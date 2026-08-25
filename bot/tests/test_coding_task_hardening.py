@@ -160,7 +160,7 @@ async def test_partial_filesystem_cleanup_is_reported_as_incomplete(
         store = CodingTaskStore(database)
         task = await _create_task(store, root_key="root", workspace_key="u1__g1")
         workspace_manager = WorkspaceManager(tmp_path / "workspaces")
-        root = workspace_manager.user_files_dir(task.workspace_key)
+        root = workspace_manager.user_files_dir(WorkspaceKey(task.workspace_key))
         (root / "test.sh").write_text("exit 0", encoding="utf-8")
 
         async def quota_run(*args: Any, **kwargs: Any) -> SandboxResult:

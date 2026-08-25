@@ -3,7 +3,8 @@ import json
 
 from agent.compaction import CompactionConfig, Compactor
 from evals.capture import InstrumentedProvider, InstrumentedRegistry
-from evals.harness import run_scenario_for_model
+from evals.harness import ScenarioRun, run_scenario_for_model
+from evals.identity import EvalIdentity
 from evals.scenario import Expect, Scenario
 from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
@@ -21,6 +22,15 @@ class _Scripted(LLMProvider):
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
         self.requests.append(request)
         return self._responses.pop(0)
+
+
+def test_scenario_run_preserves_original_positional_field_order():
+    turns = []
+    run = ScenarioRun("scenario", "model", turns, 123)
+
+    assert run.turns is turns
+    assert run.wall_time_ms == 123
+    assert run.identity is None
 
 
 def test_run_scenario_captures_reply_and_tool_trace():
@@ -96,6 +106,85 @@ def test_run_scenario_multi_turn_accumulates_records_and_carries_context():
     # One reused context: turn 2's request carries turn 1's exchange, so it has more
     # history messages than turn 1's request.
     assert len(scripted.requests[1].messages) > len(scripted.requests[0].messages)
+
+
+def test_run_scenario_uses_one_identity_context_key_per_multi_turn_run():
+    observed_context_keys: list[str] = []
+
+    async def probe(args, ctx):
+        observed_context_keys.append(ctx.context_key)
+        return json.dumps({"context_key": ctx.context_key})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="probe",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=probe,
+    )
+    scenario = Scenario(
+        id="context-isolation",
+        category="tooling",
+        trust_tier=TrustTier.MEMBER,
+        turns=["first", "second"],
+    )
+    first = EvalIdentity("run", "candidate", scenario.id, 0)
+    second = EvalIdentity("run", "candidate", scenario.id, 1)
+
+    async def exercise() -> None:
+        first_provider = InstrumentedProvider(
+            _Scripted(
+                [
+                    ProviderResponse(
+                        tool_calls=[ToolCall(id="1", name="probe", arguments={})],
+                        finish_reason="tool_calls",
+                    ),
+                    ProviderResponse(content="first done"),
+                    ProviderResponse(
+                        tool_calls=[ToolCall(id="2", name="probe", arguments={})],
+                        finish_reason="tool_calls",
+                    ),
+                    ProviderResponse(content="second done"),
+                ]
+            )
+        )
+        await run_scenario_for_model(
+            scenario,
+            provider=first_provider,
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=first,
+        )
+        await run_scenario_for_model(
+            Scenario(
+                id=scenario.id,
+                category=scenario.category,
+                trust_tier=scenario.trust_tier,
+                turns=["other repetition"],
+            ),
+            provider=InstrumentedProvider(
+                _Scripted(
+                    [
+                        ProviderResponse(
+                            tool_calls=[ToolCall(id="3", name="probe", arguments={})],
+                            finish_reason="tool_calls",
+                        ),
+                        ProviderResponse(content="other done"),
+                    ]
+                )
+            ),
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=second,
+        )
+
+    asyncio.run(exercise())
+    assert observed_context_keys == [first.context_key, first.context_key, second.context_key]
+    assert first.context_key != second.context_key
 
 
 def test_run_scenario_threads_bot_name_into_system_prompt():

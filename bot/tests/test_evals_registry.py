@@ -243,6 +243,7 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
                 channel_id="channel",
                 thread_id=None,
                 trust_tier=TrustTier.MEMBER,
+                context_key=first.context_key,
             )
             second_ctx = MessageContext(
                 user_id=second.user_id,
@@ -251,6 +252,7 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
                 channel_id="channel",
                 thread_id=None,
                 trust_tier=TrustTier.MEMBER,
+                context_key=second.context_key,
             )
 
             written = json.loads(
@@ -269,6 +271,30 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
             )
             assert "first repetition" in first_read
             assert json.loads(second_read)["error"] == "Workspace file not found: marker.txt"
+
+            workspace_manager = eval_registry.runtime_tools.workspace_manager
+            generated_root = workspace_manager.generated_job_dir(
+                first.context_key,
+                "fixture-output",
+                owner_user_id=first.user_id,
+            )
+            generated_file = generated_root / "marker.txt"
+            generated_file.write_text("first generated artifact", encoding="utf-8")
+            generated_path = workspace_manager.relative_generated_file_path(generated_file)
+            resolved = workspace_manager.resolve_context_generated_file(
+                generated_path,
+                context_key=first.context_key,
+                must_exist=True,
+            )
+            assert resolved.path == generated_file
+            with pytest.raises(
+                ValueError, match="Generated file is outside this conversation context"
+            ):
+                workspace_manager.resolve_context_generated_file(
+                    generated_path,
+                    context_key=second.context_key,
+                    must_exist=True,
+                )
             assert str(state_dir) != str(eval_settings.workspace_dir)
             return state_dir
         finally:

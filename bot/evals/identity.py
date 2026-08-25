@@ -49,5 +49,16 @@ class EvalIdentity:
         value = _SYNTHETIC_ID_BASE + int(self.digest[:16], 16) % _SYNTHETIC_ID_SPAN
         return str(value)
 
+    @property
+    def context_key(self) -> str:
+        """Conversation/output namespace unique to this arm and repetition."""
+
+        return f"eval:{self.scenario_id}:{self.digest}"
+
     def as_dict(self) -> dict[str, str | int]:
-        return {**asdict(self), "digest": self.digest, "user_id": self.user_id}
+        return {
+            **asdict(self),
+            "digest": self.digest,
+            "user_id": self.user_id,
+            "context_key": self.context_key,
+        }

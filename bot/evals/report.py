@@ -95,6 +95,7 @@ def _row(report: ScenarioReport, which: str) -> dict[str, Any]:
         "scenario": report.scenario_id,
         "role": which,
         "model": run.model_label,
+        "eval_identity": run.identity.as_dict() if run.identity else None,
         "final_text": run.turns[-1].final_text if run.turns else "",
         "tool_calls": [
             {"tool": rec.tool, "args": rec.args, "ok": rec.ok, "duration_ms": rec.duration_ms}

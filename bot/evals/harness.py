@@ -40,11 +40,13 @@ class TurnRecord:
 class ScenarioRun:
     scenario_id: str
     model_label: str
-    identity: EvalIdentity | None = None
     turns: list[TurnRecord] = field(default_factory=list)
     # End-to-end scenario time, including model calls, tool execution, memory
     # recall, and every turn. This is informational and never affects scoring.
     wall_time_ms: int = 0
+    # Additive audit metadata; kept after the original positional fields so older
+    # ScenarioRun(scenario, model, turns, wall_time) callers remain compatible.
+    identity: EvalIdentity | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -72,7 +74,7 @@ class ScenarioRun:
 
 def _seed_context(scenario: Scenario, identity: EvalIdentity) -> ConversationContext:
     context = ConversationContext(
-        key=f"eval:{scenario.id}",
+        key=identity.context_key,
         user_id=identity.user_id,
         user_name=EVAL_USER_NAME,
         channel_name=scenario.channel_name,

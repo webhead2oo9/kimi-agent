@@ -1,6 +1,7 @@
 import json
 
 from evals.harness import ScenarioRun, TurnRecord
+from evals.identity import EvalIdentity
 from evals.judge import JudgeResult, Rubric, RubricDimension
 from evals.mechanical import MechanicalResult
 from evals.report import ScenarioReport, render_report, write_raw_jsonl
@@ -19,8 +20,18 @@ def _rubric():
 
 
 def _scenario_report():
-    run_c = ScenarioRun("s", "cand", [TurnRecord("q", "cand reply", [], 10, 5)])
-    run_b = ScenarioRun("s", "base", [TurnRecord("q", "base reply", [], 8, 4)])
+    run_c = ScenarioRun(
+        "s",
+        "cand",
+        [TurnRecord("q", "cand reply", [], 10, 5)],
+        identity=EvalIdentity("qualification-run", "candidate:cand", "s", 0),
+    )
+    run_b = ScenarioRun(
+        "s",
+        "base",
+        [TurnRecord("q", "base reply", [], 8, 4)],
+        identity=EvalIdentity("qualification-run", "baseline:base", "s", 0),
+    )
     mech = MechanicalResult([], [], 0, 0, 10, 5, False)
     judge = JudgeResult(
         candidate_scores=dict.fromkeys(DIMENSIONS, 4),
@@ -58,4 +69,13 @@ def test_write_raw_jsonl_one_line_per_scenario_model(tmp_path):
     lines = path.read_text().strip().splitlines()
     # One line for candidate + one for baseline.
     assert len(lines) == 2
-    assert {json.loads(line)["model"] for line in lines} == {"cand", "base"}
+    parsed = [json.loads(line) for line in lines]
+    rows = {row["role"]: row for row in parsed}
+    assert {row["model"] for row in rows.values()} == {"cand", "base"}
+    candidate = rows["candidate"]["eval_identity"]
+    baseline = rows["baseline"]["eval_identity"]
+    assert candidate["run_nonce"] == baseline["run_nonce"] == "qualification-run"
+    assert candidate["arm"] == "candidate:cand"
+    assert baseline["arm"] == "baseline:base"
+    assert candidate["user_id"] != baseline["user_id"]
+    assert candidate["context_key"] != baseline["context_key"]

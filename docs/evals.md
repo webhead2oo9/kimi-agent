@@ -55,7 +55,9 @@ therefore cannot see one another's workspace files or accidentally reuse a real
 user's storage identity. `summary.json` and `transcripts.jsonl` record the nonce
 and derived identity inputs so a stored result remains auditable. The in-memory
 coding-control stub is keyed by the same caller id, so task numbering and captured
-control actions also start from clean state for every arm and repetition.
+control actions also start from clean state for every arm and repetition. The
+conversation context key includes the full identity digest, keeping generated
+artifacts and headless-browser sessions in the same per-arm, per-repetition boundary.
 
 `<git-sha>` is HEAD's short sha, suffixed **`-dirty`** when tracked *source*
 differs from it. The sha is the run's identity, and before the marker existed a
@@ -351,7 +353,10 @@ uv run python -m evals.run --candidate candidate-example --rubric path/to/rubric
 and `--out` (`evals/runs/latest`) narrow or relocate the run.
 
 Outputs land in `evals/runs/latest/report.md` and `raw.jsonl`. A few things to
-know about how it runs:
+know about how it runs. Each candidate and baseline row in `raw.jsonl` includes
+its complete `eval_identity` metadata (run nonce, arm, scenario, repetition,
+digest, synthetic user id, and context key), so the stored comparison retains
+the isolation provenance used during execution.
 
 - Candidate and baseline run the same scenarios (`evals/scenarios/**/*.yaml`,
   loaded recursively from the category subdirectories) through the live ReAct

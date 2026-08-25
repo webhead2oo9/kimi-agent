@@ -79,6 +79,94 @@ def test_run_scenario_captures_reply_and_tool_trace():
     assert provider._inner.requests[0].max_tokens == 65_536
 
 
+def test_run_scenario_seeds_workspace_files_outside_model_tool_trace():
+    writes: list[tuple[dict, str]] = []
+
+    async def write_file(args, ctx):
+        writes.append((args, ctx.context_key))
+        return json.dumps({"path": args["path"], "written": True})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="write_file",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=write_file,
+    )
+    scenario = Scenario(
+        id="seeded-workspace",
+        category="coding",
+        trust_tier=TrustTier.MEMBER,
+        turns=["fix it"],
+        workspace_files=(("notes.md", "teh first line\n"),),
+    )
+    identity = EvalIdentity("run", "candidate", scenario.id, 0)
+
+    run = asyncio.run(
+        run_scenario_for_model(
+            scenario,
+            provider=InstrumentedProvider(_Scripted([ProviderResponse(content="done")])),
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=identity,
+        )
+    )
+
+    assert writes == [
+        (
+            {"path": "notes.md", "content": "teh first line\n", "attach": False},
+            identity.context_key,
+        )
+    ]
+    assert run.all_tool_calls == []
+
+
+def test_run_scenario_captures_max_iteration_termination():
+    async def probe(args, ctx):
+        return json.dumps({"ok": True})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="probe",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=probe,
+    )
+    provider = InstrumentedProvider(
+        _Scripted(
+            [
+                ProviderResponse(
+                    tool_calls=[ToolCall(id=str(index), name="probe", arguments={})],
+                    finish_reason="tool_calls",
+                )
+                for index in range(10)
+            ]
+        )
+    )
+    scenario = Scenario(
+        id="exhausted",
+        category="tooling",
+        trust_tier=TrustTier.MEMBER,
+        turns=["keep probing"],
+    )
+
+    run = asyncio.run(
+        run_scenario_for_model(
+            scenario,
+            provider=provider,
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+        )
+    )
+
+    assert run.turns[0].termination_reason == "max_iterations"
+    assert run.turns[0].provider_calls == 10
+
+
 def test_run_scenario_multi_turn_accumulates_records_and_carries_context():
     scripted = _Scripted(
         [ProviderResponse(content="first reply"), ProviderResponse(content="second reply")]

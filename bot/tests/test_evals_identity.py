@@ -17,7 +17,9 @@ def test_eval_identity_is_stable_numeric_and_partitioned():
     assert base.digest == same.digest
     assert base.context_key == same.context_key
     assert base.user_id.isdigit()
-    assert len(base.user_id) == 18
+    assert len(base.user_id) == 20
+    assert int(base.user_id) > (1 << 64) - 1
+    assert int(base.user_id) < 10**20
     assert len({base.user_id, *(variant.user_id for variant in variants)}) == 5
     assert len({base.context_key, *(variant.context_key for variant in variants)}) == 5
     assert base.context_key == f"eval:vision:{base.digest}"

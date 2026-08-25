@@ -1,3 +1,6 @@
+import hashlib
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ from evals.harness_run import (
     missing_expected_tools,
     render_harness_report,
     resolve_model_spec,
+    write_transcripts,
 )
 from evals.mechanical import MechanicalResult
 from evals.models import ModelsConfig, ModelSpec, load_models
@@ -149,18 +153,40 @@ def _fake_git(responses):
 
     def run(cmd, **kwargs):
         calls.append(cmd)
-        return _Proc(responses[cmd[1]])
+        subcommand = next((part for part in cmd[1:] if part in responses), cmd[1])
+        return _Proc(responses[subcommand])
 
     return run, calls
 
 
 def test_git_short_sha_marks_dirty_tree(monkeypatch):
-    run, calls = _fake_git({"rev-parse": "0c2894a\n", "status": " M evals/compare.py\n"})
+    diff = b"diff --git a/evals/compare.py b/evals/compare.py\n+x\n"
+    run, calls = _fake_git({"rev-parse": "0c2894a\n", "diff": diff})
     monkeypatch.setattr(harness_run.subprocess, "run", run)
 
-    assert harness_run.git_short_sha(Path(".")) == "0c2894a-dirty"
-    # Untracked files must not count: a run writes its own new cassette tapes.
-    assert "--untracked-files=no" in calls[1]
+    digest = hashlib.sha256(diff).hexdigest()[:12]
+    assert harness_run.git_short_sha(Path(".")) == f"0c2894a-dirty-{digest}"
+    diff_args = calls[1]
+    assert "--binary" in diff_args
+    assert "--no-textconv" in diff_args
+    assert "--diff-algorithm=myers" in diff_args
+    assert "--no-indent-heuristic" in diff_args
+    assert "--unified=3" in diff_args
+    assert "--inter-hunk-context=0" in diff_args
+    assert "-O/dev/null" in diff_args
+    assert "--submodule=short" in diff_args
+    assert "--ignore-submodules=none" in diff_args
+    assert "core.quotePath=true" in diff_args
+    assert "diff.ignoreSubmodules=none" in diff_args
+
+
+def test_git_short_sha_hashes_non_utf8_diff_bytes(monkeypatch):
+    diff = b"diff --git a/image.bin b/image.bin\n\xff\x00\xfe"
+    run, _ = _fake_git({"rev-parse": "0c2894a\n", "diff": diff})
+    monkeypatch.setattr(harness_run.subprocess, "run", run)
+
+    digest = hashlib.sha256(diff).hexdigest()[:12]
+    assert harness_run.git_short_sha(Path(".")) == f"0c2894a-dirty-{digest}"
 
 
 def test_git_short_sha_excludes_the_cassettes_the_run_writes(monkeypatch):
@@ -168,23 +194,22 @@ def test_git_short_sha_excludes_the_cassettes_the_run_writes(monkeypatch):
     # place them in a tracked custom path; without the exclusion the run stamps
     # itself -dirty from its own data write and two runs of identical code report
     # different trees.
-    run, calls = _fake_git({"rev-parse": "0c2894a\n", "status": "\n"})
+    run, calls = _fake_git({"rev-parse": "0c2894a\n", "diff": b""})
     monkeypatch.setattr(harness_run.subprocess, "run", run)
 
     assert harness_run.git_short_sha(Path("."), data_paths=("evals/cassettes",)) == "0c2894a"
-    status_args = calls[1]
-    assert ":(top,exclude)evals/cassettes" in status_args
+    diff_args = calls[1]
+    assert ":(top,exclude)evals/cassettes" in diff_args
     # A bare exclusion matches nothing in git; the positive pathspec is what
     # keeps the rest of the tree in the check.
-    assert ":(top)" in status_args
+    assert ":(top)" in diff_args
 
 
 def _seeded_repo(tmp_path):
     """A throwaway git repo shaped like the checkout, or a skip when git is absent."""
-    import subprocess as sp
 
     def git(*args):
-        return sp.run(
+        return subprocess.run(
             [
                 "git",
                 "-c",
@@ -225,7 +250,105 @@ def test_git_dirty_marker_tracks_source_edits_not_cassette_writes(tmp_path):
     assert "-dirty" not in harness_run.git_short_sha(evals_dir, data_paths=data_paths)
     # An edited source file is what the marker is for.
     (evals_dir / "harness_run.py").write_text("x = 2\n")
-    assert harness_run.git_short_sha(evals_dir, data_paths=data_paths).endswith("-dirty")
+    first_dirty = harness_run.git_short_sha(evals_dir, data_paths=data_paths)
+    assert "-dirty-" in first_dirty
+    (evals_dir / "harness_run.py").write_text("x = 3\n")
+    second_dirty = harness_run.git_short_sha(evals_dir, data_paths=data_paths)
+    assert "-dirty-" in second_dirty
+    assert second_dirty != first_dirty
+
+
+def test_git_short_sha_uses_executed_worktree_not_index_only_state(tmp_path):
+    evals_dir = _seeded_repo(tmp_path)
+    source = evals_dir / "harness_run.py"
+    source.write_text("x = 2\n")
+    staged = subprocess.run(
+        ["git", "add", "harness_run.py"],
+        cwd=evals_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert staged.returncode == 0
+
+    # The index is dirty, but the bytes the eval imports have been restored to HEAD.
+    source.write_text("x = 1\n")
+    identity = harness_run.git_short_sha(evals_dir)
+    assert "-dirty-" not in identity
+    assert not identity.endswith("-unknown")
+
+
+def test_git_short_sha_ignores_configured_diff_context(tmp_path):
+    evals_dir = _seeded_repo(tmp_path)
+    source = evals_dir / "harness_run.py"
+    original = "".join(f"line {number}\n" for number in range(10))
+    source.write_text(original)
+    committed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-am",
+            "long source",
+        ],
+        cwd=evals_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert committed.returncode == 0
+    source.write_text(original.replace("line 5\n", "edited 5\n"))
+
+    subprocess.run(["git", "config", "diff.context", "0"], cwd=evals_dir, check=True)
+    narrow_context = harness_run.git_short_sha(evals_dir)
+    subprocess.run(["git", "config", "diff.context", "8"], cwd=evals_dir, check=True)
+    wide_context = harness_run.git_short_sha(evals_dir)
+
+    assert "-dirty-" in narrow_context
+    assert wide_context == narrow_context
+
+
+def test_git_short_sha_ignores_configured_unicode_path_quoting(tmp_path):
+    evals_dir = _seeded_repo(tmp_path)
+    unicode_source = evals_dir / "café.py"
+    unicode_source.write_text("value = 1\n")
+    added = subprocess.run(
+        ["git", "add", "café.py"],
+        cwd=evals_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert added.returncode == 0
+    committed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "unicode source",
+        ],
+        cwd=evals_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert committed.returncode == 0
+    unicode_source.write_text("value = 2\n")
+
+    subprocess.run(["git", "config", "core.quotePath", "true"], cwd=evals_dir, check=True)
+    quoted = harness_run.git_short_sha(evals_dir)
+    subprocess.run(["git", "config", "core.quotePath", "false"], cwd=evals_dir, check=True)
+    unquoted = harness_run.git_short_sha(evals_dir)
+
+    assert "-dirty-" in quoted
+    assert unquoted == quoted
 
 
 def test_run_data_paths_follows_a_non_default_cassette_dir(tmp_path):
@@ -244,7 +367,7 @@ def test_run_data_paths_follows_a_non_default_cassette_dir(tmp_path):
     # The stale hardcoded exclusion would have called this run's own write a
     # source edit.
     stale = harness_run.git_short_sha(evals_dir, data_paths=("evals/cassettes",))
-    assert stale.endswith("-dirty")
+    assert "-dirty-" in stale
 
 
 def test_run_data_paths_excludes_nothing_for_tapes_outside_the_repo(tmp_path):
@@ -256,7 +379,7 @@ def test_run_data_paths_excludes_nothing_for_tapes_outside_the_repo(tmp_path):
 
 
 def test_git_short_sha_clean_tree_has_no_suffix(monkeypatch):
-    run, _ = _fake_git({"rev-parse": "0c2894a\n", "status": "\n"})
+    run, _ = _fake_git({"rev-parse": "0c2894a\n", "diff": b""})
     monkeypatch.setattr(harness_run.subprocess, "run", run)
 
     sha = harness_run.git_short_sha(Path("."))
@@ -266,8 +389,6 @@ def test_git_short_sha_clean_tree_has_no_suffix(monkeypatch):
 
 
 def test_git_short_sha_falls_back_on_subprocess_failure(monkeypatch):
-    import subprocess
-
     def boom(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 10)
 
@@ -275,21 +396,19 @@ def test_git_short_sha_falls_back_on_subprocess_failure(monkeypatch):
     assert harness_run.git_short_sha(Path(".")) == "nogit"
 
 
-def test_git_short_sha_marks_unknown_when_the_status_check_fails(monkeypatch):
-    # rev-parse succeeding proves git works, so a status that then fails
-    # (index.lock contention, the 10s timeout, a permissions error) is the
+def test_git_short_sha_marks_unknown_when_the_diff_check_fails(monkeypatch):
+    # rev-parse succeeding proves git works, so a diff that then fails
+    # (the 10s timeout or a permissions error) is the
     # ambiguous case. Returning the bare sha stamps a genuinely edited tree with
     # a clean commit id, which is the "claimed a commit it never executed"
     # failure the marker exists to prevent.
-    import subprocess
-
     class _Proc:
         def __init__(self, stdout, returncode=0):
             self.stdout = stdout
             self.returncode = returncode
 
     def run(cmd, **kwargs):
-        if cmd[1] == "rev-parse":
+        if "rev-parse" in cmd:
             return _Proc("0c2894a\n")
         raise subprocess.TimeoutExpired(cmd, 10)
 
@@ -297,11 +416,29 @@ def test_git_short_sha_marks_unknown_when_the_status_check_fails(monkeypatch):
     assert harness_run.git_short_sha(Path(".")) == "0c2894a-unknown"
 
     def nonzero(cmd, **kwargs):
-        if cmd[1] == "rev-parse":
+        if "rev-parse" in cmd:
             return _Proc("0c2894a\n")
-        return _Proc("", returncode=128)
+        return _Proc(b"", returncode=128)
 
     monkeypatch.setattr(harness_run.subprocess, "run", nonzero)
+    assert harness_run.git_short_sha(Path(".")) == "0c2894a-unknown"
+
+
+def test_git_short_sha_marks_unknown_when_dirty_diff_cannot_be_hashed(monkeypatch):
+    class _Proc:
+        def __init__(self, stdout, returncode=0):
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def run(cmd, **kwargs):
+        del kwargs
+        if "rev-parse" in cmd:
+            return _Proc("0c2894a\n")
+        if "diff" in cmd:
+            return _Proc(b"", returncode=128)
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(harness_run.subprocess, "run", run)
     assert harness_run.git_short_sha(Path(".")) == "0c2894a-unknown"
 
 
@@ -317,7 +454,21 @@ def test_make_run_dir_uniquifies_collisions(tmp_path):
 
 def test_render_harness_report_lists_scenarios_and_flags():
     results = {
-        "a": (_scenario("a"), [_rep(_mech(75.0, passed=False, repeated_calls=2))]),
+        "a": (
+            _scenario("a"),
+            [
+                _rep(
+                    _mech(
+                        45.0,
+                        passed=False,
+                        repeated_calls=2,
+                        tool_errors=1,
+                        live_tool_errors=1,
+                        incomplete_turns=["turn 1=max_iterations"],
+                    )
+                )
+            ],
+        ),
     }
     summary = build_summary(
         run_id="r1",
@@ -332,6 +483,41 @@ def test_render_harness_report_lists_scenarios_and_flags():
     assert "| a |" in report
     assert "missing:wolfram_alpha" in report
     assert "repeats:2" in report
+    assert "tool-errors:1" in report
+    assert "incomplete:turn 1=max_iterations" in report
+
+
+def test_write_transcripts_includes_termination_and_provider_calls(tmp_path):
+    run = ScenarioRun(
+        scenario_id="a",
+        model_label="m",
+        turns=[
+            TurnRecord(
+                "q",
+                "fallback",
+                [],
+                tokens=10,
+                latency_ms=5,
+                provider_calls=10,
+                termination_reason="max_iterations",
+            )
+        ],
+    )
+    rep = RepResult(
+        mechanical=_mech(
+            75.0,
+            incomplete_turns=["turn 1=max_iterations"],
+        ),
+        sources={},
+        run=run,
+    )
+    path = tmp_path / "transcripts.jsonl"
+
+    write_transcripts(path, {"a": (_scenario("a"), [rep])})
+
+    turn = json.loads(path.read_text())["turns"][0]
+    assert turn["termination_reason"] == "max_iterations"
+    assert turn["provider_calls"] == 10
 
 
 def test_summary_and_report_include_unscored_completion_timing():

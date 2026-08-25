@@ -2,6 +2,7 @@ id: long-debug-should-move
 category: threads
 trust_tier: MEMBER
 channel: { name: general-chat, id: "800000000000000003" }
+guild: { name: Kimi Community, id: "700000000000000001" }
 seeded_history:
   - { role: user, name: Dana, text: "anyone else getting the new launcher update?" }
   - { role: user, name: Rafi, text: "yeah it downloaded fine for me" }

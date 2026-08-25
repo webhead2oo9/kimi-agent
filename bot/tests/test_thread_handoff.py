@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from app.turn_entry import _platform_scope_blocked_tools
 from app.threads import ThreadHandoffManager
 from storage.conversations import ConversationStore
 from storage.db import Database
@@ -86,7 +87,7 @@ def _manager(store: _FakeStore) -> ThreadHandoffManager:
 
 
 def _handler(registry: ToolRegistry, name: str):
-    """Look a tool up in either pool: only move_to_thread is searchable."""
+    """Look a tool up in either pool so lifecycle tests stay representation-agnostic."""
     entry = registry._core_tools.get(name) or registry._search_tools.get(name)
     assert entry is not None, name
     return entry.handler
@@ -277,6 +278,38 @@ def test_payload_reads_auto_reply_as_a_tristate(args, expected):
 
 
 # --- move_to_thread handler ---
+
+
+def test_move_to_thread_is_in_the_core_toolset():
+    registry = _tools(None)
+
+    assert "move_to_thread" in registry._core_tools
+    assert "move_to_thread" not in registry._search_tools
+    assert "step-by-step troubleshooting" in registry._core_tools["move_to_thread"].description
+
+
+def test_move_to_thread_is_visible_in_guilds_and_hidden_in_dms():
+    registry = _tools(None)
+
+    guild_names = {
+        schema["name"]
+        for schema in registry.get_tool_schemas(
+            TrustTier.MEMBER,
+            guild_id="999",
+            blocked=_platform_scope_blocked_tools("999"),
+        )
+    }
+    dm_names = {
+        schema["name"]
+        for schema in registry.get_tool_schemas(
+            TrustTier.MEMBER,
+            guild_id=None,
+            blocked=_platform_scope_blocked_tools(None),
+        )
+    }
+
+    assert "move_to_thread" in guild_names
+    assert "move_to_thread" not in dm_names
 
 
 @pytest.mark.asyncio

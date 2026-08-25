@@ -355,6 +355,7 @@ class TurnExecutionConfig:
     bot_name: str = ""
     command_template: str | None = None
     timeout_seconds: float | None = None
+    thread_handoff_suggest_after_tool_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -1054,6 +1055,9 @@ async def execute_turn(
                     activity_reporter=activity_reporter,
                     usage_store=run_dependencies.usage_store,
                     timeout_seconds=config.timeout_seconds,
+                    thread_handoff_suggest_after_tool_calls=(
+                        config.thread_handoff_suggest_after_tool_calls
+                    ),
                     deadline_monotonic=deadline,
                     usage_sink=usage_sink,
                     record_usage_call=usage_recorder.record,

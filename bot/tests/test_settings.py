@@ -311,6 +311,16 @@ def test_thread_handoff_gate_defaults_on() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.thread_handoff_enabled is True
+    assert settings.thread_handoff_suggest_after_tool_calls == 5
+
+
+@pytest.mark.parametrize("value", [-1, -10])
+def test_thread_handoff_suggestion_threshold_must_be_non_negative(value: int) -> None:
+    with pytest.raises(ValidationError, match="THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS"):
+        Settings(
+            _env_file=None,
+            thread_handoff_suggest_after_tool_calls=value,
+        )
 
 
 @pytest.mark.parametrize(

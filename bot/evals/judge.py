@@ -72,6 +72,8 @@ def _transcript(run: ScenarioRun) -> str:
             tools = ", ".join(f"{r.tool}({r.args})" for r in turn.tool_calls)
             lines.append(f"TOOLS: {tools}")
         lines.append(f"REPLY: {turn.final_text}")
+        if turn.termination_reason != "completed":
+            lines.append(f"TERMINATION: {turn.termination_reason}")
     return "\n".join(lines)
 
 

@@ -49,38 +49,41 @@ attachments, personal skills, the browser profile, and the eval database never
 use the deployment's corresponding directories, and the temporary root is removed
 only after the eval registry closes the browser worker and other composed runtime
 owners. The visible fixture author remains `webhead`, but
-the caller id is an 18-digit synthetic value derived from SHA-256 over a per-run
-nonce, model arm, scenario id, and repetition. Repetitions and qualification arms
-therefore cannot see one another's workspace files or accidentally reuse a real
-user's storage identity. `summary.json` and `transcripts.jsonl` record the nonce
+the caller id is a 20-digit synthetic value above Discord's unsigned 64-bit
+snowflake range, derived from SHA-256 over a per-run nonce, model arm, scenario id,
+and repetition. Repetitions and qualification arms therefore cannot see one
+another's workspace files or accidentally reuse a real user's storage identity.
+`summary.json` and `transcripts.jsonl` record the nonce
 and derived identity inputs so a stored result remains auditable. The in-memory
 coding-control stub is keyed by the same caller id, so task numbering and captured
 control actions also start from clean state for every arm and repetition. The
 conversation context key includes the full identity digest, keeping generated
 artifacts and headless-browser sessions in the same per-arm, per-repetition boundary.
 
-`<git-sha>` is HEAD's short sha, suffixed **`-dirty`** when tracked *source*
-differs from it. The sha is the run's identity, and before the marker existed a
-run against an edited working tree claimed a commit it never actually
-executed. The marker means "the code was edited" and nothing else, so two
-things are deliberately excluded from the check: untracked files
-(`--untracked-files=no`) and everything under the run's tape directory
-(`harness_run.run_data_paths`, excluded by pathspec). The default tape tree is
-gitignored, so it never reaches the check at all; the pathspec is there for the
-case where you point `--cassettes` at a tracked path. That matters because a
-`replay` run records misses and promotes baseline entries into that tree as
-part of doing its job, so without the exclusion it would stamp itself `-dirty`
-from its own write, and two runs of identical code would report different
-trees. Deriving the pathspec from `--cassettes` rather than fixing it at the
-default keeps it on the tree the run actually writes, instead of excusing one
-the run never touched.
+`<git-sha>` is HEAD's short sha. When tracked *source* differs from it, the
+identity is suffixed **`-dirty-<diff-hash>`**, where `<diff-hash>` is the first
+12 hexadecimal characters of SHA-256 over a configuration-independent binary
+diff from HEAD. A run against an edited working tree previously claimed a commit it never
+executed, and a later bare `-dirty` marker made every edited tree look
+identical. The hash makes equal labels mean equal tracked source bytes in the
+working tree. Untracked files and index-only changes are naturally absent from
+the worktree diff; if a staged edit has been restored to HEAD in the working
+tree, the eval executes the clean HEAD bytes and receives the clean sha. Also
+excluded is everything under the
+run's tape directory (`harness_run.run_data_paths`, excluded by pathspec). The
+default tape tree is gitignored, so it never reaches the check at all; the
+pathspec is there for the run that points `--cassettes` at a tracked path. A `replay` run records
+misses and promotes baseline entries into that tree as part of doing its job, so
+without the exclusion it changes its own diff hash and two runs
+of identical code report different trees. Deriving the pathspec from
+`--cassettes` rather than fixing it at the default keeps it on the tree the run
+actually writes, instead of excusing one the run never touched.
 
-When the check fails, it fails cautiously rather than cleanly. No git at all
-gives **`nogit`**; a `rev-parse` that succeeds followed by a `status` that does
-not (index.lock contention, the 10s timeout, a permissions error) gives
-**`-unknown`**. That second case is the ambiguous one, and answering it with a
-bare sha would stamp a possibly-edited tree with a commit it may never have
-executed, which is exactly what the marker exists to prevent.
+Failure is cautious, not clean. No git at all gives **`nogit`**; a `rev-parse`
+that succeeds followed by a diff that does not (the 10s timeout or a permissions
+error) gives **`-unknown`**. That is the ambiguous
+case, and answering it with a bare sha would stamp a possibly-edited tree with a
+commit it may never have executed, which is what the marker exists to prevent.
 
 `--repeat 1` logs a warning. One sample per scenario is not a measurement: we
 watched a scenario swing 100 → 35 between identical reps purely from tool
@@ -179,6 +182,24 @@ Only `discord_text_search` and the read-only Hindsight tools (`recall_user`,
 `eval_record` surface in `app/tool_surfaces.py`. Every other tool dispatches
 live, because local handlers may mutate context or files. Since unlisted means
 live, new tools are correct by default.
+
+### Workspace files
+
+A scenario that asks the model to inspect or edit an existing text file must
+declare the file instead of relying on an empty workspace:
+
+```yaml
+workspace_files:
+  notes.md: |
+    teh release checklist
+    - run the test suite
+```
+
+Before turn one, the harness writes each fixture through the production
+`write_file` boundary with attachments disabled. Setup bypasses eval capture,
+cassettes, and scripted faults because it is not a model action. The synthetic
+eval identity places every repetition in a separate temporary workspace, which
+is removed with the rest of the eval registry state after the run.
 
 ### Images (vision scenarios)
 
@@ -282,16 +303,20 @@ contrast, is the exact provider-reported figure.
 
 ### Mechanical score
 
-`evals/mechanical.py` computes a 0–100 composite per rep. The penalties are:
-missing expected tool 25, unexpected tool 10, live tool error 5, unrecovered
-error 15, repeated call (identical args after an identical success; retries
-after errors are free) 5, failed `reply_must_match` regex 15, raw-JSON reply
-15, over `max_tool_calls` budget 10, expected attachment never queued
-(`expect.attaches_file`) 20. Scripted fault errors cost nothing unless they go
-unrecovered. A rep *passes* when every hard expectation held; tool errors and
-repeats only lower the score. `evals.compare` diffs per-scenario score means
-between two runs and exits non-zero when the overall mean regresses beyond
-`--epsilon` (default 2.0), so a driver loop can gate on it.
+`evals/mechanical.py` computes a 0–100 composite per rep. Penalties: missing
+expected tool 25, unexpected tool 10, live tool error 5, unrecovered error 15,
+repeated call (identical args after an identical success; retries after errors
+are free) 5, failed `reply_must_match` regex 15, raw-JSON reply 15, over
+`max_tool_calls` budget 10, expected attachment never queued
+(`expect.attaches_file`) 20, and each turn that terminates anywhere other than
+`completed` 25. Scripted fault errors cost nothing unless unrecovered. A rep
+*passes* when every hard expectation held; a timeout, provider failure, or
+`max_iterations` fallback is therefore non-passing even if a later turn looks
+good. Recovered live tool errors and repeated successful calls lower the score
+and are flagged in the report but do not fail on their own. `evals.compare`
+diffs per-scenario score means between two runs and exits non-zero when the
+overall mean regresses beyond `--epsilon` (default 2.0), so a driver loop can
+gate on it.
 
 ### Completion timing
 
@@ -396,7 +421,10 @@ the isolation provenance used during execution.
   recording was made under the same scenario config, so gating already shaped
   what got recorded.
 - Thread handoff registers against a null manager, so `move_to_thread` is fully
-  graded while the three lifecycle tools are gradeable on selection only.
+  graded and the three lifecycle tools are gradeable on selection only. The
+  harness also passes `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` into the same
+  ReAct advisory path as production, so a proactive-handoff scenario is prompted
+  only after the configured amount of substantive work.
 - The chat-side coding controls register against an in-memory stub, so
   `start_coding_task` grades the delegation decision without queueing a job.
   The coding agent's own inner loop (`build_coding_registry`) is a separate

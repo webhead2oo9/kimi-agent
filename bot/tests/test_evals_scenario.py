@@ -68,6 +68,41 @@ def test_load_scenario_parses_image_turns_on_both_rails(tmp_path):
     assert rich.has_images is True
 
 
+def test_load_scenario_parses_workspace_text_fixtures(tmp_path):
+    path = _write(
+        tmp_path / "s.yaml",
+        "id: edit\n"
+        "trust_tier: MEMBER\n"
+        "workspace_files:\n"
+        "  notes.md: |\n"
+        "    teh first line\n"
+        "    second line\n"
+        "turns: [fix it]\n",
+    )
+
+    scenario = load_scenario(path)
+
+    assert scenario.workspace_files == (("notes.md", "teh first line\nsecond line\n"),)
+
+
+@pytest.mark.parametrize(
+    "workspace_yaml",
+    (
+        "workspace_files: [notes.md]\n",
+        "workspace_files: {'': text}\n",
+        "workspace_files: {notes.md: 7}\n",
+    ),
+)
+def test_load_scenario_rejects_invalid_workspace_fixtures(tmp_path, workspace_yaml):
+    path = _write(
+        tmp_path / "s.yaml",
+        f"id: edit\ntrust_tier: MEMBER\n{workspace_yaml}turns: [fix it]\n",
+    )
+
+    with pytest.raises(ValueError, match="workspace"):
+        load_scenario(path)
+
+
 def test_load_scenario_rejects_reply_text_without_reply_images(tmp_path):
     # reply_text alone builds no ReplyContext, so the scenario would silently
     # grade as if the quoted message had never existed.

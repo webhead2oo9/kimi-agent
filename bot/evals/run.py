@@ -91,6 +91,9 @@ async def _run(args: argparse.Namespace) -> int:
                 memory_client=eval_registry.memory_manager.active_client(),
                 preference_store=eval_registry.preference_store,
                 bot_name=settings.bot_name,
+                thread_handoff_suggest_after_tool_calls=(
+                    settings.thread_handoff_suggest_after_tool_calls
+                ),
                 compactor=compactor,
                 identity=EvalIdentity(
                     run_nonce=eval_run_nonce,
@@ -107,6 +110,9 @@ async def _run(args: argparse.Namespace) -> int:
                 memory_client=eval_registry.memory_manager.active_client(),
                 preference_store=eval_registry.preference_store,
                 bot_name=settings.bot_name,
+                thread_handoff_suggest_after_tool_calls=(
+                    settings.thread_handoff_suggest_after_tool_calls
+                ),
                 compactor=compactor,
                 identity=EvalIdentity(
                     run_nonce=eval_run_nonce,

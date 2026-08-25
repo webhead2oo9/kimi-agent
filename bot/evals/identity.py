@@ -6,10 +6,11 @@ from dataclasses import asdict, dataclass
 
 EVAL_USER_NAME = "webhead"
 
-# Keep synthetic ids numeric for seams that apply Discord-id validation while
-# reserving an 18-digit range that is clearly detached from any configured user.
-_SYNTHETIC_ID_BASE = 100_000_000_000_000_000
-_SYNTHETIC_ID_SPAN = 900_000_000_000_000_000
+# Keep synthetic ids numeric for seams that apply Discord-id validation, but place
+# every value above the unsigned 64-bit range used by Discord snowflakes so an eval
+# identity can never equal a real Discord user id.
+_SYNTHETIC_ID_BASE = 1 << 64
+_SYNTHETIC_ID_SPAN = 10**20 - _SYNTHETIC_ID_BASE
 
 
 def new_eval_run_nonce() -> str:

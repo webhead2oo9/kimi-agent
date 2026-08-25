@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+from typing import cast
+
+import pytest
+
+from agent.context import ConversationContext
+from agent.core import (
+    THREAD_HANDOFF_ADVISORY_TAG,
+    ConversationRunRequest,
+    run_conversation,
+)
+from providers.base import LLMProvider
+from providers.types import (
+    ContentPartType,
+    ConversationMessage,
+    ProviderCapability,
+    ProviderRequest,
+    ProviderResponse,
+    ToolCall,
+)
+from tools.registry import MessageContext, ToolRegistry
+from trust.tiers import TrustTier
+
+
+class RecordingProvider:
+    provider_key = "recording"
+    model = "test-model"
+    capabilities = {ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING}
+
+    def __init__(self, responses: list[ProviderResponse]) -> None:
+        self.responses = list(responses)
+        self.requests: list[ProviderRequest] = []
+
+    async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+async def _ok(_args: dict, _ctx: MessageContext) -> str:
+    return "ok"
+
+
+def _registry(*, include_move: bool = True) -> ToolRegistry:
+    registry = ToolRegistry()
+    for name in ("lookup", "plan"):
+        registry.register(
+            name=name,
+            description=name,
+            parameters={"type": "object", "properties": {}},
+            handler=_ok,
+        )
+    if include_move:
+        registry.register(
+            name="move_to_thread",
+            description="Move this conversation to a thread",
+            parameters={"type": "object", "properties": {}},
+            handler=_ok,
+        )
+    return registry
+
+
+def _calls(name: str, count: int, *, start: int = 0) -> list[ToolCall]:
+    return [
+        ToolCall(id=f"call-{index}", name=name, arguments={})
+        for index in range(start, start + count)
+    ]
+
+
+def _message_advisory_count(messages: list[ConversationMessage]) -> int:
+    return sum(
+        1
+        for message in messages
+        for part in message.content
+        if part.type is ContentPartType.TEXT
+        and (part.text or "").startswith(THREAD_HANDOFF_ADVISORY_TAG)
+    )
+
+
+def _advisory_count(request: ProviderRequest) -> int:
+    return _message_advisory_count(request.messages)
+
+
+def _request(
+    provider: RecordingProvider,
+    registry: ToolRegistry,
+    *,
+    threshold: int,
+    context: ConversationContext | None = None,
+    thread_id: str | None = None,
+) -> ConversationRunRequest:
+    return ConversationRunRequest(
+        user_message="Investigate it",
+        context=context or ConversationContext(key="guild:channel"),
+        trust_tier=TrustTier.MEMBER,
+        user_name="Alice",
+        user_id="user-1",
+        provider=cast(LLMProvider, provider),
+        registry=registry,
+        guild_id="guild-1",
+        channel_id="channel-1",
+        thread_id=thread_id,
+        thread_handoff_suggest_after_tool_calls=threshold,
+    )
+
+
+@pytest.mark.asyncio
+async def test_advisory_is_append_only_once_and_not_retained() -> None:
+    provider = RecordingProvider(
+        [
+            ProviderResponse(tool_calls=_calls("lookup", 5)),
+            ProviderResponse(tool_calls=_calls("lookup", 1, start=5)),
+            ProviderResponse(content="done"),
+        ]
+    )
+    context = ConversationContext(key="guild:channel")
+
+    result = await run_conversation(_request(provider, _registry(), threshold=5, context=context))
+
+    assert result.text == "done"
+    assert len(provider.requests) == 3
+    assert _advisory_count(provider.requests[0]) == 0
+    assert _advisory_count(provider.requests[1]) == 1
+    assert _advisory_count(provider.requests[2]) == 1
+    # The advisory changes only the growing message suffix, never the tool schema.
+    assert provider.requests[0].tools == provider.requests[1].tools
+    assert provider.requests[1].tools == provider.requests[2].tools
+    assert _message_advisory_count(context.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_planning_calls_do_not_reach_the_threshold() -> None:
+    provider = RecordingProvider(
+        [
+            ProviderResponse(tool_calls=_calls("plan", 5)),
+            ProviderResponse(content="done"),
+        ]
+    )
+
+    await run_conversation(_request(provider, _registry(), threshold=1))
+
+    assert _advisory_count(provider.requests[1]) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("threshold", "include_move", "thread_id"),
+    [
+        (0, True, None),
+        (1, False, None),
+        (1, True, "thread-1"),
+    ],
+)
+async def test_advisory_requires_configuration_and_an_eligible_visible_tool(
+    threshold: int,
+    include_move: bool,
+    thread_id: str | None,
+) -> None:
+    provider = RecordingProvider(
+        [
+            ProviderResponse(tool_calls=_calls("lookup", 1)),
+            ProviderResponse(content="done"),
+        ]
+    )
+
+    await run_conversation(
+        _request(
+            provider,
+            _registry(include_move=include_move),
+            threshold=threshold,
+            thread_id=thread_id,
+        )
+    )
+
+    assert _advisory_count(provider.requests[1]) == 0

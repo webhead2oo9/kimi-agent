@@ -1,0 +1,14 @@
+id: mic-first-time-buyer-clarify
+category: multiturn
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "What microphone should I buy?"
+  - "Mostly voice chat here plus some podcast recording, on a laptop with no audio interface, budget around $150, and my room is bare walls and echoes a lot."
+expect:
+  notes: |
+    Turn 1 should ask a couple of concise clarifying follow-ups instead of dumping
+    a generic buying guide. Turn 2 should narrow the recommendation for USB-only,
+    budget, voice-chat plus podcast use, and an untreated echoey room (dynamic
+    over condenser, close mic technique), while mentioning accessories like a boom
+    arm and pop filter, cheap room treatment, and return-window/setup caveats.

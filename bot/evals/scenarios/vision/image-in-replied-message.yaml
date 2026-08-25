@@ -1,0 +1,20 @@
+id: image-in-replied-message
+category: vision
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+# The reply rail. The user attaches nothing; the picture is on the message they
+# replied to, which travels as reply_context.image_parts rather than
+# input_parts. This is the shape that shipped broken - a tool reading only
+# input_parts saw zero images here and told the user none were attached.
+turns:
+  - text: "what colours are in the image they posted? top to bottom."
+    reply_images: [bands-rgb.png]
+    reply_author: Ana
+    reply_text: "made this test pattern earlier"
+expect:
+  should_not_use_tools: [browse_tools]
+  max_tool_calls: 2
+  reply_must_match: ["red", "green", "blue"]
+  notes: >
+    The replied-to image must be visible without the user re-attaching it. A
+    reply of "I don't see an image" is the regression this scenario exists for.

@@ -1,0 +1,13 @@
+id: quick-question-stays
+category: threads
+trust_tier: MEMBER
+channel: { name: general-chat, id: "800000000000000003" }
+turns:
+  - "quick one, what port does the dedicated server use by default?"
+expect:
+  should_not_use_tools: [move_to_thread]
+  max_tool_calls: 2
+  notes: >-
+    A one-line factual question answered in one line. Handing this off is the
+    failure mode worth catching: a thread for every question is more disruptive
+    than the clutter it claims to prevent.

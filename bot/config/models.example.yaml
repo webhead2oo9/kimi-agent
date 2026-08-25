@@ -1,0 +1,65 @@
+# Runtime LLM provider/model routing: GENERIC TEMPLATE.
+#
+# Copy this to `models.yaml` beside it (or into whatever CONFIG_DIR points at),
+# then replace every `.example.invalid` host and `provider/*` model id. The real
+# `models.yaml` is deliberately untracked: it describes one deployment's
+# backends, subscriptions, prices, and role assignments.
+#
+#     cp config/models.example.yaml config/models.yaml
+#
+# Secret values stay in `.env`. `api_key_env` names one of the Settings-backed
+# variables documented in docs/configuration.md; MODEL_API_KEY is the neutral
+# choice for an OpenAI-compatible provider that does not need its own named key.
+# See docs/providers.md for provider types, failover, catalogs, and overrides.
+
+providers:
+  primary:
+    type: openai_compat
+    base_url: https://llm-gateway.example.invalid/v1
+    api_key_env: MODEL_API_KEY
+    # Optional. Omit this unless the provider exposes an OpenAI-compatible
+    # catalog that should filter owner-visible /models choices at startup.
+    # models_endpoint: https://llm-gateway.example.invalid/v1/models
+
+models:
+  # REQUIRED: replace each context window and capability list with conservative
+  # values for the selected model. The template stays text-only so copying it
+  # cannot make the bot send images to a model whose vision support is unknown.
+  primary-chat:
+    provider: primary
+    model: provider/chat-model
+    context_window: 200000
+    capabilities: [text, tool_calling]
+
+  compact-chat:
+    provider: primary
+    model: provider/compact-model
+    context_window: 100000
+    capabilities: [text, tool_calling]
+
+roles:
+  chat: primary-chat
+  chat_fallbacks: []
+  compaction: compact-chat
+  # Optional durable background coding agent. Enabling it also requires
+  # CODING_TASKS_ENABLED=true and the code-execution sandbox.
+  # coding: primary-chat
+  # coding_fallbacks: []
+  compaction_fallbacks: []
+  # Optional. Assigning it registers the regular+ persona_set, persona_show, and
+  # persona_clear tools and compiles persona requests through this model. Leave
+  # the role out to keep those tools unregistered. See docs/persona.md.
+  # persona: compact-chat
+  # persona_fallbacks: []
+
+# Owner-visible candidates in /models. Maximum 120; each must support text and
+# tool calling. Keep real catalog choices in the ignored models.yaml only.
+selectable_chat_models: [primary-chat]
+
+overrides:
+  # Per-scope model pinning, most specific wins. Keys are Discord IDs (strings)
+  # or command names; values are role maps. Live IDs belong only in models.yaml.
+  channels: {}
+  guilds: {}
+  users: {}
+  commands: {}

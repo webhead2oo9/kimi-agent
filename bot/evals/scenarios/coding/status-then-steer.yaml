@@ -1,0 +1,15 @@
+id: status-then-steer
+category: coding
+trust_tier: REGULAR
+channel: { name: dev-help, id: "800000000000000004" }
+seeded_history:
+  - { role: user, name: Ana, text: "can you port the whole http layer to httpx? it's a big one" }
+  - { role: assistant, name: "", text: "Started that as a background task (eval-task-1). I'll post milestones here as it goes." }
+turns:
+  - "how's that going?"
+  - "actually tell it to leave the retry helper alone, i rewrote that yesterday"
+expect:
+  should_use_tools: [coding_task_status, coding_task_message]
+  notes: >-
+    Turn 1 inspects without restarting the task. Turn 2 is mid-flight steering,
+    not a new task: starting a second one here would duplicate the work.

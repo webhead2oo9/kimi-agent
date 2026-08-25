@@ -1,0 +1,387 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+
+import httpx
+import pytest
+
+from codex.transport import CodexWebSocketRequestError
+from providers.base import LLMProvider
+from providers.errors import (
+    ProviderBackendAccessError,
+    ProviderCapabilityError,
+    is_provider_availability_error,
+)
+from providers.failover import FailoverProvider
+from providers.types import ProviderCapability, ProviderRequest, ProviderResponse
+
+
+class _StatusError(Exception):
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _StubProvider(LLMProvider):
+    def __init__(
+        self,
+        key: str,
+        *,
+        model: str = "model",
+        capabilities: set[ProviderCapability] | None = None,
+        error: BaseException | None = None,
+        fail_times: int | None = None,
+    ) -> None:
+        self._key = key
+        self._model = model
+        self._capabilities = (
+            capabilities
+            if capabilities is not None
+            else {ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING}
+        )
+        self._error = error
+        self._fail_times = fail_times
+        self.calls = 0
+        self.closed = False
+
+    @property
+    def provider_key(self) -> str:
+        return self._key
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def capabilities(self) -> set[ProviderCapability]:
+        return set(self._capabilities)
+
+    async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+        self.calls += 1
+        if self._error is not None and (self._fail_times is None or self.calls <= self._fail_times):
+            raise self._error
+        return ProviderResponse(content=f"{self._key}-response")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+_REQUEST = ProviderRequest(
+    conversation_id=1,
+    system_prompt="",
+    messages=[],
+    current_user_parts=[],
+    tools=[],
+    max_tokens=128,
+)
+
+
+def test_returns_primary_result_when_healthy() -> None:
+    primary = _StubProvider("primary")
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    assert result.content == "primary-response"
+    assert primary.calls == 1
+    assert fallback.calls == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _StatusError("provider overloaded", 529),
+        _StatusError("cloudflare tunnel down", 530),
+        _StatusError("bad gateway", 502),
+        _StatusError("rate limited", 429),
+        ConnectionError("connection reset by peer"),
+        TimeoutError("read timed out"),
+        httpx.RemoteProtocolError("peer closed stream"),
+        httpx.ReadError("read failed"),
+        httpx.ConnectError("connect failed"),
+        httpx.ReadTimeout("read timed out"),
+        CodexWebSocketRequestError("websocket blip", retryable=True),
+    ],
+)
+def test_fails_over_on_availability_errors(error: BaseException) -> None:
+    primary = _StubProvider("primary", error=error)
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    # The failing primary is retried once before the chain advances.
+    assert result.content == "fallback-response"
+    assert primary.calls == 2
+    assert fallback.calls == 1
+
+
+def test_walks_multiple_links_until_one_succeeds() -> None:
+    first = _StubProvider("first", error=_StatusError("down", 503))
+    second = _StubProvider("second", error=_StatusError("down", 500))
+    third = _StubProvider("third")
+    chain = FailoverProvider([first, second, third], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    assert result.content == "third-response"
+    assert (first.calls, second.calls, third.calls) == (2, 2, 1)
+
+
+def test_response_is_stamped_with_serving_backend_model() -> None:
+    primary = _StubProvider("primary", model="glm-4.7", error=_StatusError("down", 503))
+    fallback = _StubProvider("fallback", model="kimi-k2")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    # The stamp names the backend that actually served, not the chain's primary.
+    assert result.content == "fallback-response"
+    assert result.model == "kimi-k2"
+    assert result.pricing_model == "kimi-k2"
+
+
+def test_healthy_primary_response_is_stamped_too() -> None:
+    chain = FailoverProvider(
+        [_StubProvider("primary", model="glm-4.7"), _StubProvider("fallback", model="kimi-k2")],
+        retry_delay_seconds=0.0,
+    )
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    assert result.model == "glm-4.7"
+    assert result.pricing_model == "glm-4.7"
+
+
+def test_stamp_keeps_model_a_backend_already_reported() -> None:
+    class _SelfReporting(_StubProvider):
+        async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="r", model="served-snapshot-2026")
+
+    chain = FailoverProvider([_SelfReporting("primary", model="configured-alias")])
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    # A backend that reports the exact served model wins over the configured alias.
+    assert result.model == "served-snapshot-2026"
+    assert result.pricing_model == "configured-alias"
+
+
+def test_provider_state_is_only_replayed_to_the_backend_that_created_it() -> None:
+    class _StatefulProvider(_StubProvider):
+        def __init__(self, key: str, state: dict[str, str]) -> None:
+            super().__init__(key)
+            self.state = state
+            self.request_states: list[dict] = []
+
+        async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+            self.request_states.append(dict(request.provider_state))
+            self.calls += 1
+            if self._error is not None:
+                raise self._error
+            return ProviderResponse(
+                content=f"{self._key}-response",
+                provider_state=dict(self.state),
+            )
+
+    primary = _StatefulProvider("primary", {"cursor": "primary"})
+    fallback = _StatefulProvider("fallback", {"cursor": "fallback"})
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    first = asyncio.run(chain.run_turn(_REQUEST))
+    same_backend = asyncio.run(
+        chain.run_turn(replace(_REQUEST, provider_state=first.provider_state))
+    )
+    assert primary.request_states[-1] == {"cursor": "primary"}
+
+    primary._error = _StatusError("primary down", 503)
+    fallback_response = asyncio.run(
+        chain.run_turn(replace(_REQUEST, provider_state=same_backend.provider_state))
+    )
+    assert fallback.request_states[-1] == {}
+
+    continued_fallback = asyncio.run(
+        chain.run_turn(replace(_REQUEST, provider_state=fallback_response.provider_state))
+    )
+    assert fallback.request_states[-1] == {"cursor": "fallback"}
+
+    primary._error = None
+    asyncio.run(chain.run_turn(replace(_REQUEST, provider_state=continued_fallback.provider_state)))
+    assert primary.request_states[-1] == {}
+
+
+def test_retries_same_backend_before_failing_over() -> None:
+    primary = _StubProvider("primary", error=_StatusError("blip", 503), fail_times=1)
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    # The retry lands on the primary (better model, warm prompt cache); the
+    # fallback is never consulted for a one-off transient failure.
+    assert result.content == "primary-response"
+    assert primary.calls == 2
+    assert fallback.calls == 0
+
+
+def test_no_failover_on_capability_error() -> None:
+    primary = _StubProvider("primary", error=ProviderCapabilityError("no image input"))
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    with pytest.raises(ProviderCapabilityError):
+        asyncio.run(chain.run_turn(_REQUEST))
+    assert fallback.calls == 0
+
+
+def test_no_failover_on_4xx_request_error() -> None:
+    primary = _StubProvider("primary", error=_StatusError("bad request", 400))
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    with pytest.raises(_StatusError):
+        asyncio.run(chain.run_turn(_REQUEST))
+    assert fallback.calls == 0
+
+
+@pytest.mark.parametrize("status_code", [401, 404])
+def test_access_or_model_error_skips_retry_and_fails_over(status_code: int) -> None:
+    primary = _StubProvider("primary", error=_StatusError("provider rejected", status_code))
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    assert result.content == "fallback-response"
+    assert primary.calls == 1
+    assert fallback.calls == 1
+
+
+def test_ambiguous_403_does_not_fail_over() -> None:
+    primary = _StubProvider("primary", error=_StatusError("policy or access rejection", 403))
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    with pytest.raises(_StatusError):
+        asyncio.run(chain.run_turn(_REQUEST))
+
+    assert primary.calls == 1
+    assert fallback.calls == 0
+
+
+def test_provider_recognized_access_error_fails_over() -> None:
+    primary = _StubProvider("primary", error=ProviderBackendAccessError("recognized access"))
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    result = asyncio.run(chain.run_turn(_REQUEST))
+
+    assert result.content == "fallback-response"
+    assert primary.calls == 1
+    assert fallback.calls == 1
+
+
+def test_access_error_from_last_backend_propagates_without_retry() -> None:
+    primary = _StubProvider("primary", error=_StatusError("primary rejected", 401))
+    last_error = _StatusError("fallback rejected", 401)
+    fallback = _StubProvider("fallback", error=last_error)
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    with pytest.raises(_StatusError) as excinfo:
+        asyncio.run(chain.run_turn(_REQUEST))
+
+    assert excinfo.value is last_error
+    assert primary.calls == 1
+    assert fallback.calls == 1
+
+
+def test_last_error_propagates_when_whole_chain_is_down() -> None:
+    primary = _StubProvider("primary", error=_StatusError("primary down", 530))
+    last_error = _StatusError("fallback down", 503)
+    fallback = _StubProvider("fallback", error=last_error)
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    with pytest.raises(_StatusError) as excinfo:
+        asyncio.run(chain.run_turn(_REQUEST))
+    assert excinfo.value is last_error
+    assert primary.calls == 2
+    assert fallback.calls == 2
+
+
+def test_capabilities_are_chain_intersection() -> None:
+    primary = _StubProvider(
+        "primary",
+        capabilities={
+            ProviderCapability.TEXT,
+            ProviderCapability.TOOL_CALLING,
+            ProviderCapability.IMAGE_INPUT,
+        },
+    )
+    fallback = _StubProvider(
+        "fallback",
+        capabilities={ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING},
+    )
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    assert chain.capabilities == {ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING}
+
+
+def test_provider_key_and_model_reflect_chain() -> None:
+    chain = FailoverProvider(
+        [_StubProvider("kimi", model="Kimi-K2.6"), _StubProvider("codex", model="gpt-5.5")]
+    )
+
+    assert chain.provider_key == "failover[kimi+codex]"
+    assert chain.model == "Kimi-K2.6"
+
+
+def test_close_does_not_close_underlying_providers() -> None:
+    primary = _StubProvider("primary")
+    fallback = _StubProvider("fallback")
+    chain = FailoverProvider([primary, fallback], retry_delay_seconds=0.0)
+
+    asyncio.run(chain.close())
+
+    assert primary.closed is False
+    assert fallback.closed is False
+
+
+def test_empty_chain_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        FailoverProvider([])
+
+
+def test_availability_classifier_excludes_typed_provider_errors() -> None:
+    # Capability/overflow are deterministic; they must never trigger failover.
+    assert is_provider_availability_error(ProviderCapabilityError("x")) is False
+    assert is_provider_availability_error(_StatusError("bad request", 400)) is False
+    assert is_provider_availability_error(_StatusError("teapot", 418)) is False
+    assert is_provider_availability_error(_StatusError("server error", 500)) is True
+    assert (
+        is_provider_availability_error(CodexWebSocketRequestError("bad request", retryable=False))
+        is False
+    )
+
+
+@pytest.mark.parametrize("status_code", range(500, 600))
+def test_availability_classifier_includes_every_5xx(status_code: int) -> None:
+    assert is_provider_availability_error(_StatusError("server error", status_code)) is True
+
+
+def test_httpx_status_errors_only_fail_over_for_availability_statuses() -> None:
+    request = httpx.Request("POST", "https://provider.test/messages")
+    bad_request = httpx.HTTPStatusError(
+        "bad request",
+        request=request,
+        response=httpx.Response(400, request=request),
+    )
+    unavailable = httpx.HTTPStatusError(
+        "unavailable",
+        request=request,
+        response=httpx.Response(503, request=request),
+    )
+
+    assert is_provider_availability_error(bad_request) is False
+    assert is_provider_availability_error(unavailable) is True

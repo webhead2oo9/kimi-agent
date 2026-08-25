@@ -1,0 +1,11 @@
+id: write-checklist-file
+category: workspace
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "can you write me a packing checklist file for a LAN party? peripherals, cables, power strips, that kind of stuff. something i can download"
+expect:
+  should_use_tools: [write_file]
+  attaches_file: true
+  max_tool_calls: 6
+  notes: "A simple file deliverable: write the checklist into the workspace and attach it."

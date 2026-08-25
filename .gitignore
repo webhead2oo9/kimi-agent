@@ -1,0 +1,93 @@
+# Top-level environments
+.venv/
+
+# Credentials and private key material. Keep checked-in examples discoverable,
+# but fail closed for instance-owned environment and authentication files.
+**/.env
+**/.env.*
+!**/.env*.example
+!**/.env*.sample
+!**/.env*.template
+**/secrets/
+**/.secrets/
+**/credentials.json
+**/*credentials*.json
+**/auth.json
+**/*-auth.json
+**/*_auth.json
+**/client_secret*.json
+**/*service-account*.json
+**/*service_account*.json
+**/*cookies*.json
+**/storage-state*.json
+**/storage_state*.json
+**/.auth/
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.ppk
+**/id_rsa*
+**/id_ed25519*
+**/id_ecdsa*
+**/id_dsa*
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/*.kdbx
+**/*.ovpn
+**/*.mobileprovision
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
+!**/*.example.tfvars
+!**/*.example.tfvars.json
+!**/*.sample.tfvars
+!**/*.sample.tfvars.json
+!**/*.template.tfvars
+!**/*.template.tfvars.json
+**/.aws/
+**/.azure/
+**/.kube/
+**/.ssh/
+**/.gnupg/
+**/.docker/config.json
+
+# Runtime-owned state. These paths may contain message content, user data,
+# tokens, or machine-local state and must not become public-repository input.
+**/data/
+**/logs/
+**/workspaces/
+**/sandbox/
+**/sandboxes/
+!bot/sandbox/
+!bot/sandbox/*.py
+**/attachments/
+**/transcripts/
+**/*.log
+**/*.log.*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+**/*.sqlite-journal
+**/*.sqlite3
+**/*.sqlite3-shm
+**/*.sqlite3-wal
+**/*.sqlite3-journal
+**/events.jsonl
+**/events.jsonl.*
+**/*.pid
+**/*.sock
+
+# Internal planning/cutover notes may name sibling repositories, deployment
+# assumptions, or unpublished work. Public architecture lives under docs/.
+/PLAN.md
+
+# Scratch review/analysis transcripts (kept local; fold real findings into PLAN.md).
+*-review.txt

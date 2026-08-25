@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import pytest
+
+from config.model_config import ModelPricing
+from usage.normalization import UsageBreakdown
+from usage.pricing import estimate_cost
+
+FULL = ModelPricing(input=0.60, output=2.40, cached_read=0.12, cache_write=0.75)
+
+
+def test_prices_each_bucket_at_its_rate() -> None:
+    usage = UsageBreakdown(
+        input_tokens=1_000_000,
+        cached_read_tokens=1_000_000,
+        cache_write_tokens=1_000_000,
+        output_tokens=1_000_000,
+    )
+
+    assert estimate_cost(FULL, usage) == pytest.approx(3.87)
+
+
+def test_no_pricing_block_returns_none() -> None:
+    assert estimate_cost(None, UsageBreakdown(input_tokens=100)) is None
+
+
+def test_nonzero_bucket_without_rate_returns_none() -> None:
+    partial = ModelPricing(input=0.60, output=2.40)
+
+    assert estimate_cost(partial, UsageBreakdown(cached_read_tokens=5)) is None
+
+
+def test_zero_token_bucket_without_rate_ignored() -> None:
+    partial = ModelPricing(input=0.60, output=2.40)
+
+    assert estimate_cost(partial, UsageBreakdown(input_tokens=1_000_000)) == pytest.approx(0.60)
+
+
+def test_zero_usage_with_pricing_is_zero() -> None:
+    assert estimate_cost(FULL, UsageBreakdown()) == 0.0

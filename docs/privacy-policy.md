@@ -1,0 +1,241 @@
+# Kimi privacy policy
+
+_Last updated: 2026-08-24_
+
+> **Deployment template:** Before publishing this policy, the operator must
+> verify that its enabled services, retention periods, moderation features, and
+> contact route match the deployment, then update the date and host it at the
+> URL configured by `PRIVACY_POLICY_URL`.
+
+Kimi is a general-purpose assistant bot for Discord communities. This page
+explains, in plain language, what data a Kimi deployment handles when you talk
+to it, who it's shared with, how long it's kept, and the controls you have. For
+the technical details, see [`privacy.md`](privacy.md).
+
+## TL;DR
+
+- Kimi only starts an AI conversation when you call on it (mention, reply,
+  "hey kimi", or its own threads). During that conversation, it may use recent
+  public messages as context. It **ignores DMs** entirely.
+- Staff can separately opt specific channels into local known-bad image
+  matching. A match can delete the message and time out its author; images and
+  matches are not sent to the fingerprint service.
+- Your messages to Kimi go to the AI provider that powers its replies.
+  Optional memory, moderation, and internet-search services receive the input
+  needed for those features.
+- Conversation history auto-deletes after **30 days**. When long-term memory is
+  available, it is on by default; opt out with `/memory opt-out`, or wipe it any
+  time with `/privacy`.
+- Your data is **never sold or used for ads**.
+- `/privacy` deletes Kimi's local conversation history, workspace files,
+  persistent browser profile, and your personal memory. It cannot erase
+  messages from Discord or copies already held by a service Kimi used.
+
+## When Kimi is listening
+
+Kimi only starts a conversation when you actually call on it: by
+@mentioning it, replying to it (with ping on), saying "hey kimi", or chatting
+inside a thread it started. It does **not** store ordinary channel conversation
+as chat history.
+
+During a requested task, Kimi may read recent public messages from the current
+channel or search other public channels selected by the operator. This gives the
+AI useful context, but does not turn those messages into Kimi conversation
+history just because they were retrieved.
+
+**Kimi ignores direct messages.** If you DM the bot, your message is dropped
+without being read, stored, or logged.
+
+**Known-bad image exception, if your server turns it on.** Staff can enroll
+specific channels in local image-fingerprint enforcement. In those channels,
+supported image attachments (and an embedded image preview) are compared with
+a list of known-bad pHashes even when the message was not addressed to Kimi.
+An ordinary-member match deletes the message, applies the configured timeout
+(24 hours by default), and creates a staff-visible moderation case. Bot
+messages are skipped; staff matches create a review case but are not deleted or
+timed out.
+
+The image bytes and hash computed from your message exist only in memory for the
+comparison and are then discarded. FingerprintHub receives no image, computed
+message hash, Discord id, match, case, or punishment result. This local
+community-moderation check does not send data to an AI provider and is not
+disabled by declining Kimi's conversational privacy prompt. Ask staff which
+channels, if any, are enrolled.
+
+**Staff log exception, if your server turns it on.** A server can send edited or
+deleted message text and attachment names to a staff-only Discord log channel.
+It can also log member joins, departures, role changes, and moderation actions.
+These are Discord log messages controlled by the server staff; `/privacy` does
+not remove them.
+
+## What Kimi collects
+
+Depending on the features a server enables, Kimi handles:
+
+- **Your messages to it**: the text you send when you invoke Kimi, and any
+  images or files you share with it in that message.
+- **Basic Discord identifiers**: your user ID and display name, and the
+  server/channel the message was in, so Kimi can reply in the right place and
+  remember the thread of a conversation. If you ask Kimi to start a managed
+  thread, it also stores your user ID as that thread's initiator so only you or a
+  moderator can close it or change its reply mode.
+- **Your server profile, when someone asks about you**: Kimi can look up a member
+  of this server and read their username, display name, avatar, account and join
+  dates, and roles. Anyone in the server can already see all of that. The lookup
+  goes to the AI provider as context for that one reply and is not stored.
+- **Usage metadata**: token counts and attributed LLM/tool-provider costs for a
+  turn, plus short-lived counters used to enforce bounded-tool limits. This does
+  not include the content of your messages, code, tool queries, or results.
+- **Images in enrolled safety channels**: supported images are read
+  transiently for the local comparison described above. They are not retained
+  by that scanner.
+- **Public messages in channels Kimi can read**: when someone asks Kimi
+  something, it may pull recent messages from that channel, or from channels the
+  operator has configured for search. That can include messages you wrote that
+  were never addressed to Kimi. They go to the AI provider as context for that
+  one reply, and are not saved to Kimi's transcript or personal memory merely
+  because they were retrieved.
+- **Messages staff teach to Kimi**: staff can deliberately turn a public message
+  into shared community knowledge or a reusable shared skill. The quoted message
+  is sent to the AI provider for that task. What Kimi learns may be stored in
+  community memory or a shared skill, and a summary is posted to a staff
+  learn-log channel.
+
+Kimi never reads your DMs. It may also check whether you hold a role or channel
+permission that a command depends on, such as the one that lets a moderator
+close a managed thread.
+
+## How Kimi uses your data, and who it's shared with
+
+- **Answering you.** Your message and recent conversation are sent to the AI
+  provider that powers Kimi's replies. Like any cloud AI service, that provider
+  may process or log prompts on its own systems under its own policies.
+- **Long-term memory.** When enabled, conversation slices, durable facts, and
+  recall queries are sent to the configured Hindsight service for users who
+  have not opted out.
+- **Safety checks.** If conversational content moderation is enabled, your
+  message to Kimi and Kimi's draft reply may be checked by a moderation
+  service before sending.
+- **Custom personas.** If you ask Kimi to adopt a persona, your request and
+  your display name are sent to a language model that rewrites it into a
+  community-appropriate persona. The result is stored against your user ID and
+  used in your future chats until you clear it or delete your memory.
+- **Internet search and page reading.** If enabled, Kimi sends a search query,
+  search filters, or URLs to the configured search provider. Built-in providers
+  include Exa and Brave. Opening a public URL also reveals a normal web request
+  to that website.
+- **Community learning.** Staff can use the process described above to store
+  shared knowledge in Hindsight or in a shared skill. This is separate from your
+  personal memory and is managed by staff.
+- **Staff moderation logs.** If enabled, selected server events are copied to a
+  staff-only Discord channel for moderation and audit purposes.
+- **Operator-added tools.** The server operator may install plugins or scripted
+  tools that contact additional services when used. The operator is responsible
+  for documenting those services and limiting the data each tool sends.
+- **Known-bad image enforcement.** In staff-enrolled channels the comparison is
+  local. FingerprintHub supplies the remote known-bad list through a read-only
+  sync; it receives no member content or Discord identifiers.
+
+Kimi does **not** sell your data, use it for advertising, or share it outside
+the configured services and tools needed to answer you.
+
+## How long Kimi keeps your data
+
+- **Conversation history: 30 days.** Your messages to Kimi (and any images in
+  them) are automatically deleted 30 days after a conversation goes quiet.
+- **Long-term memory: until you delete it.** If the server has long-term memory
+  enabled, it is on for you by default and Kimi can remember durable facts you
+  share to personalize future chats. Opt out of future use and retention with
+  `/memory opt-out`, or wipe existing memory any time with `/privacy` (the
+  **Delete memory** button).
+- **Files you create with Kimi: 7 days.** Files in your personal workspace are
+  removed after 7 days of inactivity. Your workspace is kept separate per server,
+  so files you make in one community aren't visible from another.
+- **Browser profile: 7 days.** If the interactive browser is enabled, the
+  cookies, site storage, cache, history, and screenshots from tasks Kimi does
+  for you live in a profile that is private to you, and are removed after 7 days
+  of inactivity or by **Delete my data**. The sites Kimi opens on your behalf
+  see that visit, and can set cookies that stay in your profile until it
+  expires or you delete it.
+- **Personal skills: until you delete them.** Reusable instruction skills you
+  create are stored separately from the expiring workspace. Ask Kimi to delete
+  a personal skill to remove it.
+- **Community knowledge and private shared skills: until staff remove them.**
+  These are shared server resources. They are not part of your personal memory
+  and are not removed by `/privacy`.
+- **Diagnostic logs: size-limited.** If diagnostic logging is on, technical logs
+  live in rotating files that discard the oldest file as they fill. The default
+  mode records metadata only. Operators can choose modes that also record
+  message and response text, public-channel context, and tool inputs and
+  results. `/privacy` does not edit these files.
+- **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting records
+  (which contain no message text) are kept for cost tracking and are not on the
+  30-day clock.
+- **Moderation records: kept indefinitely.** If a moderator warns, times out,
+  kicks, or bans you (or a known-bad image match triggers enforcement), the
+  server keeps a case record with the reason, message/user identifiers, and
+  action outcome. These records are **not** removed by "Delete my data": a
+  moderation history you could erase yourself would not be much of a record.
+  Ordinary staff-written cases hold the moderator's reason instead of your
+  message text; image-match cases hold fingerprint metadata, not the image.
+- **Discord staff logs: controlled by server staff.** Moderation and learning
+  log cards are messages in Discord. They remain until staff or Discord remove
+  them and are not covered by Kimi's local retention sweep.
+
+## Your controls
+
+- **`/privacy` → Delete memory**: wipes your personal long-term memory, turns
+  future memory off (the same as `/memory opt-out`), and clears your custom
+  persona. Use `/memory opt-in` if you later want to turn memory back on.
+- **`/privacy` → Delete my data**: does everything above and immediately deletes
+  Kimi's local copy of conversations you started, your messages in conversations
+  started by someone else, your workspace files, and your browser profile. If
+  you started a shared conversation, Kimi's local copy of that whole
+  conversation is removed,
+  including messages other people added to it; their other conversations,
+  workspaces, preferences, and personal memory are left alone.
+- **What `/privacy` cannot delete**: messages or files stored by Discord; copies
+  already processed or logged by AI, moderation, search, or website providers;
+  backups; diagnostic logs; community knowledge; shared or personal skills;
+  usage and rate-limit records; moderation cases and staff log messages; blocks;
+  or your saved consent preference. Those have the separate lifecycles described
+  above.
+
+Deletion waits for any interaction already in progress and blocks new activity
+for you until it finishes. Your confirmation is saved before deletion starts,
+so a restart cannot lose it. If a service is temporarily unavailable, the
+request stays pending; retry `/privacy` or ask staff for help.
+
+- **`/memory status`**: see whether memory is on for you.
+- **`/memory opt-out`**: stop Kimi from remembering anything new about you.
+- **`/memory opt-in`**: turn memory back on after opting out.
+- **Block Kimi**: ask Kimi to block you, and it will stop responding to you.
+- **Privacy prompt**: if the consent prompt is enabled on your server, you can
+  tap **Decline** the first time and nothing you said is sent to the AI provider
+  or stored as a conversation. It does not exempt images posted in a
+  staff-enrolled safety channel from the local fingerprint check described
+  above.
+
+## Who can see your data
+
+The bot operator can access the database, workspace files, diagnostic logs, and
+Hindsight backend as the infrastructure administrator. Anyone can check their
+own usage totals with `/usage`; Discord staff can additionally use
+`/moderation`, read and annotate moderation case records with `/mod`, and view
+other users' usage totals. Staff with access to configured moderation or
+learning log channels can also see the event cards posted there. None of these
+commands expose private transcripts or personal memory.
+
+## Age
+
+Kimi is intended for users **13 and older**, in line with Discord's own terms.
+
+## Changes to this policy
+
+We may update this policy as Kimi changes. Material changes will be noted with a
+new "last updated" date.
+
+## Questions
+
+Reach out to the bot owner, or the server staff in the community, with any
+privacy questions or requests.

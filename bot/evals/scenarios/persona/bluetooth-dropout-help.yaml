@@ -1,0 +1,10 @@
+id: bluetooth-dropout-help
+category: persona
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "my bluetooth keyboard keeps dropping off my laptop mid-sentence, any ideas?"
+expect:
+  notes: |
+    Stay in the bot's voice (config/persona.md). Give concrete troubleshooting
+    without dumping a generic listicle. No tool needed.

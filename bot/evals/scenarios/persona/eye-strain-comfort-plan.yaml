@@ -1,0 +1,15 @@
+id: eye-strain-comfort-plan
+category: persona
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "I'm setting my partner up to work at my desk, but long sessions on it left them with eye strain and headaches, and they wear glasses. How do I make the first week not awful?"
+expect:
+  notes: |
+    Should give a practical acclimation plan: monitor distance, height, and text
+    scaling, brightness and contrast matched to the room light, short sessions
+    with real breaks and stopping early when it hurts, chair, desk and wrist
+    setup, glasses considerations like computer-distance or anti-glare lenses,
+    warm color modes and dry-eye habits only as optional aids, and no marathon
+    sessions in the first week. It should be calm, specific, and not medical
+    overclaiming: an optometrist for headaches that persist, not a diagnosis.

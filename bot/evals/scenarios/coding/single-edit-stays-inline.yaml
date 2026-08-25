@@ -1,0 +1,13 @@
+id: single-edit-stays-inline
+category: coding
+trust_tier: REGULAR
+channel: { name: dev-help, id: "800000000000000004" }
+turns:
+  - "in my notes.md can you fix the typo on the first line? it says 'teh' instead of 'the'"
+expect:
+  should_not_use_tools: [start_coding_task]
+  max_tool_calls: 4
+  notes: >-
+    A one-word edit in one file. Spinning up a durable task for this is the
+    over-delegation failure: the user waits on a background job for something
+    that was one edit_file call.

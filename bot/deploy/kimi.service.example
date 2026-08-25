@@ -1,0 +1,22 @@
+[Unit]
+Description=Kimi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace /srv/kimi with the deployment checkout or release path. Install
+# this as a user unit for the same unprivileged account that owns runtime data.
+WorkingDirectory=/srv/kimi/bot
+Environment=PYTHONUNBUFFERED=1
+# Optional deployment-only overrides such as BROWSER_ENABLED/network mode and
+# resource caps. Keep credentials in a separate protected environment file.
+EnvironmentFile=-/srv/kimi/private/runtime.env
+EnvironmentFile=-/srv/kimi/private/secrets.env
+ExecStart=/srv/kimi/bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target

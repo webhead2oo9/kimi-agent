@@ -1,0 +1,17 @@
+id: screenshare-stutter-diagnosis
+category: persona
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+seeded_history:
+  - { role: user, name: webhead, text: "My screen share looks fine for the first few minutes." }
+turns:
+  - "After 10-15 minutes my screen share starts stuttering hard, but recording the same thing locally in OBS is mostly okay. What would you check first?"
+expect:
+  notes: |
+    This is a diagnostic ask, not a listicle. A strong answer should prioritize
+    likely causes from the symptom split: uplink and router congestion, GPU
+    encoder load, bitrate and resolution/framerate choice, hardware versus
+    software encoding, thermal throttling, app and driver settings, and logs.
+    It should ask for connection type (wired, or which band and channel width),
+    upload bandwidth, stream bitrate and resolution, encoder, GPU, and whether
+    the machine is overheating before recommending disruptive resets.

@@ -1,0 +1,39 @@
+# Copy this file to models.yaml and replace every placeholder with deployment-owned
+# eval routing. models.yaml is intentionally ignored because it can reveal private
+# providers, local endpoints, model choices, pricing, and credentials' environment
+# variable names.
+baseline:
+  label: baseline-example
+  provider_name: openai_compat
+  model: provider/baseline-model
+  base_url: https://eval-gateway.example.invalid/v1
+  api_key_env: EVAL_BASELINE_API_KEY
+  capabilities: [text, tool_calling]
+  pricing: {input: 1.0, cached_read: 0.1, output: 2.0, cache_write: 0.0}
+
+candidates:
+  candidate-example:
+    label: candidate-example
+    provider_name: openai_compat
+    model: provider/candidate-model
+    base_url: https://eval-gateway.example.invalid/v1
+    api_key_env: EVAL_CANDIDATE_API_KEY
+    capabilities: [text, tool_calling]
+
+  vision-example:
+    label: vision-example
+    provider_name: openai_compat
+    model: provider/vision-model
+    base_url: https://eval-gateway.example.invalid/v1
+    api_key_env: EVAL_VISION_API_KEY
+    capabilities: [text, tool_calling, image_input]
+
+# The qualification runner uses this judge. Keep real judge routing in the ignored
+# models.yaml alongside the other live eval profiles.
+judge:
+  label: judge-example
+  provider_name: openai_compat
+  model: provider/judge-model
+  base_url: https://eval-gateway.example.invalid/v1
+  api_key_env: EVAL_JUDGE_API_KEY
+  capabilities: [text]

@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+import app.tools as app_tools
+import web_browser.service as browser_service
+from config.settings import Settings
+from sandbox.netns_lease import NetnsLease
+from tools.registry import ToolRegistry
+from tools.workspace.common import UserLocks
+from trust.tiers import TrustTier
+from web_browser.service import (
+    BrowserNetworkMode,
+    BrowserService,
+    BrowserServiceConfig,
+    BrowserServiceError,
+    BrowserWorkerTeardownError,
+    _SubprocessBrowserWorker,
+    _runtime_env,
+    _stop_unit,
+    _unit_state,
+    build_browser_worker_command,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROJECT_ROOT.parent
+
+
+def _config(
+    tmp_path: Path,
+    *,
+    network_mode: BrowserNetworkMode = "host",
+    max_profile_bytes: int = 1024,
+) -> BrowserServiceConfig:
+    return BrowserServiceConfig(
+        runtime_dir=tmp_path / "runtime",
+        profiles_dir=tmp_path / "profiles",
+        bridge_script=tmp_path / "bridge.mjs",
+        network_mode=network_mode,
+        netns_helper_bin="/fixed/netns-helper",
+        netns_resolv_conf="/fixed/resolv.conf",
+        max_profile_bytes=max_profile_bytes,
+        idle_ttl_seconds=60,
+        require_root_owned_runtime=False,
+    )
+
+
+def test_worker_command_has_filesystem_and_network_boundary(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    command = build_browser_worker_command(
+        config,
+        tmp_path / "profile",
+        unit_name="browser-test",
+        seccomp_fd=9,
+    )
+
+    assert command[:2] == ["systemd-run", "--user"]
+    assert "--unshare-all" in command
+    assert "--share-net" in command
+    assert command[command.index("--seccomp") + 1] == "9"
+    assert command[command.index("--setenv") + 2] == "/usr/bin"
+    assert command[-2:] == ["/runtime/node", "/bridge.mjs"]
+
+
+def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
+    bridge = (PROJECT_ROOT / "web_browser/bridge.mjs").read_text(encoding="utf-8")
+    installer = (PROJECT_ROOT / "deploy/betterwright/install.sh").read_text(encoding="utf-8")
+    docs = (REPO_ROOT / "docs/browser.md").read_text(encoding="utf-8")
+
+    assert "VERSION=1.10.0" in installer
+    assert "BetterWright **1.10.0**" in docs
+    assert 'HOME="$RUNTIME_DIR" BETTERWRIGHT_HOME="$RUNTIME_DIR"' in installer
+    assert "allowPrivateNetwork: false" in bridge
+    assert "allowLoopback: false" in bridge
+    assert "vault: false" in bridge
+    assert 'downloadPolicy: "deny"' in bridge
+    assert "CloakBrowser" not in installer
+    assert "FONTCONFIG_FILE" not in installer
+
+
+def test_netns_command_uses_only_fixed_helper_and_resolver(tmp_path: Path) -> None:
+    config = _config(tmp_path, network_mode="netns")
+    command = build_browser_worker_command(
+        config,
+        tmp_path / "profile",
+        unit_name="browser-test",
+        seccomp_fd=3,
+        bpf_path=tmp_path / "policy.bpf",
+    )
+
+    assert "/fixed/netns-helper" in command
+    assert command[
+        command.index("/fixed/resolv.conf") - 1 : command.index("/fixed/resolv.conf") + 2
+    ] == ["--ro-bind", "/fixed/resolv.conf", "/etc/resolv.conf"]
+    assert not any("host" in part for part in command)
+
+
+def test_runtime_env_derives_user_manager_address_when_session_env_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_os = SimpleNamespace(name="posix", environ={}, getuid=lambda: 1234)
+    monkeypatch.setattr(browser_service, "os", fake_os)
+
+    assert _runtime_env() == {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "XDG_RUNTIME_DIR": "/run/user/1234",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1234/bus",
+    }
+
+
+class _ReadStream:
+    def __init__(self, *lines: bytes, before_read: Any | None = None) -> None:
+        self._lines = iter((*lines, b""))
+        self._before_read = before_read
+
+    async def readline(self) -> bytes:
+        if self._before_read is not None:
+            self._before_read()
+        return next(self._lines)
+
+
+class _FakeProcess:
+    def __init__(self, *, stdout: _ReadStream | None = None, returncode: int | None = 0) -> None:
+        self.stdin = None
+        self.stdout = stdout
+        self.stderr = _ReadStream()
+        self.returncode = returncode
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        output = bytearray()
+        if self.stdout is not None:
+            while line := await self.stdout.readline():
+                output.extend(line)
+        return bytes(output), b""
+
+    async def wait(self) -> int:
+        return self.returncode or 0
+
+
+@pytest.mark.asyncio
+async def test_netns_seccomp_file_survives_until_worker_is_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bpf_path = tmp_path / "worker.bpf"
+
+    def write_policy(unit_name: str) -> Path:
+        del unit_name
+        bpf_path.write_bytes(b"policy")
+        return bpf_path
+
+    def require_policy() -> None:
+        assert bpf_path.is_file()
+
+    process = _FakeProcess(
+        stdout=_ReadStream(b"__BW_READY__{}\n", before_read=require_policy),
+        returncode=None,
+    )
+
+    async def create_process(*command: str, **kwargs: Any) -> _FakeProcess:
+        del command, kwargs
+        return process
+
+    monkeypatch.setattr(browser_service, "_write_seccomp_file", write_policy)
+    monkeypatch.setattr(browser_service.asyncio, "create_subprocess_exec", create_process)
+
+    worker = await _SubprocessBrowserWorker.create(
+        _config(tmp_path, network_mode="netns"), "owner", tmp_path / "profile"
+    )
+
+    assert worker.process is process
+    assert not bpf_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_unit_state_distinguishes_confirmed_missing_unit_from_query_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    responses = iter(
+        (
+            _FakeProcess(stdout=_ReadStream(b"unknown\n"), returncode=4),
+            _FakeProcess(stdout=_ReadStream(), returncode=1),
+        )
+    )
+
+    async def create_process(*command: str, **kwargs: Any) -> _FakeProcess:
+        del command, kwargs
+        return next(responses)
+
+    monkeypatch.setattr(browser_service.asyncio, "create_subprocess_exec", create_process)
+
+    assert await _unit_state(_config(tmp_path), "missing") == "unknown"
+    assert await _unit_state(_config(tmp_path), "unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_stop_unit_fails_closed_when_unit_state_cannot_be_queried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def create_process(*command: str, **kwargs: Any) -> _FakeProcess:
+        del command, kwargs
+        return _FakeProcess()
+
+    async def unknown_state(config: BrowserServiceConfig, unit_name: str) -> None:
+        del config, unit_name
+
+    async def no_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr(browser_service.asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(browser_service, "_unit_state", unknown_state)
+    monkeypatch.setattr(browser_service.asyncio, "sleep", no_sleep)
+
+    with pytest.raises(BrowserWorkerTeardownError, match="could not be confirmed"):
+        await _stop_unit(_config(tmp_path), "unknown")
+
+
+class _Worker:
+    def __init__(self, home: Path) -> None:
+        self.home = home
+        self.alive = True
+        self.closed = False
+
+    async def call(self, *, code: str, session: str) -> dict[str, Any]:
+        return {"ok": True, "result": f"{session}:{code}"}
+
+    async def close(self) -> None:
+        self.alive = False
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_service_switches_workers_without_sharing_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workers: list[_Worker] = []
+
+    async def factory(config: BrowserServiceConfig, owner: str, home: Path) -> _Worker:
+        del config, owner
+        worker = _Worker(home)
+        workers.append(worker)
+        return worker
+
+    service = BrowserService(_config(tmp_path), worker_factory=factory)
+    monkeypatch.setattr(service, "availability_error", lambda: None)
+
+    await service.acquire_turn("user-a", "turn-a")
+    result = await service.run(owner_id="user-a", turn_id="turn-a", session="root", code="1")
+    await service.release_turn("user-a", "turn-a")
+    await service.acquire_turn("user-b", "turn-b")
+    await service.run(owner_id="user-b", turn_id="turn-b", session="root", code="2")
+
+    assert result["ok"] is True
+    assert workers[0].closed is True
+    assert workers[0].home != workers[1].home
+    assert "user-a" not in workers[0].home.name
+    await service.release_turn("user-b", "turn-b")
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_profile_quota_resets_oversized_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def factory(config: BrowserServiceConfig, owner: str, home: Path) -> _Worker:
+        del config, owner
+        (home / "large").write_bytes(b"x" * 32)
+        return _Worker(home)
+
+    service = BrowserService(_config(tmp_path, max_profile_bytes=16), worker_factory=factory)
+    monkeypatch.setattr(service, "availability_error", lambda: None)
+    await service.acquire_turn("42", "turn")
+
+    with pytest.raises(BrowserServiceError, match="storage limit"):
+        await service.run(owner_id="42", turn_id="turn", session="root", code="1")
+
+    assert not service.profile_home("42").exists()
+    await service.release_turn("42", "turn")
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_profile_sweep_and_privacy_deletion(tmp_path: Path) -> None:
+    service = BrowserService(_config(tmp_path))
+    stale = service.profile_home("stale")
+    stale.mkdir(parents=True)
+    marker = stale / ".last_used"
+    marker.touch()
+    old = time.time() - service.config.profile_ttl_seconds - 5
+    os.utime(marker, (old, old))
+    current = service.profile_home("current")
+    current.mkdir(parents=True)
+    (current / ".last_used").touch()
+
+    assert await service.sweep_expired() == 1
+    assert not stale.exists()
+    assert await service.delete_user_data("current") == 1
+    assert not current.exists()
+
+
+def test_app_registers_browser_only_after_successful_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        browser_enabled=True,
+        browser_runtime_dir=str(tmp_path / "runtime"),
+        browser_profiles_dir=str(tmp_path / "profiles"),
+    )
+    registry = ToolRegistry()
+    monkeypatch.setattr(BrowserService, "availability_error", lambda self: None)
+    monkeypatch.setattr(app_tools, "sandbox_available", lambda config: True)
+
+    app_tools._register_browser(
+        settings,
+        registry,
+        app_tools.WorkspaceManager(tmp_path / "workspace"),
+        workspace_locks=UserLocks(),
+        netns_lease=NetnsLease(),
+    )
+
+    names = {schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "42")}
+    assert "browser" in names

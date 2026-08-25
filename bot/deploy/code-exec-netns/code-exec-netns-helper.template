@@ -1,0 +1,43 @@
+#!/bin/sh
+# Install root:root 0755 after replacing every REPLACE_* token. The namespace
+# and readiness marker are fixed here; neither is accepted from the caller.
+set -eu
+
+[ "$(id -u)" = "0" ] || {
+    echo "code-exec-netns: must run as root" >&2
+    exit 2
+}
+[ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] || {
+    echo "code-exec-netns: SUDO_UID/SUDO_GID unset" >&2
+    exit 2
+}
+[ "$SUDO_UID" -ne 0 ] && [ "$SUDO_GID" -ne 0 ] || {
+    echo "code-exec-netns: refusing a root sudo caller" >&2
+    exit 2
+}
+[ "$#" -ge 1 ] || {
+    echo "code-exec-netns: no sandbox command given" >&2
+    exit 2
+}
+
+NETNS_PATH=/run/netns/REPLACE_NETNS_NAME
+READY_FILE=/run/REPLACE_READY_FILE
+[ -e "$NETNS_PATH" ] && [ -f "$READY_FILE" ] && [ ! -L "$READY_FILE" ] || {
+    echo "code-exec-netns: namespace is not ready" >&2
+    exit 3
+}
+ready_owner=$(/usr/bin/stat -c %u "$READY_FILE")
+ready_mode=$(/usr/bin/stat -c %a "$READY_FILE")
+[ "$ready_owner" = "0" ] && [ $((0$ready_mode & 0022)) -eq 0 ] || {
+    echo "code-exec-netns: readiness marker is not root-controlled" >&2
+    exit 3
+}
+
+exec /usr/bin/nsenter --net="$NETNS_PATH" -- \
+    /usr/bin/setpriv --reuid "$SUDO_UID" --regid "$SUDO_GID" --init-groups \
+        --inh-caps=-all --ambient-caps=-all \
+        /usr/bin/env \
+            XDG_RUNTIME_DIR="/run/user/${SUDO_UID}" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${SUDO_UID}/bus" \
+            PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            "$@"

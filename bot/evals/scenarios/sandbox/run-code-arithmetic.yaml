@@ -1,0 +1,13 @@
+id: run-code-arithmetic
+category: sandbox
+trust_tier: REGULAR
+channel: { name: dev-help, id: "800000000000000004" }
+requires_tools: [run_code]
+turns:
+  - "what's the 400th fibonacci number? exact digits, not scientific notation"
+expect:
+  should_use_tools: [run_code]
+  max_tool_calls: 4
+  notes: >-
+    Exact large-integer arithmetic is a compute question, not a recall question.
+    Answering from memory is the failure: the digits will be confidently wrong.

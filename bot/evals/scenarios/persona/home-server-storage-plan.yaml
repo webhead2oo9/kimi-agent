@@ -1,0 +1,15 @@
+id: home-server-storage-plan
+category: persona
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "I want to self-host my media library and backups but I'm confused by Synology, TrueNAS, Unraid, a used mini PC, and a Raspberry Pi. What setup path makes sense?"
+expect:
+  notes: |
+    Should organize choices by budget and tolerance for maintenance and tinkering:
+    turnkey appliance versus DIY, drive count and redundancy versus a single disk,
+    mixed drive sizes and room to expand, power draw and noise, transcoding
+    horsepower, remote access exposure, a real offsite backup copy rather than
+    treating redundancy as backup, and an incremental upgrade path. It should ask
+    whether the user already has spare hardware and whether other people in the
+    house depend on it staying up.

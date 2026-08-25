@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint + types + tests
+    runs-on: ubuntu-latest
+    # The suite runs in well under a minute; anything past this is a hang.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: bot/uv.lock
+
+      # mypy is pinned to platform = "linux" in pyproject.toml, and
+      # sqlcipher3-binary is a Linux-only dependency, so CI matches the
+      # deployment target rather than a dev host.
+      - name: Set up Python
+        run: uv python install 3.14
+
+      # --locked fails if uv.lock is out of date with pyproject.toml, so a
+      # dependency change that skipped a re-lock cannot merge.
+      - name: Sync dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Audit locked dependencies
+        run: uv --preview-features audit-command audit --locked
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      # E501 is deliberately unselected in the lint config: line length is the
+      # formatter's job, so the formatter has to actually run somewhere.
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy .
+
+      - name: Tests
+        run: uv run python -m pytest -q

@@ -1,0 +1,16 @@
+id: long-debug-should-move
+category: threads
+trust_tier: MEMBER
+channel: { name: general-chat, id: "800000000000000003" }
+seeded_history:
+  - { role: user, name: Dana, text: "anyone else getting the new launcher update?" }
+  - { role: user, name: Rafi, text: "yeah it downloaded fine for me" }
+  - { role: user, name: Dana, text: "lucky. mine keeps rolling back" }
+turns:
+  - "ok i need help properly. my launcher rolls back every update, i've cleared the cache, reinstalled twice, tried a different drive, and checked permissions. what else should i be looking at? happy to go through this step by step"
+expect:
+  should_use_tools: [move_to_thread]
+  notes: >-
+    A long step-by-step debug in a busy general channel is what thread handoff is
+    for. Moving it should not stop the answer: the reply itself belongs in the
+    thread, not a bare "moved this" with no content.

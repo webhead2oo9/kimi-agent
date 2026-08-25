@@ -1,0 +1,5 @@
+# Replace both tokens, install root:root 0440, then validate with visudo -cf.
+# closefrom_override permits sudo -C 4 to preserve systemd's seccomp fd 3.
+# !use_pty preserves the transient service's direct stdio/process relationship.
+Defaults!/REPLACE_ABSOLUTE_HELPER_PATH closefrom_override, !use_pty
+REPLACE_BOT_USER ALL=(root) NOPASSWD: /REPLACE_ABSOLUTE_HELPER_PATH

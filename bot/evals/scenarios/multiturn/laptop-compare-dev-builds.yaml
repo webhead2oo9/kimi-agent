@@ -1,0 +1,18 @@
+id: laptop-compare-dev-builds
+category: multiturn
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+seeded_history:
+  - { role: user, name: webhead, text: "I run long local builds, live in a terminal, and I can't stand fan noise." }
+  - { role: assistant, text: "Got it. For build-heavy work, sustained performance under load, thermals, keyboard, and driver support matter more than peak benchmark numbers." }
+turns:
+  - "Compare the MacBook Air M4, ThinkPad X1 Carbon Gen 13, Framework Laptop 13, and Dell XPS 14 for long compiles and running a couple of VMs."
+  - "I need Linux to just work, I want 32 GB of RAM, and I can spend up to $1600 if it is actually worth it."
+expect:
+  notes: |
+    Hard comparison: preserve the user's build-heavy, quiet-machine context across
+    turns, separate the fanless ARM/macOS option from the x86 machines that can
+    actually run Linux, discuss sustained multi-core performance, thermals and
+    noise, RAM ceilings and soldered versus socketed memory, keyboard and display,
+    repairability and upgrade path, driver support, and total cost. It should not
+    pick one universal winner without naming trade-offs and any missing details.

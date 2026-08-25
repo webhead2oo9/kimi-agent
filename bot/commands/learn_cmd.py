@@ -1,0 +1,104 @@
+"""The bot-name-derived teaching message context menu.
+
+Right-clicking a message and teaching from it is the capture half of the learn
+flow; ``app/learn_turn.py`` is the thinking half and ``app/learn_log.py`` the
+audit half. This module stays a thin Discord boundary: check standing, reduce
+the gateway message to plain data, hand off, and report back ephemerally.
+
+Staff-only, and re-checked here rather than trusted from the caller: a context
+menu carries no tier of its own, and every tool the resulting turn calls is
+gated again at dispatch.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from commands._shared import send_message as _send_message
+from branding import DEFAULT_BOT_NAME
+from tools.learn import LearnTarget
+from trust.resolver import TrustResolver
+from trust.tiers import TrustTier
+
+log = logging.getLogger(__name__)
+
+LEARN_MENU_PREFIX = "Teach "
+
+_NO_STANDING = "Staff only."
+_NO_GUILD = "I can only learn community knowledge inside a server."
+_BOT_MESSAGE = "That's one of my own messages. Teach me from what a person actually said."
+_EMPTY = "That message has nothing for me to learn from."
+_FAILED = "Something went wrong while I was learning that. Nothing was saved."
+_NO_REPORT = "I finished, but had nothing to report back."
+
+LearnRunner = Callable[[LearnTarget, discord.Interaction], Awaitable[str]]
+
+
+def learn_menu_name(bot_name: str) -> str:
+    """Return a Discord-safe context-menu name derived from the bot name."""
+
+    name = bot_name.strip() or DEFAULT_BOT_NAME
+    return f"{LEARN_MENU_PREFIX}{name}"[:32].rstrip()
+
+
+def register_learn_command(
+    bot: commands.Bot,
+    trust_resolver: TrustResolver,
+    *,
+    run_learn: LearnRunner,
+    bot_name: str = DEFAULT_BOT_NAME,
+) -> None:
+    """Install the context menu.
+
+    ``run_learn`` is injected so this module never reaches into the application:
+    ``app/runtime.py`` binds it to the scoped turn with the live provider,
+    registry, and skills index.
+    """
+
+    @app_commands.context_menu(name=learn_menu_name(bot_name))
+    async def teach_from_message(
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> None:
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        tier = trust_resolver.resolve(member, str(interaction.user.id), guild_id)
+        if tier < TrustTier.STAFF:
+            await _send_message(interaction, _NO_STANDING)
+            return
+        if guild_id is None:
+            await _send_message(interaction, _NO_GUILD)
+            return
+        if message.author.bot:
+            await _send_message(interaction, _BOT_MESSAGE)
+            return
+        if not message.content.strip() and not message.attachments:
+            await _send_message(interaction, _EMPTY)
+            return
+
+        # Learning runs a full model turn with tool calls; defer before it starts
+        # so the interaction token does not expire mid-thought.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        target = LearnTarget(
+            content=message.content or "",
+            author_name=getattr(message.author, "display_name", str(message.author)),
+            author_id=str(message.author.id),
+            jump_url=message.jump_url,
+            message_id=str(message.id),
+            channel_id=str(message.channel.id),
+            attachment_names=tuple(attachment.filename for attachment in message.attachments),
+        )
+        try:
+            report = await run_learn(target, interaction)
+        except Exception:
+            log.exception("Learn turn failed for message %s", message.id)
+            await _send_message(interaction, _FAILED)
+            return
+        await _send_message(interaction, report.strip() or _NO_REPORT)
+
+    bot.tree.add_command(teach_from_message, override=True)

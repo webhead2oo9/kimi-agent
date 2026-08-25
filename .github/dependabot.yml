@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/bot"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # ruff and mypy gate CI, so a new lint rule or a stricter check turns the
+      # build red on code nobody touched. Keeping them in their own PR means
+      # that fallout never holds back the routine runtime bumps.
+      lint-and-types:
+        patterns: ["ruff", "mypy"]
+      python-minor-patch:
+        patterns: ["*"]
+        exclude-patterns: ["ruff", "mypy"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]

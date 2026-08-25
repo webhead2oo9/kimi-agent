@@ -1,0 +1,139 @@
+[project]
+name = "kimi-agent"
+version = "1.0.0"
+description = "Kimi: a general-purpose Discord assistant"
+requires-python = ">=3.14"
+authors = [{ name = "Webhead" }]
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "aiohttp>=3.14.3",
+    "discord.py>=2.7",
+    "aiosqlite",
+    "openai>=3.0",
+    "hindsight-client",
+    "httpx",
+    "pydantic",
+    "pydantic-settings>=2.14.2",
+    "pyyaml",
+    "anthropic>=1.0.0",
+    "emoji>=2.0",
+    "pymupdf>=1.27.2.3",
+    # Office document → Markdown conversion for extract_document_text
+    # (tools/workspace/documents.py). Pure-Rust PyO3 binding with abi3 wheels
+    # covering both dev (win_amd64) and prod (manylinux x86_64).
+    "firecrawl-anydoc==0.2.3",
+    # Backtracking-safe regex engine for grep_workspace (tools/workspace/search.py).
+    # stdlib `re` holds the GIL and has no match timeout, so a member-supplied
+    # catastrophic pattern would pin the event loop; `regex` checks a deadline during
+    # matching and raises TimeoutError, which is the only robust bound available.
+    "regex>=2024.0",
+    # Encryption-at-rest for the SQLite DB (storage/db.py). Drop-in sqlite3-API
+    # binding with SQLCipher statically bundled (no system libsqlcipher needed).
+    # Engaged only when DATABASE_ENCRYPTION_KEY is set; Linux-only because that
+    # is the deployment target and the package ships prebuilt manylinux wheels.
+    "sqlcipher3-binary; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio"]
+
+# This repo is an application, not an importable library: code is run via
+# `uv run python bot.py` and tests import it through `pythonpath = ["."]`, so
+# nothing needs the project installed as a package. Declare a build backend
+# that packages *nothing* (metadata + dependencies only) so editable installs
+# like `uv pip install -e ".[dev]"` don't trip setuptools' auto-discovery on
+# the flat multi-package layout.
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
+# Keep uv's own commands (uv run / uv sync) treating the root as a virtual
+# project despite the build-system above, preserving the current no-build flow.
+[tool.uv]
+package = false
+
+[tool.mypy]
+# Skill scripts run as subprocesses against the bot's environment, so their
+# runtime-only imports are not type-checked here.
+exclude = "^(workspaces|skills/store/.*/scripts)/"
+# Production runs on Linux and sqlcipher3-binary is a Linux-only dependency;
+# keep type checking deterministic on non-Linux dev hosts.
+platform = "linux"
+# Check the bodies of untyped functions in production code. Test/eval modules
+# lean on loosely-typed fakes and fixtures, so they keep mypy's default (untyped
+# def bodies unchecked) via the override below.
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "evals.*"]
+check_untyped_defs = false
+
+# sqlcipher3-binary is a Linux-only runtime dependency with no type stubs and is
+# not installed on the dev/CI interpreter; storage/db.py imports it lazily.
+[[tool.mypy.overrides]]
+module = ["sqlcipher3.*"]
+ignore_missing_imports = true
+
+# The `regex` engine ships no type stubs; tools/workspace/search.py uses it for the
+# backtracking-safe grep match timeout.
+[[tool.mypy.overrides]]
+module = ["regex.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+# Curated for signal over volume. Ruff's default slice (E4/E7/E9 + F) is kept and
+# extended with bug-class and modernization families. Opinionated style families
+# that fight the formatter or fire mostly false positives in this codebase
+# (flake8-commas, errmsg, unused-arguments, boolean-trap, flake8-self, vanilla
+# tryceratops) are deliberately left unselected. E501 line-length is enforced by
+# the formatter target, not the linter, to avoid mechanical wrap churn.
+select = [
+    "E4", "E7", "E9",  # pycodestyle (Ruff default subset)
+    "F",               # pyflakes
+    "W",               # pycodestyle warnings
+    "B",               # flake8-bugbear
+    "ASYNC",           # flake8-async: catches blocking I/O in async functions
+    "C4",              # flake8-comprehensions
+    "DTZ",             # flake8-datetimez
+    "G",               # flake8-logging-format
+    "ISC",             # implicit-str-concat
+    "LOG",             # flake8-logging
+    "PERF",            # perflint
+    "PIE",             # flake8-pie
+    "RET",             # flake8-return
+    "RSE",             # flake8-raise
+    "SIM",             # flake8-simplify
+    "UP",              # pyupgrade
+    "FLY",             # flynt
+    "RUF",             # Ruff-specific (incl. mutable class defaults)
+]
+ignore = [
+    "ASYNC109",                    # timeout params are intentional in several client APIs
+    "RUF001", "RUF002", "RUF003",  # intentional unicode in user-facing / persona text
+    "ISC001", "COM812",            # formatter-owned; listed for ruff-format compatibility
+    "UP042",                       # str+Enum -> StrEnum changes str()/format semantics (separate change)
+    "PERF401",                     # manual-list-comprehension: advisory micro-perf, mostly cold paths
+    "SIM117",                      # nested aiohttp session/response context managers are idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test/eval scaffolding is not hot-path runtime code: async-blocking-I/O and
+# mutable-class-default rules don't apply, and pytest-raises pattern strictness
+# is noise here.
+"tests/**" = ["ASYNC240", "RUF012", "RUF043", "RUF059"]
+"evals/**" = ["ASYNC240", "RUF012", "RUF043", "RUF059"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Pin the fixture loop scope rather than inheriting pytest-asyncio's default,
+# which it warns about on every run and intends to change.
+asyncio_default_fixture_loop_scope = "function"

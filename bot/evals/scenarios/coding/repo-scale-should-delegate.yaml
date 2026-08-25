@@ -1,0 +1,13 @@
+id: repo-scale-should-delegate
+category: coding
+trust_tier: REGULAR
+channel: { name: dev-help, id: "800000000000000004" }
+turns:
+  - "i've got a python project in my workspace that still uses the old requests-based http client everywhere. can you migrate the whole thing to httpx, update the tests, and make sure it still passes? there are like 30 files"
+expect:
+  should_use_tools: [start_coding_task]
+  should_not_use_tools: [coding_task_status]
+  notes: >-
+    Repository-scale, multi-file, investigate-edit-verify work: exactly what the
+    durable coding agent exists for. Delegating should hand back a task id rather
+    than pretending the migration finished inside this turn.

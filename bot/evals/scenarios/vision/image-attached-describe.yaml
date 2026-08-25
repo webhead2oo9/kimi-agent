@@ -1,0 +1,19 @@
+id: image-attached-describe
+category: vision
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+# Baseline of the whole feature: an image attached to the user's own message has
+# to reach the model as input_parts and actually be looked at. A model that
+# silently drops the attachment still answers fluently, so the grader asserts on
+# content only the image can supply.
+turns:
+  - text: "what colours are the bands in this image, top to bottom?"
+    images: [bands-rgb.png]
+expect:
+  should_not_use_tools: [browse_tools]
+  max_tool_calls: 2
+  reply_must_match: ["red", "green", "blue"]
+  notes: >
+    Describes the attached image without reaching for a tool. Failure to match
+    the colours means the attachment never reached the model, not that the model
+    is weak - check input_parts plumbing before blaming the candidate.

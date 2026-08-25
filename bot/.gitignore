@@ -1,0 +1,217 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env*.example
+!.env*.sample
+!.env*.template
+secrets/
+.secrets/
+credentials.json
+*credentials*.json
+auth.json
+*-auth.json
+*_auth.json
+client_secret*.json
+*service-account*.json
+*service_account*.json
+*cookies*.json
+storage-state*.json
+storage_state*.json
+.auth/
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.ppk
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+.netrc
+.npmrc
+.pypirc
+*.kdbx
+*.ovpn
+*.mobileprovision
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+!*.example.tfvars.json
+!*.sample.tfvars
+!*.sample.tfvars.json
+!*.template.tfvars
+!*.template.tfvars.json
+.aws/
+.azure/
+.kube/
+.ssh/
+.gnupg/
+.docker/config.json
+
+# Operator settings overlay, read at startup by config/operator_settings.py.
+# Instance state, not app source: it carries this deployment's trust allowlists
+# and Discord scope. It belongs with the rest of the operator's config
+# directory, which CONFIG_DIR can point outside this checkout.
+config/settings*.md
+!config/settings.example.md
+!config/settings.sample.md
+!config/settings.template.md
+
+# LLM routing for THIS deployment: which backends, subscriptions, and proxies it
+# has, and what each role runs on. Instance state like settings.md. The tracked
+# artifact is config/models.example.yaml, which a new instance copies. Keeping
+# the live file untracked also means a local model swap for testing never shows
+# up as a working-tree change waiting to be committed.
+config/models*.yaml
+config/models*.yml
+!config/models.example.yaml
+!config/models.example.yml
+!config/models.sample.yaml
+!config/models.sample.yml
+!config/models.template.yaml
+!config/models.template.yml
+
+# Deployment-owned tool/plugin configuration. A checked-in example or
+# template remains eligible for source control, while live instance fragments
+# are local by default.
+config/tools*.md
+config/plugins*.md
+!config/tools.example.md
+!config/tools.sample.md
+!config/tools.template.md
+!config/plugins.example.md
+!config/plugins.sample.md
+!config/plugins.template.md
+config/tools/*
+config/plugins/*
+!config/tools/example.md
+!config/tools/sample.md
+!config/tools/template.md
+!config/tools/*.example.md
+!config/tools/*.sample.md
+!config/tools/*.template.md
+!config/plugins/example.md
+!config/plugins/sample.md
+!config/plugins/template.md
+!config/plugins/*.example.md
+!config/plugins/*.sample.md
+!config/plugins/*.template.md
+
+# Discord IDs identify a concrete deployment. Keep named examples and shared
+# command prompts tracked, but ignore per-server/channel/thread overlays.
+config/servers/*
+config/channels/*
+config/channel_threads/*
+config/threads/*
+config/prompts/servers/*
+config/prompts/channels/*
+config/prompts/commands/*/*
+!config/servers/example.md
+!config/channels/example.md
+!config/channel_threads/example.md
+!config/threads/example.md
+!config/prompts/servers/example.md
+!config/prompts/channels/example.md
+!config/models.example.yaml
+!config/models.template.yaml
+!config/prompt.md
+!config/persona.md
+!config/prompts/README.md
+!config/prompts/commands/*.md
+
+# Scratch operator directories for dev instances (CONFIG_DIR=config.dev), so a
+# dev-only prompt or model swap is not a working-tree change. See
+# docs/development.md.
+config.dev/
+config.*.dev/
+config.local/
+config.*.local/
+config.instance/
+config.*.instance/
+
+# Writable skill roots used by local/dev instances. The default store is
+# deployment-owned private data; the public tree carries only skills/README.md
+# and test fixtures outside these roots.
+skills.dev/
+skills.*.dev/
+skills.local/
+skills.*.local/
+skills.instance/
+skills.*.instance/
+skills/instances/
+skills/store/*
+
+# Test, lint, and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and local runtime output
+*.log
+*.log.*
+logs/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
+events.jsonl
+events.jsonl.*
+*.pid
+*.sock
+
+# Secrets and workspaces
+secrets/
+workspaces/
+sandbox/
+sandboxes/
+!sandbox/
+!sandbox/*.py
+attachments/
+transcripts/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Eval harness output
+evals/cassettes/
+evals/runs/
+evals/results/
+evals/latest/
+evals/private/
+evals/models.yaml
+evals/models.yml
+evals/RESULTS.md
+evals/RESULTS.*
+evals/models.*.yaml
+evals/models.*.yml
+!evals/models.example.yaml
+!evals/models.example.yml
+!evals/models.sample.yaml
+!evals/models.sample.yml
+!evals/models.template.yaml
+!evals/models.template.yml

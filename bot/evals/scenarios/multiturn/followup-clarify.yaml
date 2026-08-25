@@ -1,0 +1,9 @@
+id: followup-clarify
+category: multiturn
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+turns:
+  - "what's a good mechanical keyboard?"
+  - "I meant under $100."
+expect:
+  notes: "Turn 2 should refine the turn-1 answer to budget options, staying consistent."

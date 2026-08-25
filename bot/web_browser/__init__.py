@@ -1,0 +1,1 @@
+"""Persistent BetterWright browser service."""

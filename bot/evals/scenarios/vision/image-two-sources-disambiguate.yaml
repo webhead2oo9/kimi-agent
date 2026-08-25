@@ -1,0 +1,25 @@
+id: image-two-sources-disambiguate
+category: vision
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+# Both rails at once, carrying visually unmistakable and *different* images. The
+# roster order is defined - the user's own attachment first, then the replied-to
+# message's - so a model that conflates the two, or that only ever sees one,
+# gets the comparison backwards. This is what catches an off-by-one in the
+# ordering rather than a total plumbing failure.
+turns:
+  - text: >
+      the one I just attached and the one I'm replying to are different - describe
+      each in one short sentence, mine first, then theirs.
+    images: [checker-yellow.png]
+    reply_images: [bands-rgb.png]
+    reply_author: Ana
+    reply_text: "here's the pattern I mentioned"
+expect:
+  should_not_use_tools: [browse_tools]
+  max_tool_calls: 2
+  reply_must_match: ["(checker|chequer|yellow)", "(red|green|blue|band)"]
+  notes: >
+    Mine = yellow/black checkerboard, theirs = red/green/blue bands. Matching
+    only one pattern means a rail is missing; describing them in the wrong order
+    means the reference roster is ordered wrong.

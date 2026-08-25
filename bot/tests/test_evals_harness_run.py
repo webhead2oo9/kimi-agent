@@ -5,6 +5,7 @@ import pytest
 from evals import harness_run
 from evals.capture import ToolCallRecord
 from evals.harness import ScenarioRun, TurnRecord
+from evals.identity import EvalIdentity
 from evals.harness_run import (
     RepResult,
     build_summary,
@@ -44,7 +45,7 @@ def _mech(score=100.0, passed=True, **overrides):
     return MechanicalResult(**base)
 
 
-def _rep(mech, *, cost=None, tool_calls=None):
+def _rep(mech, *, cost=None, tool_calls=None, identity=None):
     turns = []
     if tool_calls:
         turns.append(
@@ -60,7 +61,7 @@ def _rep(mech, *, cost=None, tool_calls=None):
     return RepResult(
         mechanical=mech,
         sources={"replay": 2},
-        run=ScenarioRun(scenario_id="s", model_label="m", turns=turns),
+        run=ScenarioRun(scenario_id="s", model_label="m", identity=identity, turns=turns),
         cost=cost,
     )
 
@@ -104,8 +105,12 @@ def test_missing_expected_tools_flags_unregistered_only():
 
 
 def test_build_summary_aggregates_scores_and_pass_rate():
+    identity = EvalIdentity("run-1", "candidate:luna", "a", 0)
     results = {
-        "a": (_scenario("a"), [_rep(_mech(100.0)), _rep(_mech(80.0, passed=False))]),
+        "a": (
+            _scenario("a"),
+            [_rep(_mech(100.0), identity=identity), _rep(_mech(80.0, passed=False))],
+        ),
         "b": (_scenario("b"), [_rep(_mech(90.0)), _rep(_mech(90.0))]),
     }
     summary = build_summary(
@@ -116,6 +121,7 @@ def test_build_summary_aggregates_scores_and_pass_rate():
         cassette_mode="replay",
         registered_tools=["wolfram_alpha"],
         results=results,
+        eval_run_nonce="run-1",
     )
     assert summary["kind"] == "harness-eval"
     agg_a = summary["scenarios"]["a"]["aggregate"]
@@ -128,6 +134,8 @@ def test_build_summary_aggregates_scores_and_pass_rate():
     assert summary["requested_max_tokens"] == 65_536
     assert summary["scenarios"]["a"]["reps"][0]["sources"] == {"replay": 2}
     assert summary["scenarios"]["a"]["reps"][0]["passed"] is True
+    assert summary["eval_run_nonce"] == "run-1"
+    assert summary["scenarios"]["a"]["reps"][0]["eval_identity"] == identity.as_dict()
 
 
 def _fake_git(responses):

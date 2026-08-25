@@ -12,14 +12,12 @@ from utils.format import sanitize_author_name
 from agent.core import ConversationRunRequest, run_conversation
 from agent.reply_context import ReplyContext
 from evals.capture import InstrumentedProvider, InstrumentedRegistry, ToolCallRecord
+from evals.identity import EVAL_USER_NAME, EvalIdentity, new_eval_run_nonce
 from evals.scenario import Scenario, TurnSpec
 from utils.image_types import sniff_image_media_type
 from memory.recall import recall_current_user_context
 from providers.types import ContentPart, ConversationMessage
 from usage.normalization import UsageBreakdown
-
-EVAL_USER_ID = "webhead"
-EVAL_USER_NAME = "webhead"
 
 
 @dataclass
@@ -42,6 +40,7 @@ class TurnRecord:
 class ScenarioRun:
     scenario_id: str
     model_label: str
+    identity: EvalIdentity | None = None
     turns: list[TurnRecord] = field(default_factory=list)
     # End-to-end scenario time, including model calls, tool execution, memory
     # recall, and every turn. This is informational and never affects scoring.
@@ -71,10 +70,10 @@ class ScenarioRun:
         return sum(turn.provider_calls for turn in self.turns)
 
 
-def _seed_context(scenario: Scenario) -> ConversationContext:
+def _seed_context(scenario: Scenario, identity: EvalIdentity) -> ConversationContext:
     context = ConversationContext(
         key=f"eval:{scenario.id}",
-        user_id=EVAL_USER_ID,
+        user_id=identity.user_id,
         user_name=EVAL_USER_NAME,
         channel_name=scenario.channel_name,
         activated_tools=set(scenario.activated_tools),
@@ -142,10 +141,21 @@ async def run_scenario_for_model(
     bot_name: str = "",
     compactor: Compactor | None = None,
     max_tokens: int = 65_536,
+    identity: EvalIdentity | None = None,
 ) -> ScenarioRun:
     started_at = time.monotonic()
-    context = _seed_context(scenario)
-    run = ScenarioRun(scenario_id=scenario.id, model_label=provider.model)
+    identity = identity or EvalIdentity(
+        run_nonce=new_eval_run_nonce(),
+        arm=provider.model,
+        scenario_id=scenario.id,
+        repetition=0,
+    )
+    context = _seed_context(scenario, identity)
+    run = ScenarioRun(
+        scenario_id=scenario.id,
+        model_label=provider.model,
+        identity=identity,
+    )
 
     # Places each tool call in the turn's provider-call timeline, which is what
     # makes "how much context did this tool cost" answerable per tool.
@@ -153,14 +163,14 @@ async def run_scenario_for_model(
 
     for turn in scenario.turns:
         user_message = turn.text
-        gateway.set_fixture(trigger_content=user_message, trigger_author_id=EVAL_USER_ID)
+        gateway.set_fixture(trigger_content=user_message, trigger_author_id=identity.user_id)
         provider.reset()
         registry.reset_sink()
 
         recalled = await recall_current_user_context(
             memory_client=memory_client,
             preference_store=preference_store,
-            user_id=EVAL_USER_ID,
+            user_id=identity.user_id,
             user_message=user_message,
             context=context,
         )
@@ -171,7 +181,7 @@ async def run_scenario_for_model(
                 context=context,
                 trust_tier=scenario.trust_tier,
                 user_name=EVAL_USER_NAME,
-                user_id=EVAL_USER_ID,
+                user_id=identity.user_id,
                 provider=provider,
                 registry=registry,
                 max_tokens=max_tokens,

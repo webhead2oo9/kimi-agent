@@ -43,6 +43,7 @@ from evals.cassette import (
     tape_provenance,
 )
 from evals.harness import ScenarioRun, run_scenario_for_model
+from evals.identity import EvalIdentity, new_eval_run_nonce
 from evals.mechanical import MechanicalResult, compute_mechanical
 from evals.models import ModelsConfig, ModelSpec, build_eval_provider, load_models
 from evals.cost import (
@@ -202,6 +203,7 @@ class RepResult:
 def _rep_row(rep: RepResult) -> dict:
     row = asdict(rep.mechanical)
     row["passed"] = rep.mechanical.passed
+    row["eval_identity"] = rep.run.identity.as_dict() if rep.run.identity else None
     row["sources"] = rep.sources
     row["usage"] = usage_dict(rep.run.total_usage)
     row["provider_calls"] = rep.run.provider_calls
@@ -251,6 +253,7 @@ def build_summary(
     cassette_model_key: str = "",
     cassette_tapes: dict[str, str] | None = None,
     skipped_scenarios: dict[str, list[str]] | None = None,
+    eval_run_nonce: str = "",
 ) -> dict:
     scenarios: dict[str, dict[str, Any]] = {
         scenario_id: {
@@ -281,6 +284,7 @@ def build_summary(
         "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha,
         "model": model,
+        "eval_run_nonce": eval_run_nonce,
         "repeat": repeat,
         "max_tokens": max_tokens,
         "requested_max_tokens": requested_max_tokens or max_tokens,
@@ -415,6 +419,7 @@ def write_transcripts(path: Path, results: dict[str, tuple[Scenario, list[RepRes
                 row = {
                     "scenario": scenario_id,
                     "rep": index,
+                    "eval_identity": rep.run.identity.as_dict() if rep.run.identity else None,
                     "score": rep.mechanical.score,
                     "passed": rep.mechanical.passed,
                     "turns": [
@@ -519,6 +524,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     provider = InstrumentedProvider(build_eval_provider(spec))
+    eval_run_nonce = new_eval_run_nonce()
     gateway = StubGateway()
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
@@ -572,6 +578,12 @@ async def _run(args: argparse.Namespace) -> int:
                     bot_name=settings.bot_name,
                     compactor=compactor,
                     max_tokens=max_tokens,
+                    identity=EvalIdentity(
+                        run_nonce=eval_run_nonce,
+                        arm=spec.label,
+                        scenario_id=scenario.id,
+                        repetition=rep_index,
+                    ),
                 )
                 sources: dict[str, int] = {}
                 for record in run.all_tool_calls:
@@ -621,6 +633,7 @@ async def _run(args: argparse.Namespace) -> int:
         cassette_model_key=model_key,
         cassette_tapes=tapes,
         skipped_scenarios=skipped,
+        eval_run_nonce=eval_run_nonce,
     )
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (run_dir / "report.md").write_text(render_harness_report(summary), encoding="utf-8")

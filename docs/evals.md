@@ -44,6 +44,17 @@ triaging a failure). The run fails fast if a scenario expects a tool that the
 current `.env` didn't register, and `summary.json` records the registered-tool
 surface so that two runs can be compared on equal footing.
 
+Every live run gets an isolated temporary writable-state root. Workspace files,
+attachments, personal skills, the browser profile, and the eval database never
+use the deployment's corresponding directories, and the temporary root is removed
+only after the eval registry closes the browser worker and other composed runtime
+owners. The visible fixture author remains `webhead`, but
+the caller id is an 18-digit synthetic value derived from SHA-256 over a per-run
+nonce, model arm, scenario id, and repetition. Repetitions and qualification arms
+therefore cannot see one another's workspace files or accidentally reuse a real
+user's storage identity. `summary.json` and `transcripts.jsonl` record the nonce
+and derived identity inputs so a stored result remains auditable.
+
 `<git-sha>` is HEAD's short sha, suffixed **`-dirty`** when tracked *source*
 differs from it. The sha is the run's identity, and before the marker existed a
 run against an edited working tree claimed a commit it never actually

@@ -11,7 +11,7 @@ from config.settings import Settings, settings
 from evals.capture import InstrumentedRegistry
 from evals.identity import EvalIdentity
 from evals.registry import build_eval_registry, compose_tools
-from evals.stub_gateway import SAFE_STUB_TOOLS, StubGateway
+from evals.stub_gateway import SAFE_STUB_TOOLS, StubCodingControls, StubGateway
 from tests.helpers import PROJECT_ROOT
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
@@ -118,6 +118,7 @@ def test_compose_tools_registers_default_on_thread_and_coding_surfaces(eval_sett
         "coding_task_status",
         "coding_task_message",
         "coding_task_cancel",
+        "coding_task_retry_delivery",
     ):
         assert registry.has_tool(name), name
 
@@ -140,6 +141,73 @@ def test_coding_start_dispatches_into_the_stub_not_a_real_scheduler(eval_setting
     assert result["task_id"] == "eval-task-1"
     assert result["status"] == "queued"
     assert ctx.terminal_handoff is not None
+
+
+def test_stub_coding_controls_partition_state_by_eval_user():
+    async def exercise():
+        controls = StubCodingControls()
+        first_ctx = MessageContext(
+            user_id="eval-user-a",
+            user_name="n",
+            guild_id=None,
+            channel_id="c",
+            thread_id=None,
+            trust_tier=TrustTier.MEMBER,
+        )
+        second_ctx = MessageContext(
+            user_id="eval-user-b",
+            user_name="n",
+            guild_id=None,
+            channel_id="c",
+            thread_id=None,
+            trust_tier=TrustTier.MEMBER,
+        )
+
+        first_start = await controls.start_from_tool(
+            first_ctx, objective="first", acceptance_criteria=[], context_text=""
+        )
+        second_start = await controls.start_from_tool(
+            second_ctx, objective="second", acceptance_criteria=[], context_text=""
+        )
+        next_first_start = await controls.start_from_tool(
+            first_ctx, objective="first again", acceptance_criteria=[], context_text=""
+        )
+        await controls.steer_from_tool(first_ctx, task_id="eval-task-1", message="keep the helper")
+        await controls.cancel_from_tool(second_ctx, task_id="eval-task-1", reason="superseded")
+        retry = await controls.retry_delivery_from_tool(first_ctx, task_id="eval-task-1")
+        return controls, first_start, second_start, next_first_start, retry
+
+    controls, first_start, second_start, next_first_start, retry = asyncio.run(exercise())
+    assert first_start["task_id"] == "eval-task-1"
+    assert second_start["task_id"] == "eval-task-1"
+    assert next_first_start["task_id"] == "eval-task-2"
+    assert retry == {"task_id": "eval-task-1", "delivery_retry_requested": True}
+    assert controls._users["eval-user-a"].steered == [("eval-task-1", "keep the helper")]
+    assert controls._users["eval-user-a"].cancelled == []
+    assert controls._users["eval-user-a"].delivery_retries == ["eval-task-1"]
+    assert controls._users["eval-user-b"].steered == []
+    assert controls._users["eval-user-b"].cancelled == ["eval-task-1"]
+    assert controls._users["eval-user-b"].delivery_retries == []
+
+
+def test_coding_retry_delivery_dispatches_into_the_stub(eval_settings):
+    registry = InstrumentedRegistry()
+    compose_tools(eval_settings, registry=registry, gateway=StubGateway())
+    ctx = MessageContext(
+        user_id="eval-user",
+        user_name="n",
+        guild_id=None,
+        channel_id="c",
+        thread_id=None,
+        trust_tier=TrustTier.MEMBER,
+        activated_tools={"coding_task_retry_delivery"},
+    )
+    result = json.loads(
+        asyncio.run(
+            registry.dispatch("coding_task_retry_delivery", {"task_id": "eval-task-1"}, ctx)
+        )
+    )
+    assert result == {"task_id": "eval-task-1", "delivery_retry_requested": True}
 
 
 def test_move_to_thread_works_without_a_live_handoff_manager(eval_settings):

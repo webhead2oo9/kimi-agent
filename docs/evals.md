@@ -53,7 +53,9 @@ the caller id is an 18-digit synthetic value derived from SHA-256 over a per-run
 nonce, model arm, scenario id, and repetition. Repetitions and qualification arms
 therefore cannot see one another's workspace files or accidentally reuse a real
 user's storage identity. `summary.json` and `transcripts.jsonl` record the nonce
-and derived identity inputs so a stored result remains auditable.
+and derived identity inputs so a stored result remains auditable. The in-memory
+coding-control stub is keyed by the same caller id, so task numbering and captured
+control actions also start from clean state for every arm and repetition.
 
 `<git-sha>` is HEAD's short sha, suffixed **`-dirty`** when tracked *source*
 differs from it. The sha is the run's identity, and before the marker existed a

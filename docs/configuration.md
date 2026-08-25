@@ -499,11 +499,11 @@ deliberately and review the list as the access-control boundary it is.
 
 ## Internet search (gated)
 
-The member-tier core `internet_search` tool registers as soon as at least one
-provider key is present. Exa is the higher-ranked provider and does both search
-and page reads; Brave searches through its LLM Context endpoint and can't read
-pages at all. With both keys set, a search calls both providers and merges the
-results by default.
+The member-tier core `internet_search` tool registers at startup when at least
+one provider key is present. Exa is the higher-ranked provider and does both
+search and page reads; Brave searches through its LLM Context endpoint and
+can't read pages at all. With both keys set, a search calls both providers and
+merges the results by default.
 
 Think of the per-turn allowance in provider calls rather than tool calls. One
 blended search across two providers spends two of the ten, so a turn gets five

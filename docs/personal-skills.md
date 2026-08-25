@@ -1,8 +1,8 @@
 # Personal skills
 
 Personal skills are durable, per-user instruction documents. They let a member
-save a reusable procedure or preference that the bot will see on that member's
-future turns.
+save a reusable procedure or preference that the bot can load on that member's
+future turns when its name and description show that it is relevant.
 
 Character and persona overrides are a separate feature: they are managed by the
 regular+ persona tools and stored in SQLite, and no `SKILL.md` document is

@@ -39,8 +39,8 @@ usual. For where the package itself should live, see
 
 ## What the module has to expose
 
-One synchronous `register(ctx) -> None`. New plugins should pin the contract
-version too:
+The module needs to expose one synchronous `register(ctx) -> None`. New
+plugins should pin the contract version too:
 
 ```python
 from app.plugins import PluginContext
@@ -65,10 +65,10 @@ What `ctx` gives you:
 | `ctx.register_tool_labels(...)` | Operator-facing activity labels for your tools. |
 | `ctx.declare_surface_tools(surface, names)` | Isolate your tools on eval surfaces. |
 
-`PLUGIN_API_VERSION` is `1` today. Declare anything else and the loader skips
-the module. Leaving it out still works, for compatibility, but declare it
-anyway. That is what turns a future incompatibility into a log line instead of
-a strange runtime failure.
+`PLUGIN_API_VERSION` is `1` today. If you declare anything else, the loader
+skips the module. Leaving it out still works, for compatibility, but declare
+it anyway: that declaration is what turns a future incompatibility into a log
+line instead of a strange runtime failure.
 
 ### Name collisions resolve in the core's favor
 
@@ -81,22 +81,22 @@ reserved. First the skill tools (`skill_list`, `load_skill`, `skill_file`,
 `skill_create`, `skill_edit`, `skill_delete`), then the Hindsight memory tools
 once Hindsight is ready (`recall_user`, `reflect_user`, `remember_user_memory`,
 `lookup_memory_source`, `recall_community`, `reflect_community`, `teach`).
-Take one of those names and it is the *core* registration that raises later: a
-boot abort for the skill tools, a failed memory init for the memory ones. Loud
-either way, which is the point.
+If you take one of those names, it is the *core* registration that raises
+later: a boot abort for the skill tools, or a failed memory init for the memory
+ones. It is loud either way, which is the point.
 
 ### One bad plugin is only one bad plugin
 
-A failure never aborts startup, and never stops the plugins after it from
-loading. Tools and surface declarations the plugin managed to register first
-are rolled back. Activity labels are not, because they merge into a
-process-global table that has no snapshot to restore, so a crashed plugin's
-labels sit there doing no harm until the next restart.
+A plugin failure never aborts startup, and it never stops the plugins after it
+from loading. Any tools and surface declarations the plugin managed to
+register before failing are rolled back. Activity labels are not, because they
+merge into a process-global table that has no snapshot to restore; a crashed
+plugin's labels simply sit there doing no harm until the next restart.
 
 ## A whole plugin, end to end
 
 A plugin package is three files doing three jobs. Splitting them this way is
-what lets you test the client and the tools without booting a bot.
+what lets you test the client and the tools without ever booting a bot.
 
 ```text
 acme_search/
@@ -176,7 +176,8 @@ through `json_untrusted_payload` with a note saying it is context and not
 instructions, because it is somebody else's writing arriving mid-turn. And the
 handler reads its identity from `ctx`, never from `args`.
 
-`plugin.py` is the module you allowlist, and it should stay boring:
+`plugin.py` is the module you allowlist, and it should stay boring, because
+wiring is all it is for:
 
 ```python
 """Acme plugin: `acme_search` over the private catalog API."""
@@ -296,9 +297,10 @@ the declaration and `ctx.settings_for(...)`.
 
 ## Registering tools safely
 
-Go through `ctx.registry.register(...)`. Don't reach into agent internals, and
-don't add branches on private plugin names to core code. The registry is where
-dispatch-time policy is supposed to live:
+Always go through `ctx.registry.register(...)`. Don't reach into agent
+internals, and don't add branches on private plugin names to core code. The
+registry is where dispatch-time policy is supposed to live, and it gives you
+everything you need:
 
 - `min_tier` for anything privileged.
 - `guild_ids` for tools that only make sense in one community.
@@ -320,7 +322,7 @@ Discord mention rules that core tools follow.
 
 ## Testing the contract
 
-Cover these for your own plugin:
+For your own plugin, make sure your tests cover these:
 
 1. Missing configuration registers no tools.
 2. Valid configuration registers exactly the tool names and gates you meant.
@@ -342,7 +344,7 @@ full pytest checks a core change would need.
 ## When a plugin does not load
 
 Since nothing here aborts boot, the log is the only place a missing plugin
-shows up. Each case is one line.
+shows up. Each case comes down to one line:
 
 | Log line | Cause |
 |---|---|
@@ -365,5 +367,6 @@ Plugins can live in a sibling private checkout on `PYTHONPATH` without touching
 with the package that owns them; the core tests run startup with no plugin
 package present at all.
 
-That is why this page uses an invented `acme_search` throughout. There is no
-shipped plugin to point at in this repository, and there is not supposed to be.
+That split is why this page uses an invented `acme_search` throughout. There
+is no shipped plugin to point at in this repository, and there is not supposed
+to be one.

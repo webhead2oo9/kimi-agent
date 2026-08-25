@@ -1,15 +1,17 @@
 # OpenAI and OpenRouter
 
-Both are reached through the generic transports described in
+Both of these are reached through the generic transports described in
 [providers.md](providers.md). Neither needs a dedicated provider class; what
-they need is a few profile fields that only make sense on their endpoints.
+they need is a few profile fields that only make sense on their endpoints, and
+this page covers those.
 
 ## OpenAI
 
 OpenAI models can be routed through either `openai_compat` (Chat Completions) or
 `openai_responses` (the Responses API). Pick the one the model actually
-supports; the Responses transport is what carries reasoning with encrypted
-replay, image output, and `store=false` local history.
+supports. If you need reasoning with encrypted replay, image output, or
+`store=false` local history, the Responses transport is the one that carries
+them.
 
 Three profile fields matter on OpenAI-family transports:
 
@@ -22,26 +24,27 @@ Three profile fields matter on OpenAI-family transports:
   is honored by `openai_responses` (along with `anthropic` and
   `anthropic_compat`) and ignored by `openai_compat`, which relies on the stall
   watchdog instead.
-- **`app_name`**: an optional provider-facing identity override. When it is
-  omitted, the profile inherits `BOT_NAME`. OpenAI-compatible transports send
+- **`app_name`**: an optional provider-facing identity override. When you leave
+  it out, the profile inherits `BOT_NAME`. OpenAI-compatible transports send
   the resolved identity as their `User-Agent`.
 
 The reasoning rules for `openai_responses` (when a `reasoning` parameter is sent
 at all, and why `include: ["reasoning.encrypted_content"]` is mandatory once it
-is) are on the [reasoning effort](providers.md#reasoning-effort) section of the
-main page, since they interact with the provider-neutral rail.
+is) live in the [reasoning effort](providers.md#reasoning-effort) section of
+the main page, since they interact with the provider-neutral rail rather than
+being specific to OpenAI.
 
 ## OpenRouter
 
 Use `type: openrouter`. It supports text, multimodal input, tool calling, and
-image output models, and adds three profile fields:
+image output models, and it adds three profile fields of its own:
 
 - **`provider_routing`**: a structured OpenRouter provider-routing object,
   serialized into the request. This is where you express upstream preferences,
   ordering, or exclusions.
-- **`app_name`**: the shared provider identity described above. OpenRouter
-  also sends it as its attribution title.
-- **`app_url`**: attribution header, unset by default.
+- **`app_name`**: the same provider identity described above. OpenRouter
+  also receives it as its attribution title.
+- **`app_url`**: the attribution header, unset by default.
 
 ```yaml
 providers:
@@ -56,9 +59,9 @@ providers:
       allow_fallbacks: true
 ```
 
-OpenRouter's own upstream fallback and Kimi's `<role>_fallbacks` chain are
-independent layers. OpenRouter can silently move you between upstreams inside a
-single request; the Kimi chain only engages when the whole OpenRouter call
-fails with a transient availability error. If you want both, that is fine, but
-remember that a reply attributed to the OpenRouter model entry may have been
-served by any upstream that routing chose.
+One thing to keep straight: OpenRouter's own upstream fallback and Kimi's
+`<role>_fallbacks` chain are independent layers. OpenRouter can silently move
+you between upstreams inside a single request, while the Kimi chain only
+engages when the whole OpenRouter call fails with a transient availability
+error. Using both is fine, but remember that a reply attributed to the
+OpenRouter model entry may have been served by any upstream that routing chose.

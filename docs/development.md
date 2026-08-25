@@ -1,13 +1,15 @@
 # Development
 
 The bot is a long-lived process that talks to live Discord, so an end-to-end
-"dev mode" means **a second real instance**, with its own bot token, database,
-and workspaces, pointed at a test guild. Unit tests and the offline eval harness do
-not replace Discord with an interactive simulator.
+"dev mode" really means **a second real instance**, with its own bot token,
+database, and workspaces, pointed at a test guild. Unit tests and the offline
+eval harness are useful, but they don't replace Discord with an interactive
+simulator.
 
 Run the commands below from `bot/` unless a section says otherwise. Keep the dev
 instance isolated even when production runs on another machine: a copied token
-or shared path is enough for a local process to affect live users and data.
+or a shared path is all it takes for a local process to affect live users and
+their data.
 
 ## First-time setup
 
@@ -21,21 +23,21 @@ uv sync --extra dev
 ```
 
 Always run Python tools through `uv run`. A bare `python`, `pytest`, or `mypy`
-may use a different interpreter and produce misleading import or type errors.
-The first sync creates a local `.venv`; later syncs update it when
+may pick up a different interpreter and produce misleading import or type
+errors. The first sync creates a local `.venv`; later syncs update it whenever
 `pyproject.toml` or `uv.lock` changes.
 
 ## The switch
 
 `ENV_FILE` selects the dotenv file for the core `Settings` object **and every
-enabled plugin settings class** through the shared helper in
+enabled plugin settings class**, through the shared helper in
 `config/environment.py`:
 
 ```bash
 ENV_FILE=.env.dev uv run python bot.py
 ```
 
-PowerShell does not support the inline assignment form. Set the variable for
+PowerShell doesn't support the inline assignment form, so set the variable for
 the current shell instead:
 
 ```powershell
@@ -44,20 +46,20 @@ uv run python bot.py
 Remove-Item Env:ENV_FILE
 ```
 
-Unset, it loads `.env` exactly as before. A path that does not exist raises at
-import. Loading nothing silently would hand you a valid-but-empty config that
-dies far from the typo.
+When it's unset, the bot loads `.env` exactly as before. A path that doesn't
+exist raises at import, and that's intentional: loading nothing silently would
+hand you a valid-but-empty config that dies somewhere far from the typo.
 
 Plugin settings must not declare their own hard-coded `env_file`. Put private
 plugin credentials and environment-only connection settings in the selected
-file (`.env.dev` here), never in `.env`; this keeps the second process isolated
-across both core and optional integrations. See [plugins.md](plugins.md) for the
-complete plugin contract.
+file (`.env.dev` here), never in `.env`, so the second process stays isolated
+across both core and optional integrations. See [plugins.md](plugins.md) for
+the complete plugin contract.
 
 ## Setting up `.env.dev`
 
 Copy `.env.example` to `.env.dev`, then set a **different value for every path**
-so the dev instance cannot touch production state:
+so the dev instance can't touch production state:
 
 ```bash
 DISCORD_BOT_TOKEN=<a second bot application's token>
@@ -78,18 +80,19 @@ CONFIG_DIR=config.dev
 SKILLS_DIR=skills.dev/store
 ```
 
-Both directory patterns are ignored. Seed them from the production instance
-only when the test genuinely needs that private content; otherwise use a minimal
-scratch config and an empty skill store. See [instance-data.md](instance-data.md).
+Both directory patterns are gitignored. Seed them from the production instance
+only when a test genuinely needs that private content; otherwise a minimal
+scratch config and an empty skill store are enough. See
+[instance-data.md](instance-data.md).
 
 ## Trying a different LLM
 
-Model routing is `<CONFIG_DIR>/models.yaml`, and that file is untracked
+Model routing lives in `<CONFIG_DIR>/models.yaml`, and that file is untracked
 instance state (see [providers.md](providers.md)), so editing it to try another
-model dirties nothing in git and cannot be committed by accident.
+model dirties nothing in git and can't be committed by accident.
 
 For a change you want *only* in dev, give the dev instance its own operator
-directory instead of editing the shared one:
+directory rather than editing the shared one:
 
 ```bash
 mkdir -p config.dev/prompts/commands
@@ -100,29 +103,30 @@ cp config/models.example.yaml config.dev/models.yaml
 CONFIG_DIR=config.dev ENV_FILE=.env.dev uv run python bot.py
 ```
 
-Do not recursively copy `config/`: on a live checkout that would also copy the
-ignored production model file, settings overlay, and Discord fragments. Copy a
-specific private fragment only when the dev test actually requires it.
+Don't recursively copy `config/`: on a live checkout that would also sweep up
+the ignored production model file, settings overlay, and Discord fragments.
+Copy a specific private fragment only when the dev test actually requires it.
 
-Add the key the new profile's `api_key_env` names to `.env.dev`, not `.env`.
-Nothing about this reaches production: production reads its own `CONFIG_DIR` on
-its own host, and `git pull` there never carries a `models.yaml`.
+Add the key that the new profile's `api_key_env` names to `.env.dev`, not
+`.env`. None of this reaches production: production reads its own `CONFIG_DIR`
+on its own host, and a `git pull` there never carries a `models.yaml`.
 
-The same isolation applies to plugin operator overrides. Files live at
+The same isolation applies to plugin operator overrides. They live at
 `<CONFIG_DIR>/plugins/<name>.md`, so `CONFIG_DIR=config.dev` keeps them out of
-the production config tree. Plugin overrides are startup-only: edit them, then
-restart the dev bot before testing the changed behavior.
+the production config tree. Plugin overrides are startup-only, which means you
+edit them and then restart the dev bot before testing the changed behavior.
 
 To compare models on fixed scenarios instead of by hand, use the eval harness.
-Copy `evals/models.example.yaml` to the ignored `evals/models.yaml`; it is a
+Copy `evals/models.example.yaml` to the ignored `evals/models.yaml`; it's a
 private catalog separate from the bot's routing. Eval keys are resolved
-separately from the bot's: `ENV_FILE` does not apply to the harness, which reads
-the shell environment first and then `bot/.env` (`evals/models.py:resolve_api_key`),
-so export the key in the shell or keep it in `.env`. See [evals.md](evals.md).
+separately from the bot's as well: `ENV_FILE` doesn't apply to the harness,
+which reads the shell environment first and then `bot/.env`
+(`evals/models.py:resolve_api_key`), so export the key in the shell or keep it
+in `.env`. See [evals.md](evals.md).
 
-`DATABASE_PATH` is the one that matters most: production `data/bot.db` is real
-user data, and a dev boot writing into it is the mistake
-worth engineering against.
+Of all these settings, `DATABASE_PATH` is the one that matters most. Production
+`data/bot.db` is real user data, and a dev boot writing into it is exactly the
+mistake worth engineering against.
 
 Leave `ALLOWED_GUILD_IDS` blank to exercise the normal activation flow: invite
 the dev bot, then create `<CONFIG_DIR>/servers/<guild_id>.md` with
@@ -135,10 +139,11 @@ guild inactive even when the environment lists it.
 
 Create a separate application in the Discord Developer Portal, enable the
 Message Content intent, and invite it to a test guild. Sharing one token between
-two running processes means both receive every gateway event and both reply.
+two running processes means both receive every gateway event and both reply,
+which is not what you want.
 
-Give the dev application only the Discord permissions required by the features
-being tested. Record its token only in `.env.dev`; never copy the production
+Give the dev application only the Discord permissions the features under test
+require. Record its token only in `.env.dev`, and never copy the production
 token as a temporary shortcut. Activate the test guild through
 `<CONFIG_DIR>/servers/<guild_id>.md` or a dev-only `ALLOWED_GUILD_IDS` value.
 
@@ -152,47 +157,49 @@ ENV_FILE=.env.dev uv run python bot.py
 
 A successful boot logs the Discord account, the number of active and inactive
 guilds, the database path, and the number of synchronized slash commands. Check
-those values before sending a test message; they are the quickest way to catch
-the wrong token, guild, or database path. Then mention the bot in the test guild
-and confirm that one reply appears and survives a process restart as expected.
-Stop the process with `Ctrl+C`.
+those values before sending a test message, since they're the quickest way to
+catch the wrong token, guild, or database path. Then mention the bot in the
+test guild and confirm that one reply appears and survives a process restart
+as expected. Stop the process with `Ctrl+C`.
 
 If the bot connects but ignores every message, check guild activation first.
-An invited guild remains silent until it is explicitly activated, and
+An invited guild remains silent until it's explicitly activated, and
 `bot_active: false` overrides `ALLOWED_GUILD_IDS`. See
 [Setup](setup.md#the-bot-starts-and-then-ignores-every-mention) for the complete
 failure checklist.
 
 ## Editing config and prompts
 
-Edit `<CONFIG_DIR>/settings.md`, model/prompt/persona files, and fragment trees
-directly. Point `CONFIG_DIR` at a scratch copy while experimenting so a dev
-change cannot reach production operator data.
+Edit `<CONFIG_DIR>/settings.md`, the model/prompt/persona files, and the
+fragment trees directly. Point `CONFIG_DIR` at a scratch copy while
+experimenting so a dev change can't reach production operator data.
 
-Some files are read during each turn, while others shape startup composition:
+Some files are read during each turn, while others shape startup composition,
+so it helps to know which is which:
 
 | Change | When it takes effect |
 |---|---|
 | Prompt templates, persona text, channel/server/thread fragments, tool policy, and live per-tool settings | The next turn; no restart required. |
 | `.env.dev`, `models.yaml`, `settings.md`, `PLUGIN_MODULES`, plugin settings, secret metadata, and executable skill registrations | Restart the dev bot. |
 
-When in doubt, restart before judging behavior. A restart is cheap with isolated
-state and removes ambiguity about which configuration the process has loaded.
+When in doubt, restart before judging behavior. With isolated state a restart
+is cheap, and it removes any ambiguity about which configuration the process
+has actually loaded.
 
 ## What still needs the real thing
 
 - **Memory** needs a reachable Hindsight (`HINDSIGHT_URL`). Leave it unset and
-  the memory tools do not register.
+  the memory tools simply don't register.
 - **Executable skills** need Linux with `bubblewrap` + `util-linux` and a
-  non-root service account; on a Windows/macOS dev host use an instruction-only
+  non-root service account; on a Windows/macOS dev host, use an instruction-only
   or empty skill store (see [setup.md](setup.md)).
 - **Persistent browser** execution also needs the Linux isolation stack and the
-  pinned BetterWright runtime. It is off unless `BROWSER_ENABLED=true`, so a
+  pinned BetterWright runtime. It's off unless `BROWSER_ENABLED=true`, so a
   Windows/macOS dev host needs no change. To exercise it, use an isolated Linux
   test instance and a separate `BROWSER_PROFILES_DIR`; never point development
   at production profiles. See [browser.md](browser.md).
-- **Content moderation** needs its provider key; **Codex** needs
-  `CODEX_TOKEN_FILE` from `scripts/codex_auth.py`.
+- **Content moderation** needs its provider key, and **Codex** needs a
+  `CODEX_TOKEN_FILE` produced by `scripts/codex_auth.py`.
 
 ## Tests
 
@@ -207,15 +214,15 @@ uv run ruff format --check .   # line length is the formatter's job, not the lin
 uv run mypy .
 ```
 
-During development, run the smallest relevant test first:
+While you're developing, run the smallest relevant test first:
 
 ```bash
 uv run python -m pytest tests/test_storage.py -q
 uv run python -m pytest tests/test_storage.py::test_fresh_database_uses_the_current_schema_version -q
 ```
 
-Use `uv run ruff format <paths>` to format files you changed, then run the full
-four-command CI sequence before handoff. Tests use temporary databases and
+Use `uv run ruff format <paths>` to format the files you changed, then run the
+full four-command CI sequence before handoff. Tests use temporary databases and
 hand-written fakes, so they never need `.env.dev` or the live dev bot.
 
 Offline harness evals replay recorded tool calls through cassettes; see

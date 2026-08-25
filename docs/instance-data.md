@@ -1,10 +1,10 @@
 # Public source and private instance data
 
 The repository is the application, not a deployment backup. A public checkout
-contains code, generic templates, and synthetic fixtures. Everything that
+contains code, generic templates, and synthetic fixtures. Anything that
 identifies a live Discord deployment, contains community knowledge, records user
-activity, or reveals private provider routing is instance data and stays outside
-the public repository.
+activity, or reveals private provider routing is instance data, and it stays
+outside the public repository.
 
 ## Boundary
 
@@ -18,14 +18,15 @@ the public repository.
 | Deployment manifests containing variable references only | SQLite, Hindsight data, attachments, workspaces, logs, and generated files |
 | Current architecture and public changelog | Private checkout paths and unpublished project notes |
 
-Secrets should live in the deployment secret store or ignored files, never in a
-private Git repository. Private configuration and skills should be versioned in
-a separate access-controlled repository and backed up independently from Git.
+Secrets belong in the deployment secret store or in ignored files, never in a
+private Git repository. Private configuration and skills, on the other hand,
+should be versioned in a separate access-controlled repository and backed up
+independently of Git.
 
 ## Private configuration repository
 
 Keep the deployment repository separate from the public application checkout.
-A practical layout is:
+A practical layout looks like this:
 
 ```text
 kimibot-private/
@@ -55,29 +56,31 @@ kimibot-private/
 ```
 
 `config/prompt.md` and `config/models.yaml` are required for normal model turns.
-`persona.md` may be absent only if the prompt does not use `<persona>` (the
-public `prompt.md` does); a missing file silently renders an empty block instead
-of failing. Copy every tracked shared command template as well. In particular,
-the **Teach Kimi** context menu expects `config/prompts/commands/learn.md`;
-without it, the turn falls back to the base prompt and loses its narrower
-learning workflow and quoted-message handling.
+`persona.md` may be absent only if the prompt doesn't use `<persona>` (the
+public `prompt.md` does); a missing file silently renders an empty block rather
+than failing, so you won't get an error to warn you. Copy every tracked shared
+command template as well. In particular, the **Teach Kimi** context menu expects
+`config/prompts/commands/learn.md`; without it, the turn falls back to the base
+prompt and loses its narrower learning workflow and quoted-message handling.
 
-Numeric fragments, full overrides, tool/plugin files, and skills are included
-only when the deployment uses them. Copy the public `bot/config/prompt.md`,
-`persona.md`, tracked shared command templates, and `models.example.yaml` as
-starting points; thereafter the private copies are the deployment's source of
-truth. `models.yaml` is validated at startup, but `prompt.md` is first opened
-when a model turn builds its prompt, so provisioning must include a real message
-smoke test rather than treating a successful process start as sufficient.
+Numeric fragments, full overrides, tool/plugin files, and skills are only
+included when the deployment actually uses them. Copy the public
+`bot/config/prompt.md`, `persona.md`, tracked shared command templates, and
+`models.example.yaml` as starting points; from then on the private copies are
+the deployment's source of truth. One subtlety worth knowing: `models.yaml` is
+validated at startup, but `prompt.md` is first opened when a model turn builds
+its prompt, so provisioning must include a real message smoke test rather than
+treating a successful process start as sufficient.
 
 The active prompt is one complete template, selected most-specific-first from a
-command, channel/thread, server, or base `prompt.md` file. Full overrides do not
-inherit prose from the base template. Every private full override must therefore
-carry all behavioral, safety, guardrail, error-hygiene, and tool-routing rules
-that should apply in that scope. `<safety>` and `<guardrails>` are not tokens and
-nothing appends those rules in code. Scalar and generated placeholders are
-substituted once; see the [full-template guide](../bot/config/prompts/README.md)
-for the resolution order and supported layout behavior.
+command, channel/thread, server, or base `prompt.md` file. Full overrides don't
+inherit prose from the base template, so every private full override must
+carry all of the behavioral, safety, guardrail, error-hygiene, and tool-routing
+rules that should apply in that scope. `<safety>` and `<guardrails>` are not
+tokens, and nothing appends those rules in code. Scalar and generated
+placeholders are substituted once; see the
+[full-template guide](../bot/config/prompts/README.md) for the resolution
+order and supported layout behavior.
 
 Point the application at the private checkout with absolute paths:
 
@@ -89,38 +92,43 @@ SKILLS_DIR=/srv/kimi/private/skills
 Clone or update the public and private repositories independently, review and
 commit private configuration changes, then deploy an approved revision of each.
 Prompt templates, instruction fragments, tool fragments, and instruction-skill
-indexes are refreshed from disk during normal turns. Restart the bot after a
-private-repository update so startup-only model routing, settings, plugins,
-secrets metadata, and executable skill registrations are rebuilt coherently.
+indexes are refreshed from disk during normal turns. Model routing, settings,
+plugins, secrets metadata, and executable skill registrations are startup-only,
+so restart the bot after a private-repository update to rebuild them
+coherently.
 
-The private templates do not inherit later edits from the public templates.
+The private templates don't inherit later edits from the public templates.
 Before each application upgrade, diff the new public `prompt.md`, `persona.md`,
-and shared command templates against the private base files and every applicable
-full override. Merge any new placeholders, safety rules, error handling, and
-tool-routing guidance deliberately before deploying the two revisions together.
+and shared command templates against the private base files and every
+applicable full override. Merge any new placeholders, safety rules, error
+handling, and tool-routing guidance deliberately before deploying the two
+revisions together.
 
-Staff learning tools write instruction skills into the live `SKILLS_DIR`; Git
-does not commit or push those writes. If the private checkout is also the live
-skill directory, monitor and review its working tree, then commit accepted
-changes through the normal private-repository workflow. Executable scripts can
-only be added on disk by an operator and must be reviewed before deployment.
+Staff learning tools write instruction skills into the live `SKILLS_DIR`, and
+Git doesn't commit or push those writes on its own. If the private checkout is
+also the live skill directory, monitor and review its working tree, then commit
+accepted changes through the normal private-repository workflow. Executable
+scripts can only be added on disk by an operator, and they must be reviewed
+before deployment.
 
-Do not put `.env`, credential files, Discord or provider tokens, skill secret
+Don't put `.env`, credential files, Discord or provider tokens, skill secret
 values, Codex auth, SQLite/Hindsight data, attachments, workspaces, logs, eval
 cassettes, or generated output in the private repository. Back up those runtime
-stores separately with access and retention controls appropriate to user data.
+stores separately, with access and retention controls appropriate to user data.
 
-Deployment-owned plugin packages are private application code, not configuration
-fragments. Keep each package, its tests, and its documentation in an
-access-controlled source repository, install it into the bot environment (or
-place its checkout on `PYTHONPATH`), and list its importable module explicitly in
-`PLUGIN_MODULES`. See [Operator Plugins](plugins.md#publicprivate-source-split).
+Deployment-owned plugin packages are private application code, not
+configuration fragments. Keep each package, its tests, and its documentation in
+an access-controlled source repository, install it into the bot environment (or
+place its checkout on `PYTHONPATH`), and list its importable module explicitly
+in `PLUGIN_MODULES`. See
+[Operator Plugins](plugins.md#publicprivate-source-split).
 
 ## Recommended production layout
 
 Point every writable or deployment-owned path outside the application checkout.
-Absolute paths avoid dependence on the supervisor's working directory. Separate
-durable state from temporary staging so backup and retention policy are clear:
+Absolute paths avoid any dependence on the supervisor's working directory, and
+separating durable state from temporary staging keeps the backup and retention
+policy clear:
 
 ```dotenv
 CONFIG_DIR=/srv/kimi/private/config
@@ -138,10 +146,10 @@ BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
 ATTACHMENT_STORE_DIR=/var/tmp/kimi/attachments
 ```
 
-The paths are examples, not prescribed host locations. Mount the durable paths
-into replacement containers or services, but do not back up attachment staging.
-Workspaces and logs are retained according to their own TTL, quota, and rotation
-rules; any backups must enforce compatible deletion periods.
+These paths are examples, not prescribed host locations. Mount the durable
+paths into replacement containers or services, but don't back up attachment
+staging. Workspaces and logs are retained according to their own TTL, quota,
+and rotation rules, so any backups must enforce compatible deletion periods.
 
 Grant the bot only the access each path requires:
 
@@ -164,10 +172,11 @@ Grant the bot only the access each path requires:
    templates from the public generic files, then copy
    `config/models.example.yaml` to the private `config/models.yaml`. Replace its
    placeholder endpoints/model IDs, context windows, capabilities, roles, and
-   fallbacks. Add image routing only after verifying model support.
-3. Restore the private `skills/` tree when the deployment uses shared skills.
-   An absent or empty `SKILLS_DIR` is valid and contributes no private skills;
-   read-only built-ins shipped with the application remain available.
+   fallbacks. Add image routing only after you've verified model support.
+3. Restore the private `skills/` tree if the deployment uses shared skills.
+   An absent or empty `SKILLS_DIR` is valid and simply contributes no private
+   skills; the read-only built-ins shipped with the application remain
+   available.
 4. Add numeric server/channel/thread fragments only under the private
    `CONFIG_DIR`. Activate at least one guild there or through
    `ALLOWED_GUILD_IDS`.
@@ -178,45 +187,46 @@ Grant the bot only the access each path requires:
    staging.
 6. Start exactly one bot process, confirm the expected database schema and guild
    activation in the logs, then complete a real mention/reply smoke test so the
-   active prompt and provider route are exercised.
+   active prompt and provider route are actually exercised.
 
 The default in-checkout paths remain convenient for local development.
 Deployment-owned files under `config/` and the contents of `skills/store/` are
-ignored as defense in depth. Generic source files under `config/` and read-only
-skills under `skills/builtin/` remain tracked.
+ignored as defense in depth, while the generic source files under `config/` and
+the read-only skills under `skills/builtin/` remain tracked.
 
 ## Skills
 
-`SKILLS_DIR` is both read by the skill loader and written by staff learning
-tools (see above). Back it up with the database and configuration, and restore
-it before starting a replacement instance. It is merged at runtime with the
-tracked, read-only `skills/builtin/` catalog. The operational contract and
+`SKILLS_DIR` is both read by the skill loader and written by the staff learning
+tools (see above). Back it up alongside the database and configuration, and
+restore it before starting a replacement instance. At runtime it's merged with
+the tracked, read-only `skills/builtin/` catalog. The operational contract and
 restore guidance are summarized in
 [`bot/skills/README.md`](../bot/skills/README.md).
 
-Instruction-only skills created through Discord cannot add scripts. A skill
-containing `tools:` declarations or files under `scripts/` is executable operator
-code: review it separately and do not accept executable content from an untrusted
-backup. Executable tools run in the mandatory Linux Bubblewrap boundary, with the
-skill read-only and the exact per-call job directory as the only writable
-host-backed mount (`/workspace`). A private writable `/tmp` exists inside the
-sandbox but exposes no host files.
-Network is absent unless that individual declaration sets `network: true`; such an
-opt-in shares the service host's network reachability, subject to its firewall,
-proxy, and routing controls.
+Instruction-only skills created through Discord can't add scripts. A skill
+containing `tools:` declarations or files under `scripts/` is executable
+operator code: review it separately, and don't accept executable content from
+an untrusted backup. Executable tools run inside the mandatory Linux Bubblewrap
+boundary, with the skill mounted read-only and the exact per-call job directory
+as the only writable host-backed mount (`/workspace`). A private writable `/tmp`
+exists inside the sandbox but exposes no host files. Network access is absent
+unless that individual declaration sets `network: true`; such an opt-in shares
+the service host's network reachability, subject to its firewall, proxy, and
+routing controls.
 
 ## Evals
 
-Copy `evals/models.example.yaml` to ignored `evals/models.yaml` before running an
-eval. Live model names, gateway URLs, pricing, environment-variable names, and
-benchmark results are deployment metadata. Cassettes contain recorded tool
-arguments/results and transcripts contain prompt/tool data, so
-`evals/cassettes/`, `evals/runs/`, and `evals/RESULTS.md` remain private.
+Copy `evals/models.example.yaml` to the ignored `evals/models.yaml` before
+running an eval. Live model names, gateway URLs, pricing, environment-variable
+names, and benchmark results are all deployment metadata. Cassettes contain
+recorded tool arguments and results, and transcripts contain prompt and tool
+data, so `evals/cassettes/`, `evals/runs/`, and `evals/RESULTS.md` remain
+private.
 
 The tracked `evals/scenarios/` tree is for generic synthetic cases only. Put
-deployment-specific scenarios under ignored `evals/private/`, especially when
-they contain community knowledge, copied messages, private prompts, or real
-Discord identifiers. Select that directory with `--scenarios evals/private`
+deployment-specific scenarios under the ignored `evals/private/`, especially
+when they contain community knowledge, copied messages, private prompts, or
+real Discord identifiers. Select that directory with `--scenarios evals/private`
 rather than copying its content into the public scenario tree.
 
 ## Before publishing
@@ -230,8 +240,9 @@ git diff --check
 ```
 
 Review every tracked non-source artifact, run a content secret scanner in CI,
-and verify that examples contain synthetic IDs and placeholder hosts. Ignore
-rules do not remove files already tracked; remove those paths from the index
-while preserving the local instance copy before creating or publishing a public
-repository. Scan the repository's commit history as well as the current tree;
-deleting a secret from the latest revision does not remove it from older commits.
+and verify that the examples contain synthetic IDs and placeholder hosts.
+Remember that ignore rules don't remove files that are already tracked; remove
+those paths from the index while preserving the local instance copy before
+creating or publishing a public repository. Scan the repository's commit
+history as well as the current tree, because deleting a secret from the latest
+revision doesn't remove it from older commits.

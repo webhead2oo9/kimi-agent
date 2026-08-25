@@ -2,7 +2,7 @@
 
 `internet_search` is the member-tier core tool for searching the live web and
 for reading pages the model already has URLs for. It registers when `EXA_API_KEY`
-or `BRAVE_API_KEY` is set; with neither key the model never sees it.
+or `BRAVE_API_KEY` is set; with neither key configured, the model never sees it.
 
 The model sees one tool and never learns which provider answered it. Provider
 names, credentials, and cost stay out of a successful result, so which vendors a
@@ -27,9 +27,10 @@ the model gets results rather than an incident report.
   publication date the provider never reported cannot satisfy a date
   constraint, and is dropped.
 
-A result carries `title`, `url`, the useful `content`, and publication date or
-author where the provider reports them. Results and page text are stamped as
-untrusted context. A search that genuinely found nothing says so:
+Each result carries `title`, `url`, the useful `content`, and the publication
+date or author where the provider reports them. Results and page text are
+stamped as untrusted context. A search that genuinely found nothing says so
+plainly:
 
 ```json
 {"results": [], "message": "No matching results found."}
@@ -74,9 +75,9 @@ A ledger row records provider, tool, dollars, turn, user, channel, and guild.
 Queries and results are never written to it, so the ledger can be read for
 spending without exposing what anyone searched for.
 
-Local numbers can undercount. If a request fails before its cost is reported, or
-the ledger write itself fails, only the provider's own dashboard has the full
-picture.
+Bear in mind that the local numbers can undercount. If a request fails before
+its cost is reported, or the ledger write itself fails, only the provider's own
+dashboard has the full picture.
 
 See [Configuration](configuration.md#internet-search-gated), [Tool Catalog](tools.md),
 and [Database](database.md#model-paid-tool-and-bounded-tool-usage).

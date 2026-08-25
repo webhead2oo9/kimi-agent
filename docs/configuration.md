@@ -1,79 +1,87 @@
 # Configuration reference
 
-> **Living doc.** This tracks every `Settings` field the bot reads, the
-> committed `.env.example` keys that are read outside
-> `Settings`, and the model catalog in `config/models.yaml`, which is
-> **untracked instance state**, created by copying
-> [`bot/config/models.example.yaml`](../bot/config/models.example.yaml). The source of truth for typed bot
-> settings is [`bot/config/settings.py`](../bot/config/settings.py); when you add/change
-> a setting there, update this file (and `.env.example`) in the same change.
-> Defaults below are the **code defaults**; your local `.env` may override them
-> per deployment.
+> **Living doc.** This page tracks every `Settings` field the bot reads, the
+> committed `.env.example` keys that are read outside `Settings`, and the
+> model catalog in `config/models.yaml`. That catalog is **untracked instance
+> state**; you create it by copying
+> [`bot/config/models.example.yaml`](../bot/config/models.example.yaml). The
+> source of truth for typed bot settings is
+> [`bot/config/settings.py`](../bot/config/settings.py), so whenever you add or
+> change a setting there, update this file (and `.env.example`) in the same
+> change. The defaults below are the **code defaults**; your local `.env` may
+> override them per deployment.
 
 ## How configuration loading works
 
 - The core `pydantic-settings` `Settings` class in `config/settings.py` is
-  instantiated once as the module-level `settings` singleton (imported
-  everywhere). Enabled plugins and application modules may own separate `BaseSettings` classes. For a
-  plugin with `PLUGIN_SETTINGS`, discovery constructs the instance before
-  registration and passes that exact validated object to the plugin. A wholly
-  environment-managed plugin constructs its model through the
+  instantiated once as the module-level `settings` singleton, which everything
+  else imports. Enabled plugins and application modules may own separate
+  `BaseSettings` classes of their own. For a plugin that declares
+  `PLUGIN_SETTINGS`, discovery constructs the instance before registration and
+  hands that exact validated object to the plugin. A plugin managed entirely
+  through the environment instead builds its model through the
   `ctx.settings_for(...)` fallback during registration.
-- Values come from **OS environment variables** first, then a local dotenv file:
-  `.env` by default, or whatever `ENV_FILE` names (see below). Core, plugin, and module
-  settings use the shared selector in `config/environment.py`, so a dev process
-  cannot accidentally read core values from `.env.dev` and plugin values from
-  `.env`. Unknown env keys are ignored (`extra = "ignore"`).
-- **Naming:** an env var is the field name upper-cased. `react_max_tokens` ←
-  `REACT_MAX_TOKENS`, `workspace_max_size_mb` ← `WORKSPACE_MAX_SIZE_MB`. The
-  mapping is case-insensitive.
-- **Operator settings file:** `build_app` then layers `<CONFIG_DIR>/settings.md`
-  over the constructed object (`config/operator_settings.py:apply_operator_settings`).
-  It manages every plain `bool`/`int`/`float`/`str` field except deployment
-  boundaries: no secrets, no paths/binaries (`*_dir`, `*_path`, `*_bin`,
-  `*_file`), no service URLs (`*_url`, `*_base`), no `database_*`, and no
-  `plugin_modules` or `kimi_modules`. The `*_ids` allowlists are written as YAML lists in the
-  file (`staff_user_ids: [1, 2]`), not the comma-joined strings `.env` uses.
-  The file **takes precedence over the environment**; fields it
-  does not mention keep their environment/default values. An absent or empty
-  file inherits everything. The overlay is read once inside `build_app`, so an
-  edit takes effect on the next restart. A present file must be wholly valid: unreadable,
-  malformed, unknown, or out-of-range values raise `OperatorSettingsError` and
-  stop startup before a single field is applied instead of half-applying an
-  overlay.
-- **Plugin settings files:** an enabled plugin may explicitly declare a safe
+- Values come from **OS environment variables** first, then from a local dotenv
+  file: `.env` by default, or whatever `ENV_FILE` names (see below). Core,
+  plugin, and module settings all go through the shared selector in
+  `config/environment.py`, so a dev process can't accidentally read core values
+  from `.env.dev` while plugins read theirs from `.env`. Unknown env keys are
+  ignored (`extra = "ignore"`).
+- **Naming:** an env var is simply the field name upper-cased, so
+  `react_max_tokens` comes from `REACT_MAX_TOKENS` and `workspace_max_size_mb`
+  from `WORKSPACE_MAX_SIZE_MB`. The mapping is case-insensitive.
+- **Operator settings file:** once the object is constructed, `build_app` layers
+  `<CONFIG_DIR>/settings.md` over it
+  (`config/operator_settings.py:apply_operator_settings`). The file manages
+  every plain `bool`/`int`/`float`/`str` field except the ones that define a
+  deployment boundary: no secrets, no paths or binaries (`*_dir`, `*_path`,
+  `*_bin`, `*_file`), no service URLs (`*_url`, `*_base`), no `database_*`, and
+  neither `plugin_modules` nor `kimi_modules`. The `*_ids` allowlists are
+  written as YAML lists in the file (`staff_user_ids: [1, 2]`) rather than the
+  comma-joined strings `.env` uses. The file **takes precedence over the
+  environment**; any field it doesn't mention keeps its environment or default
+  value, and an absent or empty file inherits everything. The overlay is read
+  once inside `build_app`, so an edit takes effect on the next restart. A
+  present file has to be wholly valid: an unreadable or malformed file, or an
+  unknown or out-of-range value, raises `OperatorSettingsError` and stops
+  startup before a single field is applied, because a half-applied overlay
+  would be worse than none.
+- **Plugin settings files:** an enabled plugin may explicitly declare a safe,
   operator-editable subset of its own settings. Those overrides live separately
-  at `<CONFIG_DIR>/plugins/<plugin_name>.md`; they never join the core
+  at `<CONFIG_DIR>/plugins/<plugin_name>.md` and never join the core
   `settings.md` namespace. The declaration classifies every model field as
   either explicitly exposed or environment-only, with presentation and
   validation metadata for the exposed subset; leaving a field unclassified is
-  an error. Discovery also rejects attempts to expose secret-, endpoint-, or
-  path-like fields. Every plugin setting is restart-required: discovery
-  validates and applies the complete plugin overlay before that plugin
-  registers. An absent file inherits the selected dotenv/default values; a
-  present file is validated atomically. See [plugins.md](plugins.md) for the
-  module, loading, and file-overlay contract.
-- **Module settings files:** lifecycle-aware modules use the same declaration
-  rules, but their safe overrides live at
-  `<CONFIG_DIR>/modules/<module_name>.md`. Module settings are required when the
-  module is configured: invalid environment or overlay data aborts startup.
-  Module-owned variables are documented in the module package, not this core
-  catalog. See [modules.md](modules.md).
-- **Per-tool config fragments:** a tool may declare its own typed knobs, whose
+  an error, and discovery also rejects any attempt to expose a secret-,
+  endpoint-, or path-like field. Every plugin setting requires a restart:
+  discovery validates and applies the complete plugin overlay before that
+  plugin registers. An absent file inherits the selected dotenv/default
+  values, and a present file is validated atomically. See
+  [plugins.md](plugins.md) for the module, loading, and file-overlay contract.
+- **Module settings files:** lifecycle-aware modules follow the same
+  declaration rules, but their safe overrides live at
+  `<CONFIG_DIR>/modules/<module_name>.md`. Module settings are required whenever
+  the module is configured, so invalid environment or overlay data aborts
+  startup. Module-owned variables are documented in the module package rather
+  than in this core catalog. See [modules.md](modules.md).
+- **Per-tool config fragments:** a tool may declare its own typed knobs. Their
   operator values live in `<CONFIG_DIR>/tools/<tool_name>.md` and are read
-  **fresh every turn** instead of at boot. See below.
+  **fresh every turn** instead of at boot. More on this below.
 - **Model routing:** provider profiles, model IDs, role assignments, context
-  windows, and chat overrides live in `config/models.yaml`, not `.env`.
-- **Secrets** use `SecretStr` (e.g. `OPENCODE_GO_API_KEY`); read them with `.get_secret_value()`. They
-  never appear in `repr()`/logs. `validate_assignment=True` lets tests assign plain strings and
-  still coerce to `SecretStr`.
-- **Derived/computed values** are exposed as `@property` accessors that parse a raw string into a
-  richer type (comma-separated → `set`/`list`/`tuple`). These are documented inline below.
-- **Validation at startup:** a few fields validate eagerly so a typo fails fast with a clear
-  message instead of lazily mid-request (e.g. `ALLOWED_CHANNEL_IDS` must be numeric).
+  windows, and chat overrides live in `config/models.yaml`, not in `.env`.
+- **Secrets** use `SecretStr` (for example `OPENCODE_GO_API_KEY`); read them
+  with `.get_secret_value()`. They never appear in `repr()` or logs.
+  `validate_assignment=True` lets tests assign plain strings and still have
+  them coerced to `SecretStr`.
+- **Derived/computed values** are exposed as `@property` accessors that parse a
+  raw string into a richer type (comma-separated → `set`/`list`/`tuple`). They
+  are documented inline below.
+- **Validation at startup:** a few fields validate eagerly so that a typo fails
+  fast with a clear message rather than lazily in the middle of a request
+  (`ALLOWED_CHANNEL_IDS` must be numeric, for instance).
 - **`.env.example`** is the committed template; `.env` is local and gitignored.
-  `ENV_FILE` is documented separately because it is read straight from the process
-  environment instead of through `config/settings.py`.
+  `ENV_FILE` gets its own section because it is read straight from the process
+  environment rather than through `config/settings.py`.
 
 ### Adding a new setting
 1. Add the field (with a default + a short comment) to the right group in `config/settings.py`.
@@ -87,38 +95,39 @@
    declare a `_MINIMUMS` floor (a test enforces it). Add a `_CHOICES` entry only
    if code in this repo already enforces the vocabulary.
 
-For a setting owned by a plugin, do **not** add it to the core catalog. Keep it
-on the plugin's `BaseSettings` model and add an explicit plugin-settings
-declaration only when it is safe for an operator-data file. The plugin opts in
-with a module-level `PLUGIN_SETTINGS = PluginSettingsDefinition(...)` from
-`config/plugin_settings.py`. Every model field must be classified in exactly one
-of the definition's `exposed` or `environment_only` sets. Core derives scalar
-kind and nullability from the Pydantic field; each exposed `PluginSetting`
-supplies label/help, a numeric floor, closed choices, or multiline presentation
-where appropriate. Credentials, URLs/endpoints, paths, and compound values that
-can embed those deployment boundaries remain environment-only. Plugin
-declarations are fail-closed and every exposed field is restart-required.
+If the setting belongs to a plugin, do **not** add it to the core catalog. Keep
+it on the plugin's `BaseSettings` model, and add an explicit plugin-settings
+declaration only when the value is safe to keep in an operator-data file. The
+plugin opts in with a module-level `PLUGIN_SETTINGS = PluginSettingsDefinition(...)`
+from `config/plugin_settings.py`, and every model field must be classified in
+exactly one of the definition's `exposed` or `environment_only` sets. Core
+derives the scalar kind and nullability from the Pydantic field; each exposed
+`PluginSetting` adds a label and help text, a numeric floor, closed choices, or
+multiline presentation where that makes sense. Credentials, URLs and endpoints,
+paths, and compound values that could embed any of those deployment boundaries
+stay environment-only. Plugin declarations fail closed, and every exposed field
+requires a restart.
 
 ### Common patterns
 - **Model roles.** `roles.chat` and `roles.compaction` in
-  `config/models.yaml` choose the defaults. `roles.chat_images` and
-  `roles.persona` are optional.
-  `selectable_chat_models` supplies candidates for the owner-only `/models`
-  menu. Profiles with `models_endpoint` filter their candidates against the live
-  `/v1/models` response at startup. Selection is live and global; catalog edits
-  require a restart.
-- **Feature gating.** Several tools register only when their dependency is configured
-  (key present, file valid, etc.). When the dependency is missing, the tool is absent and
-  the bot still runs. Gated tools are marked **(gated)** below.
+  `config/models.yaml` choose the defaults; `roles.chat_images` and
+  `roles.persona` are optional. `selectable_chat_models` supplies the candidates
+  for the owner-only `/models` menu, and profiles with `models_endpoint` filter
+  those candidates against the live `/v1/models` response at startup. Selection
+  is live and global, but catalog edits still need a restart.
+- **Feature gating.** Several tools register only when the thing they depend on
+  is configured (a key present, a file valid, and so on). When the dependency is
+  missing the tool is simply absent and the bot still runs. Gated tools are
+  marked **(gated)** below.
 - **Trust tiers.** `*_min_tier` values are one of `member` < `regular` < `staff`.
 
 ### Per-tool config fragments (`<CONFIG_DIR>/tools/<tool_name>.md`)
 
-The per-tool configuration surface is distinct from core and plugin startup
-settings. A tool declares a typed spec at registration
+Per-tool configuration is a separate surface from the core and plugin startup
+settings. A tool declares a typed spec when it registers
 (`registry.register(..., config_spec=…)` over
-`tools/config_spec.py:ToolConfigField`), and an operator's values for it
-live in one frontmatter-only fragment per tool:
+`tools/config_spec.py:ToolConfigField`), and your values for it live in one
+frontmatter-only fragment per tool:
 
 ```markdown
 ---
@@ -126,42 +135,43 @@ max_results: 20
 ---
 ```
 
-Use this surface for safe, per-call behavior owned by one tool. Keep the
-shipped default and any absolute maximum beside the tool's registration; the
-reviewed bound lets an operator tune behavior without turning a convenience
-knob into a safety-limit bypass. Credentials, endpoints, enablement gates,
-access scope, and client transport remain deployment settings.
+Use this surface for safe, per-call behavior that one tool owns. Keep the
+shipped default and any absolute maximum beside the tool's registration: the
+bound is reviewed with the code, which lets you tune behavior without a
+convenience knob turning into a way around a safety limit. Credentials,
+endpoints, enablement gates, access scope, and client transport stay
+deployment settings.
 
-A fragment is loaded only while its tool is registered. Removing the
-registration makes the file dormant; registering the tool again restores the
-existing values.
+A fragment is loaded only while its tool is registered. If the registration
+goes away the file just sits dormant, and registering the tool again picks the
+existing values back up.
 
-`config/fragments/tool_config.py` reads every spec'd tool's fragment on **every turn**,
-resolves it over that tool's declared defaults, and `prepare_turn` stashes the
-result on `MessageContext.tool_configs` (keyed by tool name) beside the
-`blocked_tools` denylist it mirrors. A handler reads
-`ctx.tool_configs.get("<tool>") or {}` and never merges defaults itself. An edit
-therefore applies on the **next message, with no restart**, which is why the
-denylist lives in a fragment instead of an env var.
+`config/fragments/tool_config.py` reads every spec'd tool's fragment on
+**every turn**, resolves it over that tool's declared defaults, and
+`prepare_turn` stashes the result on `MessageContext.tool_configs` (keyed by
+tool name) next to the `blocked_tools` denylist it mirrors. A handler reads
+`ctx.tool_configs.get("<tool>") or {}` and never merges defaults itself. An
+edit therefore applies on the **next message, with no restart**, which is the
+same reason the denylist lives in a fragment rather than an env var.
 
 Field kinds are `int`, `float`, `bool`, `text`, and `choice` (a closed value
-set). Numeric fields can declare both a minimum and maximum; runtime loading
-enforces both.
+set). Numeric fields can declare both a minimum and a maximum, and runtime
+loading enforces both.
 
-Current tool-owned behavior:
+The tool-owned behavior that exists today:
 
 | Tool | Field | Default | Range | Fragment |
 |---|---|---|---|---|
 | `discord_text_search` | `max_results` | `25` | 1–25 | `config/tools/discord_text_search.md` |
 | `internet_search` | `strategy` | `blend` | `blend` or `failover` | `config/tools/internet_search.md` |
 
-The path is relative to `bot/`, the default `CONFIG_DIR`; the fragment is
+The path is relative to `bot/`, the default `CONFIG_DIR`, and the fragment is
 active only while the tool is registered.
 
 **Fail direction: open, the opposite of the denylist.**
-`config/tools.md` raises instead of risking a silent *grant* of a tool; a tool
-config fragment only tunes behavior an operator opted into, and the defaults are
-the shipped behavior, so nothing here ever raises:
+`config/tools.md` raises rather than risk silently *granting* a tool. A tool
+config fragment, by contrast, only tunes behavior you already opted into, and
+the defaults are the shipped behavior, so nothing here ever raises:
 
 | On disk | Result |
 |---|---|
@@ -171,16 +181,17 @@ the shipped behavior, so nothing here ever raises:
 | One uncoercible value | That field falls back to its default; the rest apply. |
 | Unreadable / malformed file | That path's last-known-good values, or defaults if there are none. Logged as an error. |
 
-Secrets and endpoints are **never** tool config: an API key stays an
+Secrets and endpoints are **never** tool config. An API key stays an
 environment-only `SecretStr` on `Settings`, and a fragment can only choose
-between backends the deployment already has credentials for. That is
-*enforced*, not just conventional: `validate_config_spec` rejects any field name
-whose final underscore-separated word is a credential, endpoint, or path word (`key`, `token`, `secret`,
-`password`, `auth`, `credential(s)`, `url`, `uri`, `base`, `endpoint`, `host`,
-`dir`, `directory`, `path`, `file`, `bin`) at registration, so a spec that would
-put an API token or a base URL into a plaintext fragment fails at boot where its
-author sees it. It is the tool-spec mirror of the `_EXCLUDED_SUFFIXES` guard on
-the operator Settings catalog above.
+between backends the deployment already holds credentials for. That is
+*enforced*, not merely conventional: at registration, `validate_config_spec`
+rejects any field name whose final underscore-separated word is a credential,
+endpoint, or path word (`key`, `token`, `secret`, `password`, `auth`,
+`credential(s)`, `url`, `uri`, `base`, `endpoint`, `host`, `dir`, `directory`,
+`path`, `file`, `bin`), so a spec that would put an API token or a base URL
+into a plaintext fragment fails at boot, where its author sees it. It is the
+tool-spec mirror of the `_EXCLUDED_SUFFIXES` guard on the operator Settings
+catalog described above.
 
 ---
 
@@ -190,8 +201,8 @@ the operator Settings catalog above.
 |---|---|---|
 | `ENV_FILE` | `.env` | Which dotenv file every core and plugin `BaseSettings` class loads through `config/environment.py`. `ENV_FILE=.env.dev uv run python bot.py` boots a second instance with its own token, database, plugin credentials, and paths against a test guild. A path that does not exist raises at import instead of silently loading nothing. See [development.md](development.md). |
 
-This is read from the process environment only; it cannot be set *inside* a
-dotenv file, since it selects which file to read.
+This one is read from the process environment only. It can't be set *inside* a
+dotenv file, since it is the thing that selects which file to read.
 
 ## Discord & access control
 
@@ -209,111 +220,114 @@ dotenv file, since it selects which file to read.
 | `MEMBERS_INTENT` | bool | `false` | Whether to request the privileged Server Members intent at connect. Ordinary operation does not need it: roles come from the message author and member lookups use on-demand fetch/query. Optional modules may require member lifecycle events. Turning it on also requires enabling Server Members in the Discord Developer Portal, or the gateway rejects the identify. |
 
 **Derived:** `staff_role_id_set`/`regular_role_id_set` (sets of numeric strings), `staff_ids` (set),
-`allowed_channels`, and the environment-backed `allowed_guilds` (sets of ints). Runtime merges
-`allowed_guilds` with the cached validated Server setup decisions; explicit file deactivation wins.
-Trust tier is resolved in `trust/resolver.py` from role IDs plus the staff-ID
-allowlist. The resolved tier is treated as sensitive: the `lookup_member` tool includes a
-member's `trust_tier` only when the requesting user is `STAFF`, because the resolved tier would
-otherwise disclose `STAFF_USER_IDS` allowlist membership (role-less staff) to any member; roles are
-public in Discord and stay visible to everyone.
+`allowed_channels`, and the environment-backed `allowed_guilds` (sets of ints). At runtime,
+`allowed_guilds` is merged with the cached, validated Server setup decisions, and an explicit
+file deactivation wins. The trust tier itself is resolved in `trust/resolver.py` from role IDs
+plus the staff-ID allowlist. That resolved tier is treated as sensitive: the `lookup_member`
+tool includes a member's `trust_tier` only when the requesting user is `STAFF`, because
+otherwise it would reveal `STAFF_USER_IDS` allowlist membership (staff who hold no role) to
+any member. Roles are public in Discord anyway and stay visible to everyone.
 
-The `STAFF_*`/`REGULAR_*` env settings above are **global** (they apply in every guild). For
-multi-guild deployments, a guild can add its own staff/regular lists in the frontmatter of
-`config/servers/<guild_id>.md` (`staff_user_ids`/`staff_role_ids`/`regular_role_ids`; see
-`config/fragments/guild_config.py`). Per-guild lists are *additive*: `trust/resolver.py` ORs them with the
-global allowlists, so a guild grants local standing only and can never remove a globally-trusted
-user. The same fragment's `pinned_tools:` frontmatter pins searchable tools guild-wide (the base
-set a channel's own `pinned_tools` union onto). Its mirror `blocked_tools:` is a guild-wide
-**denylist** (channel `blocked_tools` union onto it), and the only way to *remove* a globally-registered
-tool from a guild/channel, since `guild_ids` only scopes a tool *to* guilds. Blocked names are hidden
-from the model's tool list and the `browse_tools` catalog and masked as "Unknown tool" at dispatch in
-that scope only. All are read fresh each turn, so edits take effect on the next turn without a
-restart. The body of the file remains the `<server_instructions>` slot.
+The `STAFF_*`/`REGULAR_*` env settings above are **global**: they apply in every guild. If
+you run the bot in several guilds, a guild can add its own staff and regular lists in the
+frontmatter of `config/servers/<guild_id>.md` (`staff_user_ids`/`staff_role_ids`/
+`regular_role_ids`; see `config/fragments/guild_config.py`). Per-guild lists are *additive*:
+`trust/resolver.py` ORs them with the global allowlists, so a guild can grant local standing
+but can never take it away from a globally trusted user. The same fragment's `pinned_tools:`
+frontmatter pins searchable tools guild-wide, forming the base set that a channel's own
+`pinned_tools` unions onto. Its mirror, `blocked_tools:`, is a guild-wide **denylist** (channel
+`blocked_tools` union onto it) and the only way to *remove* a globally registered tool from a
+guild or channel, since `guild_ids` only ever scopes a tool *to* guilds. Blocked names are
+hidden from the model's tool list and the `browse_tools` catalog, and masked as "Unknown tool"
+at dispatch, in that scope only. All of these are read fresh each turn, so an edit takes
+effect on the next turn without a restart. The body of the file is still the
+`<server_instructions>` slot.
 
-The same fragment carries two tri-state thread switches, each overridable by a channel
-fragment and each defaulting to on: `thread_handoff:` (may the bot open threads here at
-all) and `thread_auto_respond:` (does a thread opened here start answering every message,
-or only when addressed). Only literal YAML booleans count, so a typo falls back to the
-wider scope instead of flipping the guild. See
+The same fragment carries two tri-state thread switches, each of which a channel fragment
+can override and each of which defaults to on: `thread_handoff:` (may the bot open threads
+here at all?) and `thread_auto_respond:` (does a thread opened here answer every message, or
+only when addressed?). Only literal YAML booleans count, so a typo falls back to the wider
+scope instead of flipping the whole guild. See
 [`docs/thread-handoff.md`](thread-handoff.md).
 
 `learn_log_channel_id:` is the audit feed for staff-taught knowledge. Whenever a Staff
-member teaches the bot something shared (a fact into community memory with `teach`, or a
-procedure into a skill with `skill_create`/`skill_edit`), the bot posts a card there
-naming who taught it, what it stored, and a link back to the source message. It matters
-most for the **Teach Kimi** message context menu (the name follows `BOT_NAME`),
-whose confirmation is ephemeral: with no log channel configured, nobody but the
-acting staff member ever sees that the bot learned something. Fails closed: absent
-or malformed means no learn logging (and, like the other id keys, a malformed value
-blocks `bot_active` activation instead of being silently ignored). A logging
-failure never fails the teaching itself.
+member teaches the bot something shared, whether a fact into community memory with `teach`
+or a procedure into a skill with `skill_create`/`skill_edit`, the bot posts a card there
+saying who taught it, what it stored, and linking back to the source message. This matters
+most for the **Teach Kimi** message context menu (the name follows `BOT_NAME`), because its
+confirmation is ephemeral: with no log channel configured, nobody but the acting staff
+member ever sees that the bot learned something. It fails closed, so an absent or malformed
+value means no learn logging at all (and, like the other id keys, a malformed value blocks
+`bot_active` activation instead of being silently ignored). A logging failure never fails
+the teaching itself.
 
-A third thread key is **guild scope only**: `thread_targets:`, a list of numeric channel
-ids the bot may open a thread in *other than the one it was asked in* ("take this to
-#bot-spam"). Absent or empty means that capability is off in the guild; it is opt-in per
-community. Listing a channel is not a permission grant and overrides nothing: forums and
-announcement channels are refused outright, `ALLOWED_CHANNEL_IDS` still binds, a
-channel that turned handoff off (either by `thread_handoff: false` or by blocking
-`move_to_thread`) stays off the list, and the asker and the bot must both be able to post
-in it. Configure the numeric ids directly in the guild fragment.
+A third thread key exists at **guild scope only**: `thread_targets:`, a list of numeric
+channel ids the bot may open a thread in *other than the one it was asked in* ("take this
+to #bot-spam"). Absent or empty means the capability is off in that guild; each community
+opts in. Listing a channel is not a permission grant and overrides nothing: forums and
+announcement channels are refused outright, `ALLOWED_CHANNEL_IDS` still binds, a channel
+that turned handoff off (either with `thread_handoff: false` or by blocking `move_to_thread`)
+stays off the list, and both the asker and the bot must be able to post there. Configure
+the numeric ids directly in the guild fragment.
 
-Two caveats for `blocked_tools`. It is **curation, not a privilege gate**: it
-only ever subtracts visible tools, so `min_tier`/`owner_only`/`guild_ids` stay
-the real security boundary. It applies to every responding turn. Channel and
-deployment-wide denylists parse strictly: a malformed or unreadable cold-load
-policy fails closed, while a failed live reload retains that exact path's
-last-known-good denylist. Deleting the fragment explicitly clears its cached
-policy. `pinned_tools` remains lenient because losing a pin cannot widen access.
+Two caveats about `blocked_tools`. First, it is **curation, not a privilege gate**: it only
+ever subtracts visible tools, so `min_tier`/`owner_only`/`guild_ids` remain the real
+security boundary. It applies to every responding turn. Second, channel and deployment-wide
+denylists parse strictly: a malformed or unreadable policy at cold load fails closed, while
+a failed live reload keeps that exact path's last-known-good denylist. Deleting the fragment
+explicitly clears its cached policy. `pinned_tools` stays lenient because losing a pin can't
+widen access.
 
 ---
 
 ## Model routing and LLM execution
 
 `config/models.yaml` selects provider profiles, model IDs, role assignments, and
-chat overrides. `providers/factory.py` remains the source of truth for supported
-provider `type` values.
+chat overrides. `providers/factory.py` is the source of truth for which
+provider `type` values are supported.
 
-YAML-owned fields include provider `type`, `base_url`, OpenAI service/timeout
-fields, OpenRouter routing/attribution fields, model IDs,
-`context_window`, and role/override assignments. Secrets stay in `.env` and are
-referenced from YAML via `api_key_env`.
+The YAML owns the provider `type`, `base_url`, the OpenAI service and timeout
+fields, the OpenRouter routing and attribution fields, model IDs,
+`context_window`, and the role and override assignments. Secrets stay in `.env`
+and the YAML refers to them by name through `api_key_env`.
 
-`api_key_env` is a closed set: a profile naming anything else is rejected when
-the file is parsed, at startup. The accepted names, each backed by a `Settings`
-field: `MODEL_API_KEY`, `OPENCODE_GO_API_KEY`, `RUNINFRA_GATEWAY_KEY`,
-`ANTHROPIC_API_KEY`, `GROK_API_KEY`, `FIREWORKS_API_KEY`, `KIMI_CODING_API_KEY`,
-`COMPACTION_API_KEY`. To
-add a backend that needs a new key, add the `Settings` field and an entry in
-`config/model_config.py:_API_KEY_SETTINGS_FIELDS` (the allowlist derives from
-that map, so there is one list, not two). A profile whose endpoint holds its own
-credentials (a local proxy, an OAuth transport) sets `keyless: true` instead
-and names no env var.
+`api_key_env` is a closed set, and a profile naming anything else is rejected
+when the file is parsed at startup. The accepted names, each backed by a
+`Settings` field, are `MODEL_API_KEY`, `OPENCODE_GO_API_KEY`,
+`RUNINFRA_GATEWAY_KEY`, `ANTHROPIC_API_KEY`, `GROK_API_KEY`,
+`FIREWORKS_API_KEY`, `KIMI_CODING_API_KEY`, and `COMPACTION_API_KEY`. To add a
+backend that needs a new key, add the `Settings` field and an entry in
+`config/model_config.py:_API_KEY_SETTINGS_FIELDS`; the allowlist derives from
+that map, so there is one list to maintain rather than two. A profile whose
+endpoint holds its own credentials (a local proxy, an OAuth transport) sets
+`keyless: true` instead and names no env var at all.
 
 ### Per-model pricing (cost tracking)
 
 Each `config/models.yaml` model entry may carry an optional `pricing` block with
 USD-per-1M-token rates: `input`, `output`, `cached_read`, and `cache_write`.
-Those rates feed the per-user `usage_ledger` and `/usage` command. Omit
-the block to record tokens without a dollar estimate (`est_cost_usd` is `NULL`).
-If a provider returns nonzero cached-token buckets, include the cached rates too;
-otherwise that turn's cost is left unpriced instead of being treated as free.
+Those rates feed the per-user `usage_ledger` and the `/usage` command. Leave
+the block out and tokens are still recorded, just without a dollar estimate
+(`est_cost_usd` is `NULL`). If a provider returns nonzero cached-token buckets,
+include the cached rates too; otherwise that turn's cost is left unpriced
+rather than being counted as free.
 
-OpenRouter can be used as a reference source for models it lists: its Models API
+OpenRouter is a handy reference for the models it lists: its Models API
 (`https://openrouter.ai/api/v1/models`) returns `pricing.prompt`,
 `pricing.completion`, `pricing.input_cache_read`, and `pricing.input_cache_write`
-as USD-per-token strings. Convert those to this repo's USD-per-1M-token config
-values by multiplying by 1,000,000 and mapping them to `input`, `output`,
-`cached_read`, and `cache_write`. Use those numbers to seed config when the
-OpenRouter listing is effectively the official provider price for the route (for
-example, a model with a single MiniMax provider). If OpenRouter omits a bucket
-such as `input_cache_write`, leave that rate unset instead of inventing one; any
-future nonzero tokens in that bucket will remain explicitly unpriced. The ledger
-still prices turns from explicit `config/models.yaml` entries so rate changes are
-reviewable.
+as USD-per-token strings. To turn those into this repo's USD-per-1M-token config
+values, multiply by 1,000,000 and map them to `input`, `output`, `cached_read`,
+and `cache_write`. Those numbers are a reasonable seed when the OpenRouter
+listing is effectively the official provider price for the route (a model with
+a single MiniMax provider, for example). If OpenRouter omits a bucket such as
+`input_cache_write`, leave that rate unset rather than inventing one; any
+future nonzero tokens in that bucket will then stay explicitly unpriced. The
+ledger always prices turns from the explicit `config/models.yaml` entries, so
+rate changes stay reviewable.
 
-Separately billed tool providers do not use model pricing. Their positive
-per-backend charges go to `paid_usage_ledger`; `/usage` breaks that spend out
-into its own column and includes it in the estimated cost for the window.
+Separately billed tool providers don't use model pricing. Their positive
+per-backend charges go to `paid_usage_ledger`, and `/usage` breaks that spend
+out into its own column while including it in the estimated cost for the window.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -337,10 +351,11 @@ into its own column and includes it in the estimated cost for the window.
 
 ### Durable coding tasks
 
-The background coding service is an optional consumer of the existing
-code-execution sandbox. `roles.coding` and its optional `coding_fallbacks` live
-in `config/models.yaml`; every entry must support `text` and `tool_calling`.
-See [Durable coding agent](coding-agent.md) for lifecycle details.
+The background coding service is an optional consumer of the same
+code-execution sandbox described later on this page. `roles.coding` and its
+optional `coding_fallbacks` live in `config/models.yaml`, and every entry there
+must support `text` and `tool_calling`. See
+[Durable coding agent](coding-agent.md) for the lifecycle details.
 
 | Env var | Type | Default | Description |
 |---|---|---:|---|
@@ -359,8 +374,8 @@ See [Durable coding agent](coding-agent.md) for lifecycle details.
 
 ### Codex operational settings
 
-Codex provider profiles live in `config/models.yaml`; transport operational
-settings stay in `.env`.
+Codex provider profiles live in `config/models.yaml`, while the operational
+settings for the transport itself stay in `.env`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -377,14 +392,14 @@ settings stay in `.env`.
 
 ## Context compaction
 
-Within-turn ReAct-loop compaction keeps long, tool-heavy single turns from overflowing the model
-window by summarizing stale in-loop tool history into one untrusted progress note. It is free on
-normal turns: no summarizer call is made until the projected request reaches the trigger. See
-[`docs/compaction.md`](compaction.md).
+Within-turn ReAct-loop compaction keeps a long, tool-heavy single turn from overflowing the
+model window by summarizing stale in-loop tool history into one untrusted progress note. It
+costs nothing on a normal turn, because no summarizer call is made until the projected
+request reaches the trigger. See [`docs/compaction.md`](compaction.md).
 
 The summarizer model is `roles.compaction` in `config/models.yaml`. If that
 provider profile references `COMPACTION_API_KEY`, set the secret in `.env`;
-otherwise it can share another supported secret env var or use Codex auth.
+otherwise it can share another supported secret env var, or use Codex auth.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -395,37 +410,39 @@ otherwise it can share another supported secret env var or use Codex auth.
 | `COMPACTION_MAX_ITERATION_TOOL_OUTPUT_TOKENS` | int | `48000` | Max cumulative tool-output tokens appended within one ReAct iteration before later results are head/tail-truncated for the model-facing transcript. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional summarizer key for provider profiles that reference `COMPACTION_API_KEY`. |
 
-The non-fatal startup capacity warning uses each reachable chat model entry's
-`context_window` from `config/models.yaml`.
+The startup capacity warning, which is non-fatal, checks these values against
+each reachable chat model entry's `context_window` from `config/models.yaml`.
 
 ---
 
 ## Content moderation (gated)
 
-Programmatic input/output moderation through the OpenAI omni-moderation endpoint
-(`app/moderation.py` builds the service; the backend/policy live in `moderation/`).
-Runs only when both the flag and the key are set. Use a dedicated OpenAI project
-key, not a chat provider key.
+This is programmatic input and output moderation through the OpenAI
+omni-moderation endpoint. `app/moderation.py` builds the service, and the
+backend and policy live in `moderation/`. It runs only when both the flag and
+the key are set. Use a dedicated OpenAI project key for it, not a chat provider
+key.
 
-Failure behavior is asymmetric: on a backend error or timeout, input
-moderation **fails open** (availability wins; the unscreened message still reaches
-the provider and can drive tool side effects), while output moderation **fails
-closed** (the bot never emits an unchecked reply; during an outage every reply is
-replaced with `MODERATION_ERROR_REFUSAL`). Failure-path output blocks are logged
-but do not emit the observability moderation event, which fires only on real
-category matches.
+Failure behavior is deliberately asymmetric. On a backend error or timeout,
+input moderation **fails open**: availability wins, so the unscreened message
+still reaches the provider and can drive tool side effects. Output moderation
+**fails closed**: the bot never emits an unchecked reply, and during an outage
+every reply is replaced with `MODERATION_ERROR_REFUSAL`. Output blocks on that
+failure path are logged but don't emit the observability moderation event,
+which fires only on a real category match.
 
-Non-image files use the shared 256 KiB UTF-8 extraction boundary in
-`moderation/files.py`. Ambient Discord text attachments are read once, screened,
-and the checked bytes are cached for `import_attachment`; binary, non-UTF-8, and
-oversized inputs remain metadata-visible but their content is withheld from tools.
-Queued files from responding turns reject unsupported opaque inputs while
-moderation is enabled. On output, queued UTF-8 files are included in the response's
-OUTPUT check along with reply/embed text and images. If any queued file is opaque,
-oversized, unreadable, or otherwise cannot be represented to the text/image backend,
-the attachment rail is cleared and `MODERATION_ERROR_REFUSAL` is returned: those
-files were never screened, so this is a hold rather than a verdict on them. Empty
-files contain no content to score and are allowed.
+Non-image files go through the shared 256 KiB UTF-8 extraction boundary in
+`moderation/files.py`. Ambient Discord text attachments are read once and
+screened, and the checked bytes are cached for `import_attachment`; binary,
+non-UTF-8, and oversized inputs stay visible as metadata but their content is
+withheld from tools. While moderation is enabled, files queued from responding
+turns reject unsupported opaque inputs. On output, queued UTF-8 files are
+included in the response's OUTPUT check along with the reply and embed text and
+any images. If any queued file is opaque, oversized, unreadable, or otherwise
+can't be represented to the text/image backend, the attachment rail is cleared
+and `MODERATION_ERROR_REFUSAL` is returned. Those files were never screened, so
+this is a hold rather than a verdict on them. Empty files have nothing to score
+and are allowed through.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -445,54 +462,54 @@ files contain no content to score and are allowed.
 
 ## Discord text search (gated)
 
-Registers the hidden/searchable `discord_text_search` tool only when
-`DISCORD_SEARCH_CHANNELS` is set. The tool is available to `member` tier users after
-`browse_tools` activation, but it can only search configured target channels. If a tool call omits
-`channels`, it searches only the current channel when that current channel is configured; otherwise
-it returns an error instead of falling back to all guild channels.
+The hidden, searchable `discord_text_search` tool registers only when
+`DISCORD_SEARCH_CHANNELS` is set. `member` tier users can use it once `browse_tools` has
+activated it, but it can only ever search the configured target channels. If a tool call
+leaves out `channels`, the tool searches just the current channel, provided that channel is
+configured; otherwise it returns an error rather than falling back to every guild channel.
 
-Treat `DISCORD_SEARCH_CHANNELS` as a content-access allow-list, not as a catalog of channels the bot
-knows about. A channel is searchable only when its `id:name` entry appears in this setting and the
-bot has the necessary Discord permissions there. Naming an unconfigured channel in a tool call is
-rejected. Activating or pinning the tool changes only whether the model can call it; neither action
-adds channels to the allow-list.
+Think of `DISCORD_SEARCH_CHANNELS` as a content-access allow-list, not a catalog of channels
+the bot knows about. A channel is searchable only when its `id:name` entry appears in this
+setting and the bot holds the necessary Discord permissions there. Naming an unconfigured
+channel in a tool call is rejected. Activating or pinning the tool changes only whether the
+model may call it; neither action adds a channel to the allow-list.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `DISCORD_SEARCH_CHANNELS` | csv(id:name) | "" | Target channels the tool may search, for example `800000000000000001:general,800000000000000002:help`. Names are kept for readable config/results; Discord receives IDs. Empty disables the tool. |
 | `DISCORD_SEARCH_TIMEOUT_SECONDS` | float | `30.0` | Per-request timeout for Discord's guild message search endpoint. |
 
-The result limit is live tool behavior. Edit `max_results` (default and
+The result limit is live tool behavior: edit `max_results` (default and
 maximum `25`, minimum `1`) in `config/tools/discord_text_search.md`.
 
-Channel instruction fragments are a separate configuration surface. Files under
-`config/channels/`, `config/channel_threads/`, and `config/threads/` tell the model how to behave in
-those scopes; their presence does **not** grant access to historical messages. Do not build
-`DISCORD_SEARCH_CHANNELS` automatically by enumerating those files, because an instruction catalog
-may include private, moderation, or administrative channels whose history should remain outside the
-search surface.
+Channel instruction fragments are a separate configuration surface. The files under
+`config/channels/`, `config/channel_threads/`, and `config/threads/` tell the model how to
+behave in those scopes, but their presence does **not** grant access to historical messages.
+Don't build `DISCORD_SEARCH_CHANNELS` automatically by enumerating those files, because an
+instruction catalog may well include private, moderation, or administrative channels whose
+history should stay outside the search surface.
 
-For example, a deployment can keep instruction fragments for `#general`, `#moderator-notes`, and
-`#bot-config` while setting `DISCORD_SEARCH_CHANNELS` to `#general` only. The model still receives
-the applicable instructions when operating in the other channels, but `discord_text_search` cannot
-query their message history. Add each searchable channel deliberately and review the list as an
-access-control boundary.
+For example, you might keep instruction fragments for `#general`, `#moderator-notes`, and
+`#bot-config` while setting `DISCORD_SEARCH_CHANNELS` to `#general` only. The model still
+receives the applicable instructions when it operates in the other channels, but
+`discord_text_search` can't query their message history. Add each searchable channel
+deliberately and review the list as the access-control boundary it is.
 
 ---
 
 ## Internet search (gated)
 
-The member-tier core `internet_search` tool registers when at least one provider
-key is present. Exa is the higher-ranked provider and does both search and page
-reads; Brave searches through its LLM Context endpoint and cannot read pages at
-all. With both keys set, a search calls both providers and merges the results by
-default.
+The member-tier core `internet_search` tool registers as soon as at least one
+provider key is present. Exa is the higher-ranked provider and does both search
+and page reads; Brave searches through its LLM Context endpoint and can't read
+pages at all. With both keys set, a search calls both providers and merges the
+results by default.
 
-Budget the per-turn allowance in provider calls rather than tool calls. One
+Think of the per-turn allowance in provider calls rather than tool calls. One
 blended search across two providers spends two of the ten, so a turn gets five
-of them before `internet_search` starts refusing; a single-provider or failover
-call spends one per provider it actually reaches. The bounded retry inside one
-provider call does not count again.
+of them before `internet_search` starts refusing, while a single-provider or
+failover call spends one per provider it actually reaches. The bounded retry
+inside one provider call doesn't count a second time.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -512,15 +529,15 @@ provider call does not count again.
 
 `BRAVE_API_KEY` has to belong to a Brave plan that includes the LLM Context
 endpoint. A key without it still authenticates, but every search fails with
-HTTP 400 `OPTION_NOT_IN_PLAN`. That is a deterministic error, so it is not
-retried, and with Exa also configured a blended search just returns Exa's
-results: the deployment looks like it is working while paying for half a
-search chain. Check a new Brave key against one real search before trusting it.
+HTTP 400 `OPTION_NOT_IN_PLAN`. That is a deterministic error, so it isn't
+retried, and if Exa is also configured a blended search simply returns Exa's
+results: the deployment looks like it's working while you pay for half a search
+chain. Check a new Brave key against one real search before you trust it.
 
 Routing is live tool config. Edit `strategy` in
-`config/tools/internet_search.md`: `blend` (default) calls every eligible
-provider concurrently, while `failover` tries Exa then Brave and stops on the
-first successful response. Keys and endpoints remain environment-only.
+`config/tools/internet_search.md`: `blend` (the default) calls every eligible
+provider concurrently, while `failover` tries Exa, then Brave, and stops at the
+first successful response. Keys and endpoints stay environment-only.
 
 See [Internet search](internet-search.md) for request behavior, output shape,
 deduplication, and cost accounting.
@@ -545,7 +562,7 @@ deduplication, and cost accounting.
 
 ## Hindsight (memory backend)
 
-Optional long-term memory backend. See `docs/memory.md`.
+Hindsight is the optional long-term memory backend. See `docs/memory.md`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -556,9 +573,10 @@ Optional long-term memory backend. See `docs/memory.md`.
 
 ## User memory
 
-The per-user memory preference is enabled by default whenever Hindsight is
-available. Users disable it with `/memory opt-out`; `/memory opt-in` re-enables it
-afterward. This is independent of the deployment-wide auto-retain switch below.
+Whenever Hindsight is available, each user's memory preference starts out
+enabled. A user turns it off with `/memory opt-out` and back on with
+`/memory opt-in`. That preference is independent of the deployment-wide
+auto-retain switch below.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -580,10 +598,10 @@ afterward. This is independent of the deployment-wide auto-retain switch below.
 
 ## Privacy consent gate (disabled by default)
 
-First-interaction accept/decline gate (`app/consent.py`). When enabled, a user's first
-interaction posts a one-time notice and holds the message until they accept, so nothing
-reaches the third-party LLM provider or SQLite before consent. See
-[`docs/privacy.md`](privacy.md).
+This is the first-interaction accept/decline gate in `app/consent.py`. When it's
+enabled, a user's first interaction posts a one-time notice and holds the message
+until they accept, so nothing reaches the third-party LLM provider or SQLite
+before consent. See [`docs/privacy.md`](privacy.md).
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -597,25 +615,25 @@ reaches the third-party LLM provider or SQLite before consent. See
 
 ## Thread handoff (gated)
 
-Lets the model move a conversation into a Discord thread it creates (`move_to_thread`)
-and keep responding there without mentions; `leave_thread` sends a final reply, then
-locks and archives the managed thread (`tools/threads.py`). The bot needs the Create
-Public Threads, Send Messages in Threads, and Manage Threads permissions. See
-[`docs/thread-handoff.md`](thread-handoff.md).
+Thread handoff lets the model move a conversation into a Discord thread it creates
+(`move_to_thread`) and keep responding there without being mentioned; `leave_thread`
+sends a final reply, then locks and archives the managed thread (`tools/threads.py`). The
+bot needs the Create Public Threads, Send Messages in Threads, and Manage Threads
+permissions for this. See [`docs/thread-handoff.md`](thread-handoff.md).
 
-A managed thread also carries a **mode**. Auto-responding (the default) answers every
+A managed thread also carries a **mode**. Auto-responding, the default, answers every
 message; paused falls back to the ordinary channel contract (@mention, reply-ping, or
-`hey <bot> …`) while keeping the thread and its transcript. The user who requested
-the handoff, configured STAFF, or someone with Discord's effective Manage Threads
-permission can switch it with `pause_thread_replies` / `resume_thread_replies`; the
-same authorization governs `leave_thread`. The model can open a thread quiet with
-`move_to_thread(auto_reply=false)`. The starting mode for new threads is the
-`thread_auto_respond:` fragment key below.
+`hey <bot> …`) while keeping the thread and its transcript. The user who asked for the
+handoff, configured STAFF, or anyone with Discord's effective Manage Threads permission
+can switch it with `pause_thread_replies` / `resume_thread_replies`, and the same
+authorization governs `leave_thread`. The model can open a thread quiet with
+`move_to_thread(auto_reply=false)`. New threads start in whichever mode the
+`thread_auto_respond:` fragment key below selects.
 
 `move_to_thread` can also open the thread in **another** channel
 (`move_to_thread(name, channel="#bot-spam")`), adding the asker to it and pointing them
-at it from where they asked. That is off unless the guild fragment lists channels in
-`thread_targets:`, and the asker and the bot must both be able to post in the target;
+at it from where they asked. That stays off unless the guild fragment lists channels in
+`thread_targets:`, and both the asker and the bot must be able to post in the target;
 forums are never eligible.
 
 | Env var | Type | Default | Description |
@@ -628,7 +646,7 @@ forums are never eligible.
 ## Instruction fragments (channel and thread scopes)
 
 Three body-only fragment directories fill the `<channel_instructions>` prompt
-slot. All three are keyed by a bare Discord snowflake, so which directory a file
+slot. All three are keyed by a bare Discord snowflake, so the directory a file
 sits in is the only thing that says what its id means:
 
 | File | Keyed by | Applies to |
@@ -645,55 +663,56 @@ Resolution is most-specific-wins, first **non-empty body**
   `channel_threads/<parent_channel_id>.md`, then `channels/<parent_channel_id>.md`.
 
 This is a **replacement, not an addition**: a thread-scoped body suppresses the
-channel's own instructions inside that thread. Clearing the text (or deleting the
-file) restores inheritance, since an empty body falls through to the next scope.
-A thread with no thread-scoped fragment inherits its parent channel's
-instructions. Before these scopes existed it silently got an empty slot.
+channel's own instructions inside that thread. Clearing the text (or deleting
+the file) restores inheritance, since an empty body falls through to the next
+scope. A thread with no thread-scoped fragment inherits its parent channel's
+instructions; before these scopes existed it silently got an empty slot.
 
 The two thread scopes are **body only**. `pinned_tools`, `blocked_tools`,
-`thread_handoff`, `thread_auto_respond`, and the `auto_thread_*` keys are read at
-channel and guild scope only (inside a thread they resolve against the parent
-channel). Read fresh each turn; no restart.
+`thread_handoff`, `thread_auto_respond`, and the `auto_thread_*` keys are read
+at channel and guild scope only, and inside a thread they resolve against the
+parent channel. Everything is read fresh each turn, with no restart needed.
 
 In a forum channel every post is a thread, so `channel_threads/<forum_id>.md` is
 the fragment that actually gets used there.
 
-Scope note: this applies to mention and reply turns, including managed-thread
-follow-ups.
+A note on scope: all of this applies to mention and reply turns, including
+managed-thread follow-ups.
 
-Timing note: the turn that opens a thread runs before the thread exists. The
-opening reply resolves the ordinary channel scope, and thread-scoped
-instructions take effect from the first follow-up onward. Write them for a
-conversation already in progress.
+A note on timing: the turn that opens a thread runs before the thread exists.
+The opening reply resolves the ordinary channel scope, and thread-scoped
+instructions take effect from the first follow-up onward, so write them for a
+conversation that is already in progress.
 
-Review channel instructions with threads in mind: a channel fragment saying
-"keep replies short, this channel is busy" follows the conversation into a
-handoff thread that exists precisely to hold the long reply. If that reads
-wrong, put the threaded behavior in `channel_threads/<channel_id>.md`, which
-replaces the channel body inside threads.
+It's worth reviewing channel instructions with threads in mind. A channel
+fragment that says "keep replies short, this channel is busy" follows the
+conversation into a handoff thread that exists precisely to hold the long
+reply. If that reads wrong, put the threaded behavior in
+`channel_threads/<channel_id>.md`, which replaces the channel body inside
+threads.
 
-Edit these fragment files directly.
+You edit these fragment files directly.
 
 ## Instance layout
 
 Keep the application checkout replaceable. A running instance has three kinds
-of files with different ownership and backup needs:
+of files, each with its own ownership and backup needs:
 
-- `CONFIG_DIR` contains operator-authored prompts, model routing, policy, and
-  scoped configuration. It belongs in a separate, access-controlled
-  configuration repository when change history is useful.
-- `SKILLS_DIR` contains private shared skills. Operators provision it and staff
-  tools may update it at runtime, so back it up even when it is also reviewed
-  and committed separately.
-- Writable paths documented throughout this page, including those under
-  [Storage](#storage), contain runtime state such as the database, attachments,
-  personal skills, workspaces, and logs. Treat them as user data, not
+- `CONFIG_DIR` holds operator-authored prompts, model routing, policy, and
+  scoped configuration. When change history is useful, it belongs in a
+  separate, access-controlled configuration repository.
+- `SKILLS_DIR` holds private shared skills. You provision it, but staff tools
+  may update it at runtime, so back it up even when it is also reviewed and
+  committed separately.
+- The writable paths documented throughout this page, including those under
+  [Storage](#storage), hold runtime state such as the database, attachments,
+  personal skills, workspaces, and logs. Treat them as user data, not as
   source-controlled configuration.
 
 The checkout-relative defaults make local development easy and are excluded
-from version control where they may contain live state. For production, use
-durable paths outside the checkout so application upgrades or container
-replacement cannot remove instance data. One possible layout is:
+from version control wherever they may contain live state. In production, use
+durable paths outside the checkout so that an application upgrade or container
+replacement can't take instance data with it. One possible layout is:
 
 ```text
 /srv/kimi/
@@ -708,12 +727,12 @@ replacement cannot remove instance data. One possible layout is:
     `-- secrets/
 ```
 
-Absolute paths are recommended in production. Relative paths are resolved from
-the process working directory, which may differ between a shell, service
-manager, and container. The directories do not need to share a parent; the
-example only illustrates the separation. See [Instance Data](instance-data.md)
-for the full public/private boundary, recommended path settings, backup notes,
-and provisioning procedure.
+Absolute paths are the safer choice in production, because relative paths are
+resolved from the process working directory, which may differ between a shell,
+a service manager, and a container. The directories don't need to share a
+parent; the example only illustrates the separation. See
+[Instance Data](instance-data.md) for the full public/private boundary,
+recommended path settings, backup notes, and the provisioning procedure.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -739,7 +758,8 @@ and provisioning procedure.
 
 ## Observability
 
-Structured tool-call event stream. See `docs/observability.md`.
+These settings control the structured tool-call event stream. See
+`docs/observability.md`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -763,48 +783,52 @@ SOME_API_KEY: sk-...
 OTHER_TOKEN: token-value
 ```
 
-Instruction-only skills do not receive these values. Executable skills declare names in
-`requires_secrets:` frontmatter; only declared names are copied into the child process's
-environment by the runner.
-Every executable tool in a secret-backed skill is forced to at least the `staff` trust tier
-during runtime registration, including hand-edited metadata that declares a lower tier. If a
-declared secret is missing from the store, the whole skill is skipped with a
-warning and none of its tools register, the same fail-closed rule every other credential-gated
-tool follows, so an absent key hides the tool instead of exposing one that fails mid-call.
-`skills/runner.py` starts from a small environment: `PATH`, declared secrets, `WORKSPACE_DIR`,
-and a private temporary home (`HOME`, `USERPROFILE`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`,
-and `MPLCONFIGDIR` all point there). It ignores reserved env names such as `PATH`,
-`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `PYTHONPATH`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `IFS`,
-and the scratch-home names if a secret tries to declare them.
-Inside the Linux sandbox, the temporary home is `/tmp/home` and `WORKSPACE_DIR` is `/workspace`.
-Environment filtering complements the mount/process boundary, but it is not protection from a
-secret supplied to the script. Captured stdout/stderr and text output files are
-scrubbed for exact declared-secret values and capped; encoding, splitting, or transforming a
-secret bypasses that scrubber, and a network-enabled script can transmit it.
+Instruction-only skills never receive these values. Executable skills declare the names
+they need in `requires_secrets:` frontmatter, and the runner copies only those declared
+names into the child process's environment. Every executable tool in a secret-backed skill
+is forced to at least the `staff` trust tier during runtime registration, even if
+hand-edited metadata declares a lower tier. If a declared secret is missing from the store,
+the whole skill is skipped with a warning and none of its tools register. That is the same
+fail-closed rule every other credential-gated tool follows: an absent key hides the tool
+rather than exposing one that would fail mid-call.
+
+`skills/runner.py` starts from a small environment: `PATH`, the declared secrets,
+`WORKSPACE_DIR`, and a private temporary home (`HOME`, `USERPROFILE`, `XDG_CACHE_HOME`,
+`XDG_CONFIG_HOME`, and `MPLCONFIGDIR` all point there). If a secret tries to declare a
+reserved env name such as `PATH`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `PYTHONPATH`,
+`NODE_OPTIONS`, `BASH_ENV`, `ENV`, `IFS`, or one of the scratch-home names, the runner
+ignores it. Inside the Linux sandbox the temporary home is `/tmp/home` and `WORKSPACE_DIR`
+is `/workspace`. Environment filtering complements the mount and process boundary, but it
+is no protection against a secret you deliberately hand to the script. Captured
+stdout/stderr and text output files are scrubbed for exact declared-secret values and
+capped, but encoding, splitting, or otherwise transforming a secret slips past that
+scrubber, and a network-enabled script can transmit it.
 
 ---
 
 ## Script execution (skills)
 
-Skill-backed scripts run in a mandatory Linux Bubblewrap sandbox (`skills/runner.py`). If any
-configured skill declares executable tools, startup requires an unprivileged service account,
-`bwrap`, `prlimit`, and a successful namespace probe; root is rejected and there is no unsandboxed
-production fallback. A clean/instruction-only skill store can still be used for development on
-other platforms.
+Skill-backed scripts run in a mandatory Linux Bubblewrap sandbox (`skills/runner.py`). If
+any configured skill declares executable tools, startup requires an unprivileged service
+account, `bwrap`, `prlimit`, and a successful namespace probe; root is rejected, and there
+is no unsandboxed production fallback. A clean, instruction-only skill store can still be
+used for development on other platforms.
 
-Each invocation gets separate user, mount, PID, IPC, UTS, cgroup, and default-denied network
-namespaces, drops all capabilities, disables nested user namespaces, mounts the skill and
-interpreter read-only, exposes a private `/proc` and size-capped tmpfs `/tmp`, and mounts only that
-call's output workspace read/write at `/workspace`. The host root, service home, other workspaces,
-deployment secrets/config, `/sys`, and host `/etc` are absent. A per-tool `network: true` declaration
-shares the host network and adds minimal resolver/CA mounts; this allows all public/private/loopback
-destinations available from the service and is not a hostname allowlist.
+Each invocation gets its own user, mount, PID, IPC, UTS, cgroup, and default-denied network
+namespaces. It drops all capabilities, disables nested user namespaces, mounts the skill and
+interpreter read-only, exposes a private `/proc` and a size-capped tmpfs `/tmp`, and mounts
+only that call's output workspace read/write at `/workspace`. The host root, the service
+home, other workspaces, deployment secrets and config, `/sys`, and the host `/etc` are all
+absent. A per-tool `network: true` declaration shares the host network and adds minimal
+resolver and CA mounts; be aware that this allows every public, private, and loopback
+destination reachable from the service, and is not a hostname allowlist.
 
-Bubblewrap's PID namespace reaps descendants, including new-session children. `prlimit` supplies
-inherited per-process virtual-memory, CPU-time, file-size, open-file, process-count, and core-file
-limits. They are not aggregate cgroup accounting; the process-count limit is per real UID. Run the
-bot under a dedicated unprivileged service account (executable-skill startup rejects root) and use
-service-level cgroup and egress controls as a second layer.
+Bubblewrap's PID namespace reaps descendants, including new-session children. `prlimit`
+supplies inherited per-process virtual-memory, CPU-time, file-size, open-file,
+process-count, and core-file limits. These are not aggregate cgroup accounting, and the
+process-count limit is per real UID, which is why executable-skill startup rejects root.
+Run the bot under a dedicated unprivileged service account and use service-level cgroup and
+egress controls as a second layer.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -827,8 +851,8 @@ service-level cgroup and egress controls as a second layer.
 ## Code execution
 
 `run_code` is Linux-only, `MEMBER` tier, and disabled by default. Setting the
-flag is not enough on its own: the sandbox and network profile you selected has
-to pass its startup probe before the tool registers at all. See
+flag isn't enough on its own: the sandbox and network profile you selected have
+to pass their startup probe before the tool registers at all. See
 [Code execution](code-exec.md) for the threat model and the provisioning
 procedure.
 
@@ -871,10 +895,10 @@ state. The generic helper and sudoers templates live under
 
 The optional [persistent browser](browser.md) is Linux-only and pins
 BetterWright 1.10.0 in an external root-owned runtime. Its network mode is
-chosen independently of code execution, so a deployment can run the browser in
-`netns` while leaving `CODE_EXEC_NETWORK_MODE=none`. The `BROWSER_NETNS_*` and
-probe values are private instance state under the same rule as the code-exec
-ones above.
+chosen independently of code execution, so you can run the browser in `netns`
+while leaving `CODE_EXEC_NETWORK_MODE=none`. The `BROWSER_NETNS_*` and probe
+values are private instance state under the same rule as the code-exec ones
+above.
 
 | Setting | Type | Default | Meaning |
 |---|---|---|---|
@@ -909,7 +933,8 @@ ones above.
 
 ## Workspaces (per-user file sandbox)
 
-Per-user workspace dirs with TTL/quota sweeping, plus the file-tool limits (`tools/workspace/`).
+These settings cover the per-user workspace directories, their TTL and quota
+sweeping, and the limits on the file tools in `tools/workspace/`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -940,16 +965,16 @@ Per-user workspace dirs with TTL/quota sweeping, plus the file-tool limits (`too
 | `WORKSPACE_TOOL_VIEW_IMAGE_MAX_PER_TURN` | int | `4` | Max images `view_image` surfaces to the model per reply. |
 | `WORKSPACE_TOOL_MAX_ENTRIES` | int | `20000` | Max files + directories in one workspace. New-entry writes past this are refused; existing files stay editable and deletable. |
 
-`extract_document_text` extracts readable text from workspace documents into a generated
+`extract_document_text` pulls readable text out of workspace documents into a generated
 file (`.txt` for PDFs via PyMuPDF, `.md` for office formats (Word, Excel, PowerPoint,
-OpenDocument, RTF, EPUB, CSV) via firecrawl-anydoc) and returns a `read_file` call hint
-for chunked reading. It uses the existing single-file, per-user quota, and read-output
-caps; PDF output is accumulated incrementally up to the read-output cap and all native
-document parsing is serialized process-wide, including after an awaiting turn is
-cancelled. PyMuPDF still materializes one page before application code can truncate its
-text; until parsing moves into a disposable worker, the repository provides no per-document
-memory boundary. Operators must set a whole-service memory limit in the Linux service or
-container. It does not OCR scanned pages.
+OpenDocument, RTF, EPUB, CSV) via firecrawl-anydoc) and returns a `read_file` call hint so
+the model can read it in chunks. It respects the existing single-file, per-user quota, and
+read-output caps; PDF output accumulates incrementally up to the read-output cap, and all
+native document parsing is serialized process-wide, including after an awaiting turn is
+cancelled. Note that PyMuPDF still materializes one whole page before application code
+gets a chance to truncate its text, so until parsing moves into a disposable worker the
+repository offers no per-document memory boundary. You must set a whole-service memory
+limit in the Linux service or container. The tool doesn't OCR scanned pages.
 
 ---
 
@@ -962,7 +987,7 @@ container. It does not OCR scanned pages.
 - `REACT_TEMPERATURE`: a blank string is coerced to `None` (omit the param) instead of failing.
 - **Model config**: `config/models.yaml` is parsed at startup. Unknown fields,
   unknown provider types, unknown secret env names, and broken model references
-  fail fast.
+  all fail fast.
 - **Codex auth**: validated at startup if any reachable enabled model role uses
   a Codex provider profile.
 
@@ -971,15 +996,17 @@ container. It does not OCR scanned pages.
 ## External env keys outside `Settings`
 
 The only bot-facing env var without a `config.settings.Settings` field is
-`ENV_FILE` (see "Choosing a dotenv file" above): it selects which dotenv file to
-load, so it is read straight from the process environment in
-`config/environment.py`. (The Hindsight Compose stack separately reads
-`FIREWORKS_API_KEY` from its own `.env` into its containers; see
-[Deployment notes](#deployment-notes).)
+`ENV_FILE` (see "Choosing a dotenv file" above). Because it selects which
+dotenv file to load, it has to be read straight from the process environment,
+which happens in `config/environment.py`. (The Hindsight Compose stack
+separately reads `FIREWORKS_API_KEY` from its own `.env` into its containers;
+see [Deployment notes](#deployment-notes).)
 
 ---
 
 ## Primary consumers
+
+If you want to know where a setting is actually read, this is the map:
 
 - `app.runtime.build_app(settings)` constructs providers, memory clients, tool
   registrations, stores, workspaces, attachment handling, startup validation,
@@ -999,13 +1026,14 @@ load, so it is read straight from the process environment in
 - `app/moderation.py` and `moderation/` consume the content moderation settings.
 - `app/consent.py` consumes the privacy consent settings.
 - `memory/`, `tools/user_memory.py`, `tools/community.py`, and
-  `commands/memory_cmd.py` consume Hindsight, user recall, explicit memory-write/source-lookup,
-  community-memory settings. `discord_adapter/lifecycle.py` owns the workspace and
-  auto-retain sweeper loops.
+  `commands/memory_cmd.py` consume the Hindsight, user recall, explicit
+  memory-write/source-lookup, and community-memory settings.
+  `discord_adapter/lifecycle.py` owns the workspace and auto-retain sweeper loops.
 - `agent/attachments.py`, `agent/backfill.py`, `workspace/manager.py`, and `tools/workspace/`
-  consume attachment, channel-backfill, and workspace limits.
+  consume the attachment, channel-backfill, and workspace limits.
 - `skills/loader.py`, `skills/registration.py`, `skills/runner.py`, and `skills/secrets.py`
-  consume `SECRETS_FILE`, script execution limits, and workspace bounds for executable skill tools.
+  consume `SECRETS_FILE`, the script execution limits, and the workspace bounds for
+  executable skill tools.
 - `skills/personal.py` and `tools/personal_skills.py` consume `PERSONAL_SKILLS_DIR` for durable
   per-user instruction-only personal skills.
 - `storage/db.py` uses `DATABASE_PATH`; `observability/events.py` (wired in
@@ -1015,7 +1043,7 @@ load, so it is read straight from the process environment in
 
 ## Deployment notes
 
-- Local `.env` wins over code defaults and is never committed.
+- Your local `.env` wins over the code defaults and is never committed.
 - The checked-in `.env.example` leaves `HINDSIGHT_URL` empty. Set it explicitly
   to the reachable self-hosted endpoint; `deploy/hindsight/` contains the generic
   Docker Compose deployment and bring-up instructions.

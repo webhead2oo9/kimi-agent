@@ -3,14 +3,14 @@
 [ccflare](https://github.com/snipeship/ccflare) is a separately deployed
 multi-provider proxy that holds Claude OAuth accounts and load-balances across
 them. Routing Claude-subscription models through it means those turns are
-covered by the subscription rather than metered API billing.
+covered by the subscription rather than by metered API billing.
 
 This is a [subscription-backed
 route](providers.md#subscription-backed-routes): it points the bot at a personal
 Claude subscription rather than a metered API key, which suits an instance you
-run for yourself or a small trusted server. That page explains what the choice
-implies; this page covers the route itself. For profiles, roles, and failover
-generally, see [providers.md](providers.md).
+run for yourself or a small trusted server. That section explains what the
+choice implies; this page covers the route itself. For profiles, roles, and
+failover in general, see [providers.md](providers.md).
 
 ## Before you start
 
@@ -19,7 +19,7 @@ deployment-owned checkout such as `<path-to-ccflare>`, following its upstream
 instructions.
 
 **ccflare has no authentication and stores tokens in plaintext SQLite.** Keep it
-on a trusted network. Anything that can reach the port can spend the
+on a trusted network, because anything that can reach the port can spend the
 subscription.
 
 ## The profile
@@ -60,7 +60,7 @@ Four details decide whether this works:
 ## Cost and quota
 
 Model entries on this route carry no `pricing`. Usage is covered by the Claude
-subscription, so these turns contribute nothing to `/usage`, the same as Codex
+subscription, so these turns contribute nothing to `/usage`, just like Codex
 models. The quota is shared with any other Claude Code usage on the same
 account, so a busy bot and a busy terminal compete for it.
 
@@ -72,8 +72,8 @@ controls this and defaults to on.
 
 The cached prefix is everything *before* that block: the system prompt, the tool
 schemas, and the whole transcript. Each ReAct iteration therefore reads the
-previous iteration's prefix instead of paying to write it again. Measured on a
-5.3k-token system prompt through ccflare:
+previous iteration's prefix instead of paying to write it again. Here is what
+that looked like measured on a 5.3k-token system prompt through ccflare:
 
 | Iteration | Cache write | Cache read |
 |---|---|---|
@@ -81,13 +81,13 @@ previous iteration's prefix instead of paying to write it again. Measured on a
 | 2 | 102 (the delta) | 5351 |
 | 3 | -- | 5453 |
 
-Two implementation details matter, and both were found the hard way:
+Two implementation details matter here, and we found both the hard way:
 
 - **The breakpoint rides the message list, not `system`.** A breakpoint placed
   inside the `system` array is silently ignored on ccflare's claude-code route.
-  This was verified live: zero cache creation across repeated identical
-  requests. Nothing about the request errors. It never caches, which is
-  the worst kind of failure: invisible and expensive.
+  We verified this live: zero cache creation across repeated identical
+  requests. Nothing about the request errors; it simply never caches, which is
+  the worst kind of failure because it is invisible and expensive.
 - **The marked block and its containing list are copied first.** An assistant
   message's content list is shared with the stored `raw_provider_data`. Writing
   a breakpoint back into it would replay in every later turn and eventually blow
@@ -95,8 +95,8 @@ Two implementation details matter, and both were found the hard way:
 
 Nothing upstream does any of this for you: ccflare passes the claude-code body
 through verbatim and never injects `cache_control` itself. Set
-`prompt_caching: false` on a profile whose gateway rejects the field, or bills
-cache writes at a rate that outweighs the reads.
+`prompt_caching: false` on a profile whose gateway rejects the field, or that
+bills cache writes at a rate that outweighs the reads.
 
 ## Reasoning effort on this route
 
@@ -107,23 +107,23 @@ and resets on the next Discord message.
 
 Anthropic's accepted ladder is narrower than the agent's internal one. An
 escalation that would land outside it is dropped rather than forwarded, because
-forwarding it produces a deterministic 400. A deterministic error never fails
-over, so it would kill the turn.
+forwarding it produces a deterministic 400, and a deterministic error never
+fails over, so it would kill the turn.
 
 ## Extended thinking on this route
 
 ccflare sends the claude-code beta header set, which turns extended thinking on.
-Responses arrive with signed `thinking` blocks ahead of the text. Two
-consequences:
+Responses arrive with signed `thinking` blocks ahead of the text, and that has
+two consequences:
 
 - `_blocks_to_data` preserves `thinking` and `redacted_thinking` blocks in the
   raw assistant history, mirroring the native `anthropic` provider, so a
-  tool-use continuation echoes them back unmodified. They are signed; they must
-  go back exactly as they came.
+  tool-use continuation echoes them back unmodified. They are signed, so they
+  must go back exactly as they came.
 - The cache breakpoint skips a trailing thinking block and lands on the last
   block that is not one, for the same reason.
 
-Thinking tokens are drawn from `max_tokens`. A small budget can therefore return
-a response containing *only* a thinking block and no text at all.
+Thinking tokens are drawn from `max_tokens`, so a small budget can return a
+response containing *only* a thinking block and no text at all.
 `REACT_MAX_TOKENS` (65536) leaves ample room, but it is worth knowing if you are
 hand-testing with a small `max_tokens`.

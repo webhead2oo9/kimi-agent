@@ -1,22 +1,24 @@
 # Architecture
 
-Project-level map: what the system is made of and where each piece lives.
+This is the project-level map: what the system is made of and where each piece
+lives.
 
 ## What this bot is
 
-Two model-driven surfaces over a provider-neutral LLM layer, plus a seam for
-optional application modules:
+At its core, the bot is two model-driven surfaces over a provider-neutral LLM
+layer, plus a seam for optional application modules:
 
 **Mention-triggered conversational agent.** This is the community's chat
-surface. A guild message that mentions the bot (or a handoff thread) enters a
-provider-neutral ReAct loop with transcript-backed context, trust-gated tool
-dispatch, and Hindsight memory. There is no conversational *slash* command;
-staff/mod commands are ordinary app commands.
+surface. A guild message that mentions the bot (or lands in a handoff thread)
+enters a provider-neutral ReAct loop with transcript-backed context, trust-gated
+tool dispatch, and Hindsight memory. There is no conversational *slash*
+command; the staff and moderation commands are ordinary app commands.
 
-**"Teach Kimi" message context menu** (name follows `BOT_NAME`;
-`commands/learn_cmd.py` → `app/learn_turn.py`). A staff-only scoped turn over the
-same ReAct core on an independent registry limited to `LEARN_TOOLS`, answered
-ephemerally and never persisted to a transcript; audited by `app/learn_log.py`.
+**"Teach Kimi" message context menu** (the name follows `BOT_NAME`;
+`commands/learn_cmd.py` → `app/learn_turn.py`). This is a staff-only scoped
+turn over the same ReAct core, running on an independent registry limited to
+`LEARN_TOOLS`. It's answered ephemerally, never persisted to a transcript, and
+audited by `app/learn_log.py`.
 
 ## Where things live (`bot/`)
 
@@ -73,27 +75,33 @@ scripts/                operator/maintenance scripts
 
 ## Structural decisions
 
+A few decisions shape everything above, so they're worth stating explicitly.
+
 - **Composition root for the core.** Runtime, config, providers, storage, and
-  trust wire up in one place (`app/runtime.py:build_app()`); deployment-specific
-  tools arrive through the best-effort plugin seam (`app/plugins.py`). Required
-  commands, listeners, schema, background jobs, and optional LLM tools arrive
-  through the fail-fast application-module seam (`app/modules.py`).
-- **Guild-scoped by construction.** `guild_id` rides every schema and the
-  per-guild seams are real: guild activation is explicit and fail-closed,
-  trust/pins/denylists/prompts layer per guild from `config/servers/<id>.md`,
-  workspaces are keyed per (user, guild), community memory banks are per guild,
-  and tools/skills can be guild-scoped. One deployment can serve several
-  communities without sharing their data surfaces.
+  trust all wire up in one place (`app/runtime.py:build_app()`).
+  Deployment-specific tools arrive through the best-effort plugin seam
+  (`app/plugins.py`), while required commands, listeners, schema, background
+  jobs, and optional LLM tools arrive through the fail-fast application-module
+  seam (`app/modules.py`).
+- **Guild-scoped by construction.** `guild_id` rides every schema, and the
+  per-guild seams are real: guild activation is explicit and fail-closed;
+  trust, pins, denylists, and prompts layer per guild from
+  `config/servers/<id>.md`; workspaces are keyed per (user, guild); community
+  memory banks are per guild; and tools and skills can be guild-scoped. The
+  result is that one deployment can serve several communities without sharing
+  their data surfaces.
 - **File-based operator config.** `config/models.yaml` and the `settings.md`
-  overlay are validated once at startup. Prompt/policy frontmatter fragments
-  are read fresh for each turn, so those targeted edits do not require an admin
-  console or restart.
+  overlay are validated once at startup. Prompt and policy frontmatter
+  fragments are read fresh for each turn, so those targeted edits need neither
+  an admin console nor a restart.
 - **Fail-closed boundaries.** Tool dispatch gates on trust tier and denylists;
-  output moderation fail-closes before Discord delivery; configured modules
-  fail startup if absent or incompatible; the Hindsight
-  gate degrades the bot cleanly instead of erroring.
+  output moderation fails closed before Discord delivery; configured modules
+  fail startup if they're absent or incompatible. The exception is the
+  Hindsight gate, which degrades the bot cleanly instead of erroring.
 
 ## Deeper reading
+
+Once you have the map, these are the places to go next:
 
 - `../bot/README.md`: bot-level feature/architecture summary.
 - `configuration.md`: complete configuration reference.

@@ -1,15 +1,19 @@
 # Tool catalog
 
-Every built-in tool Kimi can expose to the language model: what is available,
-who can use it, and which runtime gates control registration. Tool schemas and
-enforcement live in `tools/`.
+This page lists every built-in tool Kimi can expose to the language model,
+along with who can use each one and which runtime gates decide whether it gets
+registered at all. The schemas and the enforcement behind them live in
+`tools/`.
 
 Deployment plugins and operator-authored script-backed skill tools are dynamic
-and are covered under [Extensible tools](#extensible-tools).
+rather than built in, so they get their own treatment under
+[Extensible tools](#extensible-tools).
 
 ## Discord application commands
 
-These are direct Discord UI actions, not tools the model selects:
+Before the tools themselves, it helps to separate out the slash commands. These
+are direct Discord UI actions that a person invokes; the model never selects
+them:
 
 | Command | Access | Purpose |
 |---|---|---|
@@ -24,25 +28,29 @@ These are direct Discord UI actions, not tools the model selects:
 
 ## Visibility and access
 
-- **Core** tools are placed in the model's tool schema at the start of an
+The tables below use a few terms consistently, so here is what they mean:
+
+- **Core** tools are placed in the model's tool schema at the start of every
   eligible turn.
 - **Searchable** tools appear only by name and summary in `browse_tools`. The
-  model loads the relevant names when a request needs them; activation persists
-  for that rooted conversation.
+  model loads the relevant names when a request calls for them, and that
+  activation persists for the rest of the rooted conversation.
 - **Contextual core** tools are core registrations that a per-turn policy masks
-  when they cannot act, such as thread lifecycle tools outside a managed thread.
-- **Tier** is the minimum resolved trust tier: `MEMBER < REGULAR < STAFF`.
-  Dispatch rechecks the tier even if stale conversation state contains a tool
-  name.
-- Every tool can also be hidden by the deployment, guild, or channel
-  `blocked_tools` policy. Searchable tools may be pre-activated with
-  `pinned_tools`; neither mechanism bypasses trust or dispatch checks. See
+  whenever they could not act anyway, such as the thread lifecycle tools when
+  the conversation is not inside a managed thread.
+- **Tier** is the minimum resolved trust tier, where `MEMBER < REGULAR < STAFF`.
+  Dispatch rechecks the tier on every call, so a tool name lingering in stale
+  conversation state does not grant access.
+- Any tool can additionally be hidden by the deployment, guild, or channel
+  `blocked_tools` policy, and searchable tools can be pre-activated with
+  `pinned_tools`. Neither mechanism bypasses the trust or dispatch checks. See
   [configuration](configuration.md).
 
-An unavailable or unauthorized tool is omitted from the model-facing surface
-and masked as `Unknown tool` at dispatch. The registry in
-[`bot/tools/registry.py`](../bot/tools/registry.py) is the authoritative boundary; prompt
-text is not an access control.
+When a tool is unavailable or the caller is not authorized, it is left out of
+the model-facing surface and masked as `Unknown tool` at dispatch, so its
+existence never leaks. The registry in
+[`bot/tools/registry.py`](../bot/tools/registry.py) is the authoritative
+boundary; prompt text is never an access control.
 
 ## Discovery and task flow
 
@@ -61,10 +69,10 @@ text is not an access control.
 | `internet_search` | Core | Member | Search the live web, or read pages the model already has URLs for. Registered when `EXA_API_KEY` or `BRAVE_API_KEY` is set; a search blends the configured providers by default. |
 | `block_user` | Core | Member | Stop the current speaker from using the bot. It cannot target another user, and staff cannot be self-blocked through this tool. |
 
-`get_channel_context` reads the live Discord window without adding those
-messages to the rooted transcript. `discord_text_search` is an optional,
-allowlisted search surface; it never silently broadens to the whole guild. See
-[configuration](configuration.md#discord-text-search-gated).
+`get_channel_context` reads the live Discord window without adding any of
+those messages to the rooted transcript. `discord_text_search` is an optional,
+allowlisted search surface, and it never quietly broadens to the whole guild.
+See [configuration](configuration.md#discord-text-search-gated).
 
 `internet_search` returns compact, untrusted results and never tells the model
 which provider answered. A search that found nothing says so in as many words,
@@ -73,9 +81,9 @@ so the model can tell an empty web from a broken provider. See
 
 ## Workspace and files
 
-All workspace tools are member-tier and operate only inside the current user's
-per-guild sandbox. Paths, quotas, symlinks, archive expansion, downloads, output
-attachments, and cleanup share the containment rules documented in
+All of the workspace tools are member-tier and operate only inside the current
+user's per-guild sandbox. Paths, quotas, symlinks, archive expansion, downloads,
+output attachments, and cleanup all follow the containment rules documented in
 [Workspace Tools](workspace.md).
 
 | Tool | Visibility | Purpose |
@@ -97,10 +105,11 @@ attachments, and cleanup share the containment rules documented in
 | `extract_archive` | Searchable | Safely unpack a ZIP, TAR.GZ, or TGZ already in the workspace. |
 | `extract_document_text` | Searchable | Convert bounded PDF, Office, OpenDocument, RTF, EPUB, or CSV content into readable workspace text. |
 
-`view_image` remains registered on text-only models but refuses the call cleanly
-unless the active provider supports image input. Workspace output is not sent
-merely because a file exists: tools that auto-queue output and explicit
-`queue_file` calls share the same bounded attachment rail.
+`view_image` stays registered on text-only models, but it refuses the call
+cleanly unless the active provider supports image input. Note that a file
+existing in the workspace is not enough to get it sent: tools that auto-queue
+their output and explicit `queue_file` calls share the same bounded attachment
+rail.
 
 ## Code execution
 
@@ -108,12 +117,13 @@ merely because a file exists: tools that auto-queue output and explicit
 |---|---|---|---|
 | `run_code` | Core | Member | Run inline Python/shell code or a workspace file inside the Linux systemd/Bubblewrap/seccomp sandbox. Registered only when `CODE_EXEC_ENABLED` is true and the selected `none`, `host`, or `netns` profile passes its startup probe. |
 
-The network mode is deployment configuration; no call can change it. A networked
-mode can also install validated `pip_install` requirements into a workspace
-environment that survives between runs. `host` shares every route the bot host
-can reach, while `netns` runs inside an operator-provisioned namespace and proves
-at startup that a known-open private target is unreachable from it. Read
-[Code execution](code-exec.md) before enabling any of this.
+The network mode is deployment configuration, and no individual call can change
+it. A networked mode can also install validated `pip_install` requirements into
+a workspace environment that survives between runs. `host` shares every route
+the bot host can reach, while `netns` runs inside an operator-provisioned
+namespace and proves at startup that a known-open private target is
+unreachable from it. Read [Code execution](code-exec.md) before you enable any
+of this.
 
 ## Durable coding tasks
 
@@ -128,9 +138,9 @@ code-execution sandbox are both enabled and available:
 | `coding_task_cancel` | Cancel a queued or running task after stopping its managed jobs. |
 | `coding_task_retry_delivery` | Retry an exhausted final-report delivery after its Discord target is restored. |
 
-The worker itself sees only the workspace subset plus `coding_plan`,
-`coding_progress`, and managed job start/status/cancel controls. See
-[Durable coding agent](coding-agent.md).
+The worker itself sees a narrower surface: the workspace subset plus
+`coding_plan`, `coding_progress`, and the managed job start/status/cancel
+controls. See [Durable coding agent](coding-agent.md).
 
 ## Persistent browser
 
@@ -138,19 +148,19 @@ The worker itself sees only the workspace subset plus `coding_plan`,
 |---|---|---|---|
 | `browser` | Core | Member | Run one bounded BetterWright/Playwright step in the current user's persistent profile. Registered only when `BROWSER_ENABLED` is true and the pinned runtime and the selected `host` or `netns` sandbox both pass their startup probe. |
 
-The network mode is fixed by the deployment, never by the model. Profiles,
-screenshots, lifecycle, VPN lease sharing, and the vault, download, and
-live-view surfaces that are deliberately switched off are all covered in
-[Persistent browser](browser.md).
+As with code execution, the network mode is fixed by the deployment and never
+by the model. Profiles, screenshots, lifecycle, VPN lease sharing, and the
+vault, download, and live-view surfaces that are deliberately switched off are
+all covered in [Persistent browser](browser.md).
 
 ## Memory and community knowledge
 
-These tools register only after the optional Hindsight backend is ready. User
-tools always derive the subject from the current Discord user; they do not
-accept another user's ID. `/memory opt-out` disables the current user's memory
-reads and writes. Community tools resolve a separate bank for the current guild.
-See [Memory](memory.md) for bank scoping, source provenance, retention, and
-deletion behavior.
+These tools register only once the optional Hindsight backend is ready. The
+user-facing tools always derive their subject from the current Discord user and
+do not accept another user's ID. `/memory opt-out` disables the current user's
+memory reads and writes. The community tools resolve a separate bank for the
+current guild. See [Memory](memory.md) for bank scoping, source provenance,
+retention, and deletion behavior.
 
 | Tool | Visibility | Tier | Purpose |
 |------|------------|------|---------|
@@ -162,24 +172,27 @@ deletion behavior.
 | `reflect_community` | Core | Member | Synthesize an answer across public knowledge in the current guild. |
 | `teach` | Core | Staff | Store public knowledge in the current guild's community bank. |
 
-Automatic responding-turn recall and optional background auto-retention are
-memory features, but they are not model-callable tools and therefore do not
-appear in the table.
+Automatic recall on the responding turn and optional background auto-retention
+are memory features too, but they are not model-callable tools, which is why
+they do not appear in the table.
 
 ## Shared and personal skills
 
-Shared skills combine read-only instructions shipped in `skills/builtin/` with
-deployment-owned instructions in the private `SKILLS_DIR`. Built-ins are global,
-their names are reserved, and model-facing listings mark them read-only.
-Discord-side staff tools manage only private instruction documents; executable
-scripts and tool declarations remain private-store, operator-authored content.
-Skills created through Discord are owned by the current guild. Staff can edit or
-delete only skills owned exclusively by that guild; global and multi-guild
-skills remain operator-managed and are listed read-only.
+Shared skills combine the read-only instructions shipped in `skills/builtin/`
+with deployment-owned instructions in the private `SKILLS_DIR`. Built-ins are
+global, their names are reserved, and model-facing listings mark them
+read-only. The Discord-side staff tools manage only private instruction
+documents; executable scripts and tool declarations remain private-store,
+operator-authored content. A skill created through Discord is owned by the
+current guild, and staff can edit or delete only skills owned exclusively by
+that guild; global and multi-guild skills stay operator-managed and are listed
+read-only.
+
 The shipped instruction set covers bot identity, browser operation, workspace
 and coding-task routing, embeds, and managed threads. Its `{{bot_name}}` token
-is rendered from operator configuration; no other built-in placeholders are
+is rendered from operator configuration, and no other built-in placeholders are
 accepted.
+
 Personal skills are instruction-only documents owned by one Discord user. See
 the [shared skill stores guide](../bot/skills/README.md) and
 [Personal Skills](personal-skills.md).
@@ -207,15 +220,17 @@ the [shared skill stores guide](../bot/skills/README.md) and
 | `pause_thread_replies` | Contextual core | Member | Keep the managed thread open but return it to mention/reply/name invocation. |
 | `resume_thread_replies` | Contextual core | Member | Restore automatic replies for the current paused managed thread. |
 
-Thread lifecycle changes require the thread initiator, staff tier, or Discord's
-Manage Threads permission. The per-turn surface exposes only actions that match
-the current thread state. See [Thread Handoff](thread-handoff.md).
+Changing a thread's lifecycle requires being the thread initiator, holding
+staff tier, or having Discord's Manage Threads permission. The per-turn surface
+exposes only the actions that make sense for the thread's current state. See
+[Thread Handoff](thread-handoff.md).
 
 ## User persona overrides
 
 These tools are all searchable and register only when `config/models.yaml`
-assigns a `persona` role. They operate only on the current user's stored persona
-and require `REGULAR` tier or higher. See [User Persona Overrides](persona.md).
+assigns a `persona` role. They operate solely on the current user's stored
+persona and require `REGULAR` tier or higher. See
+[User Persona Overrides](persona.md).
 
 | Tool | Purpose |
 |------|---------|
@@ -225,28 +240,31 @@ and require `REGULAR` tier or higher. See [User Persona Overrides](persona.md).
 
 ## Extensible tools
 
-The built-in catalog is not the deployment's ceiling:
+The built-in catalog is not the ceiling for a deployment. Two more surfaces
+can add tools:
 
-- **Script-backed skill tools** come from operator-authored `tools:` declarations
-  and scripts in the private `SKILLS_DIR`. A tool declaration carries trust
-  (`min_tier`), searchability (`availability`), guild scope (`guild_ids`), a
-  timeout, arguments (`parameters`), and an explicit `network: true` opt-in;
-  declared secrets (`requires_secrets:`) are skill-level, and captured output
-  and output files are bounded by deployment-wide caps. They run in the mandatory Linux Bubblewrap
-  boundary with a read-only skill/runtime, private process/filesystem state,
-  default-denied network, resource limits, and only the per-call workspace
-  writable. Network opt-in shares unrestricted host egress, and declared secrets
-  remain visible to the script; see the
+- **Script-backed skill tools** come from operator-authored `tools:`
+  declarations and scripts in the private `SKILLS_DIR`. A tool declaration
+  carries trust (`min_tier`), searchability (`availability`), guild scope
+  (`guild_ids`), a timeout, arguments (`parameters`), and an explicit
+  `network: true` opt-in; declared secrets (`requires_secrets:`) are
+  skill-level, and captured output and output files are bounded by
+  deployment-wide caps. These scripts run inside the mandatory Linux Bubblewrap
+  boundary with a read-only skill/runtime, private process and filesystem
+  state, a default-denied network, resource limits, and only the per-call
+  workspace writable. Be aware that the network opt-in shares unrestricted host
+  egress, and declared secrets remain visible to the script; see the
   [private shared store guide](../bot/skills/README.md).
-- **Plugin tools** come from modules explicitly allowlisted in `PLUGIN_MODULES`.
-  Built-in tools register before plugins and a duplicate name fails the plugin,
-  except the skill-management and Hindsight memory tools, which register later.
-  A plugin must not claim those names. See [Plugins](plugins.md).
+- **Plugin tools** come from modules explicitly allowlisted in
+  `PLUGIN_MODULES`. Built-in tools register before plugins, so a duplicate name
+  fails the plugin. The exceptions are the skill-management and Hindsight
+  memory tools, which register later; a plugin must not claim those names
+  either. See [Plugins](plugins.md).
 
-Both surfaces enter the same `ToolRegistry` and receive the same tier, guild,
-policy, activation, timeout, and dispatch enforcement as built-ins. The exact
-dynamic catalog is deployment state and is visible at runtime through
-`browse_tools` and the startup capability logs.
+Both surfaces enter the same `ToolRegistry` and get the same tier, guild,
+policy, activation, timeout, and dispatch enforcement as the built-ins. The
+exact dynamic catalog is deployment state, and you can see it at runtime
+through `browse_tools` and the startup capability logs.
 
 ## Operator reference
 

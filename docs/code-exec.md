@@ -22,8 +22,9 @@ to application cancellation and timeout handling.
 
 ## Choose a network mode
 
-`CODE_EXEC_NETWORK_MODE` is a deployment-wide choice, not an argument the model
-passes in. No run can widen, narrow, or switch the boundary the operator picked.
+`CODE_EXEC_NETWORK_MODE` is a choice you make for the whole deployment, not an
+argument the model passes in. No run can widen, narrow, or switch the boundary
+you picked.
 
 | Mode | Internet | Private-network boundary | Privileged helper |
 |---|---|---|---|
@@ -63,12 +64,12 @@ of it.
 
 ### `netns`
 
-Use `netns` when the population is untrusted and internet access must not travel
+Use `netns` when your users are untrusted and internet access must not travel
 over the bot host's routes. You provision a persistent network namespace holding
 a VPN or another constrained uplink; Kimi does not care which provider it is.
 
-Registration succeeds only if one probe, run through the real privileged launch
-chain rather than a simulation of it, proves all of the following:
+Registration succeeds only if a single probe, run through the real privileged
+launch chain rather than a simulation of it, proves all of the following:
 
 1. seccomp is installed and a denied syscall returns `EPERM`;
 2. a route exists;
@@ -84,7 +85,7 @@ fallback route through the host.
 
 ## Sandbox boundary
 
-Every mode stands on the same layers:
+Whichever network mode you choose, every run stands on the same layers:
 
 - a transient `systemd-run --user` cgroup capping tasks, memory, swap, and CPU
   across the whole process tree rather than just the first process;
@@ -190,7 +191,7 @@ package is just another `pip install` into the same venv: the bind is by path, s
 the next run sees it without a restart. Only changing the path itself needs one,
 because the sandbox profile is built when the tool registers.
 
-Three things decide whether the venv works at all:
+Whether that venv works at all comes down to three things:
 
 - **Build it on an interpreter the sandbox mounts.** Apart from the paths you add
   through `CODE_EXEC_EXTRA_RO_BINDS`, `/usr` is the only host filesystem a run
@@ -243,10 +244,10 @@ independent of the repository, database, logs, and host root filesystem. Until
 that host-level boundary exists, treat code execution as unsafe to expose to a
 hostile public population.
 
-Changed files are reported after the run, up to fifty of them by name. If more
-than six files changed, Kimi reads that as a build rather than artifact
-production and attaches nothing; the model has to pick the deliverable with
-`queue_file`. Below that threshold, files are queued automatically up to the same
+After the run, changed files are reported by name, up to fifty of them. If more
+than six files changed, Kimi takes that as a sign of a build rather than
+artifact production and attaches nothing; the model has to pick the deliverable
+with `queue_file`. Below that threshold, files are queued automatically up to the same
 `WORKSPACE_TOOL_MAX_ATTACHMENTS` limit every other tool shares, and anything too
 large or of an unsupported type comes back marked as skipped rather than quietly
 disappearing.
@@ -276,10 +277,10 @@ Every mode needs Linux, Bubblewrap, util-linux `prlimit`, libseccomp,
 a Bubblewrap that can disable nested user namespaces.
 
 Kimi itself has to run as an unprivileged service account. UID 0 is rejected
-by the startup probe and again at execution time. Containers get no exception;
-container root is still the wrong account for this boundary. That
-account also needs lingering enabled, or its systemd user manager and bus are not
-running when a run needs them. Set both up and check them before starting
+by the startup probe and again at execution time, and containers get no
+exception: container root is still the wrong account for this boundary. That
+account also needs lingering enabled, because otherwise its systemd user manager
+and bus are not running when a run needs them. Set both up and check them before starting
 Kimi, replacing `kimi` with the real account:
 
 ```bash
@@ -317,8 +318,8 @@ cross that boundary before the tightly scoped helper drops privileges again.
 
 ## Configuration and startup behavior
 
-Every setting and its default lives in [`.env.example`](../bot/.env.example). The
-ones that decide the shape of a deployment:
+Every setting and its default lives in [`.env.example`](../bot/.env.example).
+These are the ones that decide the shape of a deployment:
 
 - `CODE_EXEC_ENABLED` and `CODE_EXEC_NETWORK_MODE`;
 - `CODE_EXEC_PYTHON_BIN`, `CODE_EXEC_VENV_DIR`, and
@@ -358,7 +359,8 @@ Before exposing the tool to users:
    allocation and confirm the operating system refuses further allocation without
    touching the database, checkout, logs, or host root filesystem.
 
-Registration fails closed, and the cause is almost always one of these:
+If registration fails, remember that it fails closed by design, and the cause is
+almost always one of these:
 
 - Kimi is running as UID 0;
 - a required binary is missing;
@@ -372,4 +374,5 @@ Registration fails closed, and the cause is almost always one of these:
 - DNS or TLS egress is broken; or
 - a private target has quietly become reachable.
 
-Repair the boundary that failed and restart. Do not route around the probe.
+Repair the boundary that failed and restart. Don't route around the probe; it
+is telling you the sandbox you configured isn't the one you'd be exposing.

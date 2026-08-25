@@ -12,8 +12,8 @@ directory named `user-` plus a truncated SHA-256 digest of their Discord id, so
 no plaintext id sits on disk. A rooted conversation maps to a stable
 BetterWright session, so cookies and tabs carry across tool calls within that
 conversation while profiles never cross users. Only one profile worker runs at
-a time; switching users closes the previous worker before opening the next
-profile.
+a time, so when a different user takes a turn, the previous worker is closed
+before the next profile opens.
 
 Per call, the model sends one bounded async Playwright snippet to
 `web_browser/bridge.mjs`, which returns BetterWright's structured JSON.
@@ -38,16 +38,17 @@ exactly one writable directory: its own profile, mounted at `/work`. A transient
 systemd scope or service enforces aggregate memory, process, and CPU limits,
 while `prlimit` bounds open files and output file size. The runtime at
 `/opt/kimi/betterwright` must be root-owned and neither group- nor
-world-writable.
-It must still be readable and traversable by the unprivileged bot account; the
-installer normalizes archive-created owner-only directories accordingly.
+world-writable, but it still has to be readable and traversable by the
+unprivileged bot account; the installer normalizes any owner-only directories
+the archive created so that this holds.
 
 System fonts are mounted read-only because Chromium needs ordinary font
 discovery to lay out and render pages at all.
 
 ## Network modes
 
-`BROWSER_NETWORK_MODE` is deployment-wide and cannot be selected by the model:
+`BROWSER_NETWORK_MODE` is a choice you make for the whole deployment; the model
+can't select it:
 
 - `host` inherits the bot host's network routes. BetterWright still blocks
   private and loopback targets, but treat this mode as browsing with the host's
@@ -82,8 +83,8 @@ sudo sh ./deploy/betterwright/install.sh
 
 The installer pins `betterwright@1.10.0`, runs `betterwright setup`, verifies
 the Linux BetterChromium binary and the import entry point, and locks the
-external runtime to root ownership. Nothing registers until the tool is
-switched on, so a host with the runtime installed still needs either:
+external runtime to root ownership. Installing the runtime doesn't register
+anything on its own, so you still need to switch the tool on with either:
 
 ```dotenv
 BROWSER_ENABLED=true
@@ -128,8 +129,9 @@ policy as workspaces. See [Privacy](privacy.md).
 
 ## Upgrade procedure
 
-Do not change the installer to `latest`. Review a candidate release first: its
-Node floor, setup command, browser path, network defaults, changelog, tests, and
-npm audit. Update the pinned installer version and this page together, deploy to
-a test instance, confirm the `host` and `netns` startup probes that apply, and
-only then replace the production runtime.
+Don't change the installer to `latest`. Instead, review a candidate release
+first: its Node floor, setup command, browser path, network defaults,
+changelog, tests, and npm audit. Then update the pinned installer version and
+this page together, deploy to a test instance, confirm whichever of the `host`
+and `netns` startup probes apply to you, and only then replace the production
+runtime.

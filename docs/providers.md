@@ -8,8 +8,8 @@ below that line.
 
 This page covers the parts that are the same everywhere: how a turn picks a
 backend, what you can declare in `config/models.yaml`, how failover and image
-routing behave, and what happens when the file is wrong. Backend-specific setup
-lives on its own page:
+routing behave, and what happens when the file is wrong. Each backend that
+needs real setup has its own page:
 
 - [xAI Grok](providers-grok.md)
 - [Claude subscription via ccflare](providers-ccflare.md)
@@ -18,8 +18,8 @@ lives on its own page:
 
 ## How a request finds its backend
 
-There are three layers, and it is worth holding them apart because they fail in
-different ways.
+There are three layers, and it's worth holding them apart in your head because
+they fail in different ways.
 
 **Roles** are the jobs the bot needs done: chatting, compacting a long
 conversation, compiling a persona. Code never names a model directly. It asks
@@ -46,14 +46,15 @@ two different gateways. It also means a model's identity and a gateway's
 identity fail separately: a wrong model id is a 404 from the right endpoint, a
 wrong profile is the right model at an endpoint that will not serve it.
 
-`providers/factory.py` is the runtime source of truth for which transports
-exist. `config/models.yaml` is the source of truth for which ones this
-deployment uses.
+If you want to know which transports exist, `providers/factory.py` is the
+runtime source of truth. If you want to know which ones this deployment
+actually uses, that is `config/models.yaml`.
 
 ## Provider types
 
-Each profile declares one `type`. These are the supported values, listed in
-`SUPPORTED_PROVIDER_NAMES`:
+Each profile declares one `type`. The supported values are the ones listed in
+`SUPPORTED_PROVIDER_NAMES`; if a type isn't wired into the factory, it isn't
+supported:
 
 | `type` | Transport | Supports |
 |---|---|---|
@@ -77,8 +78,8 @@ route](providers-ccflare.md). Both point the bot at a personal subscription
 rather than a metered API key.
 
 They exist for the case where you already hold the subscription and are running
-Kimi for yourself or a small trusted server. Three things follow from that,
-and they are worth knowing before you lean on either one:
+Kimi for yourself or a small trusted server. Three things follow from that, and
+you should know them before you lean on either one:
 
 - **The quota is your personal quota**, shared with your own use of the same
   account. A busy bot and a busy terminal compete for it.
@@ -113,33 +114,34 @@ chunks, reasoning characters, content characters, and tool-argument characters.
 That signal is then wired to a timeout. A stream that goes silent for
 `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` (default 90), including one that never
 answers the initial request at all, is aborted with a `TimeoutError`. That
-counts as a transient availability error, so it triggers failover. The rule is about
-silence, not duration: a stream that keeps producing chunks
-is never aborted by this watchdog no matter how long it runs, and is bounded
-only by the whole-turn `REACT_TURN_TIMEOUT_SECONDS` ceiling. A slow answer is
-not a broken one.
+counts as a transient availability error, so it triggers failover. The rule is
+about silence, not duration: a stream that keeps producing chunks is never
+aborted by this watchdog no matter how long it runs, and is bounded only by the
+whole-turn `REACT_TURN_TIMEOUT_SECONDS` ceiling. A slow answer is not a broken
+one.
 
-Two related behaviors:
+Two related behaviors are worth knowing about:
 
 - SDK-internal retries are off (`max_retries=0`). Retrying is the failover
   chain's job, and two retry layers stacked on each other multiply the worst
   case instead of improving it.
 - A backend that rejects the streaming request outright with a 400, before any
   chunk arrives, is retried once without streaming. That downgrade lasts only
-  for that request. Provider instances are shared across turns, and a rejection
-  may be specific to one payload or one route, so making it sticky would
-  quietly demote every later call on that provider; the next call streams
-  again.
+  for that one request. Provider instances are shared across turns, and a
+  rejection may be specific to one payload or one route, so making the
+  downgrade sticky would quietly demote every later call on that provider. The
+  next call streams again.
 
 ## The model catalog
 
-Routing lives in `config/models.yaml`, strictly `<CONFIG_DIR>/models.yaml`.
+Routing lives in `config/models.yaml`, which strictly means
+`<CONFIG_DIR>/models.yaml`.
 
 **That file is untracked instance state.** It describes which backends,
 subscriptions, and proxies one particular deployment has, so it is gitignored
 alongside `settings.md` and `.env`. The tracked artifact is
-`config/models.example.yaml`, which uses non-routable placeholders. Copy it to
-start a new instance:
+`config/models.example.yaml`, which uses non-routable placeholders. When you
+start a new instance, copy it:
 
 ```bash
 cp config/models.example.yaml config/models.yaml
@@ -151,10 +153,11 @@ because booting onto backends the operator did not choose is worse than not
 booting at all. The bot would come up looking healthy while talking to the
 wrong vendor on someone else's key.
 
-A pleasant side effect of the file being untracked: swapping a model locally to
-try another LLM never shows up as a dirty working tree waiting to be committed.
+A pleasant side effect of the file being untracked is that swapping a model
+locally to try another LLM never shows up as a dirty working tree waiting to be
+committed.
 
-### The shape
+### The shape of the file
 
 ```yaml
 providers:
@@ -220,12 +223,12 @@ overrides:
 ```
 
 Secrets never appear in this file. Profiles refer to them by environment
-variable name, and the values stay in `.env`.
+variable name, and the values themselves stay in `.env`.
 
 ### Provider profile fields
 
-Unknown fields are rejected outright, so a stale knob from the `.env` era
-cannot sit in the file looking effective while doing nothing.
+Unknown fields are rejected outright, so a stale knob left over from the `.env`
+era cannot sit in the file looking effective while doing nothing.
 
 | Field | Default | Applies to | Meaning |
 |---|---|---|---|
@@ -244,9 +247,10 @@ cannot sit in the file looking effective while doing nothing.
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
 | `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. Accepted but ignored on `openai_compat` unless the target is DeepSeek. |
 
-`max_output_tokens` is on the profile rather than the model entry on purpose:
-it expresses a limit the *gateway* imposes, so it applies to everything routed
-through that gateway without lowering the global limit for anyone else.
+`max_output_tokens` lives on the profile rather than the model entry on
+purpose. It expresses a limit the *gateway* imposes, so it applies to
+everything routed through that gateway without lowering the global limit for
+anyone else.
 
 `service_tier` is an OpenAI-only kwarg. It is sent only when the profile's
 `base_url` is `https://api.openai.com` or is unset (meaning the SDK default
@@ -264,8 +268,8 @@ discovering as a 401 mid-conversation.
 
 #### Supported `api_key_env` values
 
-The set is closed (`SUPPORTED_API_KEY_ENVS`), so a typo is a startup error
-rather than an empty key at request time:
+The set is closed (`SUPPORTED_API_KEY_ENVS`), so a typo shows up as a startup
+error rather than as an empty key at request time:
 
 `MODEL_API_KEY`, `ANTHROPIC_API_KEY`, `OPENCODE_GO_API_KEY`,
 `RUNINFRA_GATEWAY_KEY`, `COMPACTION_API_KEY`, `GROK_API_KEY`,
@@ -289,23 +293,23 @@ blank.
 Capabilities are declarations, not detections. The agent shapes each request
 around what a model claims here, so an entry claiming `image_input` for a model
 without vision produces a provider error rather than a graceful downgrade. Be
-accurate and be conservative.
+accurate, and when in doubt be conservative.
 
 The list is not a closed vocabulary, and only three strings currently change
 behavior: `image_input` drives image routing and the `chat_images` validation,
 while `text` and `tool_calling` are required of anything in
 `selectable_chat_models`. Notably, listing `image_output` on a model entry does
-nothing. Image generation is gated on the *provider's* declared
+nothing, because image generation is gated on the *provider's* declared
 `ProviderCapability`, not on this list. Declaring the rest is still worth doing
-as documentation of intent, but do not expect an undeclared capability to be
+as documentation of intent, but don't expect an undeclared capability to be
 enforced here.
 
-Omitting `pricing` means turns on that model contribute no cost to `/usage`.
+If you omit `pricing`, turns on that model contribute no cost to `/usage`.
 That is correct for subscription-covered backends and wrong for metered ones,
 where it silently under-reports spend.
 
 A `context_window` left at `0` suppresses the compaction capacity warning for
-that model. An unset window is therefore silent, not safe.
+that model, so an unset window is silent rather than safe.
 
 ## Roles and routing
 
@@ -321,8 +325,9 @@ rejected, so a misspelled role is a startup failure rather than a silently
 ignored line.
 
 Reachable roles must have their referenced secret available, unless the provider
-is Codex. "Reachable" is doing real work in that sentence; see
-[what is checked at startup](#what-is-checked-at-startup) below.
+is Codex. "Reachable" is doing real work in that sentence, and
+[what is checked at startup](#what-is-checked-at-startup) below spells out
+exactly what it covers.
 
 ### Scope overrides
 
@@ -334,8 +339,8 @@ A chat turn resolves its model in this order, first match winning:
 4. `overrides.guilds`: the guild
 5. `roles.chat`: the default
 
-Provider instances are cached by model entry name, so overrides that land on the
-same entry share one instance.
+Provider instances are cached by model entry name, so several overrides that
+land on the same entry share one instance.
 
 ### Choosing a chat model at runtime
 
@@ -352,12 +357,12 @@ caps one select menu at 25 options, `/models` renders them in pages of 24 plus
 **Default** on the first page, up to five menus.
 
 Editing provider or model declarations, or `selectable_chat_models` itself,
-still requires a restart: `models.yaml` is validated and loaded once at process
-startup.
+still requires a restart, because `models.yaml` is validated and loaded once at
+process startup.
 
 `roles.coding` is resolved independently for durable background coding tasks.
-It is never inherited from `roles.chat`: leaving it unset cleanly disables the
-feature even if `CODING_TASKS_ENABLED=true`. The primary and every
+It is never inherited from `roles.chat`, so leaving it unset cleanly disables
+the feature even if `CODING_TASKS_ENABLED=true`. The primary and every
 `coding_fallbacks` entry must declare `text` and `tool_calling`. Coding tasks use
 the ordinary failover rules but keep their own total and per-provider-call
 deadlines.
@@ -366,14 +371,14 @@ deadlines.
 
 A profile may set `models_endpoint` to an OpenAI-compatible `/v1/models` URL. At
 startup each unique endpoint-and-credential pair is fetched once, and that
-profile's configured candidates are filtered down to model ids actually present
-in the response. If the fetch fails, those candidates are hidden rather than
-offered, since availability is then unknown and offering a model that 404s is
-worse than offering nothing.
+profile's configured candidates are filtered down to the model ids actually
+present in the response. If the fetch fails, those candidates are hidden rather
+than offered, since their availability is then unknown and offering a model that
+404s is worse than offering nothing.
 
 Models still have to be declared statically. `/v1/models` reports ids, but not
 which transport they need or what they can do, and those are exactly the facts
-routing depends on.
+that routing depends on.
 
 ## Failover
 
@@ -396,9 +401,9 @@ errors are connection drops, timeouts, `408`, `425`, `429`, or any `5xx`
 
 On such an error the **same backend is retried once** after a two-second pause
 before the chain advances. The primary is the preferred model and a blip is
-usually a blip, so spending one cheap retry there is better than demoting the
-whole turn; it also keeps any server-side prompt cache warm. Every backend in
-the chain gets the same two attempts, including the last.
+usually just a blip, so spending one cheap retry there is better than demoting
+the whole turn; it also keeps any server-side prompt cache warm. Every backend
+in the chain gets the same two attempts, including the last.
 
 Unambiguous backend-specific access and lookup failures (`401`, `404`) advance
 to the next configured backend **without retrying the rejected backend**. A
@@ -409,26 +414,27 @@ request to another provider would be unsafe. Every rejection remains visible in
 the server log so a successful fallback does not hide a broken primary
 configuration.
 
-The `openai_compat` stall abort is in this class. A stream silent for
+The `openai_compat` stall abort falls in this class. A stream silent for
 `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` raises `TimeoutError`, so a wedged
 backend gets one fresh attempt and then hands off, instead of consuming the
 entire turn deadline. A stream still producing chunks is never aborted and may
-legitimately run to the `REACT_TURN_TIMEOUT_SECONDS` ceiling.
+legitimately run all the way to the `REACT_TURN_TIMEOUT_SECONDS` ceiling.
 
 Deterministic request failures do **not** fail over. A bad payload (`400` or
 `422`), a capability mismatch, or a context overflow propagates immediately,
 because another backend should reject the same request. If every backend in the
-chain fails, the last error reaches a scrubbed user-facing path: access/model
-rejections, rate limits, and temporary outages get distinct retry guidance, but
-raw provider bodies are logged only on the server. When a provider fails after
-tool calls completed, the reply also warns that those actions may still have
-taken effect and should be checked before the user repeats them.
+chain fails, the last error reaches a scrubbed user-facing path: access and
+model rejections, rate limits, and temporary outages each get their own retry
+guidance, but raw provider bodies are logged only on the server. When a provider
+fails after tool calls have already completed, the reply also warns that those
+actions may still have taken effect and should be checked before the user
+repeats them.
 
 The wrapper's `capabilities` are the **intersection** across the chain. The
 agent core shapes requests up front, so if it shaped one around an ability only
 the primary has, a mid-turn failover would produce a request the fallback cannot
-honor. Taking the intersection means the turn is built for whatever ends up
-serving it.
+honor. Taking the intersection means the turn is built for whichever backend
+ends up serving it.
 
 Every response is stamped with the backend that actually served it
 (`ProviderResponse.model`, preserving a more specific served model if a backend
@@ -451,12 +457,12 @@ missing key there would break ordinary conversation, which is worth refusing to
 boot over.
 
 When `CODING_TASKS_ENABLED=true`, the configured `coding` primary and fallbacks
-join that reachable set as well. A missing coding credential therefore disables
+join that reachable set as well. A missing coding credential therefore stops
 normal startup rather than accepting background work that cannot run.
 
-`compaction_fallbacks` entries and the entire `persona` chain are not checked. A
-missing credential there surfaces on first use instead. Persona is outside
-the gate: it is optional, and an optional feature must not be able to
+`compaction_fallbacks` entries and the entire `persona` chain are not checked;
+a missing credential there surfaces on first use instead. Persona sits outside
+the gate because it is optional, and an optional feature must not be able to
 abort boot.
 
 The compaction capacity warning uses every reachable chat model's
@@ -500,16 +506,16 @@ equality with `chat_images`. A scope override that happens to pin the same model
 `chat_images` names is a suppressed redirect, not a redirect.
 
 "Surfaces an image" begins with a cheap, provider-independent check made before
-any provider is chosen (`agent/attachments.py:turn_has_image_input`), reading the
-same two surfaces `collect_turn_images` and `collect_reply_context` already
-use: images on the triggering message, and on a same-channel non-bot reply
-target. Once the rooted SQLite transcript is loaded, stored image content in
-that history can also promote the turn to the image chain before execution,
+any provider is chosen (`agent/attachments.py:turn_has_image_input`). It reads
+the same two surfaces `collect_turn_images` and `collect_reply_context` already
+use: images on the triggering message, and images on a same-channel non-bot
+reply target. Once the rooted SQLite transcript is loaded, stored image content
+in that history can also promote the turn to the image chain before execution,
 which is what makes a follow-up inside a managed thread route correctly.
 
-Ambient recent-channel-history images are **not** a routing trigger. They are
-gathered only once `images_supported` is known, and that depends on the model
-chosen here, so letting them influence the choice would be circular.
+Ambient images from recent channel history are **not** a routing trigger. They
+are gathered only once `images_supported` is known, and that depends on the
+model chosen here, so letting them influence the choice would be circular.
 
 `chat_images` and every entry in `chat_images_fallbacks` must declare
 `image_input`; the validator rejects a non-vision model in either place. These
@@ -554,6 +560,8 @@ profile, so an o-series gateway will take it without complaint and then never
 see it in a request. If you need effort honored on an OpenAI reasoning model,
 route that model through `openai_responses` instead.
 
+The Anthropic transports have a narrower ladder to keep in mind.
+
 Anthropic's ladder (`ANTHROPIC_EFFORT_LEVELS`) is narrower than the agent's
 internal `REASONING_EFFORT_ORDER`: only `low`, `medium`, `high`, `xhigh`, and
 `max` are accepted. A value outside it is rejected at config load rather than
@@ -583,8 +591,8 @@ reasoning_after_tools:
   high: [read_file, grep_workspace, edit_file]
 ```
 
-When the turn calls a listed tool, subsequent ReAct iterations run at least at
-that effort for the rest of the turn. The idea is that a turn which has just
+When the turn calls a listed tool, the subsequent ReAct iterations run at least
+at that effort for the rest of the turn. The idea is that a turn which has just
 read a file is doing harder work than the one-line question that started it.
 
 Escalation is **monotonic**: a later `medium` match cannot lower a turn already
@@ -615,8 +623,8 @@ OCR regions on a normalized 0-1000 `[left, top, right, bottom]` grid. The
 transcription is then given to the selected text model, and the original images
 are never sent to it.
 
-The point is that the user's chosen model still writes the reply. The vision
-model contributes eyes, not voice.
+The point of this is that the user's chosen model still writes the reply. The
+vision model contributes eyes, not voice.
 
 A message's own images are transcribed as it arrives, before the message is
 written to the transcript, and the description is stored as a text part on that
@@ -655,8 +663,8 @@ and attached through `discord_adapter.io.send_response`.
 ## When routing is misconfigured
 
 `config/models.yaml` is validated once, at startup, and a bad file stops the
-process rather than degrading into something that half works. These messages
-come from `config/model_config.py`:
+process rather than degrading into something that half works. If you hit one of
+these messages, they come from `config/model_config.py`:
 
 | Message | Cause |
 |---|---|
@@ -679,7 +687,7 @@ come from `config/model_config.py`:
 The credential gate runs after parsing, and exits rather than booting onto a
 backend with no key. See [setup.md](setup.md).
 
-Logged and survived, rather than fatal:
+Two other conditions are logged and survived rather than treated as fatal:
 
 - `Could not refresh model catalog <endpoint> (<error>)`: the optional catalog
   probe failed. Routing is unaffected; those candidates are hidden.
@@ -688,6 +696,9 @@ Logged and survived, rather than fatal:
   fine.
 
 ## Adding a provider
+
+If you need a transport that isn't in the table above, here is the shape of the
+work:
 
 1. Add a provider class under `providers/` implementing
    `LLMProvider.run_turn(ProviderRequest) -> ProviderResponse`.

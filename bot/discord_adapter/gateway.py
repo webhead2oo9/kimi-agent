@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from agent.backfill import BackfilledMessage, collect_channel_context
-from discord_adapter.io import send_response as send_discord_response
+from discord_adapter.io import (
+    AttachmentDeliveryPlan,
+    prepare_attachment_delivery,
+    send_prepared_response as send_prepared_discord_response,
+    send_response as send_discord_response,
+)
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
 
@@ -306,6 +311,42 @@ class DiscordGateway:
             output_files=output_files,
             allowed_file_roots=allowed_file_roots,
             embed=embed,
+            mention_author=mention_author,
+        )
+
+    def prepare_attachment_delivery(
+        self,
+        channel: discord.abc.Messageable,
+        *,
+        output_files: list[str],
+        allowed_file_roots: list[str | Path] | None,
+        embed: EmbedSpec | None,
+        effective_limit_bytes: int | None = None,
+        notice_text: str | None = None,
+    ) -> AttachmentDeliveryPlan:
+        return prepare_attachment_delivery(
+            channel,
+            output_files=output_files,
+            allowed_file_roots=allowed_file_roots,
+            embed=embed,
+            effective_limit_bytes=effective_limit_bytes,
+            notice_text=notice_text,
+        )
+
+    async def send_prepared_response(
+        self,
+        channel: discord.abc.Messageable,
+        content: str,
+        plan: AttachmentDeliveryPlan,
+        *,
+        reference: discord.Message | None = None,
+        mention_author: bool = False,
+    ) -> list[discord.Message]:
+        return await send_prepared_discord_response(
+            channel,
+            content,
+            plan,
+            reference=reference,
             mention_author=mention_author,
         )
 

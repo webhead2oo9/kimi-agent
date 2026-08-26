@@ -123,7 +123,10 @@ from config.operator_settings import apply_operator_settings, settings_values
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
+    AttachmentDeliveryPlan,
     DiscordActivityReporter,
+    apply_attachment_delivery_notice,
+    attachment_delivery_notice,
     can_send_reply,
     chunk_message,
     is_allowed_guild_interaction,
@@ -188,6 +191,12 @@ def _settings_secret_values(settings: Settings) -> tuple[str, ...]:
 log = logging.getLogger(__name__)
 
 GUILD_ACTIVATION_REFRESH_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class _ModeratedCodingText:
+    text: str
+    blocked: bool = False
 
 
 class KimiCommandTree(app_commands.CommandTree):
@@ -1056,7 +1065,7 @@ class KimiApplication:
             await self._delete_coding_status_message(channel, task, status_marker)
             return
         status_text = self._coding_status_text(task)
-        status_text = await self._moderate_coding_text(task, status_text, status=True)
+        status_text = (await self._moderate_coding_text(task, status_text, status=True)).text
         status_text = self._coding_status_wire_text(status_text)[:2000]
         status_message: discord.Message | None = None
         if task.status_discord_message_id:
@@ -1105,8 +1114,8 @@ class KimiApplication:
             final_text = task.result_text.strip() or task.error_text.strip()
             if not final_text:
                 final_text = f"Coding task `{task.id[:8]}` ended as **{task.status.value}**."
-            final_text = await self._moderate_coding_text(task, final_text, status=False)
-            final_text = self._coding_result_delivery_text(task.id, final_text)
+            moderated_final = await self._moderate_coding_text(task, final_text, status=False)
+            final_text = self._coding_result_delivery_text(task.id, moderated_final.text)
             legacy_marker = f"coding-result:{task.id}"
             legacy_final = await self._find_coding_delivery(channel, legacy_marker)
             if legacy_final is not None:
@@ -1125,26 +1134,6 @@ class KimiApplication:
                 )
                 return
             delivery_channel = await self._coding_result_channel(task, channel, final_text)
-            recovered_final = await self._find_coding_result_delivery(
-                delivery_channel,
-                final_text,
-                legacy_marker=legacy_marker,
-            )
-            if recovered_final:
-                await self._persist_coding_final_messages(
-                    task,
-                    recovered_final,
-                    channel_id=str(delivery_channel.id),
-                )
-                if self.coding_task_store is not None:
-                    await self.coding_task_store.mark_delivered(task.id, str(recovered_final[0].id))
-                await self._delete_coding_status_message(
-                    channel,
-                    task,
-                    status_marker,
-                    message=status_message,
-                )
-                return
             delivery = task.checkpoint.get("delivery")
             durable_output_files = (
                 delivery.get("output_files", []) if isinstance(delivery, dict) else []
@@ -1157,45 +1146,148 @@ class KimiApplication:
                 if context is not None
                 else [str(value) for value in durable_output_files]
             )
-            allowed_roots = (
+            allowed_roots: list[str | Path] = (
                 list(context.pending_allowed_file_roots)
                 if context is not None
                 else [str(value) for value in durable_allowed_roots]
             )
-            # The ordinary turn path loads every queued file into the moderation
-            # request. Until the same file-content projection is available here,
-            # fail closed by withholding background-task attachments when output
-            # moderation is enabled.
-            if self._should_moderate_coding_output(task):
+            if moderated_final.blocked:
                 output_files = []
                 allowed_roots = []
             async with self._root_lock(task.root_key):
-                sent = await self.send_response(
-                    delivery_channel,
-                    final_text,
-                    output_files=output_files,
-                    allowed_file_roots=allowed_roots,
-                    workspace_key=WorkspaceKey(task.workspace_key),
-                )
-                if not sent or bool(getattr(sent, "delivery_failed", False)):
-                    if sent:
-                        await self._delete_coding_messages(list(sent))
-                    if bool(getattr(sent, "delivery_permanent", False)):
-                        error = str(getattr(sent, "delivery_error", "Discord permission failure"))
-                        await self._mark_coding_delivery_permanent_failure(task, error)
-                    return
-                first = sent[0]
-                await self._persist_coding_final_messages(
-                    task, list(sent), channel_id=str(delivery_channel.id)
-                )
-                if self.coding_task_store is not None:
-                    await self.coding_task_store.mark_delivered(task.id, str(first.id))
-                await self._delete_coding_status_message(
-                    channel,
-                    task,
-                    status_marker,
-                    message=status_message,
-                )
+                async with AsyncExitStack() as delivery_stack:
+                    if output_files:
+                        await delivery_stack.enter_async_context(
+                            self.tools.workspace_locks.activity(WorkspaceKey(task.workspace_key))
+                        )
+                    attachment_plan = await self._prepare_coding_attachment_delivery(
+                        task,
+                        delivery_channel,
+                        output_files=output_files,
+                        allowed_roots=allowed_roots,
+                    )
+                    prepared_text = apply_attachment_delivery_notice(
+                        final_text,
+                        attachment_plan,
+                        after_first_line=True,
+                    )
+                    recovered_final = await self._find_coding_result_delivery(
+                        delivery_channel,
+                        prepared_text,
+                        legacy_marker=legacy_marker,
+                    )
+                    if recovered_final:
+                        await self._persist_coding_final_messages(
+                            task,
+                            recovered_final,
+                            channel_id=str(delivery_channel.id),
+                        )
+                        if self.coding_task_store is not None:
+                            await self.coding_task_store.mark_delivered(
+                                task.id,
+                                str(recovered_final[0].id),
+                            )
+                        await self._delete_coding_status_message(
+                            channel,
+                            task,
+                            status_marker,
+                            message=status_message,
+                        )
+                        return
+                    sent = await self.discord_gateway.send_prepared_response(
+                        delivery_channel,
+                        prepared_text,
+                        attachment_plan,
+                    )
+                    if not sent or bool(getattr(sent, "delivery_failed", False)):
+                        if sent:
+                            await self._delete_coding_messages(list(sent))
+                        if bool(getattr(sent, "delivery_permanent", False)):
+                            error = str(
+                                getattr(sent, "delivery_error", "Discord permission failure")
+                            )
+                            await self._mark_coding_delivery_permanent_failure(task, error)
+                        return
+                    first = sent[0]
+                    await self._persist_coding_final_messages(
+                        task, list(sent), channel_id=str(delivery_channel.id)
+                    )
+                    if self.coding_task_store is not None:
+                        await self.coding_task_store.mark_delivered(task.id, str(first.id))
+                    await self._delete_coding_status_message(
+                        channel,
+                        task,
+                        status_marker,
+                        message=status_message,
+                    )
+
+    async def _prepare_coding_attachment_delivery(
+        self,
+        task: CodingTask,
+        channel: discord.TextChannel | discord.Thread,
+        *,
+        output_files: list[str],
+        allowed_roots: list[str | Path],
+    ) -> AttachmentDeliveryPlan:
+        delivery = task.checkpoint.get("delivery")
+        persisted = delivery.get("attachment_plan") if isinstance(delivery, dict) else None
+        limit, notice = self._attachment_plan_overrides(persisted)
+        plan = self.discord_gateway.prepare_attachment_delivery(
+            channel,
+            output_files=output_files,
+            allowed_file_roots=allowed_roots,
+            embed=None,
+            effective_limit_bytes=limit,
+            notice_text=notice,
+        )
+        if not output_files or persisted is not None or self.coding_task_store is None:
+            return plan
+
+        frozen = self._serialize_attachment_plan(plan)
+        stored = await self.coding_task_store.set_delivery_attachment_plan_if_absent(
+            task.id,
+            frozen,
+        )
+        if stored is None or stored == frozen:
+            return plan
+        stored_limit, stored_notice = self._attachment_plan_overrides(stored)
+        return self.discord_gateway.prepare_attachment_delivery(
+            channel,
+            output_files=output_files,
+            allowed_file_roots=allowed_roots,
+            embed=None,
+            effective_limit_bytes=stored_limit,
+            notice_text=stored_notice,
+        )
+
+    @staticmethod
+    def _serialize_attachment_plan(plan: AttachmentDeliveryPlan) -> dict[str, Any]:
+        return {
+            "effective_limit_bytes": plan.effective_limit_bytes,
+            "notice_text": attachment_delivery_notice(plan),
+            "omitted": [
+                {
+                    "path": omitted.path,
+                    "filename": omitted.filename,
+                    "size_bytes": omitted.size_bytes,
+                    "reason": omitted.reason,
+                }
+                for omitted in plan.omitted
+            ],
+        }
+
+    @staticmethod
+    def _attachment_plan_overrides(raw: object) -> tuple[int | None, str | None]:
+        if not isinstance(raw, dict):
+            return None, None
+        limit = raw.get("effective_limit_bytes")
+        notice = raw.get("notice_text")
+        valid_limit = (
+            limit
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+            else None
+        )
+        return valid_limit, notice if isinstance(notice, str) else None
 
     async def _mark_coding_delivery_permanent_failure(
         self,
@@ -1441,10 +1533,16 @@ class KimiApplication:
     def _coding_result_delivery_text(task_id: str, text: str) -> str:
         return f"**{KimiApplication._coding_result_marker(task_id)}**\n{text}"
 
-    async def _moderate_coding_text(self, task: CodingTask, text: str, *, status: bool) -> str:
+    async def _moderate_coding_text(
+        self,
+        task: CodingTask,
+        text: str,
+        *,
+        status: bool,
+    ) -> _ModeratedCodingText:
         service = self.moderation_service
         if not self._should_moderate_coding_output(task) or service is None:
-            return text
+            return _ModeratedCodingText(text)
         trust_tier = self._coding_task_trust_tier(task)
         try:
             decision = await service.check(
@@ -1457,16 +1555,25 @@ class KimiApplication:
             )
         except Exception:
             log.warning("Coding task output moderation failed", exc_info=True)
-            return (
-                f"**Coding task `{task.id[:8]}`: {task.status.value}**"
-                if status
-                else service.refusal_for(Direction.OUTPUT, error=True)
+            return _ModeratedCodingText(
+                (
+                    f"**Coding task `{task.id[:8]}`: {task.status.value}**"
+                    if status
+                    else service.refusal_for(Direction.OUTPUT, error=True)
+                ),
+                blocked=True,
             )
         if not decision.blocked:
-            return text
+            return _ModeratedCodingText(text)
         if status:
-            return f"**Coding task `{task.id[:8]}`: {task.status.value}**"
-        return service.refusal_for(Direction.OUTPUT, error=decision.error)
+            return _ModeratedCodingText(
+                f"**Coding task `{task.id[:8]}`: {task.status.value}**",
+                blocked=True,
+            )
+        return _ModeratedCodingText(
+            service.refusal_for(Direction.OUTPUT, error=decision.error),
+            blocked=True,
+        )
 
     def _should_moderate_coding_output(self, task: CodingTask) -> bool:
         service = self.moderation_service

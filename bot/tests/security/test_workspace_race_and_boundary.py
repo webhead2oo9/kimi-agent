@@ -132,7 +132,8 @@ async def test_pending_outputs_are_staged_under_lease_before_moderation_and_deli
     result = await execution
     await holder
 
-    assert "SAFE-STAGED-BYTES" in str(moderation.calls[0]["text"])
+    assert moderation.calls[0]["text"] == "attachment ready"
+    assert "SAFE-STAGED-BYTES" not in str(moderation.calls[0]["text"])
     assert "MUTATED-AFTER-STAGING" not in str(moderation.calls[0]["text"])
     staged = Path(result.output_files[0])
     assert staged != source

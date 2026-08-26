@@ -69,6 +69,16 @@ worker owns its workspace, but follow-ups that use workspace tools or deliver
 local attachments serialize behind that writer lease so concurrent file access
 stays safe.
 
+Final attachments are preflighted against the destination guild's current
+Discord per-file upload limit, falling back to 10 MiB when it is unavailable.
+A mixed batch still delivers every fitting file within the existing per-response
+attachment cap and omits only oversized files during size preflight.
+The first reply chunk names omissions in plain text and corrects any stale claim
+in the worker's report that they were attached. The exact limit and notice are
+checkpointed before the send, exposed as sanitized task-status metadata, and
+reused on recovery. The delivered notice is also stored in the conversation
+transcript so the next model turn sees the actual outcome.
+
 ## Context and starting files
 
 Delegation is explicit. The foreground assistant can include a bounded,
@@ -135,9 +145,10 @@ Provider calls have their own timeout inside the task's total deadline. A model
 failure, an exhausted iteration budget, a task deadline, a command failure, or
 an explicit cancel all produce a terminal durable state rather than wedging the
 Discord turn. Task usage is attributed to its own `coding:<task-id>` turn.
-Output text passes through the configured output moderation policy, and
-background attachments are withheld when file-content moderation can't be
-completed safely.
+Output text passes through the configured output moderation policy. Generic
+workspace attachments are delivery artifacts rather than moderation inputs;
+first-class native generated images and owned embed images remain moderated in
+ordinary turns.
 
 As an operator, watch the status message, the SQLite task/job rows, and the
 normal application logs. The raw checkpoint and command output are operational

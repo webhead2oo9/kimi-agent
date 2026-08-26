@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ log = logging.getLogger(__name__)
 
 DISCORD_MAX_LENGTH = 2000
 CHUNK_THRESHOLD = 1900
+DISCORD_DEFAULT_FILE_SIZE_LIMIT_BYTES = 10 * 1024 * 1024
 ACTIVITY_UPDATE_MIN_INTERVAL_SECONDS = 1.0
 ACTIVITY_LOG_DELETE_DELAY_SECONDS = 3.0
 ACTIVITY_IDLE_NUDGE_SECONDS = 30.0
@@ -32,6 +34,24 @@ ACTIVITY_STALE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_TEXT_INVOCATION_NAME = DEFAULT_BOT_NAME
 
 
+@dataclass(frozen=True)
+class OmittedAttachment:
+    path: str
+    filename: str
+    size_bytes: int
+    limit_bytes: int
+    reason: str = "oversize"
+
+
+@dataclass(frozen=True)
+class AttachmentDeliveryPlan:
+    files: tuple[Path, ...]
+    embed: EmbedSpec | None
+    omitted: tuple[OmittedAttachment, ...]
+    effective_limit_bytes: int
+    notice_text: str | None = None
+
+
 class SentMessages(list[Any]):
     """Delivered messages plus whether any expected chunk failed permanently."""
 
@@ -40,6 +60,8 @@ class SentMessages(list[Any]):
         self.delivery_failed = False
         self.delivery_permanent = False
         self.delivery_error = ""
+        self.attachment_plan: AttachmentDeliveryPlan | None = None
+        self.prepared_content = ""
 
 
 def _bot_invocation_names(
@@ -988,30 +1010,45 @@ async def send_response(
     embed: EmbedSpec | None = None,
     mention_author: bool = False,
 ) -> SentMessages:
+    plan = prepare_attachment_delivery(
+        channel,
+        output_files=output_files or [],
+        allowed_file_roots=allowed_file_roots,
+        embed=embed,
+    )
+    prepared_content = apply_attachment_delivery_notice(content, plan)
+    return await send_prepared_response(
+        channel,
+        prepared_content,
+        plan,
+        reference=reference,
+        mention_author=mention_author,
+    )
+
+
+async def send_prepared_response(
+    channel: discord.abc.Messageable,
+    content: str,
+    plan: AttachmentDeliveryPlan,
+    *,
+    reference: discord.Message | None = None,
+    mention_author: bool = False,
+) -> SentMessages:
     content = suppress_link_previews(content)
     chunks = chunk_message(content)
-    existing_files = _validated_output_files(output_files or [], allowed_file_roots)
-    file_paths = [Path(path) for path in output_files or []]
-    skipped = len(file_paths) - len(existing_files)
-    if skipped:
-        log.warning("Skipping %d missing generated output file(s)", skipped)
-
-    # The embed (and any file attachments) ride only on the first chunk, so an
-    # attachment://<name> reference resolves against the file in the same message.
-    required_embed_attachment = _embed_attachment_name(embed)
     reference = _reply_reference(reference)
     sent_messages = SentMessages()
+    sent_messages.attachment_plan = plan
+    sent_messages.prepared_content = content
+    suppress_notice_mentions = bool(attachment_delivery_notice(plan))
     for i, chunk in enumerate(chunks):
         first_message_files: list[Path] = []
         try:
             files: list[discord.File] = []
             embed_obj: discord.Embed | None = None
             if i == 0:
-                if existing_files:
-                    first_message_files = _files_for_first_message(
-                        existing_files,
-                        required_embed_attachment,
-                    )
+                if plan.files:
+                    first_message_files = list(plan.files)
                     for path in first_message_files:
                         try:
                             files.append(discord.File(str(path)))
@@ -1021,21 +1058,8 @@ async def send_response(
                                 path,
                                 e,
                             )
-                    if len(existing_files) > 10:
-                        log.warning(
-                            "Only attaching first 10 of %d generated files",
-                            len(existing_files),
-                        )
-                uploaded_names = {file.filename for file in files}
-                if embed is not None and (
-                    required_embed_attachment is None or required_embed_attachment in uploaded_names
-                ):
-                    embed_obj = build_embed(embed)
-                elif required_embed_attachment is not None:
-                    log.warning(
-                        "Skipping embed because required attachment is unavailable: %s",
-                        required_embed_attachment,
-                    )
+                if plan.embed is not None:
+                    embed_obj = build_embed(plan.embed)
 
             # Never send a truly empty message (no text, no embed, no files).
             content_arg = chunk if chunk.strip() else None
@@ -1043,6 +1067,8 @@ async def send_response(
                 continue
 
             send_kwargs: dict[str, Any] = {}
+            if suppress_notice_mentions:
+                send_kwargs["allowed_mentions"] = discord.AllowedMentions.none()
             if i == 0 and reference:
                 send_kwargs["reference"] = reference
                 send_kwargs["mention_author"] = mention_author
@@ -1055,6 +1081,8 @@ async def send_response(
             log.error("Failed to send message chunk %d: %s", i, e)
             try:
                 retry_kwargs: dict[str, Any] = {}
+                if suppress_notice_mentions:
+                    retry_kwargs["allowed_mentions"] = discord.AllowedMentions.none()
                 if i == 0 and reference:
                     retry_kwargs["reference"] = reference
                     retry_kwargs["mention_author"] = mention_author
@@ -1075,6 +1103,158 @@ async def send_response(
                 sent_messages.delivery_error = type(retry_error).__name__
                 break
     return sent_messages
+
+
+def prepare_attachment_delivery(
+    channel: discord.abc.Messageable,
+    *,
+    output_files: list[str],
+    allowed_file_roots: list[str | Path] | None,
+    embed: EmbedSpec | None,
+    effective_limit_bytes: int | None = None,
+    notice_text: str | None = None,
+) -> AttachmentDeliveryPlan:
+    existing_files = _validated_output_files(output_files, allowed_file_roots)
+    skipped = len(output_files) - len(existing_files)
+    if skipped:
+        log.warning("Skipping %d missing or invalid generated output file(s)", skipped)
+
+    effective_limit = (
+        effective_limit_bytes
+        if isinstance(effective_limit_bytes, int)
+        and not isinstance(effective_limit_bytes, bool)
+        and effective_limit_bytes > 0
+        else _effective_file_size_limit(channel)
+    )
+    deliverable: list[Path] = []
+    omitted: list[OmittedAttachment] = []
+    for path in existing_files:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            log.warning("Skipping generated output file before size validation: %s (%s)", path, exc)
+            continue
+        if size > effective_limit:
+            omitted.append(
+                OmittedAttachment(
+                    path=str(path),
+                    filename=path.name,
+                    size_bytes=size,
+                    limit_bytes=effective_limit,
+                )
+            )
+            continue
+        deliverable.append(path)
+
+    required_embed_attachment = _embed_attachment_name(embed)
+    selected = _files_for_first_message(deliverable, required_embed_attachment)
+    if len(deliverable) > 10:
+        log.warning("Only attaching first 10 of %d generated files", len(deliverable))
+
+    selected_names = {path.name for path in selected}
+    prepared_embed = embed
+    if required_embed_attachment is not None and required_embed_attachment not in selected_names:
+        log.warning(
+            "Skipping embed because required attachment is unavailable: %s",
+            required_embed_attachment,
+        )
+        prepared_embed = None
+
+    return AttachmentDeliveryPlan(
+        files=tuple(selected),
+        embed=prepared_embed,
+        omitted=tuple(omitted),
+        effective_limit_bytes=effective_limit,
+        notice_text=notice_text,
+    )
+
+
+def apply_attachment_delivery_notice(
+    content: str,
+    plan: AttachmentDeliveryPlan,
+    *,
+    after_first_line: bool = False,
+) -> str:
+    notice = attachment_delivery_notice(plan)
+    if not notice:
+        return content
+    if not content:
+        return notice
+    if not after_first_line:
+        return f"{notice}\n\n{content}"
+    first_line, separator, remainder = content.partition("\n")
+    if not separator:
+        return f"{content}\n{notice}"
+    return f"{first_line}\n{notice}\n\n{remainder}"
+
+
+def attachment_delivery_notice(plan: AttachmentDeliveryPlan) -> str:
+    if plan.notice_text is not None:
+        return plan.notice_text
+    if not plan.omitted:
+        return ""
+    limit = _display_file_size_exact(plan.effective_limit_bytes)
+    lines = [
+        (
+            "Delivery notice: Discord did not attach these files because each exceeds "
+            f"this destination's {limit} per-file limit."
+        )
+    ]
+    for omitted in plan.omitted:
+        filename = _plain_notice_filename(omitted.filename)
+        lines.append(f"File {filename}: {_display_file_size_exact(omitted.size_bytes)}")
+    lines.append(
+        "Ignore any claim below that an omitted file was attached. "
+        "Ask me to make smaller artifacts if needed."
+    )
+    return "\n".join(lines)
+
+
+def _effective_file_size_limit(channel: discord.abc.Messageable) -> int:
+    guild = getattr(channel, "guild", None)
+    raw_limit = getattr(guild, "filesize_limit", None)
+    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) and raw_limit > 0:
+        return raw_limit
+    return DISCORD_DEFAULT_FILE_SIZE_LIMIT_BYTES
+
+
+def _display_file_size(size_bytes: int) -> str:
+    units = ((1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB"))
+    for divisor, suffix in units:
+        if size_bytes >= divisor:
+            value = size_bytes / divisor
+            rendered = f"{value:.0f}" if value.is_integer() else f"{value:.1f}"
+            return f"{rendered} {suffix}"
+    return f"{size_bytes} bytes"
+
+
+def _display_file_size_exact(size_bytes: int) -> str:
+    rendered = _display_file_size(size_bytes)
+    if size_bytes < 1024:
+        return rendered
+    return f"{rendered} ({size_bytes:,} bytes)"
+
+
+def _plain_notice_filename(filename: str) -> str:
+    """Keep a filename recognizable without emitting Discord control syntax."""
+
+    translation = str.maketrans(
+        {
+            "@": "＠",
+            "`": "｀",
+            "*": "＊",
+            "_": "＿",
+            "~": "～",
+            "|": "｜",
+            "<": "＜",
+            ">": "＞",
+            "[": "［",
+            "]": "］",
+            "\\": "＼",
+        }
+    )
+    cleaned = filename.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return cleaned.translate(translation) or "unnamed file"
 
 
 def _validated_output_files(

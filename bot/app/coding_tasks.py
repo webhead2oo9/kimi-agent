@@ -1259,6 +1259,27 @@ class CodingTaskService:
     def _task_payload(task: CodingTask | None) -> dict[str, object]:
         if task is None:
             return {}
+        delivery = task.checkpoint.get("delivery")
+        raw_attachment_plan = (
+            delivery.get("attachment_plan") if isinstance(delivery, dict) else None
+        )
+        attachment_outcomes: dict[str, object] = {}
+        if isinstance(raw_attachment_plan, dict):
+            raw_omitted = raw_attachment_plan.get("omitted")
+            attachment_outcomes = {
+                "effective_limit_bytes": raw_attachment_plan.get("effective_limit_bytes"),
+                "omitted": [
+                    {
+                        "filename": value.get("filename"),
+                        "size_bytes": value.get("size_bytes"),
+                        "reason": value.get("reason"),
+                    }
+                    for value in raw_omitted
+                    if isinstance(value, dict)
+                ]
+                if isinstance(raw_omitted, list)
+                else [],
+            }
         return {
             "task_id": task.id,
             "status": task.status.value,
@@ -1274,6 +1295,7 @@ class CodingTaskService:
             "cancel_requested": task.cancel_requested,
             "delivery_state": task.delivery_state,
             "delivery_retry": task.checkpoint.get("delivery_retry", {}),
+            "attachment_outcomes": attachment_outcomes,
         }
 
     @staticmethod

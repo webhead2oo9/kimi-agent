@@ -190,7 +190,7 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     bot = _Bot()
     publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
     publisher.install()
-    assert len(bot.listeners) == 7
+    assert len(bot.listeners) == 9
 
     await publisher.on_message(_message())
     await publisher.on_message_delete(_message(content="gone"))
@@ -231,6 +231,33 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
 
     publisher.uninstall()
     assert bot.listeners == []
+
+
+@pytest.mark.asyncio
+async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
+    published: list[tuple[str, Any]] = []
+    bot = _Bot()
+    publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
+
+    await publisher.on_raw_message_delete(
+        SimpleNamespace(guild_id=1, channel_id=2, message_id=30, cached_message=None)
+    )
+    await publisher.on_raw_bulk_message_delete(
+        SimpleNamespace(
+            guild_id=1,
+            channel_id=2,
+            message_ids={31, 32},
+            cached_messages=[],
+        )
+    )
+
+    assert [topic for topic, _payload in published] == [ev.TOPIC_MESSAGE_DELETE] * 2
+    single = published[0][1]
+    bulk = published[1][1]
+    assert isinstance(single, ev.MessageDeleteEvent) and single.ref.message_id == 30
+    assert single.cached_content is None
+    assert isinstance(bulk, ev.MessageBulkDeleteEvent)
+    assert {ref.message_id for ref in bulk.refs} == {31, 32}
 
 
 def test_audit_entry_maps_timeout_from_member_update() -> None:

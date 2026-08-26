@@ -208,6 +208,8 @@ class ModuleEventPublisher:
             ("on_message", self.on_message),
             ("on_message_edit", self.on_message_edit),
             ("on_message_delete", self.on_message_delete),
+            ("on_raw_message_delete", self.on_raw_message_delete),
+            ("on_raw_bulk_message_delete", self.on_raw_bulk_message_delete),
             ("on_member_join", self.on_member_join),
             ("on_member_remove", self.on_member_remove),
             ("on_member_update", self.on_member_update),
@@ -261,6 +263,54 @@ class ModuleEventPublisher:
                 author_id=int(message.author.id) if message.author is not None else None,
                 cached_content=message.content or None,
                 cached_attachments=tuple(attachment_snapshot(a) for a in message.attachments),
+            ),
+        )
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        if payload.guild_id is None:
+            return
+        cached = payload.cached_message
+        self._safe(
+            ev.TOPIC_MESSAGE_DELETE,
+            ev.MessageDeleteEvent(
+                ref=(
+                    message_ref(cached)
+                    if cached is not None
+                    else MessageRef(
+                        int(payload.guild_id), int(payload.channel_id), int(payload.message_id)
+                    )
+                ),
+                author_id=(
+                    int(cached.author.id)
+                    if cached is not None and cached.author is not None
+                    else None
+                ),
+                cached_content=(cached.content or None) if cached is not None else None,
+                cached_attachments=(
+                    tuple(attachment_snapshot(item) for item in cached.attachments)
+                    if cached is not None
+                    else ()
+                ),
+            ),
+        )
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        if payload.guild_id is None:
+            return
+        cached = {int(message.id): message for message in payload.cached_messages}
+        self._safe(
+            ev.TOPIC_MESSAGE_DELETE,
+            ev.MessageBulkDeleteEvent(
+                refs=tuple(
+                    (
+                        message_ref(cached[int(message_id)])
+                        if int(message_id) in cached
+                        else MessageRef(
+                            int(payload.guild_id), int(payload.channel_id), int(message_id)
+                        )
+                    )
+                    for message_id in sorted(payload.message_ids)
+                )
             ),
         )
 

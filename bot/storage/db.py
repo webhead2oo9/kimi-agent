@@ -351,6 +351,41 @@ CREATE TABLE IF NOT EXISTS coding_command_jobs (
 CREATE INDEX IF NOT EXISTS idx_coding_jobs_task
     ON coding_command_jobs(task_id, created_at);
 
+CREATE TABLE IF NOT EXISTS control_proposals (
+    proposal_id       TEXT PRIMARY KEY,
+    module_name       TEXT NOT NULL,
+    action            TEXT NOT NULL,
+    target            TEXT NOT NULL,
+    summary           TEXT NOT NULL,
+    changes_json      TEXT NOT NULL,
+    actor_json        TEXT NOT NULL,
+    expected_revision TEXT,
+    preview_json      TEXT NOT NULL,
+    state             TEXT NOT NULL CHECK (state IN (
+                          'pending','rejected','stale','applying',
+                          'restart_pending','applied','failed','rolled_back'
+                      )),
+    decided_by        TEXT,
+    decision_reason   TEXT NOT NULL DEFAULT '',
+    result_message    TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL,
+    updated_at        REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_control_proposals_state_time
+    ON control_proposals(state, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS control_proposal_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id TEXT NOT NULL REFERENCES control_proposals(proposal_id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at  REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_control_proposal_events_proposal
+    ON control_proposal_events(proposal_id, id);
+
 """
 
 
@@ -393,9 +428,7 @@ type Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
 
 _INITIAL_SCHEMA_NAME = "initial_schema"
 
-# Empty until the first released schema change: everything above is still the
-# flattened v1 baseline. Keyed by the version each migration produces; see
-# ../docs/database.md for how to add one after the first deployed schema.
+
 _MIGRATIONS: dict[int, Migration] = {}
 
 
@@ -431,6 +464,45 @@ async def _apply_migrations(conn: aiosqlite.Connection, current: int) -> None:
         except BaseException:
             await conn.rollback()
             raise
+
+
+async def _ensure_control_plane_schema(conn: aiosqlite.Connection) -> None:
+    """Let pre-control-plane v1 development databases adopt the v1 tables."""
+    statements = (
+        """CREATE TABLE IF NOT EXISTS control_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            module_name TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            changes_json TEXT NOT NULL,
+            actor_json TEXT NOT NULL,
+            expected_revision TEXT,
+            preview_json TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN (
+                'pending','rejected','stale','applying','restart_pending',
+                'applied','failed','rolled_back'
+            )),
+            decided_by TEXT,
+            decision_reason TEXT NOT NULL DEFAULT '',
+            result_message TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_control_proposals_state_time
+            ON control_proposals(state, created_at DESC)""",
+        """CREATE TABLE IF NOT EXISTS control_proposal_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proposal_id TEXT NOT NULL REFERENCES control_proposals(proposal_id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at REAL NOT NULL
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_control_proposal_events_proposal
+            ON control_proposal_events(proposal_id, id)""",
+    )
+    for statement in statements:
+        await conn.execute(statement)
 
 
 def _sql_quote(value: str) -> str:
@@ -516,6 +588,7 @@ class Database:
                 PRIMARY KEY (module_name, version)
             )"""
         )
+        await _ensure_control_plane_schema(conn)
         await conn.commit()
 
         log.info("Database ready at %s (schema v%d)", self._path, SCHEMA_VERSION)

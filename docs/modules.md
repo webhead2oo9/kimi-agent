@@ -51,10 +51,20 @@ equivalent source if you prefer an offline deployment.
 
 The companion repository is
 [`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules).
-It currently contains `community_moderation` and the dependent
-`image_fingerprints` package. It is private during initial development, and
+It currently contains `community_moderation`, the dependent
+`image_fingerprints` package, and the experimental `config_admin` proposal
+module. It is private during initial development, and
 each package's configuration, privacy, and FingerPrint Hub deployment details
 live alongside that package rather than here.
+
+## Experimental control-plane API
+
+The module API can advertise `proposals.v1`, `config.v1`, and `restart.v1` when
+the control plane is enabled. A trusted module may inspect redacted managed
+configuration, create a durable proposal, or register an action in its own
+namespace. Only the configured bot owner can approve a proposal. See
+[module-control-plane.md](module-control-plane.md) for activation, restart,
+rollback, and the deliberately excluded operations.
 
 ## Modules versus operator plugins
 

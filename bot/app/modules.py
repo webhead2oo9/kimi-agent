@@ -10,102 +10,50 @@ removing the capability.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
-
-from pydantic_settings import BaseSettings
+from typing import TYPE_CHECKING, Any
 
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
-from config.module_settings import (
+from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
+from kimi_agent_module_api import (
+    MODULE_API_VERSION,
+    MODULE_ENTRYPOINT_GROUP,
+    AppModule,
+    GuildConfigValidator,
+    ModuleCapabilities,
+    ModuleLoadContext,
+    ModuleMigration,
+    ModuleRuntimeContext,
     ModuleSetting,
     ModuleSettingsDefinition,
-    ModuleSettingsError,
-    ModuleSettingsRegistry,
+    ModuleSpec,
 )
 
 if TYPE_CHECKING:
-    import aiosqlite
-    from discord.ext import commands
-
     from config.settings import Settings
     from discord_adapter.gateway import DiscordGateway
-    from storage.db import Database
     from tools.registry import ToolRegistry
-    from trust.resolver import TrustResolver
 
 log = logging.getLogger(__name__)
 
-MODULE_API_VERSION = 1
-MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
 
-GuildConfigValidator = Callable[[Mapping[str, Any]], bool]
-ModuleMigration = tuple[str, Callable[["aiosqlite.Connection"], Awaitable[None]]]
-_SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
-
-
-class AppModule(Protocol):
-    """Runtime object created once for one configured application module."""
-
-    migrations: Sequence[ModuleMigration]
-
-    async def start(self, ctx: ModuleRuntimeContext) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class ModuleSpec:
-    """Object exported by a package's ``kimi_agent.modules`` entry point."""
-
-    name: str
-    version: str
-    create: Callable[[ModuleLoadContext], AppModule]
-    api_version: int = MODULE_API_VERSION
-    dependencies: tuple[str, ...] = ()
-    settings: ModuleSettingsDefinition | None = None
-
-
-@dataclass(frozen=True)
-class ModuleLoadContext:
-    """Composition-time services, including the optional LLM tool seam."""
-
-    core_settings: Settings
-    registry: ToolRegistry
-    gateway: DiscordGateway
-    module_settings: BaseSettings | None
-    _register_guild_validator: Callable[[str, GuildConfigValidator], None]
-
-    def settings_for(self, settings_type: type[_SettingsT]) -> _SettingsT:
-        if self.module_settings is None or not isinstance(self.module_settings, settings_type):
-            raise TypeError(f"prepared module settings are not {settings_type.__name__}")
-        return self.module_settings
-
-    def register_tool_labels(self, labels: Mapping[str, str]) -> None:
-        register_tool_labels(labels)
-
-    def declare_surface_tools(self, surface: str, names: Sequence[str]) -> None:
-        declare_surface_tools(surface, names)
-
-    def register_guild_validator(self, name: str, validator: GuildConfigValidator) -> None:
-        self._register_guild_validator(name, validator)
-
-
-@dataclass(frozen=True)
-class ModuleRuntimeContext:
-    """Services available after the shared database connection is ready."""
-
-    bot: commands.Bot
-    database: Database
-    trust_resolver: TrustResolver
-    gateway: DiscordGateway
-    config_dir: Path
-    is_guild_active: Callable[[int], bool]
-    get_module: Callable[[str], AppModule]
+def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
+    """Build the stable capability advertisement for one core configuration."""
+    available = (
+        frozenset({"proposals.v1", "config.v1", "restart.v1"})
+        if core_settings.control_plane_enabled
+        else frozenset()
+    )
+    return ModuleCapabilities(
+        available=available,
+        members_intent=bool(core_settings.members_intent),
+        message_content_intent=bool(core_settings.message_content_intent),
+    )
 
 
 @dataclass(frozen=True)
@@ -168,6 +116,41 @@ def _ordered_specs(
     return ordered
 
 
+def validate_module_selection(
+    names: Sequence[str],
+    *,
+    core_settings: Settings,
+    installed: Mapping[str, ModuleSpec] | None = None,
+) -> tuple[ModuleSpec, ...]:
+    """Preflight one explicit module set without creating module instances."""
+    if not names:
+        return ()
+    specs = _ordered_specs(
+        names,
+        installed if installed is not None else _installed_specs(names),
+    )
+    capabilities = module_capabilities(core_settings)
+    for spec in specs:
+        if spec.api_version != MODULE_API_VERSION:
+            raise RuntimeError(
+                f"Kimi module {spec.name!r} requires module API {spec.api_version}; "
+                f"core provides {MODULE_API_VERSION}"
+            )
+        missing_capability = next(
+            (
+                capability
+                for capability in spec.requires_capabilities
+                if capability not in capabilities.available
+            ),
+            None,
+        )
+        if missing_capability is not None:
+            raise RuntimeError(
+                f"Kimi module {spec.name!r} requires unavailable capability {missing_capability!r}"
+            )
+    return tuple(specs)
+
+
 @dataclass
 class ModuleManager:
     """Configured module instances and their coordinated lifecycle."""
@@ -202,27 +185,26 @@ class ModuleManager:
         )
         if not names:
             return manager
-        specs = _ordered_specs(
+        specs = validate_module_selection(
             names,
-            installed if installed is not None else _installed_specs(names),
+            core_settings=core_settings,
+            installed=installed,
         )
+        capabilities = module_capabilities(core_settings)
         for spec in specs:
-            if spec.api_version != MODULE_API_VERSION:
-                raise RuntimeError(
-                    f"Kimi module {spec.name!r} requires module API {spec.api_version}; "
-                    f"core provides {MODULE_API_VERSION}"
-                )
             before = registry.registered_names()
             try:
                 prepared = settings_registry.prepare(spec.settings) if spec.settings else None
                 if prepared is not None and not prepared.can_register:
                     raise ModuleSettingsError(prepared.load_error or "invalid module settings")
                 ctx = ModuleLoadContext(
-                    core_settings=core_settings,
+                    capabilities=capabilities,
                     registry=registry,
                     gateway=gateway,
                     module_settings=prepared.active if prepared is not None else None,
                     _register_guild_validator=manager._register_guild_validator,
+                    _register_tool_labels=register_tool_labels,
+                    _declare_surface_tools=declare_surface_tools,
                 )
                 instance = spec.create(ctx)
             except Exception:
@@ -287,4 +269,5 @@ __all__ = [
     "ModuleSetting",
     "ModuleSettingsDefinition",
     "ModuleSpec",
+    "validate_module_selection",
 ]

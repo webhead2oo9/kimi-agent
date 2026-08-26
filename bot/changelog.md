@@ -18,6 +18,8 @@ Kimi's user-facing release notes for server owners, staff, and members.
   and workspace behavior more directly.
 - Eval browser and runtime resources are closed before temporary state is
   removed, reducing leaked sessions and cross-run interference after failures.
+- Replayed eval internet searches now preserve the live backend-call budget,
+  keeping cassette runs aligned with production search limits.
 
 ## 1.0.0 (2026-08-24)
 

@@ -51,6 +51,7 @@ from app.tool_surfaces import surface_tools
 log = logging.getLogger("evals.cassette")
 
 CASSETTE_MODES = ("off", "record", "replay", "strict")
+_INTERNET_SEARCH_TOOL = "internet_search"
 
 # Only network/source tools are recorded; everything else always dispatches
 # live. Local tools' handlers have side effects a replay would silently skip:
@@ -64,8 +65,8 @@ CASSETTE_RECORDED_TOOLS = frozenset(
     {
         "discord_text_search",
         # Live web search/read is network-backed and read-only. Replaying it
-        # freezes volatile result ordering and content without skipping any
-        # local side effect.
+        # freezes volatile result ordering and content; its per-turn backend
+        # budget effect is recorded alongside the result and reapplied.
         "internet_search",
         # Hindsight reads: network-backed and read-only, so replay is safe and
         # makes repeats deterministic.
@@ -161,10 +162,19 @@ class _Entry:
     tool: str
     args: dict[str, Any]
     results: list[str]
+    internet_search_backend_calls: list[int] | None = None
     # True when this entry was copied out of the shared baseline rather than
     # recorded by the arm that owns the tape. Persisted, so the provenance is
     # still knowable on the run after the promotion.
     from_base: bool = False
+
+
+@dataclass(frozen=True)
+class CassetteReplay:
+    """One replayed result plus local effects the live handler would apply."""
+
+    result: str
+    internet_search_backend_calls: int | None = None
 
 
 class Cassette:
@@ -179,7 +189,7 @@ class Cassette:
     because the committed file must come out of a run byte-identical.
     """
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, path: Path, *, base: Cassette | None = None) -> None:
         self.path = path
@@ -202,15 +212,43 @@ class Cassette:
             results = [str(r) for r in (item.get("results") or [])]
             if not tool or not results:
                 continue
+            backend_calls: list[int] | None = None
+            if tool == _INTERNET_SEARCH_TOOL:
+                raw_calls = item.get("internet_search_backend_calls")
+                if not (
+                    isinstance(raw_calls, list)
+                    and len(raw_calls) == len(results)
+                    and all(
+                        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                        for value in raw_calls
+                    )
+                ):
+                    # Version-1 search recordings lack the local budget effect.
+                    # Treat them as misses so replay mode refreshes them live
+                    # instead of guessing how many providers were contacted.
+                    log.warning(
+                        "Ignoring legacy internet_search cassette entry without "
+                        "backend-call metadata in %s",
+                        cassette.path,
+                    )
+                    continue
+                backend_calls = list(raw_calls)
             key = call_key(tool, args)
             from_base = bool(item.get("from_base"))
             entry = cassette._store.get(key)
             if entry is None:
                 cassette._store[key] = _Entry(
-                    tool=tool, args=args, results=results, from_base=from_base
+                    tool=tool,
+                    args=args,
+                    results=results,
+                    internet_search_backend_calls=backend_calls,
+                    from_base=from_base,
                 )
             else:
                 entry.results.extend(results)
+                if entry.internet_search_backend_calls is not None:
+                    assert backend_calls is not None
+                    entry.internet_search_backend_calls.extend(backend_calls)
                 entry.from_base = entry.from_base or from_base
         return cassette
 
@@ -219,7 +257,10 @@ class Cassette:
 
     def clear(self) -> None:
         """Drop all entries (fresh recording). The underlay is not ours to clear."""
-        if self._store:
+        # A legacy-only tape may have no usable entries after load discarded
+        # invalid search recordings. Record mode must still replace that file,
+        # even when this run records no new calls.
+        if self._store or self.path.exists():
             self._dirty = True
         self._store = {}
         self._cursors = {}
@@ -242,33 +283,77 @@ class Cassette:
         if self._base is not None:
             self._base.reset_cursors()
 
-    def record(self, tool: str, args: dict[str, Any], result: str) -> None:
+    def record(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        result: str,
+        *,
+        internet_search_backend_calls: int | None = None,
+    ) -> None:
+        if tool == _INTERNET_SEARCH_TOOL:
+            if (
+                not isinstance(internet_search_backend_calls, int)
+                or isinstance(internet_search_backend_calls, bool)
+                or internet_search_backend_calls < 0
+            ):
+                raise ValueError(
+                    "internet_search cassette results require a non-negative backend-call count"
+                )
+        elif internet_search_backend_calls is not None:
+            raise ValueError("backend-call metadata is only valid for internet_search")
         key = call_key(tool, args)
         entry = self._store.get(key)
         if entry is None:
-            self._store[key] = _Entry(tool=tool, args=dict(args), results=[result])
+            self._store[key] = _Entry(
+                tool=tool,
+                args=dict(args),
+                results=[result],
+                internet_search_backend_calls=(
+                    [internet_search_backend_calls]
+                    if internet_search_backend_calls is not None
+                    else None
+                ),
+            )
         else:
             entry.results.append(result)
+            if entry.internet_search_backend_calls is not None:
+                assert internet_search_backend_calls is not None
+                entry.internet_search_backend_calls.append(internet_search_backend_calls)
         self._dirty = True
 
     def replay(self, tool: str, args: dict[str, Any]) -> str | None:
         """Return the next recorded result for this call, or None on a miss."""
+        replay = self.replay_record(tool, args)
+        return replay.result if replay is not None else None
+
+    def replay_record(self, tool: str, args: dict[str, Any]) -> CassetteReplay | None:
+        """Return the next result and its recorded local effects, or None."""
         key = call_key(tool, args)
         entry = self._store.get(key)
         if entry is None:
             if self._base is None:
                 return None
-            result = self._base.replay(tool, args)
-            if result is not None:
+            replay = self._base.replay_record(tool, args)
+            if replay is not None:
                 self._from_base.add(key)
                 self._baseline_replays += 1
-            return result
+            return replay
         if entry.from_base:
             self._baseline_replays += 1
         cursor = self._cursors.get(key, 0)
-        result = entry.results[min(cursor, len(entry.results) - 1)]
+        result_index = min(cursor, len(entry.results) - 1)
+        result = entry.results[result_index]
+        backend_calls = (
+            entry.internet_search_backend_calls[result_index]
+            if entry.internet_search_backend_calls is not None
+            else None
+        )
         self._cursors[key] = cursor + 1
-        return result
+        return CassetteReplay(
+            result=result,
+            internet_search_backend_calls=backend_calls,
+        )
 
     def _promote_base_entries(self) -> None:
         """Copy every underlay entry this run replayed into the own store.
@@ -289,6 +374,11 @@ class Cassette:
                 tool=entry.tool,
                 args=dict(entry.args),
                 results=list(entry.results),
+                internet_search_backend_calls=(
+                    list(entry.internet_search_backend_calls)
+                    if entry.internet_search_backend_calls is not None
+                    else None
+                ),
                 from_base=True,
             )
             self._dirty = True
@@ -304,6 +394,11 @@ class Cassette:
                 "tool": entry.tool,
                 "args": entry.args,
                 "results": entry.results,
+                **(
+                    {"internet_search_backend_calls": entry.internet_search_backend_calls}
+                    if entry.internet_search_backend_calls is not None
+                    else {}
+                ),
                 # Written only when set, so an independently recorded tape stays
                 # free of baseline-provenance metadata.
                 **({"from_base": True} if entry.from_base else {}),
@@ -342,9 +437,11 @@ def load_cassette(
     shared_path = shared_cassette_path(base_dir, scenario_id)
     shared: Cassette | None = None
     if shared_fallback and shared_path.exists():
-        shared = Cassette.load(shared_path)
+        loaded_shared = Cassette.load(shared_path)
+        if len(loaded_shared) > 0:
+            shared = loaded_shared
     cassette = Cassette.load(own_path, base=shared)
-    if own_path.exists():
+    if len(cassette) > 0:
         return cassette, "model"
     if shared is not None:
         # Silent orphaning is the money-losing failure, so the fallback is on by

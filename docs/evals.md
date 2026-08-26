@@ -131,7 +131,8 @@ The `--cassette` modes are:
 
 - `replay` (default, hybrid): replay recorded `(tool, args)` results, fall
   through live on a miss and record it. The first run records, and later runs
-  are deterministic and free.
+  replay recorded source calls deterministically without paying for them.
+  Tools intentionally kept outside cassettes, such as `fetch_url`, remain live.
 - `record`: wipe and re-record the scenario's cassette live, ignoring the shared
   baseline. This mode exists to produce a tape this arm recorded itself.
 - `strict`: a miss returns an error result instead of going live. This is for
@@ -175,6 +176,11 @@ Replay returns the recorded result without invoking the handler. What it
 measures is tool-*selection* behavior against a frozen tool surface, which is
 exactly the layer harness changes touch. Repeated identical calls replay in
 recording order (then repeat the last result), so loops stay deterministic.
+`internet_search` recordings also carry the number of backend calls consumed
+by the live handler. Replay reapplies that count and enforces the current
+per-turn limit, so a cassette cannot give a model more searches than production.
+Legacy search entries without this metadata are treated as misses and refreshed
+live in `replay` mode rather than assigned a guessed cost.
 
 Only the read-only source tools `discord_text_search`, `internet_search`, and
 the Hindsight reads (`recall_user`, `reflect_user`, `lookup_memory_source`) are

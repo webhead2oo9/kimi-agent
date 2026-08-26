@@ -73,7 +73,7 @@ log = logging.getLogger("evals.harness")
 
 EVALS_DIR = Path(__file__).resolve().parent
 SUMMARY_KIND = "harness-eval"
-SUMMARY_VERSION = 1
+SUMMARY_VERSION = 2
 _TRANSCRIPT_RESULT_CAP = 2000
 
 
@@ -248,16 +248,32 @@ def _rep_row(rep: RepResult) -> dict:
     row["eval_identity"] = rep.run.identity.as_dict() if rep.run.identity else None
     row["sources"] = rep.sources
     row["usage"] = usage_dict(rep.run.total_usage)
+    row["user_turns"] = len(rep.run.turns)
+    row["model_turns"] = rep.run.provider_calls
     row["provider_calls"] = rep.run.provider_calls
+    row["effective_output_tokens_per_second"] = _effective_output_tokens_per_second(
+        output_tokens=rep.run.total_usage.output_tokens,
+        provider_latency_ms=rep.run.total_latency_ms,
+    )
     row["est_cost_usd"] = rep.cost
     row["recorded_tool_calls"] = recorded_call_sources([rep.run])
     return row
+
+
+def _effective_output_tokens_per_second(
+    *, output_tokens: int, provider_latency_ms: int
+) -> float | None:
+    """Return user-observed throughput across complete provider calls."""
+    if output_tokens <= 0 or provider_latency_ms <= 0:
+        return None
+    return round(output_tokens * 1000 / provider_latency_ms, 2)
 
 
 def _aggregate(reps: list[RepResult]) -> dict:
     scores = [rep.mechanical.score for rep in reps]
     wall_times = [rep.run.wall_time_ms for rep in reps]
     provider_times = [rep.run.total_latency_ms for rep in reps]
+    output_tokens = sum(rep.run.total_usage.output_tokens for rep in reps)
     return {
         "score_mean": round(mean(scores), 1),
         "score_min": min(scores),
@@ -265,6 +281,8 @@ def _aggregate(reps: list[RepResult]) -> dict:
         "pass_rate": round(sum(1 for r in reps if r.mechanical.passed) / len(reps), 2),
         "tool_calls_mean": round(mean(r.mechanical.tool_call_count for r in reps), 1),
         "tokens_mean": round(mean(r.mechanical.tokens for r in reps), 1),
+        "user_turns_mean": round(mean(len(r.run.turns) for r in reps), 1),
+        "model_turns_mean": round(mean(r.run.provider_calls for r in reps), 1),
         "provider_calls_mean": round(mean(r.run.provider_calls for r in reps), 1),
         # Timing is diagnostic only. Wall time includes tools and local harness
         # work; provider latency is the summed time inside model API calls.
@@ -272,6 +290,10 @@ def _aggregate(reps: list[RepResult]) -> dict:
         "wall_time_min_ms": min(wall_times),
         "wall_time_max_ms": max(wall_times),
         "provider_latency_mean_ms": round(mean(provider_times)),
+        "effective_output_tokens_per_second": _effective_output_tokens_per_second(
+            output_tokens=output_tokens,
+            provider_latency_ms=sum(provider_times),
+        ),
         # Absent pricing stays None all the way up rather than collapsing to 0,
         # and one unpriced rep makes the whole mean None, matching `sum_costs` at
         # run scope. Averaging the priced reps alone printed a concrete Cost cell
@@ -308,14 +330,22 @@ def build_summary(
     aggregates: list[dict[str, Any]] = [entry["aggregate"] for entry in scenarios.values()]
     reps = [rep for _, scenario_reps in results.values() for rep in scenario_reps]
     est_cost = sum_costs([rep.cost for rep in reps])
+    total_usage = sum((rep.run.total_usage for rep in reps), UsageBreakdown())
+    provider_latency_ms = sum(rep.run.total_latency_ms for rep in reps)
     totals = {
         "score_mean": round(mean(a["score_mean"] for a in aggregates), 1) if aggregates else 0.0,
         "pass_rate": round(mean(a["pass_rate"] for a in aggregates), 2) if aggregates else 0.0,
         "tool_calls": sum(rep.mechanical.tool_call_count for rep in reps),
         "tokens": sum(rep.mechanical.tokens for rep in reps),
+        "user_turns": sum(len(rep.run.turns) for rep in reps),
+        "model_turns": sum(rep.run.provider_calls for rep in reps),
         "wall_time_ms": sum(rep.run.wall_time_ms for rep in reps),
-        "provider_latency_ms": sum(rep.run.total_latency_ms for rep in reps),
-        "usage": usage_dict(sum((rep.run.total_usage for rep in reps), UsageBreakdown())),
+        "provider_latency_ms": provider_latency_ms,
+        "usage": usage_dict(total_usage),
+        "effective_output_tokens_per_second": _effective_output_tokens_per_second(
+            output_tokens=total_usage.output_tokens,
+            provider_latency_ms=provider_latency_ms,
+        ),
         "est_cost_usd": est_cost,
     }
     tools = tool_costs([rep.run for rep in reps])
@@ -378,12 +408,18 @@ def render_harness_report(summary: dict) -> str:
             "(informational; not scored)"
         ),
         (
+            f"**Turns:** {totals.get('user_turns', 0)} user / "
+            f"{totals.get('model_turns', 0)} model | "
+            "**Effective output rate:** "
+            f"{_tokens_per_second(totals.get('effective_output_tokens_per_second'))} tok/s"
+        ),
+        (
             f"**Cost:** {_usd(totals.get('est_cost_usd'))} tokens | "
             f"**Recorded tool calls:** {recorded_call_split(recorded)}"
         ),
         "",
-        "| Scenario | Score (min–max) | Pass | Calls | Tokens | Time (wall / provider) | Cost | Flags |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Score (min–max) | Pass | Calls | Tokens | Turns (user / model) | Time (wall / provider) | Output tok/s | Cost | Flags |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for scenario_id, entry in summary["scenarios"].items():
         agg = entry["aggregate"]
@@ -410,8 +446,11 @@ def render_harness_report(summary: dict) -> str:
         lines.append(
             f"| {scenario_id} | {agg['score_mean']} ({agg['score_min']}–{agg['score_max']}) "
             f"| {agg['pass_rate']} | {agg['tool_calls_mean']} | {agg['tokens_mean']} "
+            f"| {float(agg.get('user_turns_mean', 0)):.1f} / "
+            f"{float(agg.get('model_turns_mean', 0)):.1f} "
             f"| {_seconds(agg['wall_time_mean_ms'])} / "
             f"{_seconds(agg['provider_latency_mean_ms'])} "
+            f"| {_tokens_per_second(agg.get('effective_output_tokens_per_second'))} "
             f"| {_usd(agg.get('cost_mean_usd'))} "
             f"| {', '.join(unique_flags) or 'clean'} |"
         )
@@ -454,6 +493,10 @@ def _usd(value: float | None) -> str:
 
 def _seconds(milliseconds: int | float) -> str:
     return f"{float(milliseconds) / 1000:.2f}s"
+
+
+def _tokens_per_second(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
 
 
 def write_transcripts(path: Path, results: dict[str, tuple[Scenario, list[RepResult]]]) -> None:

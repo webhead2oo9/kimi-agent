@@ -22,6 +22,7 @@ from evals.mechanical import MechanicalResult
 from evals.models import ModelsConfig, ModelSpec, load_models
 from evals.scenario import Expect, Scenario
 from trust.tiers import TrustTier
+from usage.normalization import UsageBreakdown
 
 
 def _models():
@@ -524,6 +525,7 @@ def test_summary_and_report_include_unscored_completion_timing():
     rep = _rep(_mech(100.0), tool_calls=[_call("get_steam_game_info", "replay")])
     rep.run.wall_time_ms = 1_250
     rep.run.turns[0].latency_ms = 900
+    rep.run.turns[0].usage = UsageBreakdown(output_tokens=450)
     summary = build_summary(
         run_id="r1",
         git_sha="abc",
@@ -539,13 +541,44 @@ def test_summary_and_report_include_unscored_completion_timing():
     assert aggregate["wall_time_min_ms"] == 1_250
     assert aggregate["wall_time_max_ms"] == 1_250
     assert aggregate["provider_latency_mean_ms"] == 900
+    assert aggregate["user_turns_mean"] == 1.0
+    assert aggregate["model_turns_mean"] == 2.0
+    assert aggregate["effective_output_tokens_per_second"] == 500.0
     assert summary["totals"]["wall_time_ms"] == 1_250
     assert summary["totals"]["provider_latency_ms"] == 900
+    assert summary["totals"]["user_turns"] == 1
+    assert summary["totals"]["model_turns"] == 2
+    assert summary["totals"]["effective_output_tokens_per_second"] == 500.0
+    assert summary["scenarios"]["a"]["reps"][0]["user_turns"] == 1
+    assert summary["scenarios"]["a"]["reps"][0]["model_turns"] == 2
+    assert summary["scenarios"]["a"]["reps"][0]["effective_output_tokens_per_second"] == 500.0
 
     report = render_harness_report(summary)
     assert "**Completion time:** 1.25s end-to-end | 0.90s in provider calls" in report
+    assert "**Turns:** 1 user / 2 model | **Effective output rate:** 500.00 tok/s" in report
     assert "Time (wall / provider)" in report
-    assert "| 1.25s / 0.90s |" in report
+    assert "Turns (user / model)" in report
+    assert "| 1.0 / 2.0 | 1.25s / 0.90s | 500.00 |" in report
+
+
+def test_effective_output_rate_is_unknown_without_provider_time():
+    rep = _rep(_mech(100.0), tool_calls=[_call("get_steam_game_info", "replay")])
+    rep.run.wall_time_ms = 50
+    rep.run.turns[0].latency_ms = 0
+    rep.run.turns[0].usage = UsageBreakdown(output_tokens=100)
+    summary = build_summary(
+        run_id="r1",
+        git_sha="abc",
+        model="m",
+        repeat=1,
+        cassette_mode="replay",
+        registered_tools=[],
+        results={"a": (_scenario("a"), [rep])},
+    )
+
+    assert summary["totals"]["effective_output_tokens_per_second"] is None
+    assert summary["scenarios"]["a"]["aggregate"]["effective_output_tokens_per_second"] is None
+    assert "**Effective output rate:** n/a tok/s" in render_harness_report(summary)
 
 
 def test_build_summary_carries_llm_token_cost_keys():
@@ -673,7 +706,7 @@ def test_scenario_cost_mean_is_unpriced_when_any_rep_is():
     assert "$0.0021" not in report
 
 
-def test_summary_uses_the_initial_schema_version():
+def test_summary_uses_the_current_schema_version():
     summary = build_summary(
         run_id="r1",
         git_sha="abc",
@@ -684,7 +717,7 @@ def test_summary_uses_the_initial_schema_version():
         results={"a": (_scenario("a"), [_rep(_mech(100.0))])},
     )
 
-    assert summary["version"] == 1
+    assert summary["version"] == 2
     assert summary["kind"] == "harness-eval"
 
 

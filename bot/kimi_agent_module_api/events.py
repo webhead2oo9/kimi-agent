@@ -8,7 +8,8 @@ action instead. Payloads never contain Discord SDK objects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from kimi_agent_module_api.contracts import (
@@ -74,6 +75,8 @@ class MemberRemoveEvent:
     guild_id: int
     user_id: int
     roles_at_removal: tuple[int, ...]
+    display_name: str = ""
+    is_bot: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,9 +89,15 @@ class MemberUpdateEvent:
     timed_out_until_after: float | None
     nickname_before: str | None
     nickname_after: str | None
+    display_name: str = ""
+    is_bot: bool = False
+    # Names for every role id in roles_added / roles_removed.
+    role_names: Mapping[int, str] = field(default_factory=dict)
 
 
-type AuditAction = Literal["ban", "unban", "kick", "timeout", "member_update", "other"]
+type AuditAction = Literal[
+    "ban", "unban", "kick", "timeout", "timeout_cleared", "member_update", "other"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,3 +111,8 @@ class AuditLogEntryEvent:
     reason: str | None
     changes: tuple[tuple[str, Any, Any], ...]
     created_at: float
+    target_display_name: str | None = None
+    # Timeout expiry (unix seconds) for `timeout` actions.
+    until: float | None = None
+    # True when this bot performed the action (e.g. through a module command).
+    actor_is_self: bool = False

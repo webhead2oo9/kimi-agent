@@ -57,7 +57,20 @@ def message_snapshot(message: discord.Message) -> MessageSnapshot:
         attachments=tuple(attachment_snapshot(a) for a in message.attachments),
         jump_url=str(message.jump_url),
         created_at=_ts(message.created_at) or 0.0,
+        author_display_name=str(getattr(message.author, "display_name", message.author)),
+        author_is_bot=bool(getattr(message.author, "bot", False)),
+        embed_image_urls=_embed_image_urls(message),
     )
+
+
+def _embed_image_urls(message: discord.Message) -> tuple[str, ...]:
+    urls: list[str] = []
+    for embed in getattr(message, "embeds", ()) or ():
+        for part in (getattr(embed, "image", None), getattr(embed, "thumbnail", None)):
+            url = getattr(part, "proxy_url", None) or getattr(part, "url", None)
+            if url:
+                urls.append(str(url))
+    return tuple(urls)
 
 
 def member_snapshot(member: discord.Member) -> MemberSnapshot:
@@ -89,7 +102,9 @@ def _audit_action(action: Any) -> ev.AuditAction:
     return _AUDIT_ACTIONS.get(action, "other")
 
 
-def audit_entry_event(entry: discord.AuditLogEntry) -> ev.AuditLogEntryEvent | None:
+def audit_entry_event(
+    entry: discord.AuditLogEntry, *, self_user_id: int | None = None
+) -> ev.AuditLogEntryEvent | None:
     if entry.guild is None:
         return None
     changes: list[tuple[str, Any, Any]] = []
@@ -102,19 +117,33 @@ def audit_entry_event(entry: discord.AuditLogEntry) -> ev.AuditLogEntryEvent | N
             continue
         changes.append((attribute, _jsonable(old), _jsonable(new)))
     action = _audit_action(entry.action)
+    until: float | None = None
     if action == "member_update" and any(name == "timed_out_until" for name, _, _ in changes):
-        action = "timeout"
+        after_until = getattr(after, "timed_out_until", None)
+        until = _ts(after_until) if after_until is not None else None
+        action = "timeout" if until is not None else "timeout_cleared"
     target = getattr(entry, "target", None)
+    target_id = getattr(target, "id", None) if target is not None else None
+    if target_id is None:
+        # discord.py keeps the raw id even when the target was never cached.
+        target_id = getattr(entry, "_target_id", None)
     return ev.AuditLogEntryEvent(
         guild_id=int(entry.guild.id),
         entry_id=int(entry.id),
         action=action,
         raw_action=str(getattr(entry.action, "name", entry.action)),
         actor_id=int(entry.user_id) if entry.user_id else None,
-        target_id=int(target.id) if target is not None and hasattr(target, "id") else None,
+        target_id=int(target_id) if target_id is not None else None,
         reason=entry.reason,
         changes=tuple(changes),
         created_at=_ts(entry.created_at) or 0.0,
+        target_display_name=(
+            getattr(target, "display_name", None) or getattr(target, "name", None)
+        ),
+        until=until,
+        actor_is_self=bool(
+            entry.user_id and self_user_id is not None and int(entry.user_id) == self_user_id
+        ),
     )
 
 
@@ -213,6 +242,8 @@ class ModuleEventPublisher:
                 guild_id=int(member.guild.id),
                 user_id=int(member.id),
                 roles_at_removal=tuple(int(role.id) for role in member.roles),
+                display_name=str(member.display_name),
+                is_bot=bool(member.bot),
             ),
         )
 
@@ -230,11 +261,21 @@ class ModuleEventPublisher:
                 timed_out_until_after=_ts(getattr(after, "timed_out_until", None)),
                 nickname_before=before.nick,
                 nickname_after=after.nick,
+                display_name=str(after.display_name),
+                is_bot=bool(after.bot),
+                role_names={
+                    int(role.id): str(role.name)
+                    for role in (*before.roles, *after.roles)
+                    if int(role.id) in (before_roles ^ after_roles)
+                },
             ),
         )
 
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry) -> None:
-        event = audit_entry_event(entry)
+        bot_user = getattr(self._bot, "user", None)
+        event = audit_entry_event(
+            entry, self_user_id=int(bot_user.id) if bot_user is not None else None
+        )
         if event is not None:
             self._safe(ev.TOPIC_AUDIT_LOG_ENTRY, event)
 

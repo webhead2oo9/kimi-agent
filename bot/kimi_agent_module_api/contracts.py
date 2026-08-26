@@ -469,6 +469,10 @@ class MessageSnapshot:
     attachments: tuple[AttachmentSnapshot, ...]
     jump_url: str
     created_at: float
+    author_display_name: str = ""
+    author_is_bot: bool = False
+    # Image URLs from the message's embeds (proxy URLs when Discord provides them).
+    embed_image_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,6 +497,14 @@ class OutgoingEmbed:
 
 
 class DiscordActions(Protocol):
+    """Declared Discord operations on stable IDs.
+
+    ``actor_id`` on ban/kick/timeout is the staff member acting through the
+    module, or ``None`` when the module acts on its own (automated
+    enforcement). The target policy then requires the target to be below
+    staff tier instead of below the actor's tier.
+    """
+
     async def send_message(
         self,
         channel_id: int,
@@ -518,15 +530,23 @@ class DiscordActions(Protocol):
         guild_id: int,
         user_id: int,
         *,
-        actor_id: int,
+        actor_id: int | None,
         reason: str,
         delete_message_seconds: int = 0,
     ) -> None: ...
 
-    async def kick(self, guild_id: int, user_id: int, *, actor_id: int, reason: str) -> None: ...
+    async def kick(
+        self, guild_id: int, user_id: int, *, actor_id: int | None, reason: str
+    ) -> None: ...
 
     async def timeout(
-        self, guild_id: int, user_id: int, *, actor_id: int, reason: str, duration_seconds: int
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        actor_id: int | None,
+        reason: str,
+        duration_seconds: int,
     ) -> None: ...
 
     async def fetch_message(self, ref: MessageRef) -> MessageSnapshot | None: ...

@@ -15,5 +15,5 @@ expect:
   max_tool_calls: 5
   reply_must_match: ["rfc2606\\.txt"]
   notes: >-
-    Explicitly exercises the handoff from a live search result into the
+    Explicitly exercises the handoff from an internet search result into the
     SSRF-checked workspace downloader without depending on search-result rank.

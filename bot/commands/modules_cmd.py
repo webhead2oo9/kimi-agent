@@ -52,6 +52,7 @@ def render_manifest(
     specs: Mapping[str, ModuleSpec],
     health: Mapping[str, ModuleHealth],
     tools: Callable[[str], tuple[str, ...]] | None = None,
+    resolved_hosts: Callable[[str], tuple[str, ...]] | None = None,
 ) -> str:
     if not specs:
         return "No application modules are configured."
@@ -83,6 +84,10 @@ def render_manifest(
                 for rule in perms.http_hosts
             )
             lines.append(f"  http hosts: {hosts}")
+        if resolved_hosts is not None:
+            names = resolved_hosts(name)
+            if names:
+                lines.append(f"  resolved hosts: {', '.join(names)}")
         escapes = [flag for flag in ("raw_bot", "raw_storage") if getattr(perms, flag)]
         if perms.override_target_policy:
             escapes.append("override_target_policy")
@@ -115,8 +120,10 @@ class ModulesGroup(app_commands.Group):
         specs: Callable[[], Mapping[str, ModuleSpec]],
         health: Callable[[], Mapping[str, ModuleHealth]],
         tools: Callable[[str], tuple[str, ...]] | None = None,
+        resolved_hosts: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         super().__init__(name="modules", description="Application module status (bot owner only)")
+        self._resolved_hosts = resolved_hosts
         self._owner_user_id = owner_user_id
         self._requested = requested
         self._specs = specs
@@ -141,7 +148,10 @@ class ModulesGroup(app_commands.Group):
     async def manifest(self, interaction: discord.Interaction) -> None:
         if not await self._owner(interaction):
             return
-        await send_message(interaction, render_manifest(self._specs(), self._health(), self._tools))
+        await send_message(
+            interaction,
+            render_manifest(self._specs(), self._health(), self._tools, self._resolved_hosts),
+        )
 
 
 def register_modules_command(
@@ -152,6 +162,7 @@ def register_modules_command(
     specs: Callable[[], Mapping[str, ModuleSpec]],
     health: Callable[[], Mapping[str, ModuleHealth]],
     tools: Callable[[str], tuple[str, ...]] | None = None,
+    resolved_hosts: Callable[[str], tuple[str, ...]] | None = None,
 ) -> Any:
     group = ModulesGroup(
         owner_user_id=owner_user_id,
@@ -159,6 +170,7 @@ def register_modules_command(
         specs=specs,
         health=health,
         tools=tools,
+        resolved_hosts=resolved_hosts,
     )
     bot.tree.add_command(group, override=True)
     return group

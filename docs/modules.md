@@ -173,6 +173,17 @@ Each started module receives its own frozen `ModuleRuntimeContext` carrying
   when the module closes; core syncs the command tree once per READY.
   Not supported: modals, attachment/number option kinds, context menus,
   per-guild command scoping, localization.
+- `ctx.http`: outbound HTTP limited to the hosts in
+  `permissions.http_hosts`. A rule names an exact host, the `discord-cdn`
+  token, or `${setting_name}` resolved from the module's settings at load
+  (a bare host or a URL, whose scheme and port then apply), plus allowed
+  schemes, ports, and a `network` policy. `public` hosts resolve through
+  the same public-only resolver as URL downloads, so DNS can never land on
+  a private or metadata address; `private` allows exactly that host, which
+  is how an owner points a module at a self-hosted service. `get`,
+  `post_json` (no retry), and streaming `download` re-check every redirect
+  hop, cap bodies while streaming, bound timeouts, and never put headers or
+  credentials in errors. Wildcard hosts are not supported.
 - `ctx.trust.tier(guild_id, user_id)`: read-only trust lookup (`member`,
   `regular`, `staff`) for modules that keep their own protections.
 

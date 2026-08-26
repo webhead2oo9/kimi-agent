@@ -12,8 +12,8 @@ from modules.guild_settings import (
     coerce_value,
 )
 
-GUILD = 100000000000000001
-CHANNEL = 200000000000000002
+GUILD = 700000000000000001
+CHANNEL = 800000000000000002
 
 SCHEMA = GuildSettingsSchema(
     fields=(

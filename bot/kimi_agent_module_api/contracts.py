@@ -601,6 +601,9 @@ class ModuleInteraction(Protocol):
     def user_id(self) -> int: ...
 
     @property
+    def guild_name(self) -> str | None: ...
+
+    @property
     def options(self) -> Mapping[str, Any]: ...
 
     @property
@@ -631,6 +634,33 @@ class ModuleInteraction(Protocol):
     async def follow_up(
         self, content: str, *, embed: OutgoingEmbed | None = None, ephemeral: bool = False
     ) -> None: ...
+
+
+type ButtonStyle = Literal["primary", "secondary", "success", "danger"]
+
+
+@dataclass(frozen=True, slots=True)
+class ButtonSpec:
+    """A persistent button; ``key`` names the handler registered for it."""
+
+    key: str
+    label: str
+    style: ButtonStyle = "secondary"
+    parts: tuple[str, ...] = ()
+    disabled: bool = False
+    emoji: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SelectSpec:
+    """A persistent single/multi select; options are (label, value, description)."""
+
+    key: str
+    options: tuple[tuple[str, str, str | None], ...]
+    placeholder: str | None = None
+    parts: tuple[str, ...] = ()
+    min_values: int = 1
+    max_values: int = 1
 
 
 type CommandHandler = Callable[[ModuleInteraction], Awaitable[None]]

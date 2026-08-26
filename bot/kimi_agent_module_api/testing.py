@@ -305,7 +305,9 @@ class FakeInteraction:
         options: Mapping[str, Any] | None = None,
         custom_id: str | None = None,
         values: Sequence[str] = (),
+        guild_name: str | None = "Test Guild",
     ) -> None:
+        self._guild_name = guild_name
         self._guild_id = guild_id
         self._channel_id = channel_id
         self._user_id = user_id
@@ -326,6 +328,10 @@ class FakeInteraction:
     @property
     def user_id(self) -> int:
         return self._user_id
+
+    @property
+    def guild_name(self) -> str | None:
+        return self._guild_name
 
     @property
     def options(self) -> Mapping[str, Any]:

@@ -361,6 +361,13 @@ class ModuleManager:
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
             finally:
+                router = getattr(self._contexts.get(name), "interactions", None)
+                close_router = getattr(router, "close", None)
+                if callable(close_router):
+                    try:
+                        close_router()
+                    except Exception:
+                        log.exception("Error closing interactions for Kimi module %s", name)
                 if self.events is not None:
                     await self.events.close_module(name)
                 self.services.retire_module(name)

@@ -13,6 +13,8 @@ Kimi's user-facing release notes for server owners, staff, and members.
   Off by default (`CONTROL_PLANE_ENABLED`).
 - Application modules install through a versioned public module API and can
   declare the control-plane capabilities they need.
+- `/modules status` and `/modules manifest` (bot owner only) show each
+  application module's health and what it declares it uses.
 - Long, tool-heavy conversations in shared channels can now receive a one-time
   suggestion to continue in a Discord thread. Server owners can tune the
   threshold with `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS`, or set it to `0` to

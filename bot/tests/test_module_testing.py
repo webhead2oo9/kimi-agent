@@ -66,7 +66,8 @@ async def test_harness_starts_modules_with_per_module_contexts(tmp_path: Path) -
         assert beta.ctx.module_name == "beta"
         assert alpha.ctx is runtime.ctx_for("alpha")
         assert alpha.ctx.events is not beta.ctx.events
-        assert alpha.ctx.services is beta.ctx.services
+        assert alpha.ctx.storage is not None and alpha.ctx.storage.table("x") == '"alpha_x"'
+        assert runtime.manager.health.get("alpha") is not None
         assert alpha.ctx.current_config_dir is not None
         assert alpha.ctx.current_config_dir() == runtime.config_dir
 

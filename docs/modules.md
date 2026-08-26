@@ -84,6 +84,35 @@ services these declarations govern land incrementally as optional fields on
 the runtime context; until they do, declarations are validated but not yet
 enforced.
 
+## Runtime services
+
+Each started module receives its own frozen `ModuleRuntimeContext` carrying
+`module_name` and the service ports core has implemented so far:
+
+- `ctx.storage`: the shared database seen through the module's table prefix.
+  `ctx.storage.table("cases")` returns the quoted physical name
+  `"<module>_cases"`, or the legacy name when the spec declares a
+  `table_aliases` entry. A module that defines `scoped_migrations` gets a
+  `MigrationContext` with the same `table()` helper instead of a raw
+  connection. This is naming discipline on one shared connection, not SQL
+  isolation; every writer still goes through `write_transaction()`.
+- `ctx.health.report(state, detail, metrics)`: `starting`, `healthy`,
+  `degraded`, or `failed`. Core sets `starting` before `start()`, `failed`
+  (and aborts startup) if `start()` raises, and `healthy` after a clean
+  return unless the module already reported otherwise. A module that
+  declares a service in `provides` but never provides it is marked
+  `degraded`. Detail is truncated, metrics are capped and secret-looking
+  keys dropped; every change is a `module_health` observability event.
+- `ctx.services.provide(name, version, impl)` / `ctx.services.get(name,
+  version)`: exact-version services between modules. Both must match the
+  spec's `provides` / `consumes`; a consumer must depend on the provider so
+  it starts later. `get` returns a proxy that raises `ServiceUnavailable`
+  once the provider closes.
+
+The bot owner can inspect all of this with `/modules status` (health per
+module) and `/modules manifest` (every declaration, including escape
+hatches such as `raw_bot`).
+
 ## Testing a module
 
 `kimi_agent_module_api.testing` ships protocol-level fakes for every service

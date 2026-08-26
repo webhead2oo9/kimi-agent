@@ -112,6 +112,7 @@ from commands.privacy_cmd import (
     register_privacy_command,
     run_privacy_deletion,
 )
+from commands.modules_cmd import register_modules_command
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
@@ -135,7 +136,7 @@ from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
 from moderation.types import Direction
 from storage.auto_retain import AutoRetainStore
-from observability.events import start_event_writer, stop_event_writer
+from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from providers.assets import write_generated_assets
 from providers.types import ContentPart
 from skills.loader import SkillsIndexCache
@@ -767,6 +768,14 @@ class KimiApplication:
             self.blocked_user_store,
             self.trust_resolver,
         )
+        module_manager = self.tools.module_manager
+        register_modules_command(
+            self.bot,
+            owner_user_id=self.settings.owner_user_id,
+            requested=lambda: module_manager.load_state.requested,
+            specs=lambda: module_manager.specs,
+            health=module_manager.health_snapshot,
+        )
         register_usage_command(
             self.bot,
             self.usage_store,
@@ -796,6 +805,9 @@ class KimiApplication:
             policy_url=self.settings.privacy_policy_url,
             browser_data_store=self.tools.browser_service,
             cancel_user_work=self._cancel_user_for_privacy,
+        )
+        self.tools.module_manager.health.on_change = lambda name, health: emit_module_health(
+            module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
         )
         await self.tools.module_manager.start(
             ModuleRuntimeContext(

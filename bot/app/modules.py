@@ -10,7 +10,7 @@ removing the capability.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 import logging
@@ -21,6 +21,7 @@ from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
 from kimi_agent_module_api.contracts import (
+    ModuleHealth,
     validate_guild_settings_schema,
     validate_module_name,
     validate_permissions,
@@ -44,6 +45,10 @@ if TYPE_CHECKING:
     from config.settings import Settings
     from discord_adapter.gateway import DiscordGateway
     from tools.registry import ToolRegistry
+
+from modules.health import HealthRegistry
+from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
+from modules.storage import ModuleStorageImpl, validate_table_aliases
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +171,7 @@ def _validate_declarations(spec: ModuleSpec) -> None:
         validate_services(spec.name, spec.dependencies, spec.provides, spec.consumes)
         if spec.guild_settings is not None:
             validate_guild_settings_schema(spec.name, spec.guild_settings)
+        validate_table_aliases(spec.name, spec.table_aliases)
     except ValueError as exc:
         raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
 
@@ -181,6 +187,8 @@ class ModuleManager:
     _validators: dict[str, GuildConfigValidator] = field(default_factory=dict)
     _started: list[str] = field(default_factory=list)
     _contexts: dict[str, ModuleRuntimeContext] = field(default_factory=dict)
+    health: HealthRegistry = field(default_factory=HealthRegistry)
+    services: ServiceRegistryImpl = field(default_factory=ServiceRegistryImpl)
 
     @property
     def config_dir(self) -> Path:
@@ -253,6 +261,10 @@ class ModuleManager:
         except KeyError as exc:
             raise RuntimeError(f"Kimi module {name!r} is not active") from exc
 
+    @property
+    def specs(self) -> Mapping[str, ModuleSpec]:
+        return {spec.name: spec for spec in self._specs}
+
     def spec(self, name: str) -> ModuleSpec:
         for spec in self._specs:
             if spec.name == name:
@@ -281,20 +293,50 @@ class ModuleManager:
         try:
             for spec in self._specs:
                 instance = self._modules[spec.name]
-                migrations = tuple(getattr(instance, "migrations", ()))
-                await ctx.database.apply_module_migrations(spec.name, migrations)
+                storage = ModuleStorageImpl(ctx.database, spec.name, spec.table_aliases)
+                await ctx.database.apply_module_migrations(
+                    spec.name, _migrations_for(instance, storage)
+                )
             for spec in self._specs:
                 instance = self._modules[spec.name]
-                module_ctx = replace(ctx, module_name=spec.name)
+                module_ctx = replace(
+                    ctx,
+                    module_name=spec.name,
+                    storage=ModuleStorageImpl(ctx.database, spec.name, spec.table_aliases),
+                    health=self.health.reporter_for(spec.name),
+                    services=ModuleServiceView(
+                        self.services, spec.name, spec.provides, spec.consumes
+                    ),
+                )
                 if customize is not None:
                     module_ctx = customize(spec, module_ctx)
                 self._contexts[spec.name] = module_ctx
                 self._started.append(spec.name)
-                await instance.start(module_ctx)
+                self.health.set(spec.name, "starting")
+                try:
+                    await instance.start(module_ctx)
+                except BaseException as exc:
+                    self.health.set(spec.name, "failed", _summarize(exc))
+                    raise
+                self._settle_health(spec)
                 log.info("Kimi module started: %s %s", spec.name, spec.version)
         except BaseException:
             await self.close()
             raise
+
+    def _settle_health(self, spec: ModuleSpec) -> None:
+        """After a clean start: healthy unless the module said otherwise."""
+        missing = undeclared_provisions(spec.name, spec.provides, self.services.provided_by)
+        current = self.health.get(spec.name)
+        if missing:
+            self.health.set(
+                spec.name, "degraded", "declared but did not provide " + ", ".join(missing)
+            )
+        elif current is None or current.state == "starting":
+            self.health.set(spec.name, "healthy")
+
+    def health_snapshot(self) -> Mapping[str, ModuleHealth]:
+        return self.health.snapshot()
 
     async def close(self) -> None:
         while self._started:
@@ -303,6 +345,29 @@ class ModuleManager:
                 await self._modules[name].close()
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
+            finally:
+                self.services.retire_module(name)
+                self.health.forget(name)
+                self._contexts.pop(name, None)
+
+
+def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
+    scoped = tuple(getattr(instance, "scoped_migrations", ()))
+    if not scoped:
+        return tuple(getattr(instance, "migrations", ()))
+
+    def wrap(migrate: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:
+        async def run(conn: Any) -> None:
+            await migrate(storage.migration_context(conn))
+
+        return run
+
+    return tuple((name, wrap(migrate)) for name, migrate in scoped)
+
+
+def _summarize(exc: BaseException) -> str:
+    text = f"{type(exc).__name__}: {exc}".strip()
+    return text[:200]
 
 
 __all__ = [

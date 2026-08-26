@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from discord import RawBulkMessageDeleteEvent, RawMessageDeleteEvent
 
 from discord_adapter.module_events import (
     ModuleEventPublisher,
@@ -240,14 +241,20 @@ async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
     publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
 
     await publisher.on_raw_message_delete(
-        SimpleNamespace(guild_id=1, channel_id=2, message_id=30, cached_message=None)
+        cast(
+            RawMessageDeleteEvent,
+            SimpleNamespace(guild_id=1, channel_id=2, message_id=30, cached_message=None),
+        )
     )
     await publisher.on_raw_bulk_message_delete(
-        SimpleNamespace(
-            guild_id=1,
-            channel_id=2,
-            message_ids={31, 32},
-            cached_messages=[],
+        cast(
+            RawBulkMessageDeleteEvent,
+            SimpleNamespace(
+                guild_id=1,
+                channel_id=2,
+                message_ids={31, 32},
+                cached_messages=[],
+            ),
         )
     )
 

@@ -677,9 +677,7 @@ class DiscordActions(Protocol):
         limit: int = 100,
     ) -> MessagePage: ...
 
-    async def fetch_pins(
-        self, guild_id: int, channel_id: int
-    ) -> tuple[MessageSnapshot, ...]: ...
+    async def fetch_pins(self, guild_id: int, channel_id: int) -> tuple[MessageSnapshot, ...]: ...
 
     async def fetch_public_threads(
         self, guild_id: int, parent_channel_id: int

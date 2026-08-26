@@ -214,7 +214,10 @@ class ModuleInteractionAdapter:
 
 def _option_value(value: Any) -> Any:
     """Reduce SDK option objects to stable IDs; scalars pass through."""
-    if isinstance(value, discord.Member | discord.User | discord.Role | discord.abc.GuildChannel):
+    if isinstance(
+        value,
+        discord.Member | discord.User | discord.Role | discord.Thread | discord.abc.GuildChannel,
+    ):
         return int(value.id)
     return value
 
@@ -399,14 +402,23 @@ class InteractionRouterImpl:
         if spec.group:
             group = self._groups.get(spec.group)
             if group is None:
+                if self._bot.tree.get_command(spec.group) is not None:
+                    raise ModuleContractError(
+                        f"module {self._module_name!r} command group {spec.group!r} "
+                        "is already owned"
+                    )
                 group = app_commands.Group(
                     name=spec.group, description=spec.group_description or spec.group
                 )
                 self._groups[spec.group] = group
-                self._bot.tree.add_command(group, override=True)
+                self._bot.tree.add_command(group)
             group.add_command(command)
         else:
-            self._bot.tree.add_command(command, override=True)
+            if self._bot.tree.get_command(spec.name) is not None:
+                raise ModuleContractError(
+                    f"module {self._module_name!r} command {spec.name!r} is already owned"
+                )
+            self._bot.tree.add_command(command)
         self._commands.append((spec.group, spec.name))
 
         def close() -> None:
@@ -491,15 +503,24 @@ class InteractionRouterImpl:
                     app_commands.Choice(name=name, value=value) for name, value in option.choices
                 ]
             if option.autocomplete and autocomplete is not None:
-                command.autocomplete(option.name)(self._autocomplete(option.name, autocomplete))
+                command.autocomplete(option.name)(
+                    self._autocomplete(option.name, autocomplete, spec.min_tier)
+                )
         return command
 
-    def _autocomplete(self, option_name: str, handler: AutocompleteHandler) -> Any:
+    def _autocomplete(
+        self,
+        option_name: str,
+        handler: AutocompleteHandler,
+        min_tier: TrustTierName,
+    ) -> Any:
         module_name = self._module_name
 
         async def run(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[Any]]:
+            if not await self._allowed(interaction, min_tier):
+                return []
             try:
                 results = await handler(
                     ModuleInteractionAdapter(interaction, module_name), option_name, current

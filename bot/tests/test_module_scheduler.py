@@ -146,10 +146,29 @@ async def test_jobs_survive_restart_and_pause_without_a_handler(tmp_path: Path) 
             ran.append(run.key)
 
         second.view_for("mod").register("tick", handler)
+        assert health[-1] == ("mod", "healthy", "")
         assert await second.run_due() == 1
         assert ran == ["often"]
     finally:
         await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_last_paused_job_clears_scheduler_health(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+    view = scheduler.view_for("mod")
+    try:
+        await view.run_at("orphan", clock.now, "missing")
+        assert await scheduler.run_due() == 0
+        assert health[-1][1] == "degraded"
+        assert await view.cancel("orphan") is True
+        assert health[-1] == ("mod", "healthy", "")
+    finally:
+        await scheduler.close()
         await db.close()
 
 

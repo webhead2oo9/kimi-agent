@@ -14,6 +14,7 @@ from discord_adapter.module_interactions import (
     InteractionRouterImpl,
     InteractionRuntime,
     ModuleInteractionAdapter,
+    _option_value,
     build_view,
 )
 from kimi_agent_module_api.contracts import (
@@ -35,6 +36,9 @@ class _Tree:
 
     def add_command(self, command: Any, **_kwargs: Any) -> None:
         self.commands[command.name] = command
+
+    def get_command(self, name: str) -> Any:
+        return self.commands.get(name)
 
     def remove_command(self, name: str) -> Any:
         return self.commands.pop(name, None)
@@ -175,6 +179,58 @@ async def test_non_staff_and_inactive_guilds_are_refused_before_the_handler() ->
     router_inactive.add_command(CommandSpec(name="ping", description="p"), handler)
     await bot_inactive.tree.commands["ping"].callback(_Interaction(user_id=10))
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_is_refused_before_staff_gate() -> None:
+    router, bot, _ = _router()
+    calls: list[int] = []
+
+    async def command_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def autocomplete_handler(
+        interaction: ModuleInteraction, _option: str, current: str
+    ) -> list[tuple[str, str]]:
+        calls.append(interaction.user_id)
+        return [(current, current)]
+
+    router.add_command(
+        CommandSpec(
+            name="lookup",
+            description="lookup",
+            options=(CommandOption("query", "string", "query", autocomplete=True),),
+            min_tier="staff",
+        ),
+        command_handler,
+        autocomplete=autocomplete_handler,
+    )
+    autocomplete = bot.tree.commands["lookup"]._params["query"].autocomplete
+    assert await autocomplete(_Interaction(user_id=20), "secret") == []
+    choices = await autocomplete(_Interaction(user_id=10), "allowed")
+    assert [choice.value for choice in choices] == ["allowed"]
+    assert calls == [10]
+
+
+def test_module_commands_cannot_replace_an_existing_owner() -> None:
+    router, bot, _ = _router()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    bot.tree.commands["privacy"] = SimpleNamespace(name="privacy")
+    with pytest.raises(ModuleContractError, match="already owned"):
+        router.add_command(CommandSpec(name="privacy", description="module"), handler)
+
+    bot.tree.commands["admin"] = SimpleNamespace(name="admin")
+    with pytest.raises(ModuleContractError, match="already owned"):
+        router.add_command(CommandSpec(name="thing", description="module", group="admin"), handler)
+
+
+def test_thread_options_reduce_to_stable_ids() -> None:
+    thread = object.__new__(discord.Thread)
+    thread.id = 123  # type: ignore[attr-defined]
+    assert _option_value(thread) == 123
 
 
 @pytest.mark.asyncio

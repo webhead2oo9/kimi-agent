@@ -15,6 +15,22 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from pydantic_settings import BaseSettings
 
 from config.fragments.guild_config import parse_id_list, read_guild_frontmatter
+from kimi_agent_module_api.contracts import (
+    DiscordActions,
+    EventBus,
+    GuildSettings,
+    HealthReporter,
+    InteractionRouter,
+    ModuleHttp,
+    ModuleStorage,
+    Scheduler,
+    ServiceRegistry,
+    TrustLookup,
+    GuildSettingsSchema,
+    ModulePermissions,
+    ServiceDeclaration,
+    ServiceRequirement,
+)
 from config.module_settings import ModuleSetting, ModuleSettingsDefinition
 from discord_adapter.io import build_embed, send_response
 from storage.db import Database
@@ -201,6 +217,12 @@ class ModuleSpec:
     dependencies: tuple[str, ...] = ()
     settings: ModuleSettingsDefinition | None = None
     requires_capabilities: tuple[str, ...] = ()
+    # Declarations. Validated at selection preflight; enforced by the
+    # runtime services as they land. Defaults declare nothing.
+    permissions: ModulePermissions = field(default_factory=ModulePermissions)
+    guild_settings: GuildSettingsSchema | None = None
+    provides: tuple[ServiceDeclaration, ...] = ()
+    consumes: tuple[ServiceRequirement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -247,6 +269,21 @@ class ModuleRuntimeContext:
     proposals: ProposalService | None = None
     configuration: ConfigurationService | None = None
     restart: RestartService | None = None
+    # Per-module runtime services. Each is None until core implements it;
+    # the raw bot/database/get_module fields are removed once modules no
+    # longer need them.
+    module_name: str = ""
+    events: EventBus | None = None
+    scheduler: Scheduler | None = None
+    storage: ModuleStorage | None = None
+    health: HealthReporter | None = None
+    discord: DiscordActions | None = None
+    interactions: InteractionRouter | None = None
+    guild_settings: GuildSettings | None = None
+    http: ModuleHttp | None = None
+    services: ServiceRegistry | None = None
+    trust: TrustLookup | None = None
+    current_config_dir: Callable[[], Path] | None = None
 
 
 __all__ = [
@@ -259,9 +296,11 @@ __all__ = [
     "Database",
     "EmbedSpec",
     "GuildConfigValidator",
+    "GuildSettingsSchema",
     "ModuleCapabilities",
     "ModuleLoadContext",
     "ModuleMigration",
+    "ModulePermissions",
     "ModuleRuntimeContext",
     "ModuleSetting",
     "ModuleSettingsDefinition",
@@ -279,6 +318,8 @@ __all__ = [
     "ProposalStale",
     "ProposalState",
     "RestartService",
+    "ServiceDeclaration",
+    "ServiceRequirement",
     "TrustResolver",
     "TrustTier",
     "build_embed",

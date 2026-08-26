@@ -643,6 +643,138 @@ def test_tool_context_includes_discord_source_identifiers() -> None:
     }
 
 
+def test_start_coding_task_receives_text_only_model_visible_context() -> None:
+    seen: list[dict[str, str]] = []
+
+    async def lookup(_args: dict, _ctx: MessageContext) -> str:
+        return "workspace result"
+
+    async def start_coding_task(_args: dict, ctx: MessageContext) -> str:
+        seen.extend(ctx.handoff_context_messages)
+        return json.dumps({"accepted": True})
+
+    registry = ToolRegistry()
+    registry.register(
+        name="lookup",
+        description="Lookup",
+        parameters={"type": "object", "properties": {}},
+        handler=lookup,
+    )
+    registry.register(
+        name="start_coding_task",
+        description="Delegate",
+        parameters={"type": "object", "properties": {}},
+        handler=start_coding_task,
+    )
+    history_image = ContentPart.from_image_url(
+        url="data:image/png;base64,history-secret",
+        media_type="image/png",
+    )
+    input_image = ContentPart.from_image_url(
+        url="data:image/png;base64,input-secret",
+        media_type="image/png",
+    )
+    context = ConversationContext(
+        key="test",
+        messages=[
+            ConversationMessage(
+                role="user",
+                content=[ContentPart.from_text("rooted history"), history_image],
+            )
+        ],
+    )
+    provider = TypedScriptedProvider(
+        responses=[
+            ProviderResponse(
+                content="I will inspect first.",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="lookup",
+                        arguments={"private_argument": "must-not-appear"},
+                    )
+                ],
+                raw_message={"provider_secret": "must-not-appear"},
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                content="I will delegate now.",
+                tool_calls=[ToolCall(id="call_2", name="start_coding_task", arguments={})],
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(content="done"),
+        ]
+    )
+
+    result = asyncio.run(
+        run_conversation(
+            request=ConversationRunRequest(
+                user_message="fix this",
+                input_parts=[input_image],
+                context=context,
+                trust_tier=TrustTier.MEMBER,
+                user_name="Alice",
+                user_id="123",
+                provider=provider,
+                registry=registry,
+                recalled_memories="remembered preference",
+                reply_context=ReplyContext(
+                    referenced_message_id="444",
+                    author_name="Bob",
+                    text="reply details",
+                ),
+                max_iterations=3,
+            )
+        )
+    )
+
+    assert result == "done"
+    assert [message["section"] for message in seen] == [
+        "history",
+        "context",
+        "turn",
+        "turn",
+        "turn",
+        "turn",
+    ]
+    snapshot_text = "\n".join(message["text"] for message in seen)
+    assert "rooted history" in snapshot_text
+    assert "remembered preference" not in snapshot_text
+    assert "reply details" in snapshot_text
+    assert "Alice: fix this" in snapshot_text
+    assert "I will inspect first." in snapshot_text
+    assert "workspace result" in snapshot_text
+    assert "I will delegate now." in snapshot_text
+    assert "must-not-appear" not in snapshot_text
+    assert "history-secret" not in snapshot_text
+    assert "input-secret" not in snapshot_text
+
+
+def test_handoff_context_snapshot_keeps_newest_messages_within_both_bounds() -> None:
+    messages = [
+        ConversationMessage(role="user", content=[ContentPart.from_text(f"{i}:" + "x" * 700)])
+        for i in range(25)
+    ]
+
+    snapshot = core_module._build_handoff_context_snapshot(
+        history_messages=messages,
+        context_messages=[],
+        turn_messages=[],
+    )
+
+    assert len(snapshot) <= core_module.HANDOFF_CONTEXT_MAX_MESSAGES
+    assert sum(len(message["text"]) for message in snapshot) <= (
+        core_module.HANDOFF_CONTEXT_MAX_TEXT_CHARS
+    )
+    assert snapshot[0] == {
+        "role": "user",
+        "section": "truncation",
+        "text": core_module.HANDOFF_CONTEXT_TRUNCATION_MARKER,
+    }
+    assert snapshot[-1]["text"].startswith("24:")
+    assert not any(message["text"].startswith("0:") for message in snapshot)
+
+
 def test_embed_only_reply_keeps_empty_final_text_and_syncs_pending_embed(
     tmp_path: Path,
 ) -> None:

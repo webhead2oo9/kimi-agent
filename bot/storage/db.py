@@ -9,7 +9,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -305,7 +305,10 @@ CREATE TABLE IF NOT EXISTS coding_tasks (
     started_at                  REAL,
     finished_at                 REAL,
     deadline_at                 REAL NOT NULL,
-    heartbeat_at                REAL NOT NULL
+    heartbeat_at                REAL NOT NULL,
+    display_summary             TEXT NOT NULL DEFAULT '',
+    context_messages_json       TEXT NOT NULL DEFAULT '[]',
+    input_files_json            TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_coding_tasks_workspace_queue
@@ -450,7 +453,21 @@ type Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
 _INITIAL_SCHEMA_NAME = "initial_schema"
 
 
-_MIGRATIONS: dict[int, Migration] = {}
+async def _migrate_v1_to_v2(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "ALTER TABLE coding_tasks ADD COLUMN display_summary TEXT NOT NULL DEFAULT ''"
+    )
+    await conn.execute(
+        "ALTER TABLE coding_tasks ADD COLUMN context_messages_json TEXT NOT NULL DEFAULT '[]'"
+    )
+    await conn.execute(
+        "ALTER TABLE coding_tasks ADD COLUMN input_files_json TEXT NOT NULL DEFAULT '[]'"
+    )
+
+
+_MIGRATIONS: dict[int, Migration] = {
+    2: ("coding_task_context_inputs", _migrate_v1_to_v2),
+}
 
 
 async def _record_schema_version(
@@ -625,9 +642,8 @@ class Database:
         elif current < SCHEMA_VERSION:
             await _apply_migrations(conn, current)
 
-        # The module ledger was folded into the unreleased core-v1 baseline.
-        # Creating it idempotently also lets pre-split v1 development databases
-        # adopt modules without inventing a core schema v2.
+        # Keep the module ledger idempotent so older development databases can
+        # adopt module support independently of the core migration history.
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS module_schema_versions (
                 module_name TEXT NOT NULL,

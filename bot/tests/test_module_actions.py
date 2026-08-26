@@ -66,6 +66,9 @@ class _Channel:
     def __init__(self, guild: _Guild) -> None:
         self.id = 2
         self.guild = guild
+        self.name = "general"
+        self.topic = "Guild discussion"
+        self.parent_id = None
         self.sent: list[tuple[Any, dict[str, Any]]] = []
         self.messages: dict[int, Any] = {}
         self.fetches: list[int] = []
@@ -80,6 +83,34 @@ class _Channel:
             return self.messages[message_id]
         except KeyError as exc:
             raise discord.NotFound(SimpleNamespace(status=404, reason="nope"), "gone") from exc
+
+    def history(
+        self,
+        *,
+        limit: int,
+        after: Any = None,
+        before: Any = None,
+        oldest_first: bool,
+    ) -> Any:
+        messages = sorted(self.messages.values(), key=lambda message: message.id)
+        if after is not None:
+            messages = [message for message in messages if message.id > after.id]
+        if before is not None:
+            messages = [message for message in messages if message.id < before.id]
+        if not oldest_first:
+            messages.reverse()
+
+        async def iterate() -> Any:
+            for message in messages[:limit]:
+                yield message
+
+        return iterate()
+
+    async def pins(self) -> list[Any]:
+        return [message for message in self.messages.values() if getattr(message, "pinned", False)]
+
+    def permissions_for(self, _member: Any) -> Any:
+        return SimpleNamespace(view_channel=True, read_message_history=True)
 
 
 class _Bot:
@@ -240,6 +271,44 @@ async def test_send_and_fetch_use_snapshots_and_safe_mentions() -> None:
     assert await impl.fetch_message(MessageRef(1, 2, 6)) is None
     member = await impl.fetch_member(1, 20)
     assert member is not None and member.display_name == "user20"
+
+
+@pytest.mark.asyncio
+async def test_history_channel_and_access_reads_return_public_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    impl, _, channel = _actions()
+    monkeypatch.setattr(discord, "TextChannel", _Channel)
+    for message_id in range(1, 5):
+        channel.messages[message_id] = SimpleNamespace(
+            id=message_id,
+            guild=SimpleNamespace(id=1),
+            channel=channel,
+            author=SimpleNamespace(id=20, bot=False, display_name="reader"),
+            content=f"message {message_id}",
+            attachments=[],
+            embeds=[],
+            pinned=message_id == 2,
+            reference=None,
+            edited_at=None,
+            jump_url=f"https://discord.com/channels/1/2/{message_id}",
+            created_at=dt.datetime(2026, 1, message_id, tzinfo=dt.UTC),
+        )
+
+    snapshot = await impl.fetch_channel(1, 2)
+    page = await impl.fetch_messages(1, 2, before_message_id=4, limit=2)
+    pins = await impl.fetch_pins(1, 2)
+
+    assert snapshot is not None
+    assert (snapshot.kind, snapshot.name, snapshot.topic) == (
+        "text",
+        "general",
+        "Guild discussion",
+    )
+    assert [message.ref.message_id for message in page.messages] == [2, 3]
+    assert page.next_cursor == 2 and page.has_more is True
+    assert [message.ref.message_id for message in pins] == [2]
+    assert await impl.can_view_channel(1, 20, 2) is True
 
 
 @pytest.mark.asyncio

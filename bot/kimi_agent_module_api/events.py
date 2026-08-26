@@ -65,6 +65,11 @@ class MessageDeleteEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageBulkDeleteEvent:
+    refs: tuple[MessageRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MemberJoinEvent:
     member: MemberSnapshot
     account_created_at: float

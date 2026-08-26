@@ -27,7 +27,7 @@ guild installations, and permissions stay intact.
   `hey/hi <bot name>` / `<bot name> help` text invocation, or any message in a
   thread it created via handoff; ignores DMs; and keeps conversations rooted in
   SQLite so a reply continues its own thread even across restarts.
-- **Provider-neutral.** Route chat and compaction models from
+- **Provider-neutral.** Route chat, compaction, and optional durable coding models from
   `config/models.yaml`: OpenAI-compatible (Chat Completions or Responses),
   Anthropic (native or compat gateway), OpenRouter, or Codex. The agent core
   never touches provider-specific types. See [docs/providers.md](../docs/providers.md).
@@ -42,6 +42,10 @@ guild installations, and permissions stay intact.
   archive extract, URL fetch) with path, size, quota, and TTL caps. This boundary
   applies to the file tools; operator-authored skill scripts use a separate
   Linux Bubblewrap boundary with only their exact per-call workspace writable.
+- **Durable coding agent (optional).** Hand repository-scale work to a
+  separately routed background worker with persisted progress, managed sandbox
+  jobs, recovery, steering, and cancellation. See
+  [docs/coding-agent.md](../docs/coding-agent.md).
 - **Discord context and search.** Fetch recent channel context on demand and,
   when configured, search selected Discord channels without persisting the
   retrieved messages.
@@ -104,6 +108,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | Memory (Hindsight) | `memory/` | [memory.md](../docs/memory.md) |
 | Learning (teach + bot-name-derived menu) | `tools/learn.py`, `app/learn_turn.py`, `commands/learn_cmd.py` | [learning.md](../docs/learning.md) |
 | Workspaces & file tools | `workspace/manager.py`, `tools/workspace/` | [workspace.md](../docs/workspace.md) |
+| Durable coding agent | `app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py` | [coding-agent.md](../docs/coding-agent.md) |
 | Storage (async SQLite) | `storage/` | [database.md](../docs/database.md) |
 | Privacy & content moderation | `app/consent.py`, `moderation/` | [privacy.md](../docs/privacy.md) |
 | User persona overrides | `tools/persona.py` | [persona.md](../docs/persona.md) |

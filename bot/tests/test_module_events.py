@@ -142,6 +142,37 @@ def test_message_snapshot_carries_ids_and_attachments_only() -> None:
     assert snap.created_at == dt.datetime(2026, 1, 1, tzinfo=dt.UTC).timestamp()
 
 
+def test_message_snapshot_carries_history_projection_fields() -> None:
+    snap = message_snapshot(
+        _message(
+            pinned=True,
+            edited_at=dt.datetime(2026, 1, 2, tzinfo=dt.UTC),
+            reference=SimpleNamespace(message_id=99),
+            author=SimpleNamespace(id=4, bot=False, display_name="Ada"),
+            embeds=[
+                SimpleNamespace(
+                    title="Decision",
+                    description="Ship the index",
+                    fields=[SimpleNamespace(name="Owner", value="Ada")],
+                    footer=SimpleNamespace(text="approved"),
+                    author=SimpleNamespace(name="Review"),
+                    image=None,
+                    thumbnail=None,
+                )
+            ],
+        )
+    )
+
+    assert snap.reply_to_message_id == 99
+    assert snap.pinned is True
+    assert snap.edited_at == dt.datetime(2026, 1, 2, tzinfo=dt.UTC).timestamp()
+    assert snap.author_display_name == "Ada"
+    assert all(
+        expected in snap.embed_texts[0]
+        for expected in ("Decision", "Ship the index", "Review", "Owner: Ada", "approved")
+    )
+
+
 class _Bot:
     def __init__(self) -> None:
         self.listeners: list[tuple[Any, str]] = []
@@ -159,7 +190,7 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     bot = _Bot()
     publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
     publisher.install()
-    assert len(bot.listeners) == 7
+    assert len(bot.listeners) == 9
 
     await publisher.on_message(_message())
     await publisher.on_message_delete(_message(content="gone"))
@@ -200,6 +231,33 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
 
     publisher.uninstall()
     assert bot.listeners == []
+
+
+@pytest.mark.asyncio
+async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
+    published: list[tuple[str, Any]] = []
+    bot = _Bot()
+    publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
+
+    await publisher.on_raw_message_delete(
+        SimpleNamespace(guild_id=1, channel_id=2, message_id=30, cached_message=None)
+    )
+    await publisher.on_raw_bulk_message_delete(
+        SimpleNamespace(
+            guild_id=1,
+            channel_id=2,
+            message_ids={31, 32},
+            cached_messages=[],
+        )
+    )
+
+    assert [topic for topic, _payload in published] == [ev.TOPIC_MESSAGE_DELETE] * 2
+    single = published[0][1]
+    bulk = published[1][1]
+    assert isinstance(single, ev.MessageDeleteEvent) and single.ref.message_id == 30
+    assert single.cached_content is None
+    assert isinstance(bulk, ev.MessageBulkDeleteEvent)
+    assert {ref.message_id for ref in bulk.refs} == {31, 32}
 
 
 def test_audit_entry_maps_timeout_from_member_update() -> None:

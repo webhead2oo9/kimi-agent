@@ -62,6 +62,11 @@ type DiscordAction = Literal[
     "timeout",
     "fetch_message",
     "fetch_member",
+    "fetch_channel",
+    "fetch_messages",
+    "fetch_pins",
+    "fetch_public_threads",
+    "check_channel_access",
 ]
 ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
     {
@@ -74,6 +79,11 @@ ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
         "timeout",
         "fetch_message",
         "fetch_member",
+        "fetch_channel",
+        "fetch_messages",
+        "fetch_pins",
+        "fetch_public_threads",
+        "check_channel_access",
     }
 )
 # Actions that act on a member and therefore run the core target policy.
@@ -548,6 +558,33 @@ class MessageSnapshot:
     author_is_bot: bool = False
     # Image URLs from the message's embeds (proxy URLs when Discord provides them).
     embed_image_urls: tuple[str, ...] = ()
+    reply_to_message_id: int | None = None
+    pinned: bool = False
+    edited_at: float | None = None
+    embed_texts: tuple[str, ...] = ()
+
+
+type ChannelKind = Literal["text", "forum", "thread"]
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelSnapshot:
+    guild_id: int
+    channel_id: int
+    kind: ChannelKind
+    name: str
+    parent_channel_id: int | None = None
+    topic: str = ""
+    archived: bool = False
+    private: bool = False
+    applied_tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MessagePage:
+    messages: tuple[MessageSnapshot, ...]
+    next_cursor: int | None
+    has_more: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,6 +664,28 @@ class DiscordActions(Protocol):
     async def fetch_message(self, ref: MessageRef) -> MessageSnapshot | None: ...
 
     async def fetch_member(self, guild_id: int, user_id: int) -> MemberSnapshot | None: ...
+
+    async def fetch_channel(self, guild_id: int, channel_id: int) -> ChannelSnapshot | None: ...
+
+    async def fetch_messages(
+        self,
+        guild_id: int,
+        channel_id: int,
+        *,
+        after_message_id: int | None = None,
+        before_message_id: int | None = None,
+        limit: int = 100,
+    ) -> MessagePage: ...
+
+    async def fetch_pins(
+        self, guild_id: int, channel_id: int
+    ) -> tuple[MessageSnapshot, ...]: ...
+
+    async def fetch_public_threads(
+        self, guild_id: int, parent_channel_id: int
+    ) -> tuple[ChannelSnapshot, ...]: ...
+
+    async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool: ...
 
 
 type TrustTierName = Literal["member", "regular", "staff"]
@@ -779,6 +838,8 @@ class GuildSettingsSnapshot:
 
 
 class GuildSettings(Protocol):
+    def guild_ids(self) -> Sequence[int]: ...
+
     def get(self, guild_id: int) -> GuildSettingsSnapshot: ...
 
     def is_enabled(self, guild_id: int) -> bool: ...

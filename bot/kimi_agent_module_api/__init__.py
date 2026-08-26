@@ -212,6 +212,7 @@ class ModuleSpec:
     dependencies: tuple[str, ...] = ()
     settings: ModuleSettingsDefinition | None = None
     requires_capabilities: tuple[str, ...] = ()
+    activation_capabilities: tuple[str, ...] = ()
     # Declarations. Validated at selection preflight; enforced by the
     # runtime services as they land. Defaults declare nothing.
     permissions: ModulePermissions = field(default_factory=ModulePermissions)

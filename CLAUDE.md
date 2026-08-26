@@ -9,7 +9,7 @@ A Python 3.14 Discord bot: a generalist assistant for Discord communities, named
 This file is the map; per-subsystem behavior docs live in [`docs/`](docs/README.md) and [`docs/architecture.md`](docs/architecture.md) is the orientation-level tree. Design rationale belongs in a doc, not here. Two upkeep rules:
 
 - When a change alters behavior described in a `docs/*.md`, update that doc in the same change. Docs describe current behavior only; do not keep obsolete implementation plans around after their work has landed unless asked for an archival plan.
-- `bot/changelog.md` is the **user-facing** record for server staff and members: plain language, grouped Fixed/New/Changed, with each release dated. When a change alters something a member or server owner would notice, describe the behavior, not the implementation.
+- Release history belongs in tagged GitHub releases, not a rolling document in the repository. Put operator-facing changes and any required migration steps in the notes for the release that ships them.
 
 The deployment host and process supervisor are deliberately not recorded here. Ask rather than inferring them, and never invent or carry over host paths, service units, or restart commands.
 
@@ -24,7 +24,7 @@ ENV_FILE=.env.dev uv run python bot.py        # dev instance: test guild + own D
 uv --preview-features audit-command audit --locked  # locked dependency vulnerabilities
 uv run ruff check .                           # lint
 uv run ruff format --check .                  # formatting: the ONLY line-length enforcement (E501 is unselected)
-uv run mypy .                                 # types
+uv run mypy .                                 # types (Windows fallback: uv run python -m mypy .)
 uv run python -m pytest -q                    # all tests
 uv run python -m pytest tests/test_core_smoke.py -k "test_name"
 git diff --check                              # whitespace
@@ -91,7 +91,7 @@ When a tool-heavy turn approaches the model window, `agent/compaction.py:Compact
 
 `providers/base.py:LLMProvider` is the abstract interface; every provider normalizes into `ProviderResponse`/`ToolCall`. Supported profile types (`providers/factory.py:SUPPORTED_PROVIDER_NAMES`; if it isn't wired in the factory it isn't supported): `openai_compat` (Chat Completions, default), `openai_responses` (stateless Responses API, `store=false`), `anthropic` (native SDK, api.anthropic.com only), `anthropic_compat` (Messages-over-HTTP for gateways), `openrouter`, `codex` (WebSocket Responses transport in `codex/`).
 
-`config/models.yaml` is **untracked instance state**; the tracked template is `config/models.example.yaml` and a missing live file fails startup rather than falling back. Roles `chat` and `compaction` are required, `chat_images` and `persona` optional; each model declares a conservative `context_window` and capabilities, and routing rejects a model that cannot satisfy the turn. Any role may declare `<role>_fallbacks`; `ProviderManager.resolve` then returns a `providers/failover.py:FailoverProvider` that reacts only to transient availability errors (`providers/errors.py:is_provider_availability_error`): one retry after 2s, then advance. `openai_compat` streams with a stall watchdog (`PROVIDER_STREAM_STALL_TIMEOUT_SECONDS`, 90s); the whole-turn ceiling is `REACT_TURN_TIMEOUT_SECONDS` (3600s). The owner-only `/models` menu selects among up to 120 `selectable_chat_models` at runtime; catalog edits still need a restart. See [`docs/providers.md`](docs/providers.md).
+`config/models.yaml` is **untracked instance state**; the tracked template is `config/models.example.yaml` and a missing live file fails startup rather than falling back. Roles `chat` and `compaction` are required; `chat_images`, `persona`, and the independent durable-worker role `coding` are optional. `coding` never inherits from `chat`, and its primary and `coding_fallbacks` must declare `text` and `tool_calling`. Each model declares a conservative `context_window` and capabilities, and routing rejects a model that cannot satisfy the turn. Any role may declare `<role>_fallbacks`; `ProviderManager.resolve` then returns a `providers/failover.py:FailoverProvider` that reacts only to transient availability errors (`providers/errors.py:is_provider_availability_error`): one retry after 2s, then advance. `openai_compat` streams with a stall watchdog (`PROVIDER_STREAM_STALL_TIMEOUT_SECONDS`, 90s); the whole-turn ceiling is `REACT_TURN_TIMEOUT_SECONDS` (3600s). The owner-only `/models` menu selects among up to 120 `selectable_chat_models` at runtime; catalog edits still need a restart. See [`docs/providers.md`](docs/providers.md).
 
 New provider: subclass `LLMProvider`, implement `run_turn`, declare `capabilities`, add a factory case and a `SUPPORTED_PROVIDER_NAMES` entry, document in `docs/providers.md` and the models template.
 
@@ -120,9 +120,9 @@ Shared discovery merges code-owned, read-only `skills/builtin/<name>/SKILL.md` d
 
 ### Code Execution
 
-Optional Linux-only `run_code` (`tools/code_exec.py`, `REGULAR`) executes inline Python/shell or workspace files through `sandbox/runner.py`: systemd whole-tree cgroups, Bubblewrap namespaces/mounts, libseccomp deny-list, rlimits, capped tmpfs/output/workspace growth, and a hard core-dump boundary. `CODE_EXEC_NETWORK_MODE` is deployment-wide: `none`, explicit-risk host networking, or an operator-provisioned `netns` entered through a root-owned helper that accepts no namespace selector. Enabling never bypasses `sandbox_available()`; a failed full-profile probe leaves the tool unregistered. Runs hold the same per-workspace lock as file mutations. Persistent `.venv`/`.pio` trees have separate quotas and fd-relative no-follow cleanup. See [`docs/code-exec.md`](docs/code-exec.md).
+Optional Linux-only `run_code` (`tools/code_exec.py`, `MEMBER`) executes inline Python/shell or workspace files through `sandbox/runner.py`: systemd whole-tree cgroups, Bubblewrap namespaces/mounts, libseccomp deny-list, rlimits, capped tmpfs/output/workspace growth, and a hard core-dump boundary. `CODE_EXEC_NETWORK_MODE` is deployment-wide: `none`, explicit-risk host networking, or an operator-provisioned `netns` entered through a root-owned helper that accepts no namespace selector. Enabling never bypasses `sandbox_available()`; a failed full-profile probe leaves the tool unregistered. Runs hold the same per-workspace lock as file mutations. Persistent `.venv`/`.pio` trees have separate quotas and fd-relative no-follow cleanup. See [`docs/code-exec.md`](docs/code-exec.md).
 
-Optional durable coding tasks (`app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py`) split repository work from the foreground Discord turn. Registration requires `CODING_TASKS_ENABLED`, a tool-capable `roles.coding`, and the live code sandbox. SQLite schema v1 directly contains task/event/job state; startup recovers nonterminal tasks and marks uncertain jobs interrupted. Workers are globally bounded, serialize writes per workspace, checkpoint after tool batches, and expose only workspace, plan/progress, and managed-job tools. `/stop` and exact bot-directed `stop|cancel|abort` bypass admission to cancel foreground and background work; `/privacy` invokes the same teardown before deletion. See [`docs/coding-agent.md`](docs/coding-agent.md).
+Optional durable coding tasks (`app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py`) split repository work from the foreground Discord turn. Registration requires `CODING_TASKS_ENABLED`, a tool-capable `roles.coding`, and the live code sandbox. SQLite schema v2 contains task/event/job state plus durable task context and input metadata; startup recovers nonterminal tasks and marks uncertain jobs interrupted. Workers are globally bounded, serialize writes per workspace, checkpoint after tool batches, and expose only workspace, plan/progress, and managed-job tools. `/stop` and exact bot-directed `stop|cancel|abort` bypass admission to cancel foreground and background work; `/privacy` invokes the same teardown before deletion. See [`docs/coding-agent.md`](docs/coding-agent.md).
 
 ### Persistent Browser
 
@@ -151,7 +151,7 @@ The staff gesture for adding shared knowledge: a **fact** goes to community memo
 
 ### Storage
 
-`storage/db.py` is async SQLite (`aiosqlite`, WAL), initialized in `on_ready`; optional SQLCipher via `DATABASE_ENCRYPTION_KEY`. `messages` is the per-root transcript (one row per Discord message, deduped by `(conversation_id, discord_message_id)`); `message_contexts` maps ids to roots; `usage_ledger` and `paid_usage_ledger` feed `/usage`. Transcripts age out after `transcript_retention_days` (30) via the retention sweeper; usage ledgers and Hindsight memory are excluded. The core database is schema v1; module schemas have independent versions in `module_schema_versions`. See [`docs/database.md`](docs/database.md).
+`storage/db.py` is async SQLite (`aiosqlite`, WAL), initialized in `on_ready`; optional SQLCipher via `DATABASE_ENCRYPTION_KEY`. `messages` is the per-root transcript (one row per Discord message, deduped by `(conversation_id, discord_message_id)`); `message_contexts` maps ids to roots; `usage_ledger` and `paid_usage_ledger` feed `/usage`. Transcripts age out after `transcript_retention_days` (30) via the retention sweeper; usage ledgers and Hindsight memory are excluded. The core database is schema v2; module schemas have independent versions in `module_schema_versions`. See [`docs/database.md`](docs/database.md).
 
 ### Observability and Evals
 

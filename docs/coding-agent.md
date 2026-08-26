@@ -20,8 +20,9 @@ missing, the coding controls simply aren't exposed.
 
 ## Lifecycle and status
 
-`start_coding_task` durably queues the objective, acceptance criteria, Discord
-root, user, and workspace, and returns a task id straight away. The task is
+`start_coding_task` durably queues the objective, acceptance criteria, selected
+context and starting files, Discord root, user, and workspace, and returns a
+task id straight away. The task is
 then held until the Discord boundary has worked out the reply's final channel
 or thread, delivered the acknowledgement there, attempted the initial status
 message, and released the worker. Workers are bounded globally and there is
@@ -49,6 +50,9 @@ tools, `coding_plan`, `coding_progress`, and the managed command-job controls.
 Its command prompt requires `coding_plan` before any edits or jobs. Plan and
 progress tool calls are what produce the user-visible milestones; there is no
 separate summarizer polling or interpreting the agent's hidden reasoning.
+Before the worker publishes a plan, the status uses a short summary supplied by
+the foreground assistant or derived from the objective. Once a plan exists,
+the plan replaces that summary so members see what the worker is actually doing.
 Discord gets one status message, edited no more often than the configured
 minimum interval, followed by one normal final reply. Final delivery is durable
 and retried after a transient Discord failure: retries use persisted
@@ -64,6 +68,28 @@ midway. Text-only follow-up replies can still be delivered while the coding
 worker owns its workspace, but follow-ups that use workspace tools or deliver
 local attachments serialize behind that writer lease so concurrent file access
 stays safe.
+
+## Context and starting files
+
+Delegation is explicit. The foreground assistant can include a bounded,
+text-only snapshot of the conversation and current turn, name non-image
+attachments from the triggering message, and point to existing workspace files.
+The snapshot includes useful reply and tool-read context but never system
+prompts, tool definitions, provider payloads, recalled long-term memories, or
+image bytes. It is stored with the task so a restart does not change what the
+worker was originally given.
+
+Selected attachments go through the same moderation and workspace limits as
+`import_attachment`, then become ordinary workspace files before the task is
+queued. Existing workspace inputs are validated and stored as relative paths.
+The worker is told that copied conversation text, filenames, paths, and file
+contents are untrusted and must be inspected rather than followed as instructions.
+
+Input preparation is all-or-nothing. If a named attachment is unavailable, a
+path is unsafe or missing, a quota is exceeded, or queue admission fails, no
+task is queued and files created by that attempt are removed. The foreground
+assistant receives a direct explanation naming the affected attachment or
+workspace-relative path so it can tell the member what to fix.
 
 ## Managed command jobs
 

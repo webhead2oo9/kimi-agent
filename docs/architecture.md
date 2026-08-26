@@ -5,8 +5,9 @@ lives.
 
 ## What this bot is
 
-At its core, the bot is two model-driven surfaces over a provider-neutral LLM
-layer, plus a seam for optional application modules:
+At its core, the bot has two foreground model-driven surfaces over a
+provider-neutral LLM layer, an optional durable background coding surface, and
+a seam for optional application modules:
 
 **Mention-triggered conversational agent.** This is the community's chat
 surface. A guild message that mentions the bot (or lands in a handoff thread)
@@ -20,6 +21,14 @@ turn over the same ReAct core, running on an independent registry limited to
 `LEARN_TOOLS`. It's answered ephemerally, never persisted to a transcript, and
 audited by `app/learn_log.py`.
 
+**Durable coding agent (optional).** Large repository tasks leave the foreground
+Discord turn through `start_coding_task` and continue in a bounded background
+worker. The worker resolves the independent `roles.coding` model chain, stores
+task, checkpoint, event, and managed-job state in SQLite, and reports progress
+and completion back to Discord. It registers only when explicitly enabled and
+both its tool-capable model role and the Linux code sandbox are available; it
+never falls back to `roles.chat`. See [Durable coding agent](coding-agent.md).
+
 ## Where things live (`bot/`)
 
 ```
@@ -32,7 +41,7 @@ app/                    composition root + Discord-facing application glue:
                         loader), consent.py,
                         admission.py, conversation_routing.py, threads.py +
                         thread_handoff_boundary.py, memory.py, moderation.py,
-                        providers.py,
+                        providers.py, coding_tasks.py + coding_jobs.py,
                         tool_surfaces.py, learn_turn.py + learn_log.py
 agent/                  ReAct engine, turn prep, compaction, attachments
 discord_adapter/        the Discord boundary: io (send/receive gates, chunking),
@@ -44,7 +53,8 @@ config/fragments/       operator markdown read fresh each turn: guild/channel
                         pins and denylists, per-tool config, prompt templates
 tools/                  registry, browse-tools activation, workspace + memory +
                         community-knowledge + internet/Discord search + persona
-                        tools + optional code-execution/browser surfaces
+                        tools + optional code-execution/browser/coding-task
+                        surfaces
 web_browser/            BetterWright JSON bridge and isolated per-user worker
                         lifecycle
 workspace/              per-user sandboxed file workspaces (stdlib-only; the
@@ -54,7 +64,8 @@ sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
 commands/               staff/user app commands (/privacy, /memory, /usage,
                         /models, ...) and the "Teach Kimi" context menu
 memory/                 Hindsight client, bank scoping, auto-retain, opt-out
-storage/                SQLite WAL core schema v1, module schema ledger,
+storage/                SQLite WAL core schema v2, module schema ledger,
+                        conversation + coding task/event/job state,
                         LLM/paid-tool usage stores, global model selection
 trust/                  trust-tier resolution from Discord roles + allowlists
 moderation/             content safety: LLM input/output screening, tier
@@ -107,4 +118,5 @@ Once you have the map, these are the places to go next:
 - `configuration.md`: complete configuration reference.
 - `tools.md`: complete built-in tool catalog and availability gates.
 - `code-exec.md`: code-execution modes, threat model, deployment, and verification.
+- `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
 - `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.

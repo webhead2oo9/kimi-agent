@@ -295,18 +295,41 @@ def load_proposal_channel_id(
     Channel ownership and sendability are checked by the proposal service at
     use time. This loader only accepts a positive numeric Discord ID.
     """
-    result = read_guild_frontmatter(guild_id, config_dir=config_dir)
-    if result is None:
-        return None
-    meta, source = result
-    raw = meta.get("proposal_channel_id")
-    if raw is None:
-        return None
-    token = str(raw).strip()
+    _fallback_blocked, channel_id = _proposal_channel_route(guild_id, config_dir=config_dir)
+    return channel_id
+
+
+def _proposal_channel_route(
+    guild_id: str,
+    *,
+    config_dir: Path | None,
+) -> tuple[bool, str | None]:
+    """Return ``(fallback_blocked, valid_channel_id)`` without following links."""
+    if not guild_id or not _ID_RE.match(guild_id):
+        return True, None
+    fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
+    try:
+        fragment.lstat()
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    text = paths.read_regular_utf8(fragment)
+    if text is None:
+        log.warning("Refusing proposal routing from non-regular or unreadable %s", fragment)
+        return True, None
+    try:
+        meta, _body = split_frontmatter_strict(text)
+    except FrontmatterError:
+        log.warning("Refusing proposal routing from malformed %s", fragment)
+        return True, None
+    if "proposal_channel_id" not in meta:
+        return False, None
+    token = str(meta["proposal_channel_id"]).strip()
     if not _ID_RE.match(token) or int(token) <= 0:
-        log.warning("Ignoring non-numeric proposal_channel_id in %s", source)
-        return None
-    return token
+        log.warning("Ignoring non-numeric proposal_channel_id in %s", fragment)
+        return True, None
+    return True, token
 
 
 def proposal_channel_id_is_configured(
@@ -321,20 +344,8 @@ def proposal_channel_id_is_configured(
     the service cannot safely prove that the key is absent. Only a missing file
     or valid fragment without the key permits the invoking channel.
     """
-    if not guild_id or not _ID_RE.match(guild_id):
-        return True
-    fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
-    try:
-        text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    try:
-        meta, _body = split_frontmatter_strict(text)
-    except FrontmatterError:
-        return True
-    return "proposal_channel_id" in meta
+    fallback_blocked, _channel_id = _proposal_channel_route(guild_id, config_dir=config_dir)
+    return fallback_blocked
 
 
 def load_guild_trust(

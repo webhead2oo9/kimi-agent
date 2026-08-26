@@ -374,6 +374,26 @@ def test_proposal_channel_is_read_and_blocks_activation_when_malformed(tmp_path)
     )
 
 
+def test_proposal_channel_routing_rejects_symlinked_fragments(tmp_path) -> None:
+    servers = tmp_path / "servers"
+    servers.mkdir()
+    fragment = servers / f"{GUILD_ID}.md"
+    outside = tmp_path / "outside.md"
+    outside.write_text(f"---\nproposal_channel_id: {CHANNEL_ID}\n---\n", encoding="utf-8")
+    try:
+        fragment.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+
+    fragment.unlink()
+    fragment.symlink_to(tmp_path / "missing.md")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+
+
 # ---- source link and turn wiring ----------------------------------------
 
 

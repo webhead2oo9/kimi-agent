@@ -20,6 +20,12 @@ from typing import TYPE_CHECKING, Any
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
+from kimi_agent_module_api.contracts import (
+    validate_guild_settings_schema,
+    validate_module_name,
+    validate_permissions,
+    validate_services,
+)
 from kimi_agent_module_api import (
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
@@ -148,7 +154,20 @@ def validate_module_selection(
             raise RuntimeError(
                 f"Kimi module {spec.name!r} requires unavailable capability {missing_capability!r}"
             )
+        _validate_declarations(spec)
     return tuple(specs)
+
+
+def _validate_declarations(spec: ModuleSpec) -> None:
+    """Reject malformed declarations before any module code is created."""
+    try:
+        validate_module_name(spec.name)
+        validate_permissions(spec.name, spec.permissions)
+        validate_services(spec.name, spec.dependencies, spec.provides, spec.consumes)
+        if spec.guild_settings is not None:
+            validate_guild_settings_schema(spec.name, spec.guild_settings)
+    except ValueError as exc:
+        raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
 
 
 @dataclass

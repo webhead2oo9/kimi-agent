@@ -57,6 +57,33 @@ module. It is private during initial development, and
 each package's configuration, privacy, and FingerPrint Hub deployment details
 live alongside that package rather than here.
 
+## Declarations
+
+A `ModuleSpec` can declare what the module intends to use. Declarations are
+validated when the module set is preflighted, before any module code runs, so
+a malformed declaration aborts startup with a named reason:
+
+- `permissions.discord_actions`: the Discord operations the module will call
+  (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
+  `timeout`, `fetch_message`, `fetch_member`).
+- `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
+  module subscribes to. A module never declares its own namespace; it may
+  publish only under `<module_name>.*`.
+- `permissions.http_hosts`: exact outbound hosts, the `discord-cdn` token, or
+  `${setting_name}` resolved from the module's settings. Wildcards are not
+  accepted.
+- `provides` / `consumes`: exact `(name, version)` services. A consumed service
+  must come from a module listed in `dependencies`.
+- `guild_settings`: a typed per-guild schema whose `invalid_policy` defaults to
+  `disable_guild`, so an enforcement module with a broken guild document fails
+  closed.
+
+The rules live in `kimi_agent_module_api.contracts`, which imports only the
+standard library so a package can validate its own declarations in tests. The
+services these declarations govern land incrementally as optional fields on
+the runtime context; until they do, declarations are validated but not yet
+enforced.
+
 ## Experimental control-plane API
 
 The module API can advertise `proposals.v1`, `config.v1`, and `restart.v1` when

@@ -104,6 +104,8 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "memory": {"providers", "storage", "utils"},
     "kimi_agent_module_api": {"config", "discord_adapter", "storage", "tools", "trust"},
     "moderation": {"observability", "providers", "trust", "utils"},
+    # Module API runtime services. Grows as each service lands.
+    "modules": set(),
     "observability": {"utils"},
     "providers": {"codex", "utils"},
     "scripts": {"app", "codex"},

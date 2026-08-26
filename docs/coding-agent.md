@@ -71,10 +71,13 @@ The coding agent can't submit arbitrary inline commands directly. It first
 writes a script into the user's workspace, then starts that path through
 `coding_job_start`. The job runs through the same systemd, Bubblewrap, seccomp,
 rlimit, quota, network-mode, and workspace-lock boundary as `run_code`, with
-coding-specific wall and CPU ceilings. Without an explicit `wait_seconds`,
-`coding_job_status` does one event-driven wait for up to the configured job
-lifetime, so a long build doesn't burn repeated model iterations; passing
-`wait_seconds=0` gives a non-blocking status read instead.
+coding-specific wall and CPU ceilings. That includes the code-execution
+workspace-accounting policy: preflight and final scans, five-second in-flight
+polling by default, and bounded retries for transient disappearing-entry races.
+Without an explicit `wait_seconds`, `coding_job_status` does one event-driven
+wait for up to the configured job lifetime, so a long build doesn't burn
+repeated model iterations; passing `wait_seconds=0` gives a non-blocking status
+read instead.
 
 The application owns every job handle. Cancellation waits for the sandbox to
 tear down, and systemd also gets `RuntimeMaxSec` as a manager-side backstop. A

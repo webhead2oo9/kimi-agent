@@ -63,12 +63,14 @@ class _Channel:
         self.guild = guild
         self.sent: list[tuple[Any, dict[str, Any]]] = []
         self.messages: dict[int, Any] = {}
+        self.fetches: list[int] = []
 
     async def send(self, content: Any, **kwargs: Any) -> Any:
         self.sent.append((content, kwargs))
         return SimpleNamespace(id=99)
 
     async def fetch_message(self, message_id: int) -> Any:
+        self.fetches.append(message_id)
         try:
             return self.messages[message_id]
         except KeyError as exc:
@@ -128,6 +130,16 @@ async def test_gate_blocks_undeclared_actions_before_touching_discord() -> None:
     assert guild.bans == []
     with pytest.raises(ValueError):
         DeclaredDiscordActions(impl, "mod", frozenset({"nuke"}))
+
+
+@pytest.mark.asyncio
+async def test_audit_reason_caps_the_combined_prefix_and_preserves_leading_correlation() -> None:
+    impl, guild, _ = _actions()
+    marker = "[kimi-case:abc123]"
+    await impl.kick(1, 20, actor_id=10, reason=f"{marker} {'x' * 600}")
+    audit_reason = guild.kicks[0][1]
+    assert len(audit_reason) == 512
+    assert audit_reason.startswith(f"[mod] {marker} ")
 
 
 @pytest.mark.asyncio
@@ -211,6 +223,24 @@ async def test_send_and_fetch_use_snapshots_and_safe_mentions() -> None:
     assert await impl.fetch_message(MessageRef(1, 2, 6)) is None
     member = await impl.fetch_member(1, 20)
     assert member is not None and member.display_name == "user20"
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_delete_reject_message_refs_for_another_guild() -> None:
+    impl, _, channel = _actions()
+    deleted: list[bool] = []
+
+    async def delete() -> None:
+        deleted.append(True)
+
+    channel.messages[5] = SimpleNamespace(delete=delete)
+    mismatched = MessageRef(999, 2, 5)
+
+    assert await impl.fetch_message(mismatched) is None
+    with pytest.raises(DiscordActionError, match="not in guild 999"):
+        await impl.delete_message(mismatched)
+    assert channel.fetches == []
+    assert deleted == []
 
 
 @pytest.mark.asyncio

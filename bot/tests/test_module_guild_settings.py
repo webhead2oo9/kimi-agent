@@ -29,6 +29,9 @@ SCHEMA = GuildSettingsSchema(
 OPTIONAL = GuildSettingsSchema(
     fields=(GuildSettingField("channels", "id_list"),), invalid_policy="disable_module"
 )
+OPTIONAL_ENFORCEMENT = GuildSettingsSchema(
+    fields=(GuildSettingField("channels", "id_list"),), invalid_policy="disable_guild"
+)
 
 
 def test_coercion_rules() -> None:
@@ -153,3 +156,21 @@ def test_body_content_and_missing_documents(tmp_path: Path) -> None:
     assert service.get(GUILD, "mod").errors == ("module guild settings must be frontmatter only",)
     missing = service.get(GUILD + 1, "mod")
     assert missing.valid and missing.values == {"channels": None} and missing.legacy is False
+
+
+def test_malformed_optional_only_documents_fail_closed(tmp_path: Path) -> None:
+    """Parse failures cannot look like an empty, valid optional configuration."""
+    documents = (
+        "---\nchannels: [unclosed\n---\n",
+        "---\nchannels: []\n",
+        "---\n- not\n- a mapping\n---\n",
+    )
+    for offset, document in enumerate(documents):
+        guild_id = GUILD + offset
+        _write(tmp_path, f"{GUILD_MODULES_DIR}/{guild_id}/enforcer.md", document)
+
+    service, _ = _service(tmp_path, enforcer=OPTIONAL_ENFORCEMENT)
+    service.refresh(GUILD + offset for offset in range(len(documents)))
+
+    assert all(not service.get(GUILD + offset, "enforcer").valid for offset in range(3))
+    assert service.blocked_guilds() == frozenset(GUILD + offset for offset in range(3))

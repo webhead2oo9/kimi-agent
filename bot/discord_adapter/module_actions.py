@@ -90,8 +90,12 @@ def _build_embed(spec: OutgoingEmbed) -> discord.Embed:
 
 
 def _reason(module_name: str, reason: str) -> str:
-    text = " ".join(reason.split())[:_MAX_REASON]
-    return f"[{module_name}] {text}" if text else f"[{module_name}]"
+    prefix = f"[{module_name}]"
+    text = " ".join(reason.split())
+    if not text:
+        return prefix[:_MAX_REASON]
+    available = max(0, _MAX_REASON - len(prefix) - 1)
+    return f"{prefix} {text[:available]}"[:_MAX_REASON]
 
 
 class DiscordActionsImpl:
@@ -136,6 +140,8 @@ class DiscordActionsImpl:
 
     async def _message(self, ref: MessageRef) -> discord.Message:
         channel = await self._channel(ref.channel_id)
+        if int(channel.guild.id) != ref.guild_id:
+            raise DiscordActionError(f"channel {ref.channel_id} is not in guild {ref.guild_id}")
         try:
             return await channel.fetch_message(ref.message_id)
         except discord.NotFound as exc:

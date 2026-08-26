@@ -690,6 +690,7 @@ class InteractionRouter(Protocol):
         handler: CommandHandler,
         *,
         expires_after_seconds: float | None = None,
+        min_tier: TrustTierName = "member",
     ) -> Registration: ...
 
     def custom_id(self, key: str, *parts: str) -> str: ...

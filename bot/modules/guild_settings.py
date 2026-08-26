@@ -30,7 +30,7 @@ from kimi_agent_module_api.contracts import (
     GuildSettingsSnapshot,
     HealthState,
 )
-from utils.frontmatter import split_frontmatter
+from utils.frontmatter import FrontmatterError, split_frontmatter_strict
 
 log = logging.getLogger(__name__)
 
@@ -162,7 +162,10 @@ class GuildSettingsService:
         except OSError as exc:
             return GuildSettingsSnapshot({}, False, (f"unreadable document: {exc}",), "", False)
         if text:
-            metadata, body = split_frontmatter(text)
+            try:
+                metadata, body = split_frontmatter_strict(text)
+            except FrontmatterError as exc:
+                return GuildSettingsSnapshot({}, False, (str(exc),), _revision(text), False)
             if body.strip():
                 return GuildSettingsSnapshot(
                     {}, False, ("module guild settings must be frontmatter only",), _revision(text)
@@ -174,7 +177,10 @@ class GuildSettingsService:
                 legacy_text = legacy_path.read_text(encoding="utf-8")
             except FileNotFoundError, OSError:
                 legacy_text = ""
-            legacy_meta, _ = split_frontmatter(legacy_text) if legacy_text else ({}, "")
+            try:
+                legacy_meta, _ = split_frontmatter_strict(legacy_text) if legacy_text else ({}, "")
+            except FrontmatterError as exc:
+                return GuildSettingsSnapshot({}, False, (str(exc),), _revision(legacy_text), False)
             known = {f.name for f in schema.fields}
             metadata = {k: v for k, v in legacy_meta.items() if k in known}
             text = legacy_text

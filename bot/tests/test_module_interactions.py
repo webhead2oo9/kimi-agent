@@ -24,6 +24,7 @@ from kimi_agent_module_api.contracts import (
     ModuleInteraction,
     OutgoingEmbed,
     SelectSpec,
+    TrustTierName,
 )
 from kimi_agent_module_api.testing import FakeTrust
 
@@ -87,14 +88,17 @@ class _Interaction:
 
 
 def _router(
-    *, staff: frozenset[int] = frozenset({10}), active: bool = True
+    *,
+    staff: frozenset[int] = frozenset({10}),
+    tiers: dict[tuple[int, int], TrustTierName] | None = None,
+    active: bool = True,
 ) -> tuple[InteractionRouterImpl, _Bot, ComponentDispatcher]:
     bot = _Bot()
     dispatcher = ComponentDispatcher(clock=lambda: 100.0)
     router = InteractionRouterImpl(
         bot=bot,  # type: ignore[arg-type]
         module_name="mod",
-        trust=FakeTrust({(1, uid): "staff" for uid in staff}),
+        trust=FakeTrust(tiers or {(1, uid): "staff" for uid in staff}),
         dispatcher=dispatcher,
         is_guild_active=lambda _g: active,
     )
@@ -237,6 +241,49 @@ async def test_components_dispatch_by_custom_id_and_expire() -> None:
 
     with pytest.raises(ModuleContractError):
         router.register_component("modal", "x", handler)
+
+
+@pytest.mark.asyncio
+async def test_components_reject_dm_and_inactive_guild_before_handler() -> None:
+    hits: list[str] = []
+
+    async def handler(interaction: ModuleInteraction) -> None:
+        hits.append("ran")
+
+    router, _, dispatcher = _router()
+    router.register_component("button", "confirm", handler)
+    custom_id = router.custom_id("confirm")
+    dm = _Interaction(guild_id=None, data={"custom_id": custom_id})
+    await dispatcher.dispatch(dm, "button")  # type: ignore[arg-type]
+
+    inactive_router, _, inactive_dispatcher = _router(active=False)
+    inactive_router.register_component("button", "confirm", handler)
+    inactive = _Interaction(data={"custom_id": custom_id})
+    await inactive_dispatcher.dispatch(inactive, "button")  # type: ignore[arg-type]
+
+    assert hits == []
+    assert dm.response.sent[0]["content"] == "Not allowed."
+    assert inactive.response.sent[0]["content"] == "Not allowed."
+
+
+@pytest.mark.asyncio
+async def test_components_enforce_the_registered_minimum_tier() -> None:
+    router, _, dispatcher = _router(tiers={(1, 10): "staff", (1, 30): "regular"})
+    hits: list[int] = []
+
+    async def handler(interaction: ModuleInteraction) -> None:
+        hits.append(interaction.user_id)
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    custom_id = router.custom_id("confirm")
+    regular = _Interaction(user_id=30, data={"custom_id": custom_id})
+    staff = _Interaction(user_id=10, data={"custom_id": custom_id})
+
+    await dispatcher.dispatch(regular, "button")  # type: ignore[arg-type]
+    await dispatcher.dispatch(staff, "button")  # type: ignore[arg-type]
+
+    assert regular.response.sent[0]["content"] == "Staff only."
+    assert hits == [10]
 
 
 def test_build_view_renders_buttons_and_selects_with_module_ids() -> None:

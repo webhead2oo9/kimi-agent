@@ -384,6 +384,7 @@ class FakeInteractions:
         self.module_name = module_name
         self.commands: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
         self.components: dict[tuple[str, str], Callable[..., Any]] = {}
+        self.component_min_tiers: dict[tuple[str, str], TrustTierName] = {}
         self.autocompletes: dict[str, Callable[..., Any]] = {}
 
     def add_command(
@@ -408,9 +409,16 @@ class FakeInteractions:
         handler: Callable[..., Any],
         *,
         expires_after_seconds: float | None = None,
+        min_tier: TrustTierName = "member",
     ) -> _Closable:
         self.components[(kind, key)] = handler
-        return _Closable(lambda: self.components.pop((kind, key), None))
+        self.component_min_tiers[(kind, key)] = min_tier
+        return _Closable(
+            lambda: (
+                self.components.pop((kind, key), None),
+                self.component_min_tiers.pop((kind, key), None),
+            )
+        )
 
     def custom_id(self, key: str, *parts: str) -> str:
         return build_custom_id(self.module_name, key, *parts)

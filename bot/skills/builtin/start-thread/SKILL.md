@@ -9,13 +9,14 @@ tags: [discord, thread, handoff, conversation]
 Use this when someone asks for a thread or a discussion clearly benefits from a
 separate multi-turn space. Thread handoff is optional. `move_to_thread` is
 part of the main toolset whenever handoff is enabled in the current channel; if
-it is unavailable, say that thread creation is not enabled here.
+it is unavailable, say that thread creation is not available here. It is hidden
+inside existing threads and forum posts, on forum parents, and in announcement
+channels because Discord cannot anchor another local thread there.
 
 `move_to_thread` starts a public thread from the current user message. The
 current reply becomes the first message in that thread, so answer normally and
 do not send a separate duplicate announcement. Give it a short, specific name
-of at most 100 characters. A thread cannot be opened inside the current thread,
-though cross-channel handoff may open one in a named allowlisted channel.
+of at most 100 characters.
 
 Omit `auto_reply` unless the request establishes a preference. `false` starts a
 quiet managed thread where the bot answers only when invoked; otherwise the

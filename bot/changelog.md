@@ -9,7 +9,8 @@ Kimi's user-facing release notes for server owners, staff, and members.
   threshold with `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS`, or set it to `0` to
   disable the suggestion.
 - Thread handoff is available to the model without a preliminary tool-discovery
-  step, improving explicit thread requests and multi-turn troubleshooting.
+  step, improving explicit thread requests and multi-turn troubleshooting. It
+  is hidden where Discord cannot create another local thread.
 - Model evaluation runs now isolate identities, workspaces, attachments,
   browser profiles, generated artifacts, coding controls, and databases across
   models and repetitions. Reports also identify modified source trees, flag

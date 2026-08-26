@@ -62,11 +62,12 @@ work remains, or finish inline when the answer is already imminent. `plan`,
 `browse_tools`, and the thread-control tools do not count. `0` disables the note.
 
 The suggestion is never an automatic move. It is emitted at most once, only when
-`move_to_thread` is visible for that turn, and never in a DM or an existing thread.
-The runtime appends it as a separate content part on the latest tool result, then
-removes it before retaining conversation history. This preserves the append-only
-ReAct transcript and provider prompt-cache prefix: the initial prompt, earlier
-messages, and tool schemas are not rewritten when the threshold trips.
+`move_to_thread` is visible for that turn, and never in a DM, existing thread,
+forum surface, or announcement channel. The runtime appends it as a separate
+content part on the latest tool result, excludes it from compaction, then removes
+it before retaining conversation history. This preserves the append-only ReAct
+transcript and provider prompt-cache prefix without letting a summary carry the
+temporary suggestion into a later turn.
 
 `THREAD_AUTO_HANDOFF_ENABLED` (default `false`, requires `THREAD_HANDOFF_ENABLED`)
 turns on the **deterministic backstop** described below. It is opt-in *per channel*: a
@@ -186,9 +187,11 @@ have nothing to act on
 
 They are core because both starting a useful thread and "stop replying to
 everything" should work on the first ask, without a `browse_tools` round trip.
-`move_to_thread` is visible in ordinary guild channels where policy permits
-handoff and is masked in DMs; the lifecycle mask, not the search pool, keeps the
-other three out of turns where they cannot act.
+`move_to_thread` is visible in ordinary text channels where policy permits
+handoff. It is masked in DMs, existing threads and forum posts, forum parents,
+and announcement channels, where Discord cannot anchor another local thread.
+The lifecycle mask, not the search pool, keeps the other three out of turns
+where they cannot act.
 
 ### Instructions inside the thread
 
@@ -268,10 +271,10 @@ context cost stays flat as the allowlist grows, at the price of the `channel` ar
 being advertised in guilds that have no targets, where the model gets told so.
 
 Naming the channel the turn is already in **collapses** to the ordinary handoff (no
-anchor, no pointer, no second notification). Naming a *different* channel is legal from
-inside a thread (nesting is the Discord limit, not "no threads from threads"), so "take
-this to #dev" works from a support thread. Both threads then share one root and one
-lock, which is continuity, not a bug.
+anchor, no pointer, no second notification). Naming a *different* channel uses the
+cross-channel path from an ordinary text-channel turn. The tool is deliberately hidden
+once the conversation is already inside a thread, rather than offering a control whose
+ordinary local action Discord cannot perform there.
 
 At the boundary:
 
@@ -315,11 +318,10 @@ remain until the operator removes them.
    calls the core `move_to_thread(name)` tool (`MEMBER` tier). The tool validates and
    queues a single-slot pending request:
    `ConversationContext.pending_thread_request` → `TurnResult.thread_request`. Validation
-   is side-effect free; a second call replaces the first. The tool rejects immediately
-   when the turn is already inside a thread (known from the turn's `thread_id`, derived and
-   never a model argument) *unless* a different `channel` was named, or when the name is
-   empty; names are sanitized and truncated
-   to Discord's 100-char cap. The terse tool description points at an instruction-only
+   is side-effect free; a second call replaces the first. The tool is not offered on
+   Discord surfaces that cannot host a local thread. Empty names are rejected; valid
+   names are sanitized and truncated to Discord's 100-char cap. The terse tool
+   description points at an instruction-only
    `start-thread` skill for guidance on *when* starting a thread is appropriate (long
    troubleshooting, multi-message back-and-forth), which keeps the registry
    description short.

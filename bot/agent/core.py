@@ -592,7 +592,10 @@ class _ConversationRunner:
                     try:
                         compacted_messages = await _await_with_deadline(
                             compactor.emergency_compact(
-                                turn_messages=state.turn_messages,
+                                # The advisory is only for the active turn. Never
+                                # let a summarizer copy or paraphrase it into a
+                                # progress note that can be retained later.
+                                turn_messages=_without_thread_handoff_advisory(state.turn_messages),
                                 head_messages=(
                                     state.history_messages + continuation_context_messages
                                 ),
@@ -720,7 +723,7 @@ class _ConversationRunner:
                     self._sync_output_files(context, msg_ctx)
                     await _await_with_deadline(
                         request.checkpoint_sink(
-                            list(state.turn_messages),
+                            _without_thread_handoff_advisory(state.turn_messages),
                             dict(state.current_provider_state),
                             list(msg_ctx.plan),
                         ),
@@ -954,13 +957,17 @@ class _ConversationRunner:
                 return deadline
 
             before_messages = len(state.turn_messages)
+            uncompacted_messages = state.turn_messages
+            compaction_messages = _without_thread_handoff_advisory(uncompacted_messages)
             compacted_messages = await _await_with_deadline(
                 request.compactor.maybe_compact(
-                    turn_messages=state.turn_messages,
+                    # Keep the runtime-only advisory out of both model-written
+                    # summaries and the compactor's elision/truncation paths.
+                    turn_messages=compaction_messages,
                     head_messages=state.history_messages + continuation_context_messages,
                     system_prompt=system_prompt,
                     last_response=response,
-                    appended=state.turn_messages[appended_start:],
+                    appended=compaction_messages[appended_start:],
                     plan=msg_ctx.plan,
                     on_response=partial(
                         self._record_provider_response,
@@ -971,7 +978,7 @@ class _ConversationRunner:
                 ),
                 deadline,
             )
-            if compacted_messages is not state.turn_messages:
+            if compacted_messages is not compaction_messages:
                 _emit_compaction_event(
                     turn_id=turn_id,
                     iteration=iteration,
@@ -986,7 +993,19 @@ class _ConversationRunner:
                     request.provider.capabilities,
                     state.current_provider_state,
                 )
-            state.turn_messages = compacted_messages
+                state.turn_messages = compacted_messages
+                # Compaction runs before the next provider request. If this turn
+                # has not finished, keep the already-emitted hint visible in the
+                # live suffix without ever exposing it to the summarizer.
+                if state.thread_handoff_advisory_emitted:
+                    _append_thread_handoff_advisory(
+                        state.turn_messages,
+                        request.thread_handoff_suggest_after_tool_calls,
+                    )
+            else:
+                # No compaction happened. Preserve the original list so its
+                # append-only advisory remains in the provider-visible suffix.
+                state.turn_messages = uncompacted_messages
         except ConversationTurnTimeoutError:
             _append_missing_timeout_tool_results(
                 state=state,
@@ -1174,23 +1193,12 @@ class _ConversationRunner:
         ):
             return
 
-        for index in range(len(state.turn_messages) - 1, -1, -1):
-            message = state.turn_messages[index]
-            if message.role != "tool":
-                continue
-            state.turn_messages[index] = replace(
-                message,
-                content=[
-                    *message.content,
-                    ContentPart.from_text(_thread_handoff_advisory(threshold)),
-                ],
-            )
+        if _append_thread_handoff_advisory(state.turn_messages, threshold):
             state.thread_handoff_advisory_emitted = True
             log.info(
                 "Suggested move_to_thread after %d substantive tool calls",
                 state.substantive_tool_call_count,
             )
-            return
 
     async def _chat_with_limit(
         self,
@@ -1427,6 +1435,26 @@ def _thread_handoff_advisory(threshold: int) -> str:
         "inline. This is an optional, one-time runtime suggestion.\n"
         f"</thread_handoff_advisory>"
     )
+
+
+def _append_thread_handoff_advisory(
+    messages: list[ConversationMessage],
+    threshold: int,
+) -> bool:
+    """Attach the transient hint to the newest retained tool result."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.role != "tool":
+            continue
+        messages[index] = replace(
+            message,
+            content=[
+                *message.content,
+                ContentPart.from_text(_thread_handoff_advisory(threshold)),
+            ],
+        )
+        return True
+    return False
 
 
 def _without_thread_handoff_advisory(

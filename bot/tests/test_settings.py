@@ -21,6 +21,23 @@ def test_code_exec_public_defaults_are_safe() -> None:
 
     assert settings.code_exec_enabled is False
     assert settings.code_exec_network_mode == "none"
+    assert settings.code_exec_workspace_quota_poll_seconds == 5.0
+    assert settings.code_exec_workspace_quota_scan_retries == 4
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("code_exec_workspace_quota_poll_seconds", 0),
+        ("code_exec_workspace_quota_scan_retries", 0),
+        ("code_exec_workspace_quota_scan_retries", 11),
+    ],
+)
+def test_code_exec_workspace_quota_monitor_settings_must_be_positive(
+    field: str, value: int
+) -> None:
+    with pytest.raises(ValidationError, match=field.upper()):
+        Settings(_env_file=None, **{field: value})  # type: ignore[call-arg, arg-type]
 
 
 @pytest.mark.parametrize("mode", ["none", "host", "netns"])

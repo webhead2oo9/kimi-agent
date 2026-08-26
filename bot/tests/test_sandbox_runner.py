@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
 import json
 import os
 import signal
@@ -702,6 +703,129 @@ async def test_network_cleanup_fails_closed_when_launcher_cannot_be_reaped(
     stop_unit.assert_awaited_once_with("network-unit")
 
 
+def test_workspace_scan_failure_is_not_reported_as_quota_excess() -> None:
+    note = runner._workspace_failure_note("workspace tree could not be inspected safely")
+
+    assert note == (
+        "Execution stopped because workspace accounting could not be completed safely: "
+        "workspace tree could not be inspected safely."
+    )
+
+
+def test_workspace_limit_failure_is_reported_as_quota_excess() -> None:
+    note = runner._workspace_failure_note("11 files exceeds 10 files")
+
+    assert note == (
+        "Execution stopped because the workspace quota was exceeded: 11 files exceeds 10 files."
+    )
+
+
+def test_workspace_quota_monitor_defaults_to_five_second_polling() -> None:
+    cfg = SandboxConfig()
+
+    assert cfg.workspace_quota_poll_seconds == 5.0
+    assert cfg.workspace_quota_scan_retries == 4
+
+
+def test_workspace_quota_retries_transient_disappearing_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scans = [
+        runner._WorkspaceUsage(
+            bytes=0,
+            files=0,
+            scan_error=runner._WorkspaceScanError(
+                area="workspace", errno=errno.ENOENT, relative_path="repo/.tmp-file"
+            ),
+        ),
+        runner._WorkspaceUsage(bytes=10, files=1),
+    ]
+    monkeypatch.setattr(runner, "_workspace_usage", lambda *_args: scans.pop(0))
+
+    reason = runner._workspace_quota_reason(SandboxConfig(), tmp_path)
+
+    assert reason is None
+    assert scans == []
+
+
+def test_workspace_quota_fails_after_four_transient_scan_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    attempts = 0
+
+    def missing_entry(*_args) -> runner._WorkspaceUsage:
+        nonlocal attempts
+        attempts += 1
+        return runner._WorkspaceUsage(
+            bytes=0,
+            files=0,
+            scan_error=runner._WorkspaceScanError(
+                area="workspace", errno=errno.ENOENT, relative_path="repo/.tmp-file"
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_workspace_usage", missing_entry)
+    monkeypatch.setattr(runner.time, "sleep", lambda _delay: None)
+
+    reason = runner._workspace_quota_reason(SandboxConfig(), tmp_path)
+
+    assert attempts == 4
+    assert reason == "workspace tree could not be inspected safely"
+    assert "errno=2 path=repo/.tmp-file attempt=4/4" in caplog.text
+
+
+def test_workspace_quota_does_not_retry_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    def denied(*_args) -> runner._WorkspaceUsage:
+        nonlocal attempts
+        attempts += 1
+        return runner._WorkspaceUsage(
+            bytes=0,
+            files=0,
+            scan_error=runner._WorkspaceScanError(
+                area="environment", errno=errno.EACCES, relative_path=".venv/locked"
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_workspace_usage", denied)
+
+    reason = runner._workspace_quota_reason(SandboxConfig(), tmp_path)
+
+    assert attempts == 1
+    assert reason == "environment tree could not be inspected safely"
+
+
+@pytest.mark.asyncio
+async def test_workspace_quota_monitor_uses_configured_poll_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Proc:
+        returncode: int | None = None
+
+    proc = Proc()
+    sleeps: list[float] = []
+    monkeypatch.setattr(runner, "_workspace_quota_reason", lambda *_args: None)
+
+    async def finish_after_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        proc.returncode = 0
+
+    monkeypatch.setattr(runner.asyncio, "sleep", finish_after_sleep)
+    cfg = SandboxConfig(workspace_quota_poll_seconds=7.5)
+
+    await runner._monitor_workspace_quota(
+        proc,  # type: ignore[arg-type]
+        tmp_path,
+        cfg,
+        runner._QuotaState(),
+    )
+
+    assert sleeps == [7.5]
+
+
 def test_workspace_usage_splits_env_dir_bytes(tmp_path: Path) -> None:
     ws = tmp_path / "work"
     (ws / ".venv" / "lib").mkdir(parents=True)
@@ -748,6 +872,56 @@ def test_workspace_quota_counts_zero_byte_environment_entries(tmp_path: Path) ->
     assert reason == "environment has 11 entries; limit is 10 entries"
 
 
+def test_workspace_usage_records_scan_errno_and_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "work"
+    transient = ws / "repo" / ".tmp-file"
+    transient.mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def missing_transient(path: str | os.PathLike[str]):
+        if Path(path) == transient:
+            raise FileNotFoundError(errno.ENOENT, "simulated rename race", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(runner.os, "scandir", missing_transient)
+
+    usage = runner._workspace_usage(SandboxConfig(), ws)
+
+    assert usage.scan_error == runner._WorkspaceScanError(
+        area="workspace", errno=errno.ENOENT, relative_path="repo/.tmp-file"
+    )
+
+
+def test_workspace_usage_records_scandir_iteration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "work"
+    ws.mkdir()
+
+    class StaleScandir:
+        def __enter__(self) -> StaleScandir:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> StaleScandir:
+            return self
+
+        def __next__(self) -> os.DirEntry[str]:
+            raise OSError(errno.ESTALE, "simulated stale readdir")
+
+    monkeypatch.setattr(runner.os, "scandir", lambda _path: StaleScandir())
+
+    usage = runner._workspace_usage(SandboxConfig(), ws)
+
+    assert usage.scan_error == runner._WorkspaceScanError(
+        area="workspace", errno=errno.ESTALE, relative_path="."
+    )
+
+
 def test_workspace_quota_fails_closed_when_env_tree_cannot_be_scanned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -772,7 +946,10 @@ def test_workspace_quota_fails_closed_when_env_tree_cannot_be_scanned(
     usage = runner._workspace_usage(cfg, ws)
     reason = runner._workspace_quota_reason(cfg, ws)
 
-    assert usage.scan_error == "environment"
+    assert usage.scan_error is not None
+    assert usage.scan_error.area == "environment"
+    assert usage.scan_error.errno is None
+    assert usage.scan_error.relative_path == ".venv/locked"
     assert reason == "environment tree could not be inspected safely"
 
 
@@ -1060,6 +1237,34 @@ async def test_run_rejects_workspace_already_over_total_byte_quota(tmp_path: Pat
     assert result.quota_exceeded is True
     assert "Workspace quota exceeded before execution" in result.stderr
     assert "bytes exceeds" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_run_reports_preflight_accounting_failure_without_quota_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "_host_core_dump_boundary_safe", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_workspace_quota_reason",
+        lambda *_args: "environment tree could not be inspected safely",
+    )
+
+    result = await runner._run_built_command(
+        SandboxConfig(),
+        tmp_path,
+        ["must-not-run"],
+        seccomp_fd=None,
+        stdin=None,
+    )
+
+    assert result.exit_code == 1
+    assert result.quota_exceeded is False
+    assert result.environment_quota_exceeded is False
+    assert result.stderr == (
+        "Workspace accounting could not be completed safely before execution: "
+        "environment tree could not be inspected safely."
+    )
 
 
 @pytest.mark.asyncio

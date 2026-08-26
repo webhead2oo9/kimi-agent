@@ -405,6 +405,8 @@ def _register_code_exec(
         max_open_files=settings.code_exec_max_open_files,
         max_workspace_bytes=settings.workspace_tool_max_user_bytes,
         max_workspace_files=settings.code_exec_max_workspace_files,
+        workspace_quota_poll_seconds=settings.code_exec_workspace_quota_poll_seconds,
+        workspace_quota_scan_retries=settings.code_exec_workspace_quota_scan_retries,
         max_output_bytes=settings.code_exec_max_output_bytes,
         workspace_probe_root=str(Path(settings.workspace_dir).resolve()),
         extra_ro_binds=extra_ro_binds,

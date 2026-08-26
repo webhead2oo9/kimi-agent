@@ -183,6 +183,8 @@ _MINIMUMS: dict[str, int | float] = {
     "code_exec_max_fsize_mb": 1,
     "code_exec_max_open_files": 1,
     "code_exec_max_workspace_files": 1,
+    "code_exec_workspace_quota_poll_seconds": _FLOAT_TIMEOUT_FLOOR,
+    "code_exec_workspace_quota_scan_retries": 1,
     "code_exec_max_output_bytes": 1,
     "code_exec_max_concurrency": 1,
     "code_exec_env_dir_max_mb": 1,

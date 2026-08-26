@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import shutil
@@ -103,6 +104,8 @@ class SandboxConfig:
     max_open_files: int = 256
     max_workspace_bytes: int = 100 * 1024 * 1024
     max_workspace_files: int = 2000
+    workspace_quota_poll_seconds: float = 5.0
+    workspace_quota_scan_retries: int = 4
     max_output_bytes: int = 20_000
     # Real workspace filesystem root used only by the startup capability probe.
     # Persistent venv interpreters and direct-mode files execute below this
@@ -1029,13 +1032,19 @@ async def _run_built_command(
     # monitor already does; a large workspace must not stall the loop.
     quota_reason = await asyncio.to_thread(_workspace_quota_reason, config, workspace_dir)
     if quota_reason is not None:
+        accounting_failed = _workspace_accounting_failed(quota_reason)
         return SandboxResult(
             exit_code=1,
             stdout="",
-            stderr=f"Workspace quota exceeded before execution: {quota_reason}.",
+            stderr=(
+                "Workspace accounting could not be completed safely before execution: "
+                f"{quota_reason}."
+                if accounting_failed
+                else f"Workspace quota exceeded before execution: {quota_reason}."
+            ),
             timed_out=False,
             duration_ms=int((time.monotonic() - started) * 1000),
-            quota_exceeded=True,
+            quota_exceeded=not accounting_failed,
             environment_quota_exceeded=_environment_quota_exceeded(quota_reason),
         )
     proc: asyncio.subprocess.Process | None = None
@@ -1114,8 +1123,7 @@ async def _run_built_command(
         note = f"Execution timed out after {config.wall_timeout_seconds:.0f}s and was killed."
         stderr = f"{stderr}\n{note}".strip()
     if quota_state.reason:
-        note = f"Execution stopped because the workspace quota was exceeded: {quota_state.reason}."
-        stderr = f"{stderr}\n{note}".strip()
+        stderr = f"{stderr}\n{_workspace_failure_note(quota_state.reason)}".strip()
     exit_code = None if timed_out else (proc.returncode if proc is not None else None)
     if quota_state.reason and exit_code == 0:
         exit_code = 1
@@ -1125,9 +1133,23 @@ async def _run_built_command(
         stderr=stderr,
         timed_out=timed_out,
         duration_ms=duration_ms,
-        quota_exceeded=bool(quota_state.reason),
+        quota_exceeded=bool(quota_state.reason)
+        and not _workspace_accounting_failed(quota_state.reason),
         environment_quota_exceeded=_environment_quota_exceeded(quota_state.reason),
     )
+
+
+def _workspace_failure_note(reason: str) -> str:
+    if _workspace_accounting_failed(reason):
+        return (
+            "Execution stopped because workspace accounting could not be completed safely: "
+            f"{reason}."
+        )
+    return f"Execution stopped because the workspace quota was exceeded: {reason}."
+
+
+def _workspace_accounting_failed(reason: str | None) -> bool:
+    return bool(reason and reason.endswith("tree could not be inspected safely"))
 
 
 @dataclass
@@ -1136,20 +1158,49 @@ class _QuotaState:
 
 
 @dataclass(frozen=True)
+class _WorkspaceScanError:
+    area: Literal["workspace", "environment"]
+    errno: int | None
+    relative_path: str
+
+
+@dataclass(frozen=True)
 class _WorkspaceUsage:
     bytes: int
     files: int
     env_bytes: int = 0
     env_files: int = 0
-    scan_error: Literal["workspace", "environment"] | None = None
+    scan_error: _WorkspaceScanError | None = None
 
 
 def _workspace_quota_reason(config: SandboxConfig, workspace_dir: Path) -> str | None:
-    usage = _workspace_usage(config, workspace_dir)
-    if usage.scan_error == "environment":
-        return "environment tree could not be inspected safely"
-    if usage.scan_error == "workspace":
-        return "workspace tree could not be inspected safely"
+    attempts = min(10, max(1, config.workspace_quota_scan_retries))
+    usage = _WorkspaceUsage(bytes=0, files=0)
+    for attempt in range(1, attempts + 1):
+        usage = _workspace_usage(config, workspace_dir)
+        scan_error = usage.scan_error
+        if scan_error is None:
+            break
+        transient = scan_error.errno in {errno.ENOENT, errno.ESTALE}
+        if not transient or attempt == attempts:
+            log.warning(
+                "Workspace quota scan failed: area=%s errno=%s path=%s attempt=%d/%d",
+                scan_error.area,
+                scan_error.errno,
+                scan_error.relative_path,
+                attempt,
+                attempts,
+            )
+            return f"{scan_error.area} tree could not be inspected safely"
+        log.debug(
+            "Retrying transient workspace quota scan: area=%s errno=%s path=%s attempt=%d/%d",
+            scan_error.area,
+            scan_error.errno,
+            scan_error.relative_path,
+            attempt,
+            attempts,
+        )
+        time.sleep(0.05 * attempt)
     if usage.bytes > config.max_workspace_bytes:
         return f"{usage.bytes} bytes exceeds {config.max_workspace_bytes} bytes"
     if usage.files > config.max_workspace_files:
@@ -1162,7 +1213,9 @@ def _workspace_quota_reason(config: SandboxConfig, workspace_dir: Path) -> str |
 
 
 def _environment_quota_exceeded(reason: str | None) -> bool:
-    return bool(reason and reason.startswith("environment "))
+    return bool(
+        reason and reason.startswith("environment ") and not _workspace_accounting_failed(reason)
+    )
 
 
 def _in_env_dir(config: SandboxConfig, rel_parts: tuple[str, ...]) -> bool:
@@ -1183,26 +1236,45 @@ def _workspace_usage(config: SandboxConfig, workspace_dir: Path) -> _WorkspaceUs
     env_bytes = 0
     total_files = 0
     env_files = 0
-    scan_error: Literal["workspace", "environment"] | None = None
+    scan_error: _WorkspaceScanError | None = None
     pending: list[tuple[Path, bool]] = [(workspace_dir, False)]
     while pending and scan_error is None:
         directory, directory_is_env = pending.pop()
         try:
             entries = os.scandir(directory)
-        except OSError:
-            scan_error = "environment" if directory_is_env else "workspace"
+        except OSError as exc:
+            scan_error = _WorkspaceScanError(
+                area="environment" if directory_is_env else "workspace",
+                errno=exc.errno,
+                relative_path=directory.relative_to(workspace_dir).as_posix() or ".",
+            )
             break
         with entries:
-            for entry in entries:
+            while True:
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    break
+                except OSError as exc:
+                    scan_error = _WorkspaceScanError(
+                        area="environment" if directory_is_env else "workspace",
+                        errno=exc.errno,
+                        relative_path=directory.relative_to(workspace_dir).as_posix() or ".",
+                    )
+                    break
                 path = Path(entry.path)
                 try:
                     path_stat = entry.stat(follow_symlinks=False)
                     rel_parts = path.relative_to(workspace_dir).parts
-                except OSError:
-                    scan_error = (
-                        "environment"
-                        if directory_is_env or entry.name in config.env_dir_names
-                        else "workspace"
+                except OSError as exc:
+                    scan_error = _WorkspaceScanError(
+                        area=(
+                            "environment"
+                            if directory_is_env or entry.name in config.env_dir_names
+                            else "workspace"
+                        ),
+                        errno=exc.errno,
+                        relative_path=path.relative_to(workspace_dir).as_posix(),
                     )
                     break
                 in_env = directory_is_env or _in_env_dir(config, rel_parts)
@@ -1244,7 +1316,7 @@ async def _monitor_workspace_quota(
             state.reason = reason
             await _kill_process_group(proc, unit_name)
             return
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(config.workspace_quota_poll_seconds)
 
 
 async def _drain_capped(

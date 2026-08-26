@@ -894,6 +894,8 @@ procedure.
 | `CODE_EXEC_MAX_FSIZE_MB` | positive int | `128` | Per-file-size rlimit. |
 | `CODE_EXEC_MAX_OPEN_FILES` | positive int | `1024` | Open-file-descriptor rlimit. |
 | `CODE_EXEC_MAX_WORKSPACE_FILES` | positive int | `50000` | Ordinary workspace entry ceiling monitored during a run. |
+| `CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` | positive float | `5` | Seconds between complete in-flight workspace accounting scans; preflight and final scans always run. |
+| `CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES` | int (`1`–`10`) | `4` | Total complete-scan attempts allowed for transient `ENOENT`/`ESTALE` races before accounting fails closed. Other scan errors fail immediately. |
 | `CODE_EXEC_MAX_OUTPUT_BYTES` | positive int | `40000` | Independent bounded capture for stdout and stderr. |
 | `CODE_EXEC_MAX_CONCURRENCY` | positive int | `1` | Bot-wide concurrent run count for `none`/`host`; netns remains single-slot. |
 | `CODE_EXEC_ENV_DIR_MAX_MB` | positive int | `2048` | Per-workspace bytes allowed for regenerable `.venv`/`.pio` trees. |

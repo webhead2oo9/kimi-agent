@@ -306,6 +306,14 @@ goes. Think of it as the bot's own working memory for **one reply**:
 
 ## Configuration
 
+The workspace has separate admission and retention controls. `WORKSPACE_TOOL_MAX_USER_BYTES`
+is the ordinary-document admission ceiling used by write tools and the code-execution
+sandbox. `WORKSPACE_MAX_SIZE_MB` is the background sweeper's retained-size target: outside
+an active workspace lease, the sweeper removes the oldest non-environment files until the
+tree returns to that target. It is not the in-flight sandbox byte ceiling. Regenerable
+`.venv`/`.pio` trees remain outside both ordinary-document calculations and use their own
+byte and entry allowances.
+
 The caps live in `WorkspaceToolConfig` (`tools/workspace/config.py`), plumbed
 from `Settings` via `app/tools.py:_workspace_tool_config` and documented in
 `.env.example`. The relevant keys include `WORKSPACE_TOOL_MAX_FILE_BYTES`,

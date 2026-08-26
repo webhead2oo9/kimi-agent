@@ -173,6 +173,23 @@ including `none`-mode runs that use packages installed earlier. `.pio` and
 - are removed as whole units by quota and TTL cleanup; and
 - cannot be written by ordinary workspace tools.
 
+### Workspace accounting during a run
+
+The sandbox performs a full workspace accounting scan before launch, every
+`CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` while the process runs, and once more
+before returning output. The default in-flight interval is five seconds. A job
+may therefore exceed a workspace ceiling briefly, but the final scan prevents
+unchecked output from being released.
+
+Package managers and test runners rename and remove files while the scan walks
+the tree. An entry disappearing between `scandir` and `stat` is a normal race,
+not evidence of quota evasion. `ENOENT` and `ESTALE` scans are retried up to
+`CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES` total attempts (four by default, ten
+maximum), with a short bounded backoff. Permission failures and other non-transient errors still fail
+immediately; a transient error that persists through every attempt also fails
+closed. Logs record the affected area, errno, relative path, and attempt count
+without exposing the absolute workspace path.
+
 ### The shared packages environment
 
 `CODE_EXEC_VENV_DIR` is something else: one packages environment that every
@@ -328,6 +345,8 @@ These are the ones that decide the shape of a deployment:
   `CODE_EXEC_SYSTEMD_RUN_BIN`;
 - the `CODE_EXEC_MAX_*`, `CODE_EXEC_CPU_QUOTA_PERCENT`,
   `CODE_EXEC_TMP_SIZE_MB`, and `CODE_EXEC_WALL_TIMEOUT_SECONDS` limits;
+- `CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` and
+  `CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES`;
 - `CODE_EXEC_ENV_DIR_MAX_MB` and `CODE_EXEC_ENV_DIR_MAX_FILES`;
 - `CODE_EXEC_NETWORK_WEEKLY_LIMIT`; and
 - for netns, `CODE_EXEC_SUDO_BIN`, `CODE_EXEC_NETNS_HELPER_BIN`,

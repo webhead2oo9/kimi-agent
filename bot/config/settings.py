@@ -200,6 +200,8 @@ class Settings(BaseSettings):
     code_exec_max_fsize_mb: int = 128
     code_exec_max_open_files: int = 1024
     code_exec_max_workspace_files: int = 50_000
+    code_exec_workspace_quota_poll_seconds: float = 5.0
+    code_exec_workspace_quota_scan_retries: int = 4
     code_exec_max_output_bytes: int = 40_000
     code_exec_max_concurrency: int = 1
     # Per-user allowances for regenerable workspace env dirs (.venv/.pio-style
@@ -494,6 +496,24 @@ class Settings(BaseSettings):
     def _blank_optional_float_uses_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator(
+        "code_exec_workspace_quota_poll_seconds",
+        "code_exec_workspace_quota_scan_retries",
+    )
+    @classmethod
+    def _require_positive_workspace_quota_monitor_value(
+        cls, value: float | int, info: ValidationInfo
+    ) -> float | int:
+        if value <= 0:
+            raise ValueError(
+                f"{(info.field_name or 'value').upper()} must be positive, got {value}"
+            )
+        if info.field_name == "code_exec_workspace_quota_scan_retries" and value > 10:
+            raise ValueError(
+                f"CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES must not exceed 10, got {value}"
+            )
         return value
 
     @field_validator(

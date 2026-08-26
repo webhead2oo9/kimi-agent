@@ -742,7 +742,7 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
 | `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
 
-## Experimental module control plane
+## Module control plane
 
 These environment-owned bootstrap settings enable the owner-approved module
 proposal system described in [module-control-plane.md](module-control-plane.md).

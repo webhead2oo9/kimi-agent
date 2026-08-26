@@ -147,6 +147,7 @@ class OpenAIChatProvider(LLMProvider):
         service_tier: str | None = None,
         reasoning_effort: str = "",
         request_id_header: str = "",
+        timeout_seconds: float = 900.0,
         stream: bool = False,
         stall_timeout_seconds: float = 90.0,
         user_agent: str = DEFAULT_BOT_NAME,
@@ -168,6 +169,7 @@ class OpenAIChatProvider(LLMProvider):
             base_url=base_url,
             default_headers={"User-Agent": provider_identity(user_agent)},
             max_retries=0,
+            timeout=timeout_seconds,
         )
         self._base_url = base_url
         self._model = model

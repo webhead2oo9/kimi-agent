@@ -15,12 +15,15 @@ from evals.harness_run import (
     make_run_dir,
     missing_expected_tools,
     render_harness_report,
+    resolve_vision_scenarios,
     resolve_model_spec,
+    safe_provider_endpoint,
+    select_scenarios,
     write_transcripts,
 )
 from evals.mechanical import MechanicalResult
 from evals.models import ModelsConfig, ModelSpec, load_models
-from evals.scenario import Expect, Scenario
+from evals.scenario import Expect, Scenario, TurnSpec
 from trust.tiers import TrustTier
 from usage.normalization import UsageBreakdown
 
@@ -109,6 +112,37 @@ def test_missing_expected_tools_flags_unregistered_only():
     assert problems == {"b": ["get_steam_game_info"]}
 
 
+def test_select_scenarios_preserves_file_order_and_rejects_unknown_ids():
+    scenarios = [_scenario("a"), _scenario("b"), _scenario("c")]
+    assert [s.id for s in select_scenarios(scenarios, ["c", "a"])] == ["a", "c"]
+    with pytest.raises(ValueError, match="missing"):
+        select_scenarios(scenarios, ["missing"])
+
+
+def test_provider_endpoint_strips_userinfo_path_query_and_fragment():
+    assert (
+        safe_provider_endpoint("https://user:secret@gateway.example:8443/private/key?q=secret#x")
+        == "https://gateway.example:8443"
+    )
+    assert safe_provider_endpoint("not a URL") == "configured endpoint (redacted)"
+
+
+def test_native_vision_skips_are_preserved_for_mixed_text_and_image_suite():
+    plain = _scenario("plain")
+    visual = Scenario(
+        id="visual",
+        category="vision",
+        trust_tier=TrustTier.MEMBER,
+        turns=[TurnSpec(text="look", images=("bands-rgb.png",))],
+    )
+    runnable, mode, skipped = resolve_vision_scenarios(
+        [plain, visual], requested_mode="native", has_captioner=True, supports_images=False
+    )
+    assert [scenario.id for scenario in runnable] == ["plain"]
+    assert mode == "native"
+    assert skipped == {"visual": ["image_input"]}
+
+
 def test_build_summary_aggregates_scores_and_pass_rate():
     identity = EvalIdentity("run-1", "candidate:luna", "a", 0)
     results = {
@@ -122,6 +156,11 @@ def test_build_summary_aggregates_scores_and_pass_rate():
         run_id="r1",
         git_sha="abc1234",
         model="gpt-5.6-sol",
+        model_label="sol-codex",
+        provider_name="codex",
+        timeout_seconds=240,
+        min_request_interval_seconds=6.1,
+        vision_mode="native",
         repeat=2,
         cassette_mode="replay",
         registered_tools=["wolfram_alpha"],
@@ -129,6 +168,11 @@ def test_build_summary_aggregates_scores_and_pass_rate():
         eval_run_nonce="run-1",
     )
     assert summary["kind"] == "harness-eval"
+    assert summary["model_label"] == "sol-codex"
+    assert summary["provider_name"] == "codex"
+    assert summary["timeout_seconds"] == 240
+    assert summary["min_request_interval_seconds"] == 6.1
+    assert summary["vision_mode"] == "native"
     agg_a = summary["scenarios"]["a"]["aggregate"]
     assert agg_a["score_mean"] == 90.0
     assert agg_a["score_min"] == 80.0
@@ -717,7 +761,7 @@ def test_summary_uses_the_current_schema_version():
         results={"a": (_scenario("a"), [_rep(_mech(100.0))])},
     )
 
-    assert summary["version"] == 2
+    assert summary["version"] == 3
     assert summary["kind"] == "harness-eval"
 
 

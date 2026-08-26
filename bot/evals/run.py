@@ -79,11 +79,27 @@ async def _run(args: argparse.Namespace) -> int:
             print(line)
         return 0
 
-    candidate = InstrumentedProvider(build_eval_provider(models.candidates[args.candidate]))
-    baseline = InstrumentedProvider(build_eval_provider(models.baseline))
-    judge = build_eval_provider(models.judge)
+    candidate = InstrumentedProvider(
+        build_eval_provider(models.candidates[args.candidate]),
+        min_request_interval_seconds=models.candidates[args.candidate].min_request_interval_seconds,
+        request_timeout_seconds=models.candidates[args.candidate].timeout_seconds,
+    )
+    baseline = InstrumentedProvider(
+        build_eval_provider(models.baseline),
+        min_request_interval_seconds=models.baseline.min_request_interval_seconds,
+        request_timeout_seconds=models.baseline.timeout_seconds,
+    )
+    judge = InstrumentedProvider(
+        build_eval_provider(models.judge),
+        min_request_interval_seconds=models.judge.min_request_interval_seconds,
+        request_timeout_seconds=models.judge.timeout_seconds,
+    )
     caption_provider = (
-        build_eval_provider(models.image_captioner)
+        InstrumentedProvider(
+            build_eval_provider(models.image_captioner),
+            min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
+            request_timeout_seconds=models.image_captioner.timeout_seconds,
+        )
         if models.image_captioner is not None and visual
         else None
     )

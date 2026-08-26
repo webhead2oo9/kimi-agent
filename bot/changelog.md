@@ -20,7 +20,8 @@ Kimi's user-facing release notes for server owners, staff, and members.
   threshold with `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS`, or set it to `0` to
   disable the suggestion.
 - Thread handoff is available to the model without a preliminary tool-discovery
-  step, improving explicit thread requests and multi-turn troubleshooting.
+  step, improving explicit thread requests and multi-turn troubleshooting. It
+  is hidden where Discord cannot create another local thread.
 - Model evaluation runs now isolate identities, workspaces, attachments,
   browser profiles, generated artifacts, coding controls, and databases across
   models and repetitions. Reports also identify modified source trees, flag
@@ -28,6 +29,8 @@ Kimi's user-facing release notes for server owners, staff, and members.
   and workspace behavior more directly.
 - Eval browser and runtime resources are closed before temporary state is
   removed, reducing leaked sessions and cross-run interference after failures.
+- Replayed eval internet searches now preserve the live backend-call budget,
+  keeping cassette runs aligned with production search limits.
 
 ## 1.0.0 (2026-08-24)
 

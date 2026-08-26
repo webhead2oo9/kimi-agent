@@ -2438,11 +2438,43 @@ def test_thread_state_tools_are_masked_outside_a_managed_thread(monkeypatch):
         channel=fake_thread_cls(321, []),
     )
     assert app.threads._thread_state_blocked_tools(in_thread) == frozenset(
-        {"resume_thread_replies"}
+        {"move_to_thread", "resume_thread_replies"}
     )
 
     asyncio.run(manager.pause(321))
-    assert app.threads._thread_state_blocked_tools(in_thread) == frozenset({"pause_thread_replies"})
+    assert app.threads._thread_state_blocked_tools(in_thread) == frozenset(
+        {"move_to_thread", "pause_thread_replies"}
+    )
+
+
+def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(monkeypatch):
+    app = _build_test_app(monkeypatch)
+    _enable_thread_handoff(app, ThreadMappingStore())
+
+    fake_forum_cls = type("_FakeForum", (_Channel,), {})
+    monkeypatch.setattr(discord, "ForumChannel", fake_forum_cls)
+    forum_message = _trigger_message(
+        content="hi",
+        author_id=1,
+        author_name="A",
+        message_id=1,
+        channel=fake_forum_cls(400, []),
+    )
+    assert "move_to_thread" in app.threads._thread_state_blocked_tools(forum_message)
+
+    class _FakeAnnouncement(_Channel):
+        def is_news(self):
+            return True
+
+    monkeypatch.setattr(discord, "TextChannel", _FakeAnnouncement)
+    announcement_message = _trigger_message(
+        content="hi",
+        author_id=1,
+        author_name="A",
+        message_id=2,
+        channel=_FakeAnnouncement(500, []),
+    )
+    assert "move_to_thread" in app.threads._thread_state_blocked_tools(announcement_message)
 
 
 def test_leave_thread_locks_and_archives_managed_thread(monkeypatch):

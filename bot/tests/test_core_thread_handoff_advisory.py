@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 import pytest
 
+from agent.compaction import CompactionConfig, Compactor
 from agent.context import ConversationContext
 from agent.core import (
     THREAD_HANDOFF_ADVISORY_TAG,
@@ -11,6 +13,7 @@ from agent.core import (
     run_conversation,
 )
 from providers.base import LLMProvider
+from providers.errors import ProviderContextOverflowError
 from providers.types import (
     ContentPartType,
     ConversationMessage,
@@ -35,6 +38,44 @@ class RecordingProvider:
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
         self.requests.append(request)
         return self.responses.pop(0)
+
+
+class _RecordingCompactor:
+    def __init__(self, *, compact_normally: bool) -> None:
+        self.config = CompactionConfig(keep_recent_iterations=1)
+        self.compact_normally = compact_normally
+        self.normal_inputs: list[list[ConversationMessage]] = []
+        self.emergency_inputs: list[list[ConversationMessage]] = []
+
+    def clamp_tool_output(
+        self, running_chars: int, result: str, _tool_name: str
+    ) -> tuple[str, int]:
+        return result, running_chars + len(result)
+
+    async def maybe_compact(self, **kwargs):
+        messages = kwargs["turn_messages"]
+        self.normal_inputs.append(messages)
+        return list(messages) if self.compact_normally else messages
+
+    async def emergency_compact(self, **kwargs):
+        messages = kwargs["turn_messages"]
+        self.emergency_inputs.append(messages)
+        return list(messages)
+
+
+class _OverflowAfterAdvisoryProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.calls = 0
+
+    async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+        self.requests.append(request)
+        self.calls += 1
+        if self.calls == 1:
+            return ProviderResponse(tool_calls=_calls("lookup", 5), finish_reason="tool_calls")
+        if self.calls == 2:
+            raise ProviderContextOverflowError("maximum context length exceeded")
+        return ProviderResponse(content="done")
 
 
 async def _ok(_args: dict, _ctx: MessageContext) -> str:
@@ -88,6 +129,14 @@ def _request(
     threshold: int,
     context: ConversationContext | None = None,
     thread_id: str | None = None,
+    compactor: Compactor | None = None,
+    checkpoint_sink: (
+        Callable[
+            [list[ConversationMessage], dict, list[dict[str, str]]],
+            Awaitable[None],
+        ]
+        | None
+    ) = None,
 ) -> ConversationRunRequest:
     return ConversationRunRequest(
         user_message="Investigate it",
@@ -101,6 +150,8 @@ def _request(
         channel_id="channel-1",
         thread_id=thread_id,
         thread_handoff_suggest_after_tool_calls=threshold,
+        compactor=compactor,
+        checkpoint_sink=checkpoint_sink,
     )
 
 
@@ -125,6 +176,85 @@ async def test_advisory_is_append_only_once_and_not_retained() -> None:
     # The advisory changes only the growing message suffix, never the tool schema.
     assert provider.requests[0].tools == provider.requests[1].tools
     assert provider.requests[1].tools == provider.requests[2].tools
+    assert _message_advisory_count(context.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_advisory_is_not_written_to_durable_checkpoints() -> None:
+    provider = RecordingProvider(
+        [
+            ProviderResponse(tool_calls=_calls("lookup", 5)),
+            ProviderResponse(content="done"),
+        ]
+    )
+    checkpoints: list[list[ConversationMessage]] = []
+
+    async def checkpoint(
+        messages: list[ConversationMessage],
+        _provider_state: dict,
+        _plan: list[dict[str, str]],
+    ) -> None:
+        checkpoints.append(messages)
+
+    result = await run_conversation(
+        _request(provider, _registry(), threshold=5, checkpoint_sink=checkpoint)
+    )
+
+    assert result.text == "done"
+    assert len(checkpoints) == 1
+    assert _message_advisory_count(checkpoints[0]) == 0
+    assert _advisory_count(provider.requests[1]) == 1
+
+
+@pytest.mark.asyncio
+async def test_compaction_never_receives_or_retains_the_advisory() -> None:
+    provider = RecordingProvider(
+        [
+            ProviderResponse(tool_calls=_calls("lookup", 5)),
+            ProviderResponse(content="done"),
+        ]
+    )
+    compactor = _RecordingCompactor(compact_normally=True)
+    context = ConversationContext(key="guild:channel")
+
+    result = await run_conversation(
+        _request(
+            provider,
+            _registry(),
+            threshold=5,
+            context=context,
+            compactor=cast(Compactor, compactor),
+        )
+    )
+
+    assert result.text == "done"
+    assert compactor.normal_inputs
+    assert all(_message_advisory_count(messages) == 0 for messages in compactor.normal_inputs)
+    assert _advisory_count(provider.requests[1]) == 1
+    assert _message_advisory_count(context.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_emergency_compaction_drops_the_advisory_before_summarizing() -> None:
+    provider = _OverflowAfterAdvisoryProvider()
+    compactor = _RecordingCompactor(compact_normally=False)
+    context = ConversationContext(key="guild:channel")
+
+    result = await run_conversation(
+        _request(
+            provider,
+            _registry(),
+            threshold=5,
+            context=context,
+            compactor=cast(Compactor, compactor),
+        )
+    )
+
+    assert result.text == "done"
+    assert _advisory_count(provider.requests[1]) == 1
+    assert compactor.emergency_inputs
+    assert all(_message_advisory_count(messages) == 0 for messages in compactor.emergency_inputs)
+    assert _advisory_count(provider.requests[2]) == 0
     assert _message_advisory_count(context.messages) == 0
 
 

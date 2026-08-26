@@ -46,6 +46,27 @@ def _registry_with_probe():
     return registry, calls
 
 
+def _registry_with_search_probe(*, limit: int = 3, backend_calls: int = 2):
+    calls = {"live": 0}
+
+    async def handler(args, ctx):
+        calls["live"] += 1
+        ctx.internet_search_backend_calls_this_turn += backend_calls
+        return json.dumps({"query": args.get("query"), "live": calls["live"]})
+
+    registry = InstrumentedRegistry(
+        internet_search_max_backend_calls_per_turn=limit,
+    )
+    registry.register(
+        name="internet_search",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        min_tier=TrustTier.MEMBER,
+    )
+    return registry, calls
+
+
 def test_call_key_is_order_insensitive():
     assert call_key("t", {"a": 1, "b": 2}) == call_key("t", {"b": 2, "a": 1})
     assert call_key("t", {"a": 1}) != call_key("u", {"a": 1})
@@ -107,6 +128,117 @@ def test_registry_replay_mode_skips_live_handler(tmp_path):
     assert json.loads(result) == {"recorded": True}
     assert calls["live"] == 0
     assert registry.sink[-1].source == "replay"
+
+
+def test_internet_search_replay_preserves_and_enforces_backend_budget(tmp_path):
+    path = tmp_path / "s.json"
+    cassette = Cassette(path)
+    registry, calls = _registry_with_search_probe(limit=3, backend_calls=2)
+    registry.configure_cassette(cassette, "record")
+    args = {"query": "bounded"}
+
+    live_ctx = _ctx()
+    live_result = asyncio.run(registry.dispatch("internet_search", args, live_ctx))
+    assert live_ctx.internet_search_backend_calls_this_turn == 2
+    assert calls["live"] == 1
+    cassette.save()
+
+    payload = json.loads(path.read_text())
+    assert payload["version"] == 2
+    assert payload["entries"][0]["internet_search_backend_calls"] == [2]
+
+    replay = Cassette.load(path)
+    registry.configure_cassette(replay, "replay")
+    replay_ctx = _ctx()
+    assert asyncio.run(registry.dispatch("internet_search", args, replay_ctx)) == live_result
+    assert replay_ctx.internet_search_backend_calls_this_turn == 2
+    assert calls["live"] == 1
+
+    exhausted = json.loads(asyncio.run(registry.dispatch("internet_search", args, replay_ctx)))
+    assert exhausted["error"] == "Internet search call limit reached for this turn."
+    assert replay_ctx.internet_search_backend_calls_this_turn == 2
+    assert calls["live"] == 1
+    assert registry.sink[-1].source == "replay"
+
+
+def test_legacy_internet_search_entry_refreshes_live_with_budget_metadata(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "tool": "internet_search",
+                        "args": {"query": "old"},
+                        "results": [json.dumps({"stale": True})],
+                    }
+                ],
+            }
+        )
+    )
+    cassette = Cassette.load(path)
+    registry, calls = _registry_with_search_probe(backend_calls=2)
+    registry.configure_cassette(cassette, "replay")
+
+    ctx = _ctx()
+    result = asyncio.run(registry.dispatch("internet_search", {"query": "old"}, ctx))
+    assert json.loads(result) == {"query": "old", "live": 1}
+    assert calls["live"] == 1
+    assert registry.sink[-1].source == "live"
+    cassette.save()
+
+    refreshed = json.loads(path.read_text())
+    assert refreshed["version"] == 2
+    assert refreshed["entries"][0]["internet_search_backend_calls"] == [2]
+
+
+def test_legacy_only_search_tape_reports_none_and_record_mode_wipes_it(tmp_path):
+    path = cassette_path(tmp_path, "s", "m")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "tool": "internet_search",
+                        "args": {"query": "old"},
+                        "results": [json.dumps({"stale": True})],
+                    }
+                ],
+            }
+        )
+    )
+
+    cassette, provenance = load_cassette(tmp_path, "s", "m")
+    assert provenance == "none"
+    cassette.clear()
+    cassette.save()
+
+    assert json.loads(path.read_text()) == {"version": 2, "entries": []}
+
+
+def test_legacy_only_shared_search_tape_is_not_reported_as_replayable(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "tool": "internet_search",
+                        "args": {"query": "old"},
+                        "results": [json.dumps({"stale": True})],
+                    }
+                ],
+            }
+        )
+    )
+
+    cassette, provenance = load_cassette(tmp_path, "s", "m")
+    assert provenance == "none"
+    assert cassette.replay("internet_search", {"query": "old"}) is None
 
 
 def test_registry_replay_mode_records_misses_live(tmp_path):
@@ -259,6 +391,28 @@ def test_reset_cursors_resets_base_cursor(tmp_path):
     assert own.replay("discord_text_search", {"x": 1}) == "base-1"
     own.reset_cursors()
     assert own.replay("discord_text_search", {"x": 1}) == "base-1"
+
+
+def test_promoted_internet_search_keeps_backend_budget_metadata(tmp_path):
+    base = Cassette(tmp_path / "s.json")
+    base.record(
+        "internet_search",
+        {"query": "q"},
+        json.dumps({"results": []}),
+        internet_search_backend_calls=2,
+    )
+    base.save()
+    own_path = tmp_path / "m" / "s.json"
+    own = Cassette(own_path, base=Cassette.load(base.path))
+
+    replay = own.replay_record("internet_search", {"query": "q"})
+    assert replay is not None
+    assert replay.internet_search_backend_calls == 2
+    own.save()
+
+    promoted = Cassette.load(own_path).replay_record("internet_search", {"query": "q"})
+    assert promoted is not None
+    assert promoted.internet_search_backend_calls == 2
 
 
 def test_save_writes_only_own_entries_and_leaves_base_file_untouched(tmp_path):

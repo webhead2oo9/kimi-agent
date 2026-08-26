@@ -28,6 +28,7 @@ from trust.tiers import TrustTier
 log = logging.getLogger(__name__)
 
 TOOL_NAME = "internet_search"
+BUDGET_EXCEEDED_MESSAGE = "Internet search call limit reached for this turn."
 DEFAULT_MAX_RESULTS = 10
 MAX_QUERY_CHARS = 400
 MAX_QUERY_WORDS = 50
@@ -87,7 +88,7 @@ def init_internet_search_tool(registry: ToolRegistry, config: InternetSearchConf
             await _record_costs(ctx, response, config, request_mode)
             return _render_response(response.results, config.max_output_chars)
         except SearchBudgetExceeded:
-            return tool_error("Internet search call limit reached for this turn.")
+            return tool_error(BUDGET_EXCEEDED_MESSAGE)
         except TimeoutError:
             return tool_error("Internet search timed out.")
         except (SearchProviderError, ValueError) as exc:

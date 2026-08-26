@@ -221,8 +221,10 @@ def _option_value(value: Any) -> Any:
 
 @dataclass(slots=True)
 class _ComponentRegistration:
+    router: InteractionRouterImpl
     handler: CommandHandler
     expires_at: float | None
+    min_tier: TrustTierName
 
 
 @dataclass(slots=True)
@@ -247,14 +249,17 @@ class ComponentDispatcher:
 
     def register(
         self,
-        module_name: str,
+        router: InteractionRouterImpl,
         kind: str,
         key: str,
         handler: CommandHandler,
         expires_after_seconds: float | None,
+        min_tier: TrustTierName,
     ) -> None:
         expires_at = self._clock() + expires_after_seconds if expires_after_seconds else None
-        self._handlers[(module_name, kind, key)] = _ComponentRegistration(handler, expires_at)
+        self._handlers[(router.module_name, kind, key)] = _ComponentRegistration(
+            router, handler, expires_at, min_tier
+        )
 
     def unregister(self, module_name: str, kind: str, key: str) -> None:
         self._handlers.pop((module_name, kind, key), None)
@@ -280,6 +285,12 @@ class ComponentDispatcher:
         if registration.expires_at is not None and self._clock() > registration.expires_at:
             self._handlers.pop((module_name, kind, key), None)
             await _quiet_reply(interaction, "This control has expired.")
+            return True
+        if not await registration.router._allowed(interaction, registration.min_tier):
+            await _quiet_reply(
+                interaction,
+                "Staff only." if registration.min_tier == "staff" else "Not allowed.",
+            )
             return True
         try:
             await registration.handler(ModuleInteractionAdapter(interaction, module_name))
@@ -367,6 +378,11 @@ class InteractionRouterImpl:
         self._groups: dict[str, app_commands.Group] = {}
         self._commands: list[tuple[str | None, str]] = []
         self._closed = False
+
+    @property
+    def module_name(self) -> str:
+        """Name owning commands and persistent component registrations."""
+        return self._module_name
 
     # ---- commands ----------------------------------------------------------
 
@@ -513,11 +529,12 @@ class InteractionRouterImpl:
         handler: CommandHandler,
         *,
         expires_after_seconds: float | None = None,
+        min_tier: TrustTierName = "member",
     ) -> _Registration:
         if kind not in ("button", "select"):
             raise ModuleContractError(f"unsupported component kind {kind!r}")
         build_custom_id(self._module_name, key)  # validates the key
-        self._dispatcher.register(self._module_name, kind, key, handler, expires_after_seconds)
+        self._dispatcher.register(self, kind, key, handler, expires_after_seconds, min_tier)
         return _Registration(
             self, lambda: self._dispatcher.unregister(self._module_name, kind, key)
         )

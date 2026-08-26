@@ -231,6 +231,15 @@ class CodingTaskStore:
             row = await cursor.fetchone()
         return self._task_from_row(row) if row is not None else None
 
+    async def list_tasks_by_id_prefix(self, task_id_prefix: str) -> list[CodingTask]:
+        """Return tasks matching a validated UUID-hex prefix, newest first."""
+        async with self._db.conn.execute(
+            "SELECT * FROM coding_tasks WHERE id LIKE ? ORDER BY created_at DESC",
+            (f"{task_id_prefix}%",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._task_from_row(row) for row in rows]
+
     async def list_active(
         self,
         *,

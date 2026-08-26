@@ -10,6 +10,10 @@ The stream is **off by default**. While it is disabled, no writer is started
 and `emit_*` calls return without writing anything. The file is the whole
 output contract; the bot does not depend on anything consuming it.
 
+`module_health` events record every application-module health transition:
+`module`, `state` (`starting`/`healthy`/`degraded`/`failed`), a truncated
+`detail`, and bounded numeric `metrics`. They carry no message content.
+
 ## Enabling it
 
 These settings live in `config/settings.py` and are mirrored in `.env.example`:

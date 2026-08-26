@@ -15,9 +15,13 @@ from app.modules import (
     ModuleLoadContext,
     ModuleManager,
     ModuleMigration,
+    ModuleRuntimeBase,
     ModuleRuntimeContext,
     ModuleSpec,
 )
+from kimi_agent_module_api import ModuleCapabilities
+from kimi_agent_module_api.testing import FakeTrust
+from modules.testing import fake_ports
 from config.settings import Settings
 from storage.db import Database
 from tools.registry import ToolRegistry
@@ -62,7 +66,6 @@ def _manager(
         names,
         core_settings=_settings(tmp_path),
         registry=registry or ToolRegistry(),
-        gateway=object(),  # type: ignore[arg-type]
         installed=installed,
     )
 
@@ -83,15 +86,16 @@ def _spec(
     )
 
 
-def _runtime_context(database: Database, manager: ModuleManager) -> ModuleRuntimeContext:
-    return ModuleRuntimeContext(
-        bot=object(),  # type: ignore[arg-type]
+def _base(database: Database, manager: ModuleManager) -> ModuleRuntimeBase:
+    return ModuleRuntimeBase(
         database=database,
-        trust_resolver=object(),  # type: ignore[arg-type]
-        gateway=object(),  # type: ignore[arg-type]
-        config_dir=manager.config_dir,
+        bot=object(),
         is_guild_active=lambda _guild_id: True,
-        get_module=manager.get,
+        current_config_dir=lambda: manager.config_dir,
+        capabilities=ModuleCapabilities(
+            available=frozenset(), members_intent=False, message_content_intent=False
+        ),
+        trust=FakeTrust(),
     )
 
 
@@ -131,7 +135,6 @@ def test_discovery_imports_only_configured_entrypoints(
         ("configured",),
         core_settings=_settings(tmp_path),
         registry=ToolRegistry(),
-        gateway=object(),  # type: ignore[arg-type]
     )
 
     assert manager.load_state.loaded == ("configured",)
@@ -200,7 +203,7 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
 
     assert manager.load_state.loaded == ("base", "dependent")
     assert registry.is_registered("module_demo")
-    assert manager.get("base") is base
+    assert manager.spec("base").name == "base"
 
 
 @pytest.mark.asyncio
@@ -225,7 +228,7 @@ async def test_module_schema_lifecycle_and_reverse_close(tmp_path: Path) -> None
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
 
-    await manager.start(_runtime_context(database, manager))
+    await manager.start(_base(database, manager), customize=fake_ports)
     await manager.close()
 
     cursor = await database.conn.execute(
@@ -278,7 +281,7 @@ async def test_start_failure_closes_already_started_modules(tmp_path: Path) -> N
     await database.connect()
 
     with pytest.raises(RuntimeError, match="failed:failing"):
-        await manager.start(_runtime_context(database, manager))
+        await manager.start(_base(database, manager), customize=fake_ports)
 
     assert events == ["start:base", "start:failing", "close:failing", "close:base"]
     await database.close()

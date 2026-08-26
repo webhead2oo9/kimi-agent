@@ -13,6 +13,16 @@ Kimi's user-facing release notes for server owners, staff, and members.
   Off by default (`CONTROL_PLANE_ENABLED`).
 - Application modules install through a versioned public module API and can
   declare the control-plane capabilities they need.
+- `/modules status` and `/modules manifest` (bot owner only) show each
+  application module's health and what it declares it uses.
+- Application modules now run on core-provided services (events, scheduled
+  jobs, Discord actions with staff protection, slash commands, per-guild
+  settings, and outbound HTTP limited to declared hosts). Per-guild module
+  settings move to `config/guild-modules/<server>/<module>.md`; the old
+  keys in `config/servers/<server>.md` keep working for one release and
+  show up in `/modules status` until they are moved. A broken module
+  setting takes only that server offline for enforcement modules instead
+  of leaving it unmoderated.
 - Long, tool-heavy conversations in shared channels can now receive a one-time
   suggestion to continue in a Discord thread. Server owners can tune the
   threshold with `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS`, or set it to `0` to

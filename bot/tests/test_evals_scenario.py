@@ -162,6 +162,19 @@ def test_bundled_scenarios_use_webhead_not_prior_name():
     )
 
 
+def test_bundled_scenarios_cover_search_fetch_and_their_handoff():
+    scenarios = load_scenarios(Path("evals/scenarios"))
+    expected_by_scenario = {
+        scenario.id: set(scenario.expect.should_use_tools) for scenario in scenarios
+    }
+
+    assert any("internet_search" in tools for tools in expected_by_scenario.values())
+    assert any("fetch_url" in tools for tools in expected_by_scenario.values())
+    assert any(
+        {"internet_search", "fetch_url"}.issubset(tools) for tools in expected_by_scenario.values()
+    )
+
+
 def test_load_scenario_parses_reliability_fields(tmp_path):
     path = _write(
         tmp_path / "s.yaml",

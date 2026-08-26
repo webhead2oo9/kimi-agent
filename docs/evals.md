@@ -176,12 +176,14 @@ measures is tool-*selection* behavior against a frozen tool surface, which is
 exactly the layer harness changes touch. Repeated identical calls replay in
 recording order (then repeat the last result), so loops stay deterministic.
 
-Only `discord_text_search` and the read-only Hindsight tools (`recall_user`,
-`reflect_user`, `lookup_memory_source`) are recorded by the core allowlist in
-`evals/cassette.py`; plugins may add network-backed read-only tools through the
-`eval_record` surface in `app/tool_surfaces.py`. Every other tool dispatches
-live, because local handlers may mutate context or files. Since unlisted means
-live, new tools are correct by default.
+Only the read-only source tools `discord_text_search`, `internet_search`, and
+the Hindsight reads (`recall_user`, `reflect_user`, `lookup_memory_source`) are
+recorded by the core allowlist in `evals/cassette.py`; plugins may add
+network-backed read-only tools through the `eval_record` surface in
+`app/tool_surfaces.py`. Every other tool dispatches live, because local handlers
+may mutate context or files. In particular, `fetch_url` stays live so replay
+cannot skip its workspace write and outgoing-attachment side effects. Since
+unlisted means live, new tools are correct by default.
 
 ### Workspace files
 

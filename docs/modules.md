@@ -32,6 +32,9 @@ Dependencies start first, and modules close in reverse order. An empty
 - Module settings use the same selected dotenv as the core. Explicitly exposed,
   non-secret operator overrides live under
   `<CONFIG_DIR>/modules/<module_name>.md`.
+- A module's runtime context is the only thing it needs from core; the
+  `kimi_agent_module_api` package exports contracts, event dataclasses,
+  image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
   provides commands or listeners need not expose anything to the LLM.
@@ -79,15 +82,18 @@ a malformed declaration aborts startup with a named reason:
   closed.
 
 The rules live in `kimi_agent_module_api.contracts`, which imports only the
-standard library so a package can validate its own declarations in tests. The
-services these declarations govern land incrementally as optional fields on
-the runtime context; until they do, declarations are validated but not yet
-enforced.
+standard library so a package can validate its own declarations in tests.
+Every declaration is enforced by the matching runtime service below.
 
 ## Runtime services
 
-Each started module receives its own frozen `ModuleRuntimeContext` carrying
-`module_name` and the service ports core has implemented so far:
+Each started module receives its own frozen `ModuleRuntimeContext`: its
+`module_name`, `is_guild_active`, `current_config_dir()`, `capabilities`,
+and one port per service. A module never receives the Discord client, the
+database, or another module's object; `raw_bot` and `raw_storage` are
+populated only for a module whose permissions declare them, and the owner
+manifest lists those escape hatches. Modules are trusted, in-process code:
+the ports are a contract and an audit surface, not a sandbox.
 
 - `ctx.storage`: the shared database seen through the module's table prefix.
   `ctx.storage.table("cases")` returns the quoted physical name

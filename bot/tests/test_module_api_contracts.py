@@ -69,22 +69,23 @@ def test_spec_declares_nothing_by_default() -> None:
     assert spec.api_version == MODULE_API_VERSION == 1
 
 
-def test_runtime_context_service_ports_default_to_none() -> None:
-    fields = {f.name: f for f in dataclasses.fields(ModuleRuntimeContext)}
-    for port in (
+def test_runtime_context_requires_every_service_port() -> None:
+    required = {
+        f.name for f in dataclasses.fields(ModuleRuntimeContext) if f.default is dataclasses.MISSING
+    }
+    assert {
         "events",
         "scheduler",
         "storage",
         "health",
         "discord",
         "interactions",
-        "guild_settings",
         "http",
         "services",
         "trust",
         "current_config_dir",
-    ):
-        assert fields[port].default is None, port
+    } <= required
+    assert "bot" not in required and "database" not in required
 
 
 # --- naming rules ---------------------------------------------------------

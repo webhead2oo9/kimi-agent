@@ -11,7 +11,7 @@ removing the capability.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 import logging
 from pathlib import Path
@@ -21,17 +21,19 @@ from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
 from kimi_agent_module_api.contracts import (
+    DiscordActions,
     ModuleHealth,
+    TrustLookup,
     validate_guild_settings_schema,
     validate_module_name,
     validate_permissions,
     validate_services,
 )
 from kimi_agent_module_api import (
+    AppModule,
+    ConfigurationService,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
-    AppModule,
-    GuildConfigValidator,
     ModuleCapabilities,
     ModuleLoadContext,
     ModuleMigration,
@@ -39,14 +41,16 @@ from kimi_agent_module_api import (
     ModuleSetting,
     ModuleSettingsDefinition,
     ModuleSpec,
+    ProposalService,
+    RestartService,
 )
 
 if TYPE_CHECKING:
     from config.settings import Settings
-    from discord_adapter.gateway import DiscordGateway
     from tools.registry import ToolRegistry
 
 from modules.actions import DeclaredDiscordActions
+from storage.db import Database
 from modules.events import EventBusImpl, ModuleEventView
 from modules.guild_settings import GuildSettingsService
 from modules.health import HealthRegistry
@@ -181,6 +185,35 @@ def _validate_declarations(spec: ModuleSpec) -> None:
         raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
 
 
+@dataclass(frozen=True)
+class ModuleRuntimeBase:
+    """Core-side inputs the manager turns into per-module contexts."""
+
+    database: Database
+    bot: Any
+    is_guild_active: Callable[[int], bool]
+    current_config_dir: Callable[[], Path]
+    capabilities: ModuleCapabilities
+    trust: TrustLookup
+    discord: DiscordActions | None = None
+    proposals: ProposalService | None = None
+    configuration: ConfigurationService | None = None
+    restart: RestartService | None = None
+
+
+_REQUIRED_PORTS = (
+    "events",
+    "scheduler",
+    "storage",
+    "health",
+    "discord",
+    "interactions",
+    "http",
+    "services",
+    "trust",
+)
+
+
 @dataclass
 class ModuleManager:
     """Configured module instances and their coordinated lifecycle."""
@@ -189,7 +222,6 @@ class ModuleManager:
     settings: ModuleSettingsRegistry | None = None
     _specs: tuple[ModuleSpec, ...] = ()
     _modules: dict[str, AppModule] = field(default_factory=dict)
-    _validators: dict[str, GuildConfigValidator] = field(default_factory=dict)
     _started: list[str] = field(default_factory=list)
     _contexts: dict[str, ModuleRuntimeContext] = field(default_factory=dict)
     health: HealthRegistry = field(default_factory=HealthRegistry)
@@ -213,7 +245,6 @@ class ModuleManager:
         *,
         core_settings: Settings,
         registry: ToolRegistry,
-        gateway: DiscordGateway,
         installed: Mapping[str, ModuleSpec] | None = None,
     ) -> ModuleManager:
         settings_registry = ModuleSettingsRegistry(config_dir=Path(core_settings.config_dir))
@@ -238,9 +269,7 @@ class ModuleManager:
                 ctx = ModuleLoadContext(
                     capabilities=capabilities,
                     registry=registry,
-                    gateway=gateway,
                     module_settings=prepared.active if prepared is not None else None,
-                    _register_guild_validator=manager._register_guild_validator,
                     _register_tool_labels=register_tool_labels,
                     _declare_surface_tools=declare_surface_tools,
                 )
@@ -260,20 +289,6 @@ class ModuleManager:
             loaded=tuple(spec.name for spec in specs),
         )
         return manager
-
-    def _register_guild_validator(self, name: str, validator: GuildConfigValidator) -> None:
-        if not name or name in self._validators:
-            raise RuntimeError(f"Duplicate Kimi module guild validator {name!r}")
-        self._validators[name] = validator
-
-    def validate_guild_config(self, metadata: Mapping[str, Any]) -> bool:
-        return all(validator(metadata) for validator in self._validators.values())
-
-    def get(self, name: str) -> AppModule:
-        try:
-            return self._modules[name]
-        except KeyError as exc:
-            raise RuntimeError(f"Kimi module {name!r} is not active") from exc
 
     @property
     def specs(self) -> Mapping[str, ModuleSpec]:
@@ -302,61 +317,36 @@ class ModuleManager:
 
     async def start(
         self,
-        ctx: ModuleRuntimeContext,
+        base: ModuleRuntimeBase,
         *,
-        customize: Callable[[ModuleSpec, ModuleRuntimeContext], ModuleRuntimeContext] | None = None,
+        customize: Callable[[ModuleSpec, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         """Migrate every module, then start them in dependency order.
 
-        Each module receives its own frozen copy of ``ctx`` carrying its
-        ``module_name``; ``customize`` lets the composition root attach the
-        per-module service ports before the module sees the context.
+        Each module receives its own frozen ``ModuleRuntimeContext`` assembled
+        from ``base`` plus the per-module ports. ``customize`` lets the
+        composition root (or a test harness) add or replace ports before the
+        context is frozen; missing required ports abort startup.
         """
         try:
             for spec in self._specs:
                 instance = self._modules[spec.name]
-                storage = ModuleStorageImpl(ctx.database, spec.name, spec.table_aliases)
-                await ctx.database.apply_module_migrations(
+                storage = ModuleStorageImpl(base.database, spec.name, spec.table_aliases)
+                await base.database.apply_module_migrations(
                     spec.name, _migrations_for(instance, storage)
                 )
             for spec in self._specs:
                 instance = self._modules[spec.name]
-                module_ctx = replace(
-                    ctx,
-                    module_name=spec.name,
-                    storage=ModuleStorageImpl(ctx.database, spec.name, spec.table_aliases),
-                    health=self.health.reporter_for(spec.name),
-                    services=ModuleServiceView(
-                        self.services, spec.name, spec.provides, spec.consumes
-                    ),
-                    events=(
-                        ModuleEventView(self.events, spec.name, spec.permissions)
-                        if self.events is not None
-                        else None
-                    ),
-                    scheduler=(
-                        self.scheduler.view_for(spec.name) if self.scheduler is not None else None
-                    ),
-                    guild_settings=(
-                        self.guild_settings.view_for(spec.name, ctx.is_guild_active)
-                        if self.guild_settings is not None and spec.guild_settings is not None
-                        else None
-                    ),
-                    http=(
-                        self.http.client_for(spec.name, self._host_rules.get(spec.name, ()))
-                        if self.http is not None
-                        else None
-                    ),
-                    discord=(
-                        DeclaredDiscordActions(
-                            ctx.discord, spec.name, spec.permissions.discord_actions
-                        )
-                        if ctx.discord is not None
-                        else None
-                    ),
-                )
+                ports = self._ports_for(spec, base)
                 if customize is not None:
-                    module_ctx = customize(spec, module_ctx)
+                    ports = customize(spec, ports)
+                missing = sorted(name for name in _REQUIRED_PORTS if ports.get(name) is None)
+                if missing:
+                    raise RuntimeError(
+                        f"Kimi module {spec.name!r} cannot start: core provided no "
+                        f"{', '.join(missing)} port"
+                    )
+                module_ctx = ModuleRuntimeContext(**ports)
                 self._contexts[spec.name] = module_ctx
                 self._started.append(spec.name)
                 self.health.set(spec.name, "starting")
@@ -370,6 +360,45 @@ class ModuleManager:
         except BaseException:
             await self.close()
             raise
+
+    def _ports_for(self, spec: ModuleSpec, base: ModuleRuntimeBase) -> dict[str, Any]:
+        return {
+            "module_name": spec.name,
+            "is_guild_active": base.is_guild_active,
+            "current_config_dir": base.current_config_dir,
+            "capabilities": base.capabilities,
+            "events": (
+                ModuleEventView(self.events, spec.name, spec.permissions)
+                if self.events is not None
+                else None
+            ),
+            "scheduler": self.scheduler.view_for(spec.name) if self.scheduler is not None else None,
+            "storage": ModuleStorageImpl(base.database, spec.name, spec.table_aliases),
+            "health": self.health.reporter_for(spec.name),
+            "discord": (
+                DeclaredDiscordActions(base.discord, spec.name, spec.permissions.discord_actions)
+                if base.discord is not None
+                else None
+            ),
+            "interactions": None,
+            "http": (
+                self.http.client_for(spec.name, self._host_rules.get(spec.name, ()))
+                if self.http is not None
+                else None
+            ),
+            "services": ModuleServiceView(self.services, spec.name, spec.provides, spec.consumes),
+            "trust": base.trust,
+            "guild_settings": (
+                self.guild_settings.view_for(spec.name, base.is_guild_active)
+                if self.guild_settings is not None and spec.guild_settings is not None
+                else None
+            ),
+            "proposals": base.proposals,
+            "configuration": base.configuration,
+            "restart": base.restart,
+            "raw_bot": base.bot if spec.permissions.raw_bot else None,
+            "raw_storage": base.database if spec.permissions.raw_storage else None,
+        }
 
     def _settle_health(self, spec: ModuleSpec) -> None:
         """After a clean start: healthy unless the module said otherwise."""
@@ -439,6 +468,7 @@ __all__ = [
     "ModuleLoadState",
     "ModuleManager",
     "ModuleMigration",
+    "ModuleRuntimeBase",
     "ModuleRuntimeContext",
     "ModuleSetting",
     "ModuleSettingsDefinition",

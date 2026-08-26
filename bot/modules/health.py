@@ -72,6 +72,10 @@ class HealthRegistry:
                 log.exception("Module health observer failed for %s", module_name)
         return health
 
+    def mark(self, module_name: str, state: HealthState, detail: str = "") -> None:
+        """``set`` for callers that need a ``None``-returning callback."""
+        self.set(module_name, state, detail)
+
     def merge_metrics(self, module_name: str, metrics: Mapping[str, float]) -> None:
         """Update metrics without changing state or detail (e.g. event counters)."""
         current = self._states.get(module_name)

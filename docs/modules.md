@@ -132,6 +132,17 @@ Each started module receives its own frozen `ModuleRuntimeContext` carrying
   `permissions.override_target_policy`. Every action is scoped to guilds
   core considers active, audit reasons are prefixed with the module name,
   and outgoing messages never ping.
+- `ctx.scheduler`: durable jobs. `register(name, handler)` in `start()`
+  binds a handler by name; `run_at(key, when, name, payload)` and
+  `run_every(key, interval, name, payload, jitter_seconds=, backoff=)`
+  persist the job in `module_scheduler_jobs` (unique per module and key;
+  scheduling the same key again replaces it). One runner claims due jobs
+  by taking a lease, heartbeats it while the handler runs, deletes a
+  one-shot job on success, reschedules a periodic one from completion plus
+  jitter, and backs a failing one off. A live lease is never run twice; an
+  expired lease from a crashed process is claimed again. A persisted job
+  whose handler is not registered stays paused and marks the module
+  `degraded`. Kimi runs one process; there is no multi-node coordination.
 - `ctx.interactions`: slash commands and persistent components without the
   Discord SDK. `add_command(CommandSpec, handler)` builds the app command
   (top-level or one group level; `string`/`integer`/`boolean`/`user`/

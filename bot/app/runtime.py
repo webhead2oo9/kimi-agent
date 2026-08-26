@@ -118,6 +118,7 @@ from discord_adapter.module_events import ModuleEventPublisher
 from discord_adapter.module_interactions import InteractionRuntime
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl
+from modules.scheduler import DurableScheduler
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
@@ -494,6 +495,8 @@ class KimiApplication:
                 await self.moderation_service.close()
             except Exception:
                 log.exception("Error closing moderation service")
+        if self.tools.module_manager.scheduler is not None:
+            await self.tools.module_manager.scheduler.close()
         await self.tools.module_manager.close()
         if self._module_event_publisher is not None:
             self._module_event_publisher.uninstall()
@@ -822,6 +825,9 @@ class KimiApplication:
             module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
         )
         module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
+        module_manager.scheduler = DurableScheduler(
+            self.database, on_health=module_manager.health.mark
+        )
         self._module_event_publisher = ModuleEventPublisher(
             self.bot, module_manager.events.publish_core
         )
@@ -864,6 +870,8 @@ class KimiApplication:
                 ),
             ),
         )
+        # Persisted module jobs re-bind to handlers registered during start().
+        module_manager.scheduler.start()
         # Start the durable scheduler only after pending privacy deletions have
         # replayed and their barriers are installed. This prevents recovered
         # work from racing a deletion request during READY initialization.

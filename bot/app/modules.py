@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl, ModuleEventView
 from modules.health import HealthRegistry
+from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl, validate_table_aliases
 
@@ -192,6 +193,7 @@ class ModuleManager:
     health: HealthRegistry = field(default_factory=HealthRegistry)
     services: ServiceRegistryImpl = field(default_factory=ServiceRegistryImpl)
     events: EventBusImpl | None = None
+    scheduler: DurableScheduler | None = None
 
     @property
     def config_dir(self) -> Path:
@@ -315,6 +317,9 @@ class ModuleManager:
                         if self.events is not None
                         else None
                     ),
+                    scheduler=(
+                        self.scheduler.view_for(spec.name) if self.scheduler is not None else None
+                    ),
                     discord=(
                         DeclaredDiscordActions(
                             ctx.discord, spec.name, spec.permissions.discord_actions
@@ -370,6 +375,8 @@ class ModuleManager:
                         log.exception("Error closing interactions for Kimi module %s", name)
                 if self.events is not None:
                     await self.events.close_module(name)
+                if self.scheduler is not None:
+                    self.scheduler.unregister_module(name)
                 self.services.retire_module(name)
                 self.health.forget(name)
                 self._contexts.pop(name, None)

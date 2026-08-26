@@ -36,6 +36,10 @@ _SKIP_PREFIXES = (".venv/", "tests/", "workspaces/", "data/", "skills/store/")
 #                              reader in config/ resolves them. tools/config_spec
 #                              is a stdlib-only leaf, held there by
 #                              test_import_isolation.py.
+#   app <-> modules            app composes the module runtime services, while
+#                              modules/testing drives ModuleManager (which
+#                              lives in app/) the way the bot does. Moving the
+#                              manager into modules/ would break the cycle.
 _ALLOWED_EDGES: dict[str, set[str]] = {
     "agent": {
         "config",
@@ -60,6 +64,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "kimi_agent_module_api",
         "memory",
         "moderation",
+        "modules",
         "observability",
         "providers",
         "sandbox",
@@ -104,10 +109,8 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "memory": {"providers", "storage", "utils"},
     "kimi_agent_module_api": {"config", "discord_adapter", "storage", "tools", "trust"},
     "moderation": {"observability", "providers", "trust", "utils"},
-    # Module API runtime services. Grows as each service lands. modules/testing
-    # is the integration harness and drives the composition root (app) the way
-    # the bot does; once app composes modules/ that becomes a fourth listed
-    # cycle, or ModuleManager moves into modules/ and the edge goes away.
+    # Module API runtime services. Grows as each service lands; the app edge is
+    # the harness cycle documented above.
     "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},

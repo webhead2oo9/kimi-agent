@@ -201,6 +201,9 @@ class RestartService(Protocol):
 
 
 class AppModule(Protocol):
+    # Raw-connection migrations. A module that also defines
+    # ``scoped_migrations: Sequence[ScopedModuleMigration]`` gets those run
+    # instead, with a MigrationContext whose ``table()`` applies the prefix.
     migrations: Sequence[ModuleMigration]
 
     async def start(self, ctx: ModuleRuntimeContext) -> None: ...
@@ -223,6 +226,9 @@ class ModuleSpec:
     guild_settings: GuildSettingsSchema | None = None
     provides: tuple[ServiceDeclaration, ...] = ()
     consumes: tuple[ServiceRequirement, ...] = ()
+    # Logical table name -> legacy physical name, so an installation keeps
+    # its data until a later release renames tables to the module prefix.
+    table_aliases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -481,6 +481,37 @@ async def stop_event_writer() -> None:
         _writer = None
 
 
+def build_module_health_event(
+    *,
+    ts: str,
+    module: str,
+    state: str,
+    detail: str,
+    metrics: dict[str, float],
+) -> dict[str, Any]:
+    return {
+        "v": SCHEMA_VERSION,
+        "type": "module_health",
+        "ts": ts,
+        "module": module,
+        "state": state,
+        "detail": detail,
+        "metrics": metrics,
+    }
+
+
+def emit_module_health(
+    *, module: str, state: str, detail: str = "", metrics: dict[str, float] | None = None
+) -> None:
+    if _writer is None:
+        return
+    _writer.enqueue(
+        build_module_health_event(
+            ts=_now_iso(), module=module, state=state, detail=detail, metrics=dict(metrics or {})
+        )
+    )
+
+
 def emit_tool_call(
     *,
     turn_id: str,

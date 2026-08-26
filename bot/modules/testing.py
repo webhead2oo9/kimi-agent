@@ -4,8 +4,9 @@
 the requested modules through ``ModuleManager`` exactly as the bot does,
 applies their migrations, and starts them with a runtime context whose ports
 are the real implementations where core has them and the public fakes from
-``kimi_agent_module_api.testing`` elsewhere. Module-package tests may import
-this; module production source may not.
+``kimi_agent_module_api.testing`` elsewhere. Health, services, and storage are
+always the real core implementations; inspect them via ``runtime.manager``.
+Module-package tests may import this; module production source may not.
 """
 
 from __future__ import annotations
@@ -22,11 +23,9 @@ from kimi_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeGuildSettings,
-    FakeHealth,
     FakeHttp,
     FakeInteractions,
     FakeScheduler,
-    FakeServiceRegistry,
     FakeTrust,
 )
 from storage.db import Database
@@ -64,7 +63,6 @@ class ModulePorts:
 
     events: FakeEvents
     scheduler: FakeScheduler
-    health: FakeHealth
     discord: FakeDiscordActions
     interactions: FakeInteractions
     guild_settings: FakeGuildSettings
@@ -78,7 +76,6 @@ class TestRuntime:
     bot: FakeBot
     settings: Settings
     config_dir: Path
-    services: FakeServiceRegistry
     trust: FakeTrust
     ports: dict[str, ModulePorts] = field(default_factory=dict)
     _closed: bool = False
@@ -155,7 +152,6 @@ async def build_test_runtime(
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
     bot = FakeBot()
-    services = FakeServiceRegistry()
     trust_lookup = trust or FakeTrust()
     ports: dict[str, ModulePorts] = {}
 
@@ -163,7 +159,6 @@ async def build_test_runtime(
         created = ModulePorts(
             events=FakeEvents(spec.name),
             scheduler=FakeScheduler(),
-            health=FakeHealth(),
             discord=FakeDiscordActions(spec.name, spec.permissions.discord_actions),
             interactions=FakeInteractions(spec.name),
             guild_settings=FakeGuildSettings(),
@@ -180,7 +175,6 @@ async def build_test_runtime(
         config_dir=config_dir,
         is_guild_active=active_guilds or (lambda _guild_id: True),
         get_module=manager.get,
-        services=services,
         trust=trust_lookup,
         current_config_dir=lambda: config_dir,
     )
@@ -193,7 +187,6 @@ async def build_test_runtime(
             ctx,
             events=p.events,
             scheduler=p.scheduler,
-            health=p.health,
             discord=p.discord,
             interactions=p.interactions,
             guild_settings=p.guild_settings,
@@ -206,7 +199,6 @@ async def build_test_runtime(
         bot=bot,
         settings=settings,
         config_dir=config_dir,
-        services=services,
         trust=trust_lookup,
         ports=ports,
     )

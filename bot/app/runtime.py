@@ -1283,9 +1283,7 @@ class KimiApplication:
         limit = raw.get("effective_limit_bytes")
         notice = raw.get("notice_text")
         valid_limit = (
-            limit
-            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
-            else None
+            limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
         )
         return valid_limit, notice if isinstance(notice, str) else None
 

@@ -243,7 +243,7 @@ era cannot sit in the file looking effective while doing nothing.
 | `app_name` | `BOT_NAME` | OpenAI-compatible | Optional provider-facing identity override. By default the configured bot name becomes the `User-Agent`; OpenRouter also receives it as its attribution title. |
 | `app_url` | `""` | `openrouter` | Attribution header. |
 | `service_tier` | `""` | OpenAI only | Service tier such as `flex`. Dropped on non-OpenAI endpoints. |
-| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_responses` | Per-call timeout. Ignored by `openai_compat` and `openrouter`. |
+| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses` | SDK transport timeout. Ignored by `openrouter`. |
 | `max_output_tokens` | unset | all | Hard output-token ceiling for every model on this gateway. |
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
 | `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. Accepted but ignored on `openai_compat` unless the target is DeepSeek. |

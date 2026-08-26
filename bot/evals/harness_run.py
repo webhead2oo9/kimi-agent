@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.providers import close_provider
 from config.settings import settings
@@ -74,7 +75,7 @@ log = logging.getLogger("evals.harness")
 
 EVALS_DIR = Path(__file__).resolve().parent
 SUMMARY_KIND = "harness-eval"
-SUMMARY_VERSION = 2
+SUMMARY_VERSION = 3
 _TRANSCRIPT_RESULT_CAP = 2000
 
 
@@ -233,6 +234,56 @@ def missing_expected_tools(scenarios: list[Scenario], registered: set[str]) -> d
     return problems
 
 
+def select_scenarios(scenarios: list[Scenario], requested_ids: Sequence[str]) -> list[Scenario]:
+    """Select requested scenarios in file order and reject misspelled ids."""
+    if not requested_ids:
+        return scenarios
+    requested = set(requested_ids)
+    known = {scenario.id for scenario in scenarios}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise ValueError(f"Unknown scenario id(s): {', '.join(unknown)}")
+    return [scenario for scenario in scenarios if scenario.id in requested]
+
+
+def safe_provider_endpoint(base_url: str) -> str:
+    """Return a credential-free endpoint origin suitable for reports."""
+    if not base_url:
+        return ""
+    try:
+        parsed = urlsplit(base_url)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return "configured endpoint (redacted)"
+    if not parsed.scheme or not host:
+        return "configured endpoint (redacted)"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parsed.scheme}://{host}{f':{port}' if port is not None else ''}"
+
+
+def resolve_vision_scenarios(
+    scenarios: list[Scenario],
+    *,
+    requested_mode: str,
+    has_captioner: bool,
+    supports_images: bool,
+) -> tuple[list[Scenario], str, dict[str, list[str]]]:
+    """Resolve image routing and preserve capability skips for the report."""
+    plain, visual = split_image_scenarios(scenarios)
+    if not visual:
+        return plain, "none", {}
+    mode = (
+        ("caption" if has_captioner else "native") if requested_mode == "auto" else requested_mode
+    )
+    if mode == "caption" and not has_captioner:
+        raise ValueError("--vision-mode caption requires image_captioner in evals/models.yaml")
+    if mode == "caption" or supports_images:
+        return [*plain, *visual], mode, {}
+    return plain, mode, {scenario.id: ["image_input"] for scenario in visual}
+
+
 @dataclass
 class RepResult:
     mechanical: MechanicalResult
@@ -312,6 +363,11 @@ def build_summary(
     cassette_mode: str,
     registered_tools: list[str],
     results: dict[str, tuple[Scenario, list[RepResult]]],
+    model_label: str = "",
+    provider_name: str = "",
+    provider_base_url: str = "",
+    timeout_seconds: float | None = None,
+    min_request_interval_seconds: float = 0.0,
     max_tokens: int = 65_536,
     requested_max_tokens: int | None = None,
     cassette_dir: str = "",
@@ -321,6 +377,7 @@ def build_summary(
     eval_run_nonce: str = "",
     image_captioner: str = "",
     captioned_scenarios: list[str] | None = None,
+    vision_mode: str = "none",
 ) -> dict:
     scenarios: dict[str, dict[str, Any]] = {
         scenario_id: {
@@ -359,9 +416,15 @@ def build_summary(
         "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha,
         "model": model,
+        "model_label": model_label or model,
+        "provider_name": provider_name,
+        "provider_base_url": provider_base_url,
+        "timeout_seconds": timeout_seconds,
+        "min_request_interval_seconds": min_request_interval_seconds,
         "eval_run_nonce": eval_run_nonce,
         "image_captioner": image_captioner,
         "captioned_scenarios": captioned_scenarios or [],
+        "vision_mode": vision_mode,
         "repeat": repeat,
         "max_tokens": max_tokens,
         "requested_max_tokens": requested_max_tokens or max_tokens,
@@ -374,8 +437,8 @@ def build_summary(
         # report said nothing.
         "cassette_tapes": cassette_tapes or {},
         "registered_tools": registered_tools,
-        # Scenario id -> tools this host does not register. A run that silently
-        # dropped its sandbox-only scenarios would read as full coverage.
+        # Scenario id -> missing capability/tool. A run that silently dropped
+        # image or sandbox-only scenarios would read as full coverage.
         "skipped_scenarios": skipped_scenarios or {},
         "scenarios": scenarios,
         "tool_costs": [entry.as_dict() for entry in tools],
@@ -395,8 +458,24 @@ def render_harness_report(summary: dict) -> str:
     if requested_max_tokens != max_tokens:
         max_tokens_cell += f" effective (requested {requested_max_tokens})"
     lines = [
-        f"# Harness eval: {summary['model']} @ {summary['git_sha']}",
+        f"# Harness eval: {summary.get('model_label') or summary['model']} @ {summary['git_sha']}",
         "",
+        (
+            f"**Provider:** {summary.get('provider_name') or 'unknown'}"
+            + (f" ({summary['provider_base_url']})" if summary.get("provider_base_url") else "")
+            + f" | **Model ID:** {summary['model']}"
+        ),
+        (
+            "**Request controls:** "
+            "timeout="
+            + (
+                f"{summary['timeout_seconds']}s"
+                if summary.get("timeout_seconds") is not None
+                else "provider default"
+            )
+            + " | "
+            f"minimum interval={float(summary.get('min_request_interval_seconds', 0)):.1f}s"
+        ),
         (
             f"**Run:** {summary['run_id']} | **Repeats:** {summary['repeat']} | "
             f"**Max tokens/call:** {max_tokens_cell} | "
@@ -412,6 +491,7 @@ def render_harness_report(summary: dict) -> str:
             if summary.get("image_captioner")
             else []
         ),
+        f"**Vision mode:** {summary.get('vision_mode', 'none')}",
         (
             f"**Overall score:** {totals['score_mean']} | "
             f"**Pass rate:** {totals['pass_rate']} | "
@@ -469,11 +549,11 @@ def render_harness_report(summary: dict) -> str:
             f"| {_usd(agg.get('cost_mean_usd'))} "
             f"| {', '.join(unique_flags) or 'clean'} |"
         )
-    # Named explicitly, never omitted: a reader comparing two runs has to be able to
-    # see that one of them sat out the sandbox-only scenarios.
+    # Named explicitly, never omitted: a reader comparing two runs has to be able
+    # to see that one sat out image or sandbox-only scenarios.
     skipped = summary.get("skipped_scenarios") or {}
     if skipped:
-        lines += ["", "## Skipped (host lacks the required tools)", ""]
+        lines += ["", "## Skipped scenarios", ""]
         lines += [f"- `{sid}`: needs {', '.join(tools)}" for sid, tools in sorted(skipped.items())]
     lines.extend(tool_cost_table(costs))
     return "\n".join(lines) + "\n"
@@ -581,23 +661,38 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
     model_key = cassette_model_key(spec.label)
     scenarios = load_scenarios(args.scenarios)
+    try:
+        scenarios = select_scenarios(scenarios, getattr(args, "scenario", []))
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
     # Resolve the runnable set *before* the dry-run print, or the plan reports
     # scenarios (and a call count) the real run would skip, which is the one
     # thing a dry run exists to get right.
     #
-    # A configured shared captioner makes the visual evidence identical for every
-    # candidate, including native-vision models. Without one, retain the direct
-    # image path and its fail-closed capability gate.
-    scenarios, visual = split_image_scenarios(scenarios)
-    if visual and (models.image_captioner is not None or spec.supports_images()):
-        scenarios = [*scenarios, *visual]
-    elif visual:
+    # Caption mode compares reasoning over identical visual evidence. Native mode
+    # measures the model's own image path. Auto preserves the historical choice:
+    # use a configured captioner, otherwise send images directly.
+    has_visual = any(any(turn.has_images for turn in scenario.turns) for scenario in scenarios)
+    requested_vision_mode = getattr(args, "vision_mode", "auto")
+    try:
+        scenarios, vision_mode, skipped = resolve_vision_scenarios(
+            scenarios,
+            requested_mode=requested_vision_mode,
+            has_captioner=models.image_captioner is not None,
+            supports_images=spec.supports_images(),
+        )
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    vision_skipped = list(skipped)
+    if vision_skipped:
         log.warning(
             "Skipping %d image scenario(s). %s does not declare image_input in "
             "evals/models.yaml: %s",
-            len(visual),
+            len(vision_skipped),
             spec.label,
-            ", ".join(s.id for s in visual),
+            ", ".join(vision_skipped),
         )
     if not scenarios:
         log.error("No runnable scenarios for %s; every selected scenario needs images.", spec.label)
@@ -608,9 +703,14 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(f"Model:     {spec.label} ({spec.model})")
+        provider_display = spec.provider_name
+        if endpoint := safe_provider_endpoint(spec.base_url):
+            provider_display += f" ({endpoint})"
+        print(f"Provider:  {provider_display}")
         max_tokens_note = f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
         print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
-        if models.image_captioner is not None:
+        print(f"Vision:    {vision_mode}")
+        if vision_mode == "caption" and models.image_captioner is not None:
             print(
                 f"Image captions: {models.image_captioner.label} "
                 f"({models.image_captioner.model}; cache: {caption_cache_dir})"
@@ -632,17 +732,24 @@ async def _run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    provider = InstrumentedProvider(build_eval_provider(spec))
+    provider = InstrumentedProvider(
+        build_eval_provider(spec),
+        min_request_interval_seconds=spec.min_request_interval_seconds,
+        request_timeout_seconds=spec.timeout_seconds,
+    )
     caption_provider = (
-        build_eval_provider(models.image_captioner)
-        if models.image_captioner is not None and visual
+        InstrumentedProvider(
+            build_eval_provider(models.image_captioner),
+            min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
+            request_timeout_seconds=models.image_captioner.timeout_seconds,
+        )
+        if vision_mode == "caption" and models.image_captioner is not None and has_visual
         else None
     )
     eval_run_nonce = new_eval_run_nonce()
     gateway = StubGateway()
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
-    skipped: dict[str, list[str]] = {}
     eval_registry = None
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
@@ -746,13 +853,18 @@ async def _run(args: argparse.Namespace) -> int:
         if caption_provider is not None:
             await close_provider(caption_provider)
 
-    base_out = Path(args.out)
+    base_out = Path(args.out) / model_key
     sha = git_short_sha(EVALS_DIR, data_paths=run_data_paths(EVALS_DIR, cassette_dir))
     run_dir = make_run_dir(base_out, sha=sha)
     summary = build_summary(
         run_id=run_dir.name,
         git_sha=sha,
         model=spec.model,
+        model_label=spec.label,
+        provider_name=spec.provider_name,
+        provider_base_url=safe_provider_endpoint(spec.base_url),
+        timeout_seconds=spec.timeout_seconds,
+        min_request_interval_seconds=spec.min_request_interval_seconds,
         repeat=args.repeat,
         max_tokens=max_tokens,
         requested_max_tokens=args.max_tokens,
@@ -764,10 +876,17 @@ async def _run(args: argparse.Namespace) -> int:
         cassette_tapes=tapes,
         skipped_scenarios=skipped,
         eval_run_nonce=eval_run_nonce,
-        image_captioner=(models.image_captioner.model if models.image_captioner else ""),
+        image_captioner=(
+            models.image_captioner.model
+            if vision_mode == "caption" and models.image_captioner
+            else ""
+        ),
         captioned_scenarios=[
             scenario.id for scenario in scenarios if any(turn.has_images for turn in scenario.turns)
-        ],
+        ]
+        if vision_mode == "caption"
+        else [],
+        vision_mode=vision_mode,
     )
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (run_dir / "report.md").write_text(render_harness_report(summary), encoding="utf-8")
@@ -795,8 +914,20 @@ def main() -> None:
     )
     parser.add_argument("--models", default=str(EVALS_DIR / "models.yaml"))
     parser.add_argument("--scenarios", default=str(EVALS_DIR / "scenarios"))
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        help="run only this scenario id (repeatable)",
+    )
     parser.add_argument("--cassettes", default=str(EVALS_DIR / "cassettes"))
     parser.add_argument("--captions", default=str(EVALS_DIR / "captions"))
+    parser.add_argument(
+        "--vision-mode",
+        choices=("auto", "caption", "native"),
+        default="auto",
+        help="auto uses the captioner when configured; caption shares captions; native sends images",
+    )
     parser.add_argument(
         "--cassette",
         choices=CASSETTE_MODES,

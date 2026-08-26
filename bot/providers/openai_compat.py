@@ -20,6 +20,7 @@ class OpenAICompatProvider(OpenAIChatProvider):
         service_tier: str | None = None,
         reasoning_effort: str = "",
         request_id_header: str = "",
+        timeout_seconds: float = 900.0,
         stall_timeout_seconds: float = 90.0,
         user_agent: str = DEFAULT_BOT_NAME,
     ) -> None:
@@ -31,6 +32,7 @@ class OpenAICompatProvider(OpenAIChatProvider):
             service_tier=service_tier,
             reasoning_effort=reasoning_effort,
             request_id_header=request_id_header,
+            timeout_seconds=timeout_seconds,
             stream=True,
             stall_timeout_seconds=stall_timeout_seconds,
             user_agent=user_agent,

@@ -71,6 +71,7 @@ def create_provider(config: ProviderConfig) -> LLMProvider:
                 service_tier=_openai_service_tier(config),
                 reasoning_effort=config.openai_reasoning_effort,
                 request_id_header=config.openai_request_id_header,
+                timeout_seconds=config.openai_timeout_seconds,
                 stall_timeout_seconds=config.stream_stall_timeout_seconds,
                 user_agent=config.user_agent,
             )

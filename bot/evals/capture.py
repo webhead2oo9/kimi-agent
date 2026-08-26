@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -47,9 +49,25 @@ class ProviderCall:
 class InstrumentedProvider(LLMProvider):
     """Wraps a provider to record per-call latency + token usage."""
 
-    def __init__(self, inner: LLMProvider) -> None:
+    def __init__(
+        self,
+        inner: LLMProvider,
+        *,
+        min_request_interval_seconds: float = 0.0,
+        request_timeout_seconds: float | None = None,
+    ) -> None:
+        if not math.isfinite(min_request_interval_seconds) or min_request_interval_seconds < 0:
+            raise ValueError("min_request_interval_seconds must be >= 0")
+        if request_timeout_seconds is not None and (
+            not math.isfinite(request_timeout_seconds) or request_timeout_seconds <= 0
+        ):
+            raise ValueError("request_timeout_seconds must be > 0 when set")
         self._inner = inner
         self.calls: list[ProviderCall] = []
+        self._min_request_interval_seconds = min_request_interval_seconds
+        self._request_timeout_seconds = request_timeout_seconds
+        self._next_request_at = 0.0
+        self._pace_lock = asyncio.Lock()
 
     @property
     def provider_key(self) -> str:
@@ -90,8 +108,17 @@ class InstrumentedProvider(LLMProvider):
             await result
 
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+        async with self._pace_lock:
+            now = time.monotonic()
+            if now < self._next_request_at:
+                await asyncio.sleep(self._next_request_at - now)
+            self._next_request_at = time.monotonic() + self._min_request_interval_seconds
         start = time.monotonic()
-        response = await self._inner.run_turn(request)
+        if self._request_timeout_seconds is None:
+            response = await self._inner.run_turn(request)
+        else:
+            async with asyncio.timeout(self._request_timeout_seconds):
+                response = await self._inner.run_turn(request)
         latency_ms = int((time.monotonic() - start) * 1000)
         self.calls.append(
             ProviderCall(

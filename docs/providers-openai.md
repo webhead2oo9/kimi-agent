@@ -20,10 +20,11 @@ Three profile fields matter on OpenAI-family transports:
   default endpoint). On any other gateway it is silently dropped, for both
   `openai_compat` and `openai_responses`, because a gateway that has never heard
   of the field would reject the whole request.
-- **`timeout_seconds`**: the per-call timeout for OpenAI-family providers. It
-  is honored by `openai_responses` (along with `anthropic` and
-  `anthropic_compat`) and ignored by `openai_compat`, which relies on the stall
-  watchdog instead.
+- **`timeout_seconds`**: the SDK transport timeout for OpenAI-family providers. It
+  is honored by `openai_compat` and `openai_responses` (along with `anthropic`
+  and `anthropic_compat`). Streaming `openai_compat` calls also keep their
+  shorter stall watchdog. These are transport/inactivity bounds, not a promise
+  that a continuously streaming response finishes within one wall-clock deadline.
 - **`app_name`**: an optional provider-facing identity override. When you leave
   it out, the profile inherits `BOT_NAME`. OpenAI-compatible transports send
   the resolved identity as their `User-Agent`.

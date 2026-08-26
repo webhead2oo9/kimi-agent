@@ -75,6 +75,7 @@ class ModulePorts:
 @dataclass(slots=True)
 class TestRuntime:
     manager: ModuleManager
+    registry: ToolRegistry
     database: Database
     bot: FakeBot
     settings: Settings
@@ -138,10 +139,11 @@ async def build_test_runtime(
     os.environ.update(env or {})
     try:
         settings = Settings(_env_file=None, config_dir=str(config_dir))  # type: ignore[call-arg]
+        registry = ToolRegistry()
         manager = ModuleManager.load(
             tuple(names),
             core_settings=settings,
-            registry=ToolRegistry(),
+            registry=registry,
             installed=installed,
         )
     finally:
@@ -163,7 +165,7 @@ async def build_test_runtime(
             scheduler=FakeScheduler(),
             discord=FakeDiscordActions(spec.name, spec.permissions.discord_actions),
             interactions=FakeInteractions(spec.name),
-            guild_settings=FakeGuildSettings(),
+            guild_settings=FakeGuildSettings(guild_config),
             http=FakeHttp(http_routes),
         )
         ports[spec.name] = created
@@ -194,6 +196,7 @@ async def build_test_runtime(
 
     runtime = TestRuntime(
         manager=manager,
+        registry=registry,
         database=database,
         bot=bot,
         settings=settings,

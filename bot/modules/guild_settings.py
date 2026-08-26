@@ -119,7 +119,7 @@ class GuildSettingsService:
             legacy_path = base / "servers" / f"{guild_id}.md"
             try:
                 legacy_text = legacy_path.read_text(encoding="utf-8")
-            except FileNotFoundError, OSError:
+            except (FileNotFoundError, OSError):
                 legacy_text = ""
             try:
                 legacy_meta, _ = split_frontmatter_strict(legacy_text) if legacy_text else ({}, "")
@@ -245,6 +245,15 @@ class ModuleGuildSettingsView:
     service: GuildSettingsService
     module_name: str
     is_guild_active: Callable[[int], bool]
+
+    def guild_ids(self) -> tuple[int, ...]:
+        with self.service._lock:
+            guild_ids = {
+                guild_id
+                for guild_id, module_name in self.service._entries
+                if module_name == self.module_name
+            }
+        return tuple(sorted(guild_id for guild_id in guild_ids if self.is_guild_active(guild_id)))
 
     def get(self, guild_id: int) -> GuildSettingsSnapshot:
         return self.service.get(guild_id, self.module_name)

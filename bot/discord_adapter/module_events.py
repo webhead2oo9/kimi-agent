@@ -93,6 +93,7 @@ def _embed_texts(message: discord.Message) -> tuple[str, ...]:
             for value in (
                 getattr(embed, "title", None),
                 getattr(embed, "description", None),
+                getattr(getattr(embed, "author", None), "name", None),
                 getattr(embed, "url", None),
             )
             if value
@@ -102,6 +103,9 @@ def _embed_texts(message: discord.Message) -> tuple[str, ...]:
             value = str(getattr(field, "value", "")).strip()
             if name or value:
                 parts.append(f"{name}: {value}".strip(": "))
+        footer = str(getattr(getattr(embed, "footer", None), "text", "")).strip()
+        if footer:
+            parts.append(footer)
         if parts:
             texts.append(" â€” ".join(parts))
     return tuple(texts)

@@ -19,6 +19,12 @@ dependency that is not active, has invalid settings, or fails to start.
 Dependencies start first, and modules close in reverse order. An empty
 `KIMI_MODULES` loads no module code and no module schema.
 
+A module may separately declare `activation_capabilities` for an optional
+feature that is meaningful only when core is configured to expose it. Missing
+activation capabilities soft-disable that module (and its dependents) without
+creating it, running migrations, or aborting bot startup; `/modules status`
+shows the reason. `requires_capabilities` remains a hard compatibility check.
+
 ## Package and schema contract
 
 - Pin module distributions in deployment-owned requirements or lock data. Do
@@ -133,7 +139,9 @@ the ports are a contract and an audit surface, not a sandbox.
   are lost on restart; durable work belongs in the scheduler.
 - `ctx.discord`: the declared Discord operations (`send_message`,
   `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`,
-  `fetch_message`, `fetch_member`) on stable IDs, returning public
+  `fetch_message`, `fetch_member`, `fetch_channel`, paginated
+  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, and
+  `check_channel_access`) on stable IDs, returning public
   snapshots. Calling an undeclared action raises
   `UndeclaredDiscordAction`. `ban`, `kick`, and `timeout` refuse the bot,
   the acting user, other bots, and any member whose trust tier is not
@@ -153,6 +161,7 @@ the ports are a contract and an audit surface, not a sandbox.
   empty settings. Until a guild has that document, the schema's field names are
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
+  `guild_ids()` lists the active guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
   `revision`), refreshed on the guild-activation cadence and on managed
   config activation; `is_enabled(guild_id)` is the guild being active and
@@ -223,7 +232,8 @@ For composition tests, core's `modules.testing.build_test_runtime(tmp_path,
 names)` loads the named modules through the real `ModuleManager`, applies their
 migrations to a fresh SQLite file, and starts them with a per-module context
 whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
-context and `runtime.ports[name]` its fakes for assertions. Module test suites
+context, `runtime.ports[name]` its fakes, and `runtime.registry` the composed
+tool registry for assertions. Module test suites
 may import that harness; module production source may import only
 `kimi_agent_module_api`.
 

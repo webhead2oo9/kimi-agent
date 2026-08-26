@@ -483,6 +483,9 @@ class FakeGuildSettings:
         self.errors: dict[int, tuple[str, ...]] = {}
         self._callbacks: list[Callable[[int], None]] = []
 
+    def guild_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self.values))
+
     def get(self, guild_id: int) -> GuildSettingsSnapshot:
         errors = self.errors.get(guild_id, ())
         return GuildSettingsSnapshot(

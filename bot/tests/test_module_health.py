@@ -143,6 +143,7 @@ def test_render_manifest_lists_declarations_and_escapes() -> None:
     spec = _spec(
         "guard",
         _Module(),
+        activation_capabilities=("discord.message_content.v1",),
         permissions=ModulePermissions(
             discord_actions=frozenset({"ban", "send_message"}),
             event_topics=("discord.message",),
@@ -156,7 +157,26 @@ def test_render_manifest_lists_declarations_and_escapes() -> None:
     )
     assert "provides: moderation.cases@1" in text
     assert "discord actions: ban, send_message" in text
+    assert "activation capabilities: discord.message_content.v1" in text
     assert "escape hatches: raw_bot" in text
     assert "table aliases: cases→moderation_cases" in text
     assert "llm tools: tool_a" in text
     assert render_status((), {}, {}).startswith("No application modules")
+
+
+def test_render_status_explains_soft_disabled_modules() -> None:
+    text = render_status(
+        ("discord_rag",),
+        {},
+        {},
+        disabled={
+            "discord_rag": (
+                "0.1.0",
+                "missing activation capability discord.message_content.v1",
+            )
+        },
+    )
+
+    assert "`discord_rag` 0.1.0" in text
+    assert "disabled" in text
+    assert "discord.message_content.v1" in text

@@ -66,7 +66,7 @@ def test_spec_declares_nothing_by_default() -> None:
     assert spec.guild_settings is None
     assert spec.provides == ()
     assert spec.consumes == ()
-    assert spec.api_version == MODULE_API_VERSION == 1
+    assert spec.api_version == MODULE_API_VERSION == 2
 
 
 def test_runtime_context_requires_every_service_port() -> None:
@@ -93,6 +93,24 @@ def test_runtime_context_requires_every_service_port() -> None:
 
 def test_table_prefix_normalizes_hyphens() -> None:
     assert table_prefix("image-fingerprints") == "image_fingerprints"
+
+
+def test_proposals_is_a_reserved_core_module_name() -> None:
+    with pytest.raises(RuntimeError, match="reserved by core"):
+        validate_module_selection(
+            ("proposals",),
+            core_settings=_settings(),
+            installed={"proposals": _spec("proposals")},
+        )
+
+
+def test_old_module_api_is_rejected_clearly() -> None:
+    with pytest.raises(RuntimeError, match="requires module API 1; core provides 2"):
+        validate_module_selection(
+            ("legacy",),
+            core_settings=_settings(),
+            installed={"legacy": _spec("legacy", api_version=1)},
+        )
 
 
 @pytest.mark.parametrize("topic", ["discord.message", "community_moderation.case_created"])

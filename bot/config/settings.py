@@ -435,10 +435,6 @@ class Settings(BaseSettings):
 
     # Experimental owner-approved module control plane. These bootstrap values
     # remain environment-owned and cannot be changed through managed overrides.
-    control_plane_enabled: bool = False
-    control_plane_dir: str = "data/control-plane"
-    control_plane_key: SecretStr = SecretStr("")
-    control_plane_auto_restart: bool = True
 
     # Script Execution
     script_default_timeout: int = 1200

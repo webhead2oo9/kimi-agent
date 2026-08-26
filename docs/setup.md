@@ -134,7 +134,8 @@ all, so the silence itself is the clue. Check the guild's activation state:
   `ALLOWED_GUILD_IDS`, the state is `pending` and the bot stays silent.
 - If the fragment exists but the state is `invalid_setup`, then
   `server_setup_activation` refused it. It fails closed on *any* malformed
-  sibling key, not just `bot_active`: a non-numeric `learn_log_channel_id`, or
+  sibling key, not just `bot_active`: a non-numeric `learn_log_channel_id` or
+  `proposal_channel_id`, or
   one bad entry in `staff_user_ids`, `staff_role_ids`, `regular_role_ids`, or
   `thread_targets`, voids the whole file. Active modules can add their own
   fail-closed validators. The reasoning is simple: a typo in a trust list must

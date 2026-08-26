@@ -28,6 +28,7 @@ from kimi_agent_module_api.testing import (
     FakeGuildSettings,
     FakeHttp,
     FakeInteractions,
+    FakeProposals,
     FakeScheduler,
     FakeTrust,
 )
@@ -70,6 +71,7 @@ class ModulePorts:
     interactions: FakeInteractions
     guild_settings: FakeGuildSettings
     http: FakeHttp
+    proposals: FakeProposals
 
 
 @dataclass(slots=True)
@@ -160,6 +162,7 @@ async def build_test_runtime(
     ports: dict[str, ModulePorts] = {}
 
     def ports_for(spec: ModuleSpec) -> ModulePorts:
+        target_guilds = {f"guild:{guild_id}": str(guild_id) for guild_id in (guild_config or {})}
         created = ModulePorts(
             events=FakeEvents(spec.name),
             scheduler=FakeScheduler(),
@@ -167,6 +170,7 @@ async def build_test_runtime(
             interactions=FakeInteractions(spec.name),
             guild_settings=FakeGuildSettings(guild_config),
             http=FakeHttp(http_routes),
+            proposals=FakeProposals(spec.name, target_guilds=target_guilds),
         )
         ports[spec.name] = created
         return created
@@ -177,7 +181,9 @@ async def build_test_runtime(
         is_guild_active=active_guilds or (lambda _guild_id: True),
         current_config_dir=lambda: config_dir,
         capabilities=ModuleCapabilities(
-            available=frozenset(), members_intent=False, message_content_intent=False
+            available=frozenset({"proposals.v2"}),
+            members_intent=False,
+            message_content_intent=False,
         ),
         trust=trust_lookup,
     )
@@ -192,6 +198,7 @@ async def build_test_runtime(
             "interactions": p.interactions,
             "guild_settings": p.guild_settings,
             "http": p.http,
+            "proposals": p.proposals,
         }
 
     runtime = TestRuntime(
@@ -221,6 +228,7 @@ def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
         "discord": FakeDiscordActions(spec.name, spec.permissions.discord_actions),
         "interactions": FakeInteractions(spec.name),
         "http": ports.get("http") or FakeHttp(),
+        "proposals": ports.get("proposals") or FakeProposals(spec.name),
     }
 
 

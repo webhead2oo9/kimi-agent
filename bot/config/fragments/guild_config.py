@@ -36,6 +36,9 @@ affordances ride the frontmatter:
   ``skill_create``, ``skill_edit``) is announced, so an ephemeral confirmation
   still leaves a shared audit trail. Absent means no learn logging; see
   :func:`load_learn_log_channel_id` and ``app/learn_log.py``.
+* ``proposal_channel_id``: where module-authored configuration proposals are
+  reviewed by staff. Absent means the invoking channel is used; see
+  :func:`load_proposal_channel_id` and ``app/proposals.py``.
 * Application modules may own additional keys. Their validators join
   :func:`server_setup_activation` while the module is active, so a malformed
   module security boundary cannot activate the guild.
@@ -105,10 +108,12 @@ def server_setup_activation(
         raw = meta.get(key)
         if raw is not None and not isinstance(raw, list):
             return None
-    for key in ("learn_log_channel_id",):
+    for key in ("learn_log_channel_id", "proposal_channel_id"):
         raw = meta.get(key)
-        if raw is not None and not _ID_RE.match(str(raw).strip()):
-            return None
+        if raw is not None:
+            token = str(raw).strip()
+            if not _ID_RE.match(token) or int(token) <= 0:
+                return None
     if any(not validator(meta) for validator in validators):
         return None
     return decision
@@ -276,6 +281,30 @@ def load_learn_log_channel_id(
     token = str(raw).strip()
     if not _ID_RE.match(token):
         log.warning("Ignoring non-numeric learn_log_channel_id in %s", source)
+        return None
+    return token
+
+
+def load_proposal_channel_id(
+    guild_id: str,
+    *,
+    config_dir: Path | None = None,
+) -> str | None:
+    """Read the guild's optional staff proposal-review channel.
+
+    Channel ownership and sendability are checked by the proposal service at
+    use time. This loader only accepts a positive numeric Discord ID.
+    """
+    result = read_guild_frontmatter(guild_id, config_dir=config_dir)
+    if result is None:
+        return None
+    meta, source = result
+    raw = meta.get("proposal_channel_id")
+    if raw is None:
+        return None
+    token = str(raw).strip()
+    if not _ID_RE.match(token) or int(token) <= 0:
+        log.warning("Ignoring non-numeric proposal_channel_id in %s", source)
         return None
     return token
 

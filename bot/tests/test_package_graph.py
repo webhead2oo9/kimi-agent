@@ -122,7 +122,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
-    "scripts": {"app", "codex"},
+    "scripts": {"codex"},
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": set(),

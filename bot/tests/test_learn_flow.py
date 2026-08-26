@@ -20,7 +20,11 @@ from app.learn_turn import (
     build_learn_registry,
     learn_turn_blocked_tools,
 )
-from config.fragments.guild_config import load_learn_log_channel_id, server_setup_activation
+from config.fragments.guild_config import (
+    load_learn_log_channel_id,
+    load_proposal_channel_id,
+    server_setup_activation,
+)
 from tools.learn import (
     SCOPE_THIS_GUILD,
     SINK_COMMUNITY_MEMORY,
@@ -342,6 +346,18 @@ def test_malformed_learn_log_channel_blocks_guild_activation() -> None:
     )
     assert (
         server_setup_activation(f"---\nbot_active: true\nlearn_log_channel_id: {CHANNEL_ID}\n---\n")
+        is True
+    )
+
+
+def test_proposal_channel_is_read_and_blocks_activation_when_malformed(tmp_path) -> None:
+    _write_guild_fragment(tmp_path, f"---\nproposal_channel_id: {CHANNEL_ID}\n---\n")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) == CHANNEL_ID
+    assert (
+        server_setup_activation("---\nbot_active: true\nproposal_channel_id: nope\n---\n") is None
+    )
+    assert (
+        server_setup_activation(f"---\nbot_active: true\nproposal_channel_id: {CHANNEL_ID}\n---\n")
         is True
     )
 

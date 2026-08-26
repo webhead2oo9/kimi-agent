@@ -10,6 +10,8 @@ that composes real core services lives in core's ``modules.testing``.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +21,7 @@ from kimi_agent_module_api.contracts import (
     Backoff,
     ChannelSnapshot,
     CommandSpec,
+    ConfigSnapshot,
     Event,
     EventHandler,
     GuildSettingsSnapshot,
@@ -34,6 +37,10 @@ from kimi_agent_module_api.contracts import (
     MessageSnapshot,
     ModuleHealth,
     OutgoingEmbed,
+    ProposalActor,
+    ProposalError,
+    ProposalRef,
+    ProposalState,
     ServiceUnavailable,
     TrustTierName,
     UndeclaredDiscordAction,
@@ -51,6 +58,111 @@ class _Closable:
         if not self.closed:
             self.closed = True
             self._on_close()
+
+
+@dataclass(frozen=True, slots=True)
+class ProposedChange:
+    proposal_id: str
+    module_name: str
+    target: str
+    content: str
+    summary: str
+    actor: ProposalActor
+    expected_revision: str | None
+
+
+class FakeProposals:
+    """Actor-scoped, module-bound fragment proposal fake."""
+
+    def __init__(
+        self,
+        module_name: str,
+        documents: Mapping[str, str] | None = None,
+        *,
+        target_guilds: Mapping[str, str] | None = None,
+    ) -> None:
+        self.module_name = module_name
+        self.documents = dict(documents or {})
+        self.target_guilds = dict(target_guilds or {})
+        self.changes: list[ProposedChange] = []
+        self.refs: dict[str, ProposalRef] = {}
+        self._proposal_guilds: dict[str, str] = {}
+
+    @staticmethod
+    def _revision(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def _require_guild(self, target: str, actor: ProposalActor) -> str:
+        actor_guild = str(actor.guild_id or "")
+        if not actor_guild.isdecimal() or int(actor_guild) <= 0:
+            raise ProposalError("proposal actor must belong to a guild")
+        target_guild = self.target_guilds.get(target)
+        if target_guild is None and target.startswith("guild:"):
+            target_guild = target.split(":", 2)[1]
+        if target_guild is None:
+            raise ProposalError(f"fake has no guild mapping for {target!r}")
+        if target_guild != actor_guild:
+            raise ProposalError("proposal target must belong to the actor's guild")
+        return actor_guild
+
+    async def snapshot(self, target: str, *, actor: ProposalActor) -> ConfigSnapshot:
+        self._require_guild(target, actor)
+        content = self.documents.get(target, "")
+        return ConfigSnapshot(target, self._revision(content), content)
+
+    async def propose(
+        self,
+        *,
+        target: str,
+        content: str,
+        summary: str,
+        actor: ProposalActor,
+        expected_revision: str | None = None,
+    ) -> ProposalRef:
+        guild_id = self._require_guild(target, actor)
+        current = self.documents.get(target, "")
+        if expected_revision is not None and expected_revision != self._revision(current):
+            raise ProposalError("configuration changed since it was inspected")
+        proposal_id = uuid.uuid4().hex
+        change = ProposedChange(
+            proposal_id,
+            self.module_name,
+            target,
+            content,
+            summary,
+            actor,
+            expected_revision,
+        )
+        ref = ProposalRef(proposal_id, target, "pending")
+        self.changes.append(change)
+        self.refs[proposal_id] = ref
+        self._proposal_guilds[proposal_id] = guild_id
+        return ref
+
+    async def get(self, proposal_id: str, *, actor: ProposalActor) -> ProposalRef | None:
+        actor_guild = str(actor.guild_id or "")
+        if self._proposal_guilds.get(proposal_id) != actor_guild:
+            return None
+        return self.refs.get(proposal_id)
+
+    def decide(
+        self,
+        proposal_id: str,
+        state: ProposalState,
+        decided_by: str,
+        decision_reason: str = "",
+    ) -> ProposalRef:
+        current = self.refs[proposal_id]
+        updated = ProposalRef(
+            current.proposal_id,
+            current.target,
+            state,
+            current.message,
+            decided_by,
+            decision_reason,
+        )
+        self.refs[proposal_id] = updated
+        return updated
 
 
 class FakeEvents:
@@ -625,9 +737,11 @@ __all__ = [
     "FakeHttp",
     "FakeInteraction",
     "FakeInteractions",
+    "FakeProposals",
     "FakeResponse",
     "FakeScheduler",
     "FakeServiceRegistry",
     "FakeStorageTables",
     "FakeTrust",
+    "ProposedChange",
 ]

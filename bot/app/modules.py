@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
@@ -31,7 +31,6 @@ from kimi_agent_module_api.contracts import (
 )
 from kimi_agent_module_api import (
     AppModule,
-    ConfigurationService,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
     ModuleCapabilities,
@@ -42,7 +41,6 @@ from kimi_agent_module_api import (
     ModuleSettingsDefinition,
     ModuleSpec,
     ProposalService,
-    RestartService,
 )
 
 if TYPE_CHECKING:
@@ -64,11 +62,9 @@ log = logging.getLogger(__name__)
 
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     """Build the stable capability advertisement for one core configuration."""
-    available = {"discord.history.v1"}
+    available = {"discord.history.v1", "proposals.v2"}
     if core_settings.message_content_intent:
         available.add("discord.message_content.v1")
-    if core_settings.control_plane_enabled:
-        available.update({"proposals.v1", "config.v1", "restart.v1"})
     return ModuleCapabilities(
         available=frozenset(available),
         members_intent=bool(core_settings.members_intent),
@@ -189,6 +185,8 @@ def validate_module_selection(
 def _validate_declarations(spec: ModuleSpec) -> None:
     """Reject malformed declarations before any module code is created."""
     try:
+        if spec.name == "proposals":
+            raise ValueError("module name 'proposals' is reserved by core")
         validate_module_name(spec.name)
         validate_permissions(spec.name, spec.permissions)
         validate_services(spec.name, spec.dependencies, spec.provides, spec.consumes)
@@ -229,9 +227,11 @@ class ModuleRuntimeBase:
     capabilities: ModuleCapabilities
     trust: TrustLookup
     discord: DiscordActions | None = None
-    proposals: ProposalService | None = None
-    configuration: ConfigurationService | None = None
-    restart: RestartService | None = None
+    proposals: ProposalViewFactory | None = None
+
+
+class ProposalViewFactory(Protocol):
+    def view_for(self, module_name: str) -> ProposalService: ...
 
 
 _REQUIRED_PORTS = (
@@ -447,9 +447,7 @@ class ModuleManager:
                 if self.guild_settings is not None and spec.guild_settings is not None
                 else None
             ),
-            "proposals": base.proposals,
-            "configuration": base.configuration,
-            "restart": base.restart,
+            "proposals": base.proposals.view_for(spec.name) if base.proposals is not None else None,
             "raw_bot": base.bot if spec.permissions.raw_bot else None,
             "raw_storage": base.database if spec.permissions.raw_storage else None,
         }

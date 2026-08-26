@@ -642,9 +642,8 @@ class Database:
         elif current < SCHEMA_VERSION:
             await _apply_migrations(conn, current)
 
-        # The module ledger was folded into the unreleased core-v1 baseline.
-        # Creating it idempotently also lets pre-split v1 development databases
-        # adopt modules without inventing a core schema v2.
+        # Keep the module ledger idempotent so older development databases can
+        # adopt module support independently of the core migration history.
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS module_schema_versions (
                 module_name TEXT NOT NULL,

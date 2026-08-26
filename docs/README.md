@@ -71,5 +71,3 @@ the subsystem it covers.
   authoring for complete prompt layouts.
 - [Developer map](../CLAUDE.md): source boundaries and maintenance
   conventions.
-- [Changelog](../bot/changelog.md): behavior changes visible to members and
-  staff.

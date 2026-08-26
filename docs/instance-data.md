@@ -16,7 +16,7 @@ outside the public repository.
 | Synthetic Discord identifiers in fixtures | `<SKILLS_DIR>` including staff-created and learned skills |
 | Eval code, synthetic scenarios, fixtures, and `models.example.yaml` | Deployment-specific scenarios; `evals/models.yaml`, cassettes, results, transcripts, and run artifacts |
 | Deployment manifests containing variable references only | SQLite, Hindsight data, attachments, workspaces, logs, and generated files |
-| Current architecture and public changelog | Private checkout paths and unpublished project notes |
+| Current architecture and public documentation | Private checkout paths and unpublished project notes |
 
 Secrets belong in the deployment secret store or in ignored files, never in a
 private Git repository. Private configuration and skills, on the other hand,

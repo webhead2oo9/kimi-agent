@@ -128,6 +128,14 @@ Of all these settings, `DATABASE_PATH` is the one that matters most. Production
 `data/bot.db` is real user data, and a dev boot writing into it is exactly the
 mistake worth engineering against.
 
+Local state deserves the same care. Encryption is off by default on every
+platform, and this repository installs SQLCipher only on Linux. A normal
+Windows dev database is therefore plaintext and may contain retained
+transcripts (30 days by default). Before cleaning or retiring a dev machine,
+review what needs to be kept. `git clean -ndx` previews ignored files;
+`git clean -fdx` removes them, including `data/`, dotenv files, and
+`config/models.yaml`.
+
 Leave `ALLOWED_GUILD_IDS` blank to exercise the normal activation flow: invite
 the dev bot, then create `<CONFIG_DIR>/servers/<guild_id>.md` with
 `bot_active: true` in its YAML frontmatter. Until that file is valid, the bot
@@ -213,6 +221,9 @@ uv run ruff check .
 uv run ruff format --check .   # line length is the formatter's job, not the linter's
 uv run mypy .
 ```
+
+`uv run mypy .` is the CI and Linux form. On Windows, uv's script trampoline
+may fail to canonicalize the path; use `uv run python -m mypy .` instead.
 
 While you're developing, run the smallest relevant test first:
 

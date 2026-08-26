@@ -84,6 +84,23 @@ services these declarations govern land incrementally as optional fields on
 the runtime context; until they do, declarations are validated but not yet
 enforced.
 
+## Testing a module
+
+`kimi_agent_module_api.testing` ships protocol-level fakes for every service
+port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
+`FakeHttp`, and friends). They import nothing beyond the standard library and
+the contracts, so a module can unit-test its logic with only the API package
+installed. `FakeDiscordActions` enforces the module's declared actions, and
+`FakeScheduler.run_due(now)` runs jobs only when the test advances time.
+
+For composition tests, core's `modules.testing.build_test_runtime(tmp_path,
+names)` loads the named modules through the real `ModuleManager`, applies their
+migrations to a fresh SQLite file, and starts them with a per-module context
+whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
+context and `runtime.ports[name]` its fakes for assertions. Module test suites
+may import that harness; module production source may import only
+`kimi_agent_module_api`.
+
 ## Experimental control-plane API
 
 The module API can advertise `proposals.v1`, `config.v1`, and `restart.v1` when

@@ -104,8 +104,11 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "memory": {"providers", "storage", "utils"},
     "kimi_agent_module_api": {"config", "discord_adapter", "storage", "tools", "trust"},
     "moderation": {"observability", "providers", "trust", "utils"},
-    # Module API runtime services. Grows as each service lands.
-    "modules": set(),
+    # Module API runtime services. Grows as each service lands. modules/testing
+    # is the integration harness and drives the composition root (app) the way
+    # the bot does; once app composes modules/ that becomes a fourth listed
+    # cycle, or ModuleManager moves into modules/ and the edge goes away.
+    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
     "scripts": {"app", "codex"},

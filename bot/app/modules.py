@@ -10,8 +10,8 @@ removing the capability.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 import logging
 from pathlib import Path
@@ -180,6 +180,7 @@ class ModuleManager:
     _modules: dict[str, AppModule] = field(default_factory=dict)
     _validators: dict[str, GuildConfigValidator] = field(default_factory=dict)
     _started: list[str] = field(default_factory=list)
+    _contexts: dict[str, ModuleRuntimeContext] = field(default_factory=dict)
 
     @property
     def config_dir(self) -> Path:
@@ -252,7 +253,31 @@ class ModuleManager:
         except KeyError as exc:
             raise RuntimeError(f"Kimi module {name!r} is not active") from exc
 
-    async def start(self, ctx: ModuleRuntimeContext) -> None:
+    def spec(self, name: str) -> ModuleSpec:
+        for spec in self._specs:
+            if spec.name == name:
+                return spec
+        raise RuntimeError(f"Kimi module {name!r} is not active")
+
+    def context_for(self, name: str) -> ModuleRuntimeContext:
+        """The per-module runtime context handed to ``start`` (after it ran)."""
+        try:
+            return self._contexts[name]
+        except KeyError as exc:
+            raise RuntimeError(f"Kimi module {name!r} has not been started") from exc
+
+    async def start(
+        self,
+        ctx: ModuleRuntimeContext,
+        *,
+        customize: Callable[[ModuleSpec, ModuleRuntimeContext], ModuleRuntimeContext] | None = None,
+    ) -> None:
+        """Migrate every module, then start them in dependency order.
+
+        Each module receives its own frozen copy of ``ctx`` carrying its
+        ``module_name``; ``customize`` lets the composition root attach the
+        per-module service ports before the module sees the context.
+        """
         try:
             for spec in self._specs:
                 instance = self._modules[spec.name]
@@ -260,8 +285,12 @@ class ModuleManager:
                 await ctx.database.apply_module_migrations(spec.name, migrations)
             for spec in self._specs:
                 instance = self._modules[spec.name]
+                module_ctx = replace(ctx, module_name=spec.name)
+                if customize is not None:
+                    module_ctx = customize(spec, module_ctx)
+                self._contexts[spec.name] = module_ctx
                 self._started.append(spec.name)
-                await instance.start(ctx)
+                await instance.start(module_ctx)
                 log.info("Kimi module started: %s %s", spec.name, spec.version)
         except BaseException:
             await self.close()

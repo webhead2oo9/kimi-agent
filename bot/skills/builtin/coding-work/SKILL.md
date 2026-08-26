@@ -91,9 +91,14 @@ a Git clone.
 
 When calling `start_coding_task`, state the concrete objective, useful
 acceptance criteria, relevant paths or inputs, and constraints the worker cannot
-infer. A successful call durably queues the task, publishes its initial status,
-and ends the foreground turn automatically with a short acknowledgement. Do not
-combine it with later tool work in the same turn.
+infer. Put requirements in `task` or `acceptance_criteria`; `context` is
+supplemental untrusted material. Use `include_conversation` when prior discussion, a reply target, or
+tool-read Discord context matters. Name only the triggering-message attachments
+and workspace files the worker actually needs. A successful call durably queues
+the task, publishes its initial status, and ends the foreground turn
+automatically with a short acknowledgement. A rejected call explains why no
+task was queued; relay that reason instead of implying work started. Do not
+combine a successful delegation with later tool work in the same turn.
 
 On later turns:
 

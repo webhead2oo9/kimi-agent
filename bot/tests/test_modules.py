@@ -326,6 +326,7 @@ async def test_existing_core_v1_database_gains_module_ledger(tmp_path: Path) -> 
     )
     await raw.execute("INSERT INTO schema_version VALUES (1, 'core_v1', 'now')")
     await raw.execute("CREATE TABLE legacy_core_data (id INTEGER PRIMARY KEY)")
+    await raw.execute("CREATE TABLE coding_tasks (id TEXT PRIMARY KEY)")
     await raw.commit()
     await raw.close()
 

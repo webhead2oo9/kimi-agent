@@ -53,6 +53,9 @@ log = logging.getLogger(__name__)
 
 MAX_TOOL_NAME_RETRIES = 3
 MAX_ARG_PARSE_RETRIES = 3
+HANDOFF_CONTEXT_MAX_MESSAGES = 20
+HANDOFF_CONTEXT_MAX_TEXT_CHARS = 12_000
+HANDOFF_CONTEXT_TRUNCATION_MARKER = "[Earlier model-visible context was truncated.]"
 THREAD_HANDOFF_ADVISORY_TAG = "<thread_handoff_advisory>"
 _THREAD_HANDOFF_NON_SUBSTANTIVE_TOOLS = frozenset(
     {
@@ -500,6 +503,9 @@ class _ConversationRunner:
             )
             if msg is not None
         ]
+        durable_handoff_context_messages = (
+            [reply_context_msg] if reply_context_msg is not None else []
+        )
 
         # Debug snapshot of the iteration-0 model input for the tool-event stream. Built
         # once here while every piece is still its iteration-0 value (`tools` may expand
@@ -707,6 +713,7 @@ class _ConversationRunner:
                     msg_ctx=msg_ctx,
                     system_prompt=system_prompt,
                     continuation_context_messages=continuation_context_messages,
+                    handoff_context_messages=durable_handoff_context_messages,
                     turn_id=turn_id,
                     deadline=deadline,
                 )
@@ -839,6 +846,7 @@ class _ConversationRunner:
         msg_ctx: MessageContext,
         system_prompt: str,
         continuation_context_messages: list[ConversationMessage],
+        handoff_context_messages: list[ConversationMessage],
         turn_id: str,
         deadline: float | None,
     ) -> float | None:
@@ -877,6 +885,12 @@ class _ConversationRunner:
                         arg_parse_errors=state.arg_parse_errors,
                     )
                 else:
+                    if tc.name == "start_coding_task":
+                        msg_ctx.handoff_context_messages = _build_handoff_context_snapshot(
+                            history_messages=state.history_messages,
+                            context_messages=handoff_context_messages,
+                            turn_messages=state.turn_messages,
+                        )
                     outcome = await _await_guarded_with_deadline(
                         partial(
                             _resolve_tool_call,
@@ -1611,6 +1625,54 @@ def _build_request_snapshot(
     if tool_names:
         snapshot.append({"role": "tool", "section": "tools", "text": "\n".join(tool_names)})
     return snapshot
+
+
+def _build_handoff_context_snapshot(
+    *,
+    history_messages: list[ConversationMessage],
+    context_messages: list[ConversationMessage],
+    turn_messages: list[ConversationMessage],
+) -> list[dict[str, str]]:
+    """Return bounded, plain text from the context visible before handoff."""
+
+    messages: list[dict[str, str]] = []
+    for section, source in (
+        ("history", history_messages),
+        ("context", context_messages),
+        ("turn", turn_messages),
+    ):
+        for message in source:
+            text = "\n".join(
+                part.text or ""
+                for part in message.content
+                if part.type is ContentPartType.TEXT and part.text
+            )
+            if text:
+                messages.append({"role": message.role, "section": section, "text": text})
+
+    if (
+        len(messages) <= HANDOFF_CONTEXT_MAX_MESSAGES
+        and sum(len(message["text"]) for message in messages) <= HANDOFF_CONTEXT_MAX_TEXT_CHARS
+    ):
+        return messages
+
+    marker = {
+        "role": "user",
+        "section": "truncation",
+        "text": HANDOFF_CONTEXT_TRUNCATION_MARKER,
+    }
+    remaining_chars = HANDOFF_CONTEXT_MAX_TEXT_CHARS - len(marker["text"])
+    kept_reversed: list[dict[str, str]] = []
+    for snapshot_message in reversed(messages):
+        if len(kept_reversed) >= HANDOFF_CONTEXT_MAX_MESSAGES - 1 or remaining_chars <= 0:
+            break
+        text = snapshot_message["text"]
+        if len(text) > remaining_chars:
+            text = text[-remaining_chars:]
+        kept_reversed.append({**snapshot_message, "text": text})
+        remaining_chars -= len(text)
+
+    return [marker, *reversed(kept_reversed)]
 
 
 def _assistant_message_from_response(

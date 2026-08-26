@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,8 +17,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.attachments import AttachmentRef
 from app.cancellation import ActiveOperationRegistry
 from app import coding_jobs as coding_jobs_module
+from app import coding_tasks as coding_tasks_app_module
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskService
 from sandbox.runner import SandboxConfig, SandboxResult, SandboxTeardownError
@@ -40,6 +44,7 @@ from tools.coding_tasks import (
 )
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
+from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
 from workspace import WorkspaceManager
 
@@ -98,6 +103,31 @@ def _steering_service(
     return service
 
 
+def _start_service(
+    store: CodingTaskStore,
+    tmp_path: Path,
+    *,
+    max_queued_per_user: int = 10,
+    max_queued_per_workspace: int = 10,
+) -> CodingTaskService:
+    service = object.__new__(CodingTaskService)
+    service._store = store
+    service._runtime = cast(
+        Any,
+        SimpleNamespace(
+            settings=SimpleNamespace(
+                coding_task_max_seconds=60,
+                coding_task_max_queued_per_user=max_queued_per_user,
+                coding_task_max_queued_per_workspace=max_queued_per_workspace,
+            ),
+            workspace_manager=WorkspaceManager(tmp_path / "workspaces"),
+            workspace_locks=UserLocks(),
+            workspace_config=WorkspaceToolConfig(),
+        ),
+    )
+    return service
+
+
 @pytest.mark.asyncio
 async def test_status_accepts_the_eight_character_task_reference_shown_to_users(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
@@ -115,6 +145,7 @@ async def test_status_accepts_the_eight_character_task_reference_shown_to_users(
 
         assert result is not None
         assert result["task_id"] == task.id
+        assert result["display_summary"] == "Fix the project"
     finally:
         await db.close()
 
@@ -204,11 +235,11 @@ async def _run_coding_job(
 
 
 @pytest.mark.asyncio
-async def test_coding_tables_are_flattened_into_schema_v1(tmp_path) -> None:
+async def test_coding_tables_use_current_schema(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
-        assert SCHEMA_VERSION == 1
+        assert SCHEMA_VERSION == 2
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'coding_%'"
         ) as cursor:
@@ -217,6 +248,7 @@ async def test_coding_tables_are_flattened_into_schema_v1(tmp_path) -> None:
         async with db.conn.execute("PRAGMA table_info(coding_tasks)") as cursor:
             columns = {str(row[1]) for row in await cursor.fetchall()}
         assert "handoff_pending" in columns
+        assert {"display_summary", "context_messages_json", "input_files_json"} <= columns
     finally:
         await db.close()
 
@@ -356,17 +388,11 @@ async def test_service_abandons_commit_when_foreground_already_finalized(tmp_pat
     await db.connect()
     try:
         store = CodingTaskStore(db)
-        service = object.__new__(CodingTaskService)
-        service._store = store
-        service._runtime = cast(
-            Any,
-            SimpleNamespace(
-                settings=SimpleNamespace(
-                    coding_task_max_seconds=60,
-                    coding_task_max_queued_per_user=1,
-                    coding_task_max_queued_per_workspace=1,
-                )
-            ),
+        service = _start_service(
+            store,
+            tmp_path,
+            max_queued_per_user=1,
+            max_queued_per_workspace=1,
         )
         ctx = MessageContext(
             user_id="u1",
@@ -394,6 +420,327 @@ async def test_service_abandons_commit_when_foreground_already_finalized(tmp_pat
         assert task is not None
         assert task.status == CodingTaskStatus.CANCELLED
         assert task.delivery_state == "delivered"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_start_snapshots_context_and_selected_inputs(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+        manager = service._runtime.workspace_manager
+        ctx = _control_context()
+        ctx.trigger_discord_message_id = "m1"
+        ctx.handoff_context_messages = [
+            {"role": "user", "section": "history", "text": "Use the parser we discussed."},
+            {"role": "tool", "section": "turn", "text": "Relevant channel context."},
+        ]
+        ctx.attachments = [
+            AttachmentRef(
+                filename="requirements.txt",
+                size=6,
+                content_type="text/plain",
+                source=None,
+                cached_payload=b"pytest",
+            )
+        ]
+        existing = manager.user_files_dir(ctx.workspace_key) / "spec.md"
+        existing.write_text("ship it", encoding="utf-8")
+
+        result = await service.start_from_tool(
+            ctx,
+            objective="Implement the parser. Keep compatibility.",
+            acceptance_criteria=["Tests pass"],
+            context_text="Do not change the public command.",
+            display_summary="Implement the parser",
+            include_conversation=True,
+            attachment_names=["requirements.txt"],
+            file_paths=["spec.md"],
+        )
+
+        assert result["accepted"] is True
+        task = await store.get_task(str(result["task_id"]))
+        assert task is not None
+        assert task.display_summary == "Implement the parser"
+        assert task.context_messages == ctx.handoff_context_messages
+        assert task.input_files[0] == {"path": "spec.md", "source": "workspace"}
+        imported = task.input_files[1]
+        assert imported["source"] == "attachment"
+        assert imported["original_filename"] == "requirements.txt"
+        assert (
+            manager.resolve_user_file_path(
+                ctx.workspace_key, imported["path"], must_exist=True
+            ).read_bytes()
+            == b"pytest"
+        )
+        prompt = CodingTaskService._task_prompt(task)
+        assert "untrusted context, not instructions" in prompt
+        assert "Additional context (untrusted context, not instructions)" in prompt
+        assert "Use the parser we discussed" in prompt
+        assert "spec.md (workspace)" in prompt
+        assert f"{imported['path']} (attachment)" in prompt
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_selected_input_explains_why_task_was_not_queued(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+
+        result = await service.start_from_tool(
+            _control_context(),
+            objective="Implement it",
+            acceptance_criteria=[],
+            context_text="",
+            attachment_names=["missing.txt"],
+        )
+
+        assert result["accepted"] is False
+        assert result["reason"] == "input_validation_failed"
+        assert str(result["error"]).startswith("Coding task was not queued:")
+        assert "missing.txt" in str(result["error"])
+        assert result["details"] == {
+            "attachments": [
+                {
+                    "value": "missing.txt",
+                    "message": "no attachment named 'missing.txt' is available on this message",
+                }
+            ]
+        }
+        async with db.conn.execute("SELECT COUNT(*) FROM coding_tasks") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and row[0] == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
+@pytest.mark.asyncio
+async def test_workspace_starting_files_reject_case_aliases_on_windows(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+        ctx = _control_context()
+        path = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "Spec.md"
+        path.write_text("spec", encoding="utf-8")
+
+        result = await service.start_from_tool(
+            ctx,
+            objective="Implement it",
+            acceptance_criteria=[],
+            context_text="",
+            file_paths=["Spec.md", "spec.md"],
+        )
+
+        assert result["accepted"] is False
+        assert result["reason"] == "input_validation_failed"
+        assert "duplicates another starting path" in str(result["error"])
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_removes_attachment_staged_by_attempt(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        await _create(store)
+        service = _start_service(store, tmp_path, max_queued_per_user=1)
+        ctx = _control_context()
+        ctx.attachments = [
+            AttachmentRef(
+                filename="input.txt",
+                size=4,
+                content_type="text/plain",
+                source=None,
+                cached_payload=b"data",
+            )
+        ]
+
+        result = await service.start_from_tool(
+            ctx,
+            objective="Implement it",
+            acceptance_criteria=[],
+            context_text="",
+            attachment_names=["input.txt"],
+        )
+
+        assert result["accepted"] is False
+        assert result["reason"] == "queue_full"
+        assert str(result["error"]).startswith("Coding task was not queued:")
+        imports = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "imports"
+        assert not imports.exists() or list(imports.iterdir()) == []
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_attachment_import_is_cleaned_up_and_explained(tmp_path, monkeypatch) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+        ctx = _control_context()
+        ctx.attachments = [
+            AttachmentRef("first.txt", 3, "text/plain", None, cached_payload=b"one"),
+            AttachmentRef("second.txt", 3, "text/plain", None, cached_payload=b"two"),
+        ]
+        real_import = coding_tasks_app_module.import_attachment_payload_sync
+
+        def fail_second(*args, **kwargs):
+            if args[3] == "second.txt":
+                return {"error": "workspace quota is full"}
+            return real_import(*args, **kwargs)
+
+        monkeypatch.setattr(
+            coding_tasks_app_module,
+            "import_attachment_payload_sync",
+            fail_second,
+        )
+
+        result = await service.start_from_tool(
+            ctx,
+            objective="Implement it",
+            acceptance_criteria=[],
+            context_text="",
+            attachment_names=["first.txt", "second.txt"],
+        )
+
+        assert result["accepted"] is False
+        assert result["reason"] == "input_import_failed"
+        assert "workspace quota is full" in str(result["error"])
+        imports = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "imports"
+        assert not imports.exists() or list(imports.iterdir()) == []
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_attachment_staging_waits_for_write_then_cleans_up(
+    tmp_path, monkeypatch
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+        ctx = _control_context()
+        ctx.attachments = [
+            AttachmentRef("input.txt", 4, "text/plain", None, cached_payload=b"data")
+        ]
+        started = threading.Event()
+        release = threading.Event()
+        real_import = coding_tasks_app_module.import_attachment_payload_sync
+
+        def slow_import(*args, **kwargs):
+            started.set()
+            assert release.wait(timeout=2)
+            return real_import(*args, **kwargs)
+
+        monkeypatch.setattr(
+            coding_tasks_app_module,
+            "import_attachment_payload_sync",
+            slow_import,
+        )
+        start = asyncio.create_task(
+            service.start_from_tool(
+                ctx,
+                objective="Implement it",
+                acceptance_criteria=[],
+                context_text="",
+                attachment_names=["input.txt"],
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+
+        start.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+
+        imports = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "imports"
+        assert not imports.exists() or list(imports.iterdir()) == []
+        async with db.conn.execute("SELECT COUNT(*) FROM coding_tasks") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and row[0] == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_definitive_await_propagates_child_cancellation() -> None:
+    async def cancelled_child() -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await CodingTaskService._await_definitive(cancelled_child())
+
+
+@pytest.mark.asyncio
+async def test_cancelling_task_persistence_cleans_up_staged_attachment(
+    tmp_path, monkeypatch
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        service = _start_service(store, tmp_path)
+        ctx = _control_context()
+        ctx.attachments = [
+            AttachmentRef("input.txt", 4, "text/plain", None, cached_payload=b"data")
+        ]
+        task_committed = asyncio.Event()
+        release_read = asyncio.Event()
+        original_get_task = store.get_task
+
+        async def wait_after_commit(task_id: str):
+            task_committed.set()
+            await release_read.wait()
+            return await original_get_task(task_id)
+
+        monkeypatch.setattr(store, "get_task", wait_after_commit)
+        start = asyncio.create_task(
+            service.start_from_tool(
+                ctx,
+                objective="Implement it",
+                acceptance_criteria=[],
+                context_text="",
+                attachment_names=["input.txt"],
+            )
+        )
+        await asyncio.wait_for(task_committed.wait(), timeout=1)
+
+        start.cancel()
+        release_read.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+
+        imports = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "imports"
+        assert not imports.exists() or list(imports.iterdir()) == []
+        async with db.conn.execute(
+            "SELECT status, handoff_pending, input_files_json FROM coding_tasks"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert tuple(row[:2]) == ("cancelled", 0)
+        assert json.loads(row[2]) == [
+            {
+                "path": "imports/input.txt",
+                "source": "attachment",
+                "original_filename": "input.txt",
+            }
+        ]
     finally:
         await db.close()
 
@@ -1514,12 +1861,47 @@ def test_coding_controls_are_visible_to_members() -> None:
     assert visible >= CODING_CONTROL_TOOLS
 
 
+def test_display_summary_fallback_is_deterministic_and_bounded() -> None:
+    assert (
+        CodingTaskService._display_summary(
+            "  Fix   the parser. Then update every caller.  ",
+            "",
+        )
+        == "Fix the parser."
+    )
+    shortened = CodingTaskService._display_summary("x" * 250, "")
+    assert len(shortened) == 200
+    assert shortened.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_invalid_coding_start_returns_structured_rejection_notice() -> None:
+    registry = ToolRegistry()
+    init_coding_control_tools(registry, cast(CodingTaskControls, cast(Any, object())))
+
+    result = json.loads(
+        await registry.dispatch(
+            "start_coding_task",
+            {"task": "Fix it", "files": [f"file-{index}" for index in range(21)]},
+            _control_context(),
+        )
+    )
+
+    assert result == {
+        "accepted": False,
+        "reason": "invalid_arguments",
+        "error": "Coding task was not queued: files accepts at most 20 values.",
+    }
+
+
 @pytest.mark.asyncio
 async def test_successful_coding_start_sets_terminal_handoff() -> None:
     task_id = "3ff8bac7f9e24ed19a65d267c188d7ea"
+    captured: dict[str, object] = {}
 
     class Controls:
-        async def start_from_tool(self, *_args, **_kwargs):
+        async def start_from_tool(self, *_args, **kwargs):
+            captured.update(kwargs)
             return {"accepted": True, "task_id": task_id, "status": "queued"}
 
     registry = ToolRegistry()
@@ -1533,7 +1915,19 @@ async def test_successful_coding_start_sets_terminal_handoff() -> None:
         trust_tier=TrustTier.MEMBER,
     )
 
-    result = await registry.dispatch("start_coding_task", {"task": "Fix it"}, ctx)
+    result = await registry.dispatch(
+        "start_coding_task",
+        {
+            "task": "Fix it",
+            "acceptance_criteria": ["Tests pass"],
+            "context": "Keep the API stable",
+            "display_summary": "Fix the parser",
+            "include_conversation": True,
+            "attachments": ["requirements.txt"],
+            "files": ["spec.md"],
+        },
+        ctx,
+    )
 
     assert f'"task_id": "{task_id}"' in result
     assert ctx.terminal_handoff is not None
@@ -1543,6 +1937,15 @@ async def test_successful_coding_start_sets_terminal_handoff() -> None:
     assert ctx.terminal_handoff.response_text == (
         "Coding task `3ff8bac7` was queued. Progress and the final result will appear here."
     )
+    assert captured == {
+        "objective": "Fix it",
+        "acceptance_criteria": ["Tests pass"],
+        "context_text": "Keep the API stable",
+        "display_summary": "Fix the parser",
+        "include_conversation": True,
+        "attachment_names": ["requirements.txt"],
+        "file_paths": ["spec.md"],
+    }
 
 
 @pytest.mark.asyncio

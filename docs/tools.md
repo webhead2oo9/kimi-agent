@@ -22,9 +22,15 @@ them:
 | `/stop` | Member | Cancel the current response/coding work, all of the member's work, or one owned coding task. |
 | `/usage` | Member; expanded for staff | Show the current user's usage, or let staff inspect another user or server totals. |
 | `/models` | Owner | Inspect or change the global chat-model override. |
+| `/proposals list`, `show`, `approve`, `reject`, `stage-secret` | Owner; gated | Review and decide durable managed-configuration proposals, or stage a write-only credential reference. Registered only when `CONTROL_PLANE_ENABLED=true`. |
 | `/moderation block`, `unblock`, `status` | Staff | Manage bot-level user blocks. |
 | `/mod note`, `warn`, `timeout`, `kick`, `ban`, `history`, `case` | Staff | Create Discord moderation actions/cases and inspect case history. |
 | **Teach Kimi** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
+
+The proposal control plane is off by default. The optional `config_admin`
+module lets staff draft configuration changes; only the configured bot owner
+can review and decide them through `/proposals`. See
+[Module control plane](module-control-plane.md) for the full workflow.
 
 ## Visibility and access
 
@@ -132,7 +138,7 @@ code-execution sandbox are both enabled and available:
 
 | Tool | Purpose |
 |---|---|
-| `start_coding_task` | Queue multi-file or repository work and return immediately with a durable task id. |
+| `start_coding_task` | Queue multi-file or repository work with optional bounded conversation context, selected triggering-message attachments, and validated workspace starting files. Returns immediately with a durable task id, or a specific explanation when nothing was queued. |
 | `coding_task_status` | Inspect an owned active or recent task without waiting for completion. |
 | `coding_task_message` | Append steering that the agent receives at its next model boundary. |
 | `coding_task_cancel` | Cancel a queued or running task after stopping its managed jobs. |

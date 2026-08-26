@@ -18,6 +18,7 @@ import json
 import logging
 import random
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -94,6 +95,7 @@ class _Row:
     interval_seconds: float | None
     jitter_seconds: float
     backoff: Backoff
+    definition_token: str
     payload: dict[str, Any]
     attempt: int
     leased_until: float | None
@@ -102,7 +104,8 @@ class _Row:
 
     @classmethod
     def from_row(cls, row: Any) -> _Row:
-        backoff_raw = _loads(row["backoff_json"])
+        definition_token = str(row["backoff_json"] or "{}")
+        backoff_raw = _loads(definition_token)
         backoff = Backoff(
             base_seconds=float(backoff_raw.get("base_seconds", _DEFAULT_BACKOFF.base_seconds)),
             max_seconds=float(backoff_raw.get("max_seconds", _DEFAULT_BACKOFF.max_seconds)),
@@ -119,6 +122,7 @@ class _Row:
             ),
             jitter_seconds=float(row["jitter_seconds"] or 0),
             backoff=backoff,
+            definition_token=definition_token,
             payload=_loads(row["payload_json"]),
             attempt=int(row["attempt"] or 0),
             leased_until=float(row["leased_until"]) if row["leased_until"] is not None else None,
@@ -199,6 +203,17 @@ class DurableScheduler:
         now = self._clock()
         backoff = backoff or Backoff()
         job_id = f"{module_name}:{key}"
+        # The revision lives in core-owned scheduler metadata, not the module's
+        # payload. A running execution retains its lease (and can heartbeat it),
+        # while settlement also checks this token before mutating the definition.
+        backoff_json = _dumps(
+            {
+                "base_seconds": backoff.base_seconds,
+                "max_seconds": backoff.max_seconds,
+                "multiplier": backoff.multiplier,
+                "_definition_revision": uuid.uuid4().hex,
+            }
+        )
         async with self._database.write_transaction() as conn:
             await conn.execute(
                 f"""INSERT INTO {TABLE} (
@@ -213,6 +228,8 @@ class DurableScheduler:
                     jitter_seconds = excluded.jitter_seconds,
                     backoff_json = excluded.backoff_json,
                     payload_json = excluded.payload_json,
+                    attempt = 0,
+                    last_error = NULL,
                     updated_at = excluded.updated_at""",
                 (
                     job_id,
@@ -222,13 +239,7 @@ class DurableScheduler:
                     float(run_at),
                     interval_seconds,
                     float(max(0.0, jitter_seconds)),
-                    _dumps(
-                        {
-                            "base_seconds": backoff.base_seconds,
-                            "max_seconds": backoff.max_seconds,
-                            "multiplier": backoff.multiplier,
-                        }
-                    ),
+                    backoff_json,
                     _dumps(dict(payload or {})),
                     now,
                     now,
@@ -331,34 +342,42 @@ class DurableScheduler:
     async def _claim_next(self, now: float) -> _Row | None:
         token = f"{now:.6f}:{self._rng.random():.12f}"
         async with self._database.write_transaction() as conn:
-            cursor = await conn.execute(
-                f"""SELECT * FROM {TABLE}
-                    WHERE run_at <= ? AND (leased_until IS NULL OR leased_until < ?)
-                    ORDER BY run_at LIMIT 1""",
-                (now, now),
-            )
-            raw = await cursor.fetchone()
-            if raw is None:
-                return None
-            row = _Row.from_row(raw)
-            if (row.module_name, row.handler) not in self._handlers:
-                self._report_paused(row)
-                # Push it out so the loop does not spin on it; it stays persisted.
-                await conn.execute(
-                    f"UPDATE {TABLE} SET run_at = ?, last_error = ?, updated_at = ? WHERE job_id = ?",
-                    (now + self._lease_seconds, f"no handler {row.handler!r}", now, row.job_id),
+            while True:
+                cursor = await conn.execute(
+                    f"""SELECT * FROM {TABLE}
+                        WHERE run_at <= ? AND (leased_until IS NULL OR leased_until < ?)
+                        ORDER BY run_at LIMIT 1""",
+                    (now, now),
                 )
-                return None
-            leased_until = now + self._lease_seconds
-            await conn.execute(
-                f"""UPDATE {TABLE} SET leased_until = ?, lease_token = ?, attempt = attempt + 1,
-                    updated_at = ? WHERE job_id = ?""",
-                (leased_until, token, now, row.job_id),
-            )
-            row.leased_until = leased_until
-            row.lease_token = token
-            row.attempt += 1
-            return row
+                raw = await cursor.fetchone()
+                if raw is None:
+                    return None
+                row = _Row.from_row(raw)
+                if (row.module_name, row.handler) not in self._handlers:
+                    self._report_paused(row)
+                    # Push it out so this claim can continue to the next due job;
+                    # the orphan stays persisted without starving runnable work.
+                    await conn.execute(
+                        f"""UPDATE {TABLE} SET run_at = ?, last_error = ?, updated_at = ?
+                            WHERE job_id = ?""",
+                        (
+                            now + self._lease_seconds,
+                            f"no handler {row.handler!r}",
+                            now,
+                            row.job_id,
+                        ),
+                    )
+                    continue
+                leased_until = now + self._lease_seconds
+                await conn.execute(
+                    f"""UPDATE {TABLE} SET leased_until = ?, lease_token = ?,
+                        attempt = attempt + 1, updated_at = ? WHERE job_id = ?""",
+                    (leased_until, token, now, row.job_id),
+                )
+                row.leased_until = leased_until
+                row.lease_token = token
+                row.attempt += 1
+                return row
 
     def _report_paused(self, row: _Row) -> None:
         marker = (row.module_name, row.handler)
@@ -417,10 +436,13 @@ class DurableScheduler:
         now = self._clock()
         async with self._database.write_transaction() as conn:
             if error is None and row.interval_seconds is None:
-                await conn.execute(
-                    f"DELETE FROM {TABLE} WHERE job_id = ? AND lease_token = ?",
-                    (row.job_id, row.lease_token),
+                cursor = await conn.execute(
+                    f"""DELETE FROM {TABLE}
+                        WHERE job_id = ? AND lease_token = ? AND backoff_json = ?""",
+                    (row.job_id, row.lease_token, row.definition_token),
                 )
+                if not cursor.rowcount:
+                    await self._release_stale_lease(conn, row)
                 return
             if error is None:
                 jitter = self._rng.uniform(0, row.jitter_seconds) if row.jitter_seconds else 0.0
@@ -433,12 +455,31 @@ class DurableScheduler:
                 )
                 next_run = now + delay
                 attempt = row.attempt
-            await conn.execute(
+            cursor = await conn.execute(
                 f"""UPDATE {TABLE} SET run_at = ?, attempt = ?, leased_until = NULL,
                     lease_token = NULL, last_error = ?, updated_at = ?
-                    WHERE job_id = ? AND lease_token = ?""",
-                (next_run, attempt, error, now, row.job_id, row.lease_token),
+                    WHERE job_id = ? AND lease_token = ? AND backoff_json = ?""",
+                (
+                    next_run,
+                    attempt,
+                    error,
+                    now,
+                    row.job_id,
+                    row.lease_token,
+                    row.definition_token,
+                ),
             )
+            if not cursor.rowcount:
+                await self._release_stale_lease(conn, row)
+
+    @staticmethod
+    async def _release_stale_lease(conn: Any, row: _Row) -> None:
+        """Release this execution's lease without touching a replacement definition."""
+        await conn.execute(
+            f"""UPDATE {TABLE} SET leased_until = NULL, lease_token = NULL
+                WHERE job_id = ? AND lease_token = ?""",
+            (row.job_id, row.lease_token),
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,10 +23,11 @@ several communities without forking the application.
 
 | Capability | In short |
 |---|---|
-| **Multiple providers** | Route chat and compaction models via `config/models.yaml`: OpenAI-compatible, Anthropic, OpenRouter, or Codex. The agent core never sees provider types. |
+| **Multiple providers** | Route chat, compaction, and optional durable coding models via `config/models.yaml`: OpenAI-compatible, Anthropic, OpenRouter, or Codex. The agent core never sees provider types. |
 | **Trust-tiered tools** | `MEMBER < REGULAR < STAFF`, resolved from Discord roles and enforced at dispatch, not by prompt wording. |
 | **Long-term memory** | Optional per-user memory banks via [Hindsight](https://github.com/vectorize-io/hindsight), with recall, reflection, opt-out, and staff-taught community knowledge. |
 | **Per-user workspaces** | File read/write/edit, archive extraction, document-to-text, and URL fetch, with path, size, quota, and TTL caps enforced by the application. |
+| **Durable coding agent** | Optionally hand repository-scale work to a separately routed background worker with persisted progress, managed sandbox jobs, recovery, steering, and cancellation. |
 | **Persistent browser** | Optional per-user BetterWright profiles for interactive web tasks, isolated with Bubblewrap/systemd/seccomp and routed over the host network or a fixed VPN namespace. |
 | **Skills** | Staff-managed Markdown instruction docs plus operator-authored script tools that run under mandatory Linux isolation with networking denied by default. |
 | **Managed threads** | Hand a conversation into a bot-owned thread and keep the transcript intact across the move. |

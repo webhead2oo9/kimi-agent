@@ -94,6 +94,9 @@ class CodingTask:
     objective: str
     acceptance_criteria: list[str]
     context_text: str
+    display_summary: str
+    context_messages: list[dict[str, str]]
+    input_files: list[dict[str, str]]
     status: CodingTaskStatus
     plan: list[dict[str, str]]
     milestone: str
@@ -160,6 +163,9 @@ class CodingTaskStore:
         objective: str,
         acceptance_criteria: list[str],
         context_text: str,
+        display_summary: str = "",
+        context_messages: list[dict[str, str]] | None = None,
+        input_files: list[dict[str, str]] | None = None,
         max_seconds: float,
         initial_checkpoint: dict[str, Any] | None = None,
         max_queued_per_user: int | None = None,
@@ -193,9 +199,10 @@ class CodingTaskStore:
                     id, conversation_id, root_key, workspace_key, user_id, user_name,
                     guild_id, channel_id, thread_id, handoff_pending,
                     trigger_discord_message_id,
-                    objective, acceptance_criteria_json, context_text, status,
+                    objective, acceptance_criteria_json, context_text,
+                    display_summary, context_messages_json, input_files_json, status,
                     checkpoint_json, created_at, updated_at, deadline_at, heartbeat_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -212,6 +219,9 @@ class CodingTaskStore:
                     objective,
                     json.dumps(acceptance_criteria),
                     context_text,
+                    display_summary,
+                    json.dumps(context_messages or []),
+                    json.dumps(input_files or []),
                     json.dumps(initial_checkpoint or {}),
                     now,
                     now,
@@ -1082,6 +1092,17 @@ class CodingTaskStore:
                 str(value) for value in _json_list(row["acceptance_criteria_json"])
             ],
             context_text=str(row["context_text"]),
+            display_summary=str(row["display_summary"]),
+            context_messages=[
+                {str(k): str(v) for k, v in message.items()}
+                for message in _json_list(row["context_messages_json"])
+                if isinstance(message, dict)
+            ],
+            input_files=[
+                {str(k): str(v) for k, v in item.items()}
+                for item in _json_list(row["input_files_json"])
+                if isinstance(item, dict)
+            ],
             status=CodingTaskStatus(str(row["status"])),
             plan=[
                 {str(k): str(v) for k, v in step.items()}

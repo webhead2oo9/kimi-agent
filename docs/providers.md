@@ -22,8 +22,9 @@ There are three layers, and it's worth holding them apart in your head because
 they fail in different ways.
 
 **Roles** are the jobs the bot needs done: chatting, compacting a long
-conversation, compiling a persona. Code never names a model directly. It asks
-for a role, and `config/models.yaml` decides what serves it.
+conversation, compiling a persona, or running an optional durable coding task.
+Code never names a model directly. It asks for a role, and
+`config/models.yaml` decides what serves it.
 
 **Model entries** are named routing targets. An entry says which upstream model
 id to send, how big its context window is, what it can do, and what it costs. A
@@ -319,6 +320,7 @@ that model, so an unset window is silent rather than safe.
 | `chat_images` | no | Image-bearing turns when `chat` lacks `image_input`. |
 | `compaction` | yes | In-turn context compaction ([compaction.md](compaction.md)). |
 | `persona` | no | Compiling user persona overrides ([persona.md](persona.md)). |
+| `coding` | no | Durable background coding tasks ([coding-agent.md](coding-agent.md)); requires `text` and `tool_calling`. |
 
 Every role may declare an ordered `<role>_fallbacks` list. Unknown role keys are
 rejected, so a misspelled role is a startup failure rather than a silently

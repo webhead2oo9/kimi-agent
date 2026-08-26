@@ -85,7 +85,8 @@ uv run python bot.py
 ```
 
 Here's what you should expect: settings validate, SQLite opens and initializes
-schema v1, the gateway connects, `on_ready` completes boot under the READY
+schema v2 (automatically upgrading older databases), the gateway connects,
+`on_ready` completes boot under the READY
 initialization lock, and JSONL turn events write to `logs/` when enabled. A
 mention in the test guild then round-trips the whole way: mention → ReAct turn
 → reply → durable transcript.

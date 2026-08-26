@@ -155,6 +155,153 @@ async def test_jobs_survive_restart_and_pause_without_a_handler(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_orphaned_due_job_does_not_starve_runnable_due_job(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+    ran: list[str] = []
+
+    async def handler(run: JobRun) -> None:
+        ran.append(run.key)
+
+    view = scheduler.view_for("mod")
+    view.register("tick", handler)
+    # Ensure the orphan is the first row considered by the due-job ordering.
+    await view.run_at("orphan", clock.now - 1, "missing")
+    await view.run_at("runnable", clock.now, "tick")
+    try:
+        assert await scheduler.run_due() == 1
+        assert ran == ["runnable"]
+        (orphan,) = await view.list()
+        assert orphan.key == "orphan"
+        assert orphan.last_error == "no handler 'missing'"
+        assert orphan.next_run_at == clock.now + 30
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_rescheduling_running_one_shot_survives_stale_settlement(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+    replacement_runs: list[JobRun] = []
+    view = scheduler.view_for("mod")
+
+    async def replace(_run: JobRun) -> None:
+        await view.run_at("job", clock.now + 60, "replacement", {"generation": 2})
+
+    async def replacement(run: JobRun) -> None:
+        replacement_runs.append(run)
+
+    view.register("replace", replace)
+    view.register("replacement", replacement)
+    await view.run_at("job", clock.now, "replace")
+    try:
+        assert await scheduler.run_due() == 1
+        (job,) = await view.list()
+        assert job.key == "job"
+        assert job.handler == "replacement"
+        assert job.next_run_at == clock.now + 60
+        assert job.attempt == 0
+
+        clock.now += 60
+        assert await scheduler.run_due() == 1
+        assert [run.payload for run in replacement_runs] == [{"generation": 2}]
+        assert await view.list() == []
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_rescheduling_running_periodic_job_preserves_replacement_definition(
+    tmp_path: Path,
+) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+    replacement_started = asyncio.Event()
+    view = scheduler.view_for("mod")
+
+    async def replace(_run: JobRun) -> None:
+        await view.run_every("job", 300, "replacement", {"generation": 2})
+
+    async def replacement(_run: JobRun) -> None:
+        replacement_started.set()
+
+    view.register("replace", replace)
+    view.register("replacement", replacement)
+    await view.run_every("job", 60, "replace")
+    try:
+        assert await scheduler.run_due(limit=1) == 1
+        (job,) = await view.list()
+        assert job.handler == "replacement"
+        assert job.interval_seconds == 300
+        assert job.next_run_at == clock.now
+        assert job.attempt == 0
+
+        # Settlement releases the completed execution's still-owned lease, so
+        # its due replacement is immediately claimable without overlap.
+        assert await scheduler.run_due() == 1
+        assert replacement_started.is_set()
+        (job,) = await view.list()
+        assert job.handler == "replacement"
+        assert job.interval_seconds == 300
+        assert job.next_run_at == clock.now + 300
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_rescheduled_job_keeps_running_execution_lease_heartbeating(
+    tmp_path: Path,
+) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, lease_seconds=0.2)
+    replacement_runs: list[str] = []
+    view = scheduler.view_for("mod")
+
+    async def replace(_run: JobRun) -> None:
+        await view.run_at("job", clock.now, "replacement")
+        original_deadline = clock.now + 0.2
+        clock.now += 0.15
+        for _ in range(100):
+            cursor = await db.conn.execute(
+                f"SELECT leased_until FROM {TABLE} WHERE job_id = ?", ("mod:job",)
+            )
+            row = await cursor.fetchone()
+            if row is not None and row[0] is not None and float(row[0]) > original_deadline:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("running execution did not heartbeat its replacement's lease")
+        clock.now += 0.1
+        # The replacement is already due, but cannot overlap this execution.
+        assert await scheduler.run_due() == 0
+
+    async def replacement(run: JobRun) -> None:
+        replacement_runs.append(run.key)
+
+    view.register("replace", replace)
+    view.register("replacement", replacement)
+    await view.run_at("job", clock.now, "replace")
+    try:
+        assert await scheduler.run_due(limit=1) == 1
+        assert replacement_runs == []
+        # Completion releases the old execution's lease without changing the
+        # replacement definition, making it immediately claimable.
+        assert await scheduler.run_due() == 1
+        assert replacement_runs == ["job"]
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_cancelling_the_last_paused_job_clears_scheduler_health(tmp_path: Path) -> None:
     db = await _db(tmp_path)
     clock = _Clock()

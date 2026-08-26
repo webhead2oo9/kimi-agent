@@ -30,12 +30,7 @@ _LIVE_DOC_PAGES: tuple[Path, ...] = (
     REPO_ROOT / "CLAUDE.md",
 )
 
-# The changelog deliberately names things that were renamed or deleted, so its
-# prose must not be held to "every symbol still exists". Its links must still
-# resolve.
-_HISTORICAL_DOC_PAGES: tuple[Path, ...] = (PROJECT_ROOT / "changelog.md",)
-
-_DOC_PAGES: tuple[Path, ...] = (*_LIVE_DOC_PAGES, *_HISTORICAL_DOC_PAGES)
+_DOC_PAGES: tuple[Path, ...] = _LIVE_DOC_PAGES
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 

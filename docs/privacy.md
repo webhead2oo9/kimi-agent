@@ -42,7 +42,7 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `auto_retain_watermarks` | Per-(conversation, user) high-water marks for memory auto-retain. |
 | `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, and timestamps. The row contains no message content. |
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
-| `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace. |
+| `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 
 **Encryption at rest (optional).** When `DATABASE_ENCRYPTION_KEY` is set, this
 database, including the WAL sidecar, is encrypted on disk with SQLCipher

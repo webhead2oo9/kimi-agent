@@ -7,9 +7,11 @@ from typing import Any
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
+    ChannelSnapshot,
     DiscordActions,
     MemberSnapshot,
     MessageRef,
+    MessagePage,
     MessageSnapshot,
     OutgoingEmbed,
     UndeclaredDiscordAction,
@@ -104,6 +106,34 @@ class DeclaredDiscordActions:
     async def fetch_member(self, guild_id: int, user_id: int) -> MemberSnapshot | None:
         self._gate("fetch_member")
         return await self._inner.fetch_member(guild_id, user_id)
+
+    async def fetch_channel(self, guild_id: int, channel_id: int) -> ChannelSnapshot | None:
+        self._gate("fetch_channel")
+        return await self._inner.fetch_channel(guild_id, channel_id)
+
+    async def fetch_messages(
+        self, guild_id: int, channel_id: int, *, after_message_id: int | None = None,
+        before_message_id: int | None = None, limit: int = 100,
+    ) -> MessagePage:
+        self._gate("fetch_messages")
+        return await self._inner.fetch_messages(
+            guild_id, channel_id, after_message_id=after_message_id,
+            before_message_id=before_message_id, limit=limit,
+        )
+
+    async def fetch_pins(self, guild_id: int, channel_id: int) -> tuple[MessageSnapshot, ...]:
+        self._gate("fetch_pins")
+        return await self._inner.fetch_pins(guild_id, channel_id)
+
+    async def fetch_public_threads(
+        self, guild_id: int, parent_channel_id: int
+    ) -> tuple[ChannelSnapshot, ...]:
+        self._gate("fetch_public_threads")
+        return await self._inner.fetch_public_threads(guild_id, parent_channel_id)
+
+    async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
+        self._gate("check_channel_access")
+        return await self._inner.can_view_channel(guild_id, user_id, channel_id)
 
 
 __all__ = ["DeclaredDiscordActions"]

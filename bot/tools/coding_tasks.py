@@ -9,6 +9,8 @@ from trust.tiers import TrustTier
 
 MAX_OBJECTIVE_CHARS = 12_000
 MAX_CONTEXT_CHARS = 12_000
+MAX_DISPLAY_SUMMARY_CHARS = 200
+MAX_STARTING_FILES = 20
 MAX_STEERING_CHARS = 8_000
 MAX_PROGRESS_CHARS = 500
 MAX_PLAN_STEPS = 30
@@ -49,6 +51,10 @@ class CodingTaskControls(Protocol):
         objective: str,
         acceptance_criteria: list[str],
         context_text: str,
+        display_summary: str,
+        include_conversation: bool,
+        attachment_names: list[str],
+        file_paths: list[str],
     ) -> dict[str, object]: ...
 
     async def status_from_tool(
@@ -83,27 +89,65 @@ class CodingTaskControls(Protocol):
 
 
 def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskControls) -> None:
+    def rejected_start(message: str, *, reason: str = "invalid_arguments") -> str:
+        return json.dumps(
+            {
+                "accepted": False,
+                "reason": reason,
+                "error": f"Coding task was not queued: {message}.",
+            }
+        )
+
+    def string_list(args: dict, name: str, *, max_items: int | None = None) -> list[str]:
+        raw = args.get(name) or []
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ValueError(f"{name} must be a list of strings")
+        values = [item.strip() for item in raw]
+        if any(not item for item in values):
+            raise ValueError(f"{name} must not contain empty values")
+        if max_items is not None and len(values) > max_items:
+            raise ValueError(f"{name} accepts at most {max_items} values")
+        return values
+
     async def start(args: dict, ctx: MessageContext) -> str:
         if ctx.stop_event is not None and ctx.stop_event.is_set():
-            return tool_error("The response was stopped before delegation began")
+            return rejected_start(
+                "the response was stopped before delegation began",
+                reason="handoff_ended",
+            )
         objective = str(args.get("task", "")).strip()
         if not objective:
-            return tool_error("task is required")
+            return rejected_start("task is required")
         if len(objective) > MAX_OBJECTIVE_CHARS:
-            return tool_error(f"task exceeds {MAX_OBJECTIVE_CHARS} characters")
+            return rejected_start(f"task exceeds {MAX_OBJECTIVE_CHARS} characters")
         raw_criteria = args.get("acceptance_criteria") or []
         if not isinstance(raw_criteria, list) or not all(
             isinstance(item, str) for item in raw_criteria
         ):
-            return tool_error("acceptance_criteria must be a list of strings")
+            return rejected_start("acceptance_criteria must be a list of strings")
         context_text = str(args.get("context", "")).strip()
         if len(context_text) > MAX_CONTEXT_CHARS:
-            return tool_error(f"context exceeds {MAX_CONTEXT_CHARS} characters")
+            return rejected_start(f"context exceeds {MAX_CONTEXT_CHARS} characters")
+        display_summary = str(args.get("display_summary", "")).strip()
+        if len(display_summary) > MAX_DISPLAY_SUMMARY_CHARS:
+            return rejected_start(f"display_summary exceeds {MAX_DISPLAY_SUMMARY_CHARS} characters")
+        raw_include_conversation = args.get("include_conversation", False)
+        if not isinstance(raw_include_conversation, bool):
+            return rejected_start("include_conversation must be a boolean")
+        try:
+            attachment_names = string_list(args, "attachments")
+            file_paths = string_list(args, "files", max_items=MAX_STARTING_FILES)
+        except ValueError as exc:
+            return rejected_start(str(exc))
         result = await controls.start_from_tool(
             ctx,
             objective=objective,
             acceptance_criteria=[item.strip() for item in raw_criteria if item.strip()],
             context_text=context_text,
+            display_summary=display_summary,
+            include_conversation=raw_include_conversation,
+            attachment_names=attachment_names,
+            file_paths=file_paths,
         )
         if ctx.stop_event is not None and ctx.stop_event.is_set():
             task_id = str(result.get("task_id", ""))
@@ -113,7 +157,10 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
                     task_id=task_id,
                     reason="Foreground response was stopped during delegation",
                 )
-            return tool_error("The response was stopped; the delegated task was cancelled")
+            return rejected_start(
+                "the response was stopped and the delegated task was cancelled",
+                reason="handoff_ended",
+            )
         task_id = str(result.get("task_id", "")).strip()
         if result.get("accepted") is True and task_id:
             ctx.terminal_handoff = TurnHandoff(
@@ -172,7 +219,40 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
             "properties": {
                 "task": {"type": "string"},
                 "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
-                "context": {"type": "string"},
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Supplemental current-turn details the coding worker cannot infer, "
+                        "including relevant quoted or tool-read Discord context. This text is "
+                        "treated as untrusted context; put requirements in task or "
+                        "acceptance_criteria."
+                    ),
+                },
+                "display_summary": {
+                    "type": "string",
+                    "maxLength": MAX_DISPLAY_SUMMARY_CHARS,
+                    "description": "Concise user-facing description shown before a plan exists.",
+                },
+                "include_conversation": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Snapshot bounded conversation and current-turn context for the worker."
+                    ),
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Exact filenames of selected non-image attachments on the triggering message."
+                    ),
+                },
+                "files": {
+                    "type": "array",
+                    "maxItems": MAX_STARTING_FILES,
+                    "items": {"type": "string"},
+                    "description": "Workspace-relative regular files to use as starting points.",
+                },
             },
             "required": ["task"],
         },

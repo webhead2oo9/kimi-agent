@@ -8,7 +8,7 @@ managed-thread state, LLM and paid-tool usage ledgers, durable authorization for
 confirmed privacy deletions, cached image distillations, memory auto-retain
 watermarks, and per-user Hindsight bank tracking.
 
-The core database is schema v1. A newer core database is left alone and
+The core database is schema v2. A newer core database is left alone and
 rejected, so an older bot cannot accidentally use it. Optional application
 modules own their own independent schemas and versions.
 
@@ -130,8 +130,9 @@ authoritative.
 
 - **`coding_tasks`** holds the durable objective, owner/root/workspace scope,
   deadline, status, plan, checkpoint, Discord delivery ids, terminal result,
-  and the short-lived handoff hold that prevents execution before reply routing
-  is settled.
+  conversation context and input-file references supplied to the worker, and
+  the short-lived handoff hold that prevents execution before reply routing is
+  settled.
 - **`coding_task_events`** is the append-only task journal for steering,
   milestones, checkpoints, recovery, cancellation, and terminal transitions.
 - **`coding_command_jobs`** records managed sandbox job requests and bounded
@@ -155,8 +156,8 @@ authoritative.
   message row it describes.
 - **`schema_version`** records the version the database has reached.
 
-The coding tables are part of the flattened schema-v1 baseline; there is no
-separate coding migration.
+The coding tables began in schema v1. Schema v2 adds the task's display summary,
+bounded conversation context, and input-file metadata.
 
 ## Model, paid-tool, and bounded-tool usage
 
@@ -250,30 +251,33 @@ it walks the registered migrations from the stored version up to
 `SCHEMA_VERSION`. Each migration and its version record are committed together,
 so a failed migration leaves the database at its previous version.
 
-Nothing has shipped yet, so `_MIGRATIONS` in `storage/db.py` is empty and the
-version columns are part of the v1 baseline rather than a migration onto it.
-When you need a schema change, add an entry keyed by the version it produces,
-paired with a name for the history row:
+Schema v2, `coding_task_context_inputs`, is the first shipped core migration.
+It adds durable context and input metadata to coding tasks. Future changes add
+an entry keyed by the version they produce, paired with a permanent name for
+the history row:
 
 ```python
-async def _migrate_v1_to_v2(conn: aiosqlite.Connection) -> None:
+async def _migrate_v2_to_v3(conn: aiosqlite.Connection) -> None:
     await conn.execute("ALTER TABLE conversations ADD COLUMN locale TEXT")
 
 
-_MIGRATIONS: dict[int, Migration] = {2: ("conversation_locale", _migrate_v1_to_v2)}
+_MIGRATIONS: dict[int, Migration] = {
+    2: ("coding_task_context_inputs", _migrate_v1_to_v2),
+    3: ("conversation_locale", _migrate_v2_to_v3),
+}
 ```
 
-`SCHEMA_VERSION` moves to `2` in the same change. Leaving a version in the
+`SCHEMA_VERSION` moves to `3` in the same change. Leaving a version in the
 range unregistered raises at startup on both the fresh and the upgrade path,
 rather than creating a database that claims a version nothing built. A
 migration runs inside its own transaction, so it only has to do its own work;
 recording the version and committing are handled for it.
 
-Migrations only move forward. Before upgrading a real instance, take a
-WAL-consistent backup. If you ever need to restore an older release, restore
-the matching database backup too rather than changing the version record by
-hand. The bot rejects a non-empty database without a schema stamp, and any
-database stamped newer than it supports.
+Migrations only move forward and run automatically at startup. Before upgrading
+a real instance, take a WAL-consistent backup. If you need to return to an older
+release, restore its matching database backup too; the old release cannot open
+the newer schema safely. The bot rejects a non-empty database without a schema
+stamp, and any database stamped newer than it supports.
 
 Before moving or restoring the database, stop the bot and copy the main file
 with its `-wal` and `-shm` sidecars, or use SQLite's backup API. Do not change

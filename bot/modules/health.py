@@ -29,7 +29,7 @@ def _bounded_metrics(metrics: Mapping[str, float] | None) -> dict[str, float]:
             continue
         try:
             bounded[name[:64]] = float(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     return bounded
 

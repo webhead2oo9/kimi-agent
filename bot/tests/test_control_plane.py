@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import sqlite3
 from pathlib import Path
@@ -39,6 +40,18 @@ class _Handler:
         return ProposalApplyResult(activation="live", revision="two", message="done")
 
 
+class _BlockingHandler(_Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def apply(self, proposal) -> ProposalApplyResult:
+        del proposal
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 @pytest.mark.asyncio
 async def test_owner_approval_is_durable_and_single_use(tmp_path: Path) -> None:
     database = Database(tmp_path / "bot.db")
@@ -64,6 +77,97 @@ async def test_owner_approval_is_durable_and_single_use(tmp_path: Path) -> None:
         assert handler.applied is True
         with pytest.raises(ProposalNotPending):
             await service.approve(record.proposal_id, owner_user_id="owner")
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approval_durably_fails_applying_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "bot.db")
+    await database.connect()
+    try:
+        service = DurableProposalService(database, owner_user_id="owner")
+        handler = _BlockingHandler()
+        service.register_handler("core", "config.test.update", handler)
+        record = await service.create(
+            "module",
+            ProposalDraft(
+                action="config.test.update",
+                target="test",
+                summary="Change test config",
+                changes={"enabled": True},
+                actor=ProposalActor(user_id="staff", source="test"),
+            ),
+        )
+
+        approval = asyncio.create_task(service.approve(record.proposal_id, owner_user_id="owner"))
+        await handler.started.wait()
+        applying = await service.get(record.proposal_id)
+        assert applying is not None
+        assert applying.state == "applying"
+
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        fail_interrupted = service._fail_interrupted_application
+
+        async def delayed_fail_interrupted(proposal_id: str) -> None:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            await fail_interrupted(proposal_id)
+
+        monkeypatch.setattr(service, "_fail_interrupted_application", delayed_fail_interrupted)
+        approval.cancel()
+        await cleanup_started.wait()
+        approval.cancel()
+        await asyncio.sleep(0)
+        assert not approval.done()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await approval
+
+        persisted = await service.get(record.proposal_id)
+        assert persisted is not None
+        assert persisted.state == "failed"
+        assert "interrupted before completion" in persisted.result_message
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_fails_preexisting_applying_proposal(tmp_path: Path) -> None:
+    database = Database(tmp_path / "bot.db")
+    await database.connect()
+    try:
+        service = DurableProposalService(database, owner_user_id="owner")
+        handler = _Handler()
+        service.register_handler("core", "config.test.update", handler)
+        record = await service.create(
+            "module",
+            ProposalDraft(
+                action="config.test.update",
+                target="test",
+                summary="Change test config",
+                changes={"enabled": True},
+                actor=ProposalActor(user_id="staff", source="test"),
+            ),
+        )
+        await service._store.transition(
+            record.proposal_id,
+            from_state="pending",
+            to_state="applying",
+            decided_by="owner",
+        )
+
+        recovered = DurableProposalService(database, owner_user_id="owner")
+        await recovered.reconcile_interrupted_applications()
+        await recovered.reconcile_interrupted_applications()
+
+        persisted = await recovered.get(record.proposal_id)
+        assert persisted is not None
+        assert persisted.state == "failed"
+        assert "interrupted before completion" in persisted.result_message
     finally:
         await database.close()
 

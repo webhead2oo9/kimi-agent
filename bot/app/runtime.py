@@ -729,6 +729,8 @@ class KimiApplication:
         marks ``db_initialized`` only after the complete startup path succeeds.
         """
         await self.database.connect()
+        if self.proposal_service is not None:
+            await self.proposal_service.reconcile_interrupted_applications()
         self.conversation_store = ConversationStore(self.database)
         self.preference_store = PreferenceStore(self.database)
         self.blocked_user_store = BlockedUserStore(self.database)
@@ -808,6 +810,7 @@ class KimiApplication:
             requested=lambda: module_manager.load_state.requested,
             specs=lambda: module_manager.specs,
             health=module_manager.health_snapshot,
+            disabled=lambda: module_manager.disabled_modules,
             resolved_hosts=lambda name: tuple(
                 f"{rule.host}{' (private)' if rule.private else ''}"
                 for rule in module_manager.host_rules(name)
@@ -974,6 +977,8 @@ class KimiApplication:
                 notifier=self._publish_coding_task,
                 user_activity=self.privacy_barrier.activity,
                 workspace_manager=self.tools.workspace_manager,
+                workspace_locks=self.tools.workspace_locks,
+                workspace_config=self.tools.workspace_config,
                 blocked_tools=load_blocked_tools,
                 tool_configs=load_tool_configs,
             )
@@ -1492,10 +1497,14 @@ class KimiApplication:
             CodingTaskStatus.TIMED_OUT: "⌛",
         }
         task_marker = KimiApplication._coding_task_marker(task.id)
-        lines = [
-            f"{icons[task.status]} **{task_marker}: {task.status.value}**",
-            task.objective[:500],
-        ]
+        lines = [f"{icons[task.status]} **{task_marker}: {task.status.value}**"]
+        if not task.plan:
+            lines.append(
+                CodingTaskService._display_summary(
+                    task.objective,
+                    str(getattr(task, "display_summary", "")),
+                )
+            )
         if task.milestone:
             lines.append(f"-# {task.milestone[:500]}")
         visible_plan = [step for step in task.plan if step.get("status") != "completed"][:3]

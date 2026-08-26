@@ -433,9 +433,6 @@ class Settings(BaseSettings):
     # Secrets
     secrets_file: str = "secrets/secrets.yaml"
 
-    # Experimental owner-approved module control plane. These bootstrap values
-    # remain environment-owned and cannot be changed through managed overrides.
-
     # Script Execution
     script_default_timeout: int = 1200
     script_max_timeout: int = 1200

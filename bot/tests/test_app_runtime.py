@@ -484,9 +484,10 @@ async def test_coding_output_moderation_marks_blocked_result() -> None:
 async def test_durable_attachment_plan_freezes_limit_and_plain_notice(tmp_path: Path) -> None:
     output = tmp_path / "large.zip"
     output.write_bytes(b"12345")
+    guild = SimpleNamespace(filesize_limit=4)
     channel = cast(
         discord.TextChannel | discord.Thread,
-        SimpleNamespace(guild=SimpleNamespace(filesize_limit=4)),
+        SimpleNamespace(guild=guild),
     )
     save_plan = AsyncMock(side_effect=lambda _task_id, plan: plan)
     gateway = SimpleNamespace(
@@ -515,13 +516,14 @@ async def test_durable_attachment_plan_freezes_limit_and_plain_notice(tmp_path: 
 
     assert plan.files == ()
     assert [item.filename for item in plan.omitted] == ["large.zip"]
+    assert save_plan.await_args is not None
     frozen = save_plan.await_args.args[1]
     notice = frozen["notice_text"]
     assert notice == attachment_delivery_notice(plan)
     assert "**" not in notice
     assert "`" not in notice
 
-    channel.guild.filesize_limit = 100
+    guild.filesize_limit = 100
     recovered_task = cast(
         CodingTask,
         SimpleNamespace(id="task-1", checkpoint={"delivery": {"attachment_plan": frozen}}),
@@ -555,9 +557,7 @@ async def test_durable_delivery_notice_is_persisted_in_assistant_transcript() ->
             conversation_id=7,
         ),
     )
-    notice = (
-        "Delivery notice: Discord did not attach large.zip because it exceeds the limit."
-    )
+    notice = "Delivery notice: Discord did not attach large.zip because it exceeds the limit."
     message = cast(
         discord.Message,
         SimpleNamespace(
@@ -574,6 +574,7 @@ async def test_durable_delivery_notice_is_persisted_in_assistant_transcript() ->
         channel_id="10",
     )
 
+    assert save_messages.await_args is not None
     records = save_messages.await_args.args[1]
     assert records[0].content == f"{notice}\n\nReport body."
     assert save_messages.await_args.kwargs == {"context_channel_id": "10"}

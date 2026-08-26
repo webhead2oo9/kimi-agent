@@ -53,6 +53,7 @@ def message_ref(message: discord.Message) -> MessageRef:
 
 
 def message_snapshot(message: discord.Message) -> MessageSnapshot:
+    reference = getattr(message, "reference", None)
     return MessageSnapshot(
         ref=message_ref(message),
         author_id=int(message.author.id),
@@ -63,6 +64,14 @@ def message_snapshot(message: discord.Message) -> MessageSnapshot:
         author_display_name=str(getattr(message.author, "display_name", message.author)),
         author_is_bot=bool(getattr(message.author, "bot", False)),
         embed_image_urls=_embed_image_urls(message),
+        reply_to_message_id=(
+            int(reference.message_id)
+            if reference is not None and reference.message_id is not None
+            else None
+        ),
+        pinned=bool(getattr(message, "pinned", False)),
+        edited_at=_ts(getattr(message, "edited_at", None)),
+        embed_texts=_embed_texts(message),
     )
 
 
@@ -74,6 +83,28 @@ def _embed_image_urls(message: discord.Message) -> tuple[str, ...]:
             if url:
                 urls.append(str(url))
     return tuple(urls)
+
+
+def _embed_texts(message: discord.Message) -> tuple[str, ...]:
+    texts: list[str] = []
+    for embed in getattr(message, "embeds", ()) or ():
+        parts = [
+            str(value).strip()
+            for value in (
+                getattr(embed, "title", None),
+                getattr(embed, "description", None),
+                getattr(embed, "url", None),
+            )
+            if value
+        ]
+        for field in getattr(embed, "fields", ()) or ():
+            name = str(getattr(field, "name", "")).strip()
+            value = str(getattr(field, "value", "")).strip()
+            if name or value:
+                parts.append(f"{name}: {value}".strip(": "))
+        if parts:
+            texts.append(" â€” ".join(parts))
+    return tuple(texts)
 
 
 def member_snapshot(member: discord.Member) -> MemberSnapshot:

@@ -810,6 +810,7 @@ class KimiApplication:
             requested=lambda: module_manager.load_state.requested,
             specs=lambda: module_manager.specs,
             health=module_manager.health_snapshot,
+            disabled=lambda: module_manager.disabled_modules,
             resolved_hosts=lambda name: tuple(
                 f"{rule.host}{' (private)' if rule.private else ''}"
                 for rule in module_manager.host_rules(name)

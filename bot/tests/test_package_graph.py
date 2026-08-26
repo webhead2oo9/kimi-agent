@@ -119,7 +119,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "moderation": {"observability", "providers", "trust", "utils"},
     # Module API runtime services. Grows as each service lands; the app edge is
     # the harness cycle documented above.
-    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools"},
+    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
     "scripts": {"app", "codex"},

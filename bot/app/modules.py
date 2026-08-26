@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl, ModuleEventView
+from modules.guild_settings import GuildSettingsService
 from modules.health import HealthRegistry
 from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
@@ -194,6 +195,7 @@ class ModuleManager:
     services: ServiceRegistryImpl = field(default_factory=ServiceRegistryImpl)
     events: EventBusImpl | None = None
     scheduler: DurableScheduler | None = None
+    guild_settings: GuildSettingsService | None = None
 
     @property
     def config_dir(self) -> Path:
@@ -270,6 +272,14 @@ class ModuleManager:
     def specs(self) -> Mapping[str, ModuleSpec]:
         return {spec.name: spec for spec in self._specs}
 
+    @property
+    def guild_settings_schemas(self) -> Mapping[str, Any]:
+        return {
+            spec.name: spec.guild_settings
+            for spec in self._specs
+            if spec.guild_settings is not None
+        }
+
     def spec(self, name: str) -> ModuleSpec:
         for spec in self._specs:
             if spec.name == name:
@@ -319,6 +329,11 @@ class ModuleManager:
                     ),
                     scheduler=(
                         self.scheduler.view_for(spec.name) if self.scheduler is not None else None
+                    ),
+                    guild_settings=(
+                        self.guild_settings.view_for(spec.name, ctx.is_guild_active)
+                        if self.guild_settings is not None and spec.guild_settings is not None
+                        else None
                     ),
                     discord=(
                         DeclaredDiscordActions(

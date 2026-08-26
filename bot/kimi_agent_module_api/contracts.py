@@ -135,7 +135,7 @@ class ServiceRequirement:
     provider: str
 
 
-type GuildSettingKind = Literal["int", "id", "id_list", "str", "enum", "bool"]
+type GuildSettingKind = Literal["int", "id", "id_list", "str", "str_list", "enum", "bool"]
 type InvalidPolicy = Literal["disable_module", "disable_guild"]
 
 

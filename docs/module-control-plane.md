@@ -53,6 +53,11 @@ proposal records the target revision seen during preview; approval makes a
 fresh preview and marks the proposal stale if the target changed. Application
 is serialized, and a proposal is single-use.
 
+Per-guild module settings use the target `guild:<guild_id>:<module_name>`
+and map to `guild-modules/<guild_id>/<module_name>.md`; they are
+frontmatter-only, activate live, and each document carries its own
+revision so proposals for different modules never collide.
+
 Settings and model changes require restart. Guild, channel, prompt, and tool
 documents activate live. Module and plugin settings documents require restart.
 All documents are copied into immutable managed revisions and strictly checked

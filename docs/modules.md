@@ -132,6 +132,21 @@ Each started module receives its own frozen `ModuleRuntimeContext` carrying
   `permissions.override_target_policy`. Every action is scoped to guilds
   core considers active, audit reasons are prefixed with the module name,
   and outgoing messages never ping.
+- `ctx.guild_settings`: the module's typed per-guild settings, declared as
+  `ModuleSpec.guild_settings` (fields of kind `int`, `id`, `id_list`, `str`,
+  `str_list`, `enum`, `bool`, plus an optional validator). Values live in
+  `<CONFIG_DIR>/guild-modules/<guild_id>/<module_name>.md` (frontmatter
+  only); until a guild has that document, the schema's field names are
+  read from `servers/<guild_id>.md` and the snapshot reports
+  `legacy=True`, with the module marked `degraded` naming those guilds.
+  `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
+  `revision`), refreshed on the guild-activation cadence and on managed
+  config activation; `is_enabled(guild_id)` is the guild being active and
+  the document valid; `on_change(callback)` fires per changed guild. An
+  invalid document follows the schema's `invalid_policy`: `disable_module`
+  turns the module off for that guild, `disable_guild` (the default) takes
+  the guild out of the bot's active set until it is fixed. The owner edits
+  these documents through `guild:<guild_id>:<module_name>` proposals.
 - `ctx.scheduler`: durable jobs. `register(name, handler)` in `start()`
   binds a handler by name; `run_at(key, when, name, payload)` and
   `run_every(key, interval, name, payload, jitter_seconds=, backoff=)`

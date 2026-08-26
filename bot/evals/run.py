@@ -9,6 +9,7 @@ from app.providers import close_provider
 from config.settings import settings
 from evals.capture import InstrumentedProvider
 from evals.harness import run_scenario_for_model
+from evals.identity import EvalIdentity, new_eval_run_nonce
 from evals.judge import judge_pair, load_rubric
 from evals.mechanical import compute_mechanical
 from evals.models import ModelsConfig, build_eval_provider, load_models
@@ -75,6 +76,7 @@ async def _run(args: argparse.Namespace) -> int:
     gateway = StubGateway()
     eval_registry: EvalRegistry | None = None
     reports: list[ScenarioReport] = []
+    eval_run_nonce = new_eval_run_nonce()
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
         # Production parity: every chat turn runs with the mandatory compactor
@@ -89,7 +91,16 @@ async def _run(args: argparse.Namespace) -> int:
                 memory_client=eval_registry.memory_manager.active_client(),
                 preference_store=eval_registry.preference_store,
                 bot_name=settings.bot_name,
+                thread_handoff_suggest_after_tool_calls=(
+                    settings.thread_handoff_suggest_after_tool_calls
+                ),
                 compactor=compactor,
+                identity=EvalIdentity(
+                    run_nonce=eval_run_nonce,
+                    arm=f"candidate:{candidate_spec.label}",
+                    scenario_id=scenario.id,
+                    repetition=0,
+                ),
             )
             base_run = await run_scenario_for_model(
                 scenario,
@@ -99,7 +110,16 @@ async def _run(args: argparse.Namespace) -> int:
                 memory_client=eval_registry.memory_manager.active_client(),
                 preference_store=eval_registry.preference_store,
                 bot_name=settings.bot_name,
+                thread_handoff_suggest_after_tool_calls=(
+                    settings.thread_handoff_suggest_after_tool_calls
+                ),
                 compactor=compactor,
+                identity=EvalIdentity(
+                    run_nonce=eval_run_nonce,
+                    arm=f"baseline:{models.baseline.label}",
+                    scenario_id=scenario.id,
+                    repetition=0,
+                ),
             )
             judge_result = await judge_pair(
                 judge, scenario, candidate_run=cand_run, baseline_run=base_run, rubric=rubric

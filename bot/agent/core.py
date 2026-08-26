@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from typing import Any
 
@@ -53,6 +53,17 @@ log = logging.getLogger(__name__)
 
 MAX_TOOL_NAME_RETRIES = 3
 MAX_ARG_PARSE_RETRIES = 3
+THREAD_HANDOFF_ADVISORY_TAG = "<thread_handoff_advisory>"
+_THREAD_HANDOFF_NON_SUBSTANTIVE_TOOLS = frozenset(
+    {
+        "browse_tools",
+        "leave_thread",
+        "move_to_thread",
+        "pause_thread_replies",
+        "plan",
+        "resume_thread_replies",
+    }
+)
 UserActivityGuard = Callable[[str], AbstractAsyncContextManager[None]]
 _DETACHED_TURN_TASKS: set[asyncio.Task[Any]] = set()
 
@@ -256,6 +267,9 @@ class ConversationRunRequest:
     max_iterations: int = 10
     max_tokens: int = 4096
     temperature: float | None = None
+    # 0 disables the one-time optional move_to_thread advisory. Production and
+    # eval entry points wire the operator setting; embedded/direct runs opt in.
+    thread_handoff_suggest_after_tool_calls: int = 0
     channel_name: str = ""
     # Opaque platform actor propagated from the Discord boundary. Keeping this
     # as Any preserves the provider-agnostic core while avoiding cache-based
@@ -330,6 +344,8 @@ class _ConversationRunState:
     llm_calls: list[LLMUsageCall] = field(default_factory=list)
     completed_calls: int = 0
     tool_call_count: int = 0
+    substantive_tool_call_count: int = 0
+    thread_handoff_advisory_emitted: bool = False
     tool_name_errors: int = 0
     arg_parse_errors: int = 0
     compaction_overflow_handled: bool = False
@@ -786,7 +802,7 @@ class _ConversationRunner:
         state.turn_messages.append(
             ConversationMessage(role="assistant", content=[ContentPart.from_text(fallback)])
         )
-        context.add_messages(state.turn_messages)
+        context.add_messages(_without_thread_handoff_advisory(state.turn_messages))
         self._sync_output_files(context, msg_ctx)
         emit_turn(
             turn_id=turn_id,
@@ -901,6 +917,8 @@ class _ConversationRunner:
                     model=response.model or request.provider.model,
                 )
                 state.tool_call_count += 1
+                if outcome.dispatched and tc.name not in _THREAD_HANDOFF_NON_SUBSTANTIVE_TOOLS:
+                    state.substantive_tool_call_count += 1
 
                 tool_msg = ConversationMessage(
                     role="tool",
@@ -920,6 +938,8 @@ class _ConversationRunner:
 
             if msg_ctx.terminal_handoff is not None:
                 return deadline
+
+            self._maybe_append_thread_handoff_advisory(state)
 
             # Any workspace images the view_image tool queued this iteration ride into
             # the loop as one synthetic untrusted user message (the same user-role
@@ -998,7 +1018,7 @@ class _ConversationRunner:
             )
         )
         log.info("Ending foreground turn after %s handoff", handoff.reason)
-        context.add_messages(state.turn_messages)
+        context.add_messages(_without_thread_handoff_advisory(state.turn_messages))
         self._sync_output_files(context, msg_ctx)
         context.pending_terminal_handoff = handoff
         emit_turn(
@@ -1040,7 +1060,7 @@ class _ConversationRunner:
         # was produced, so re-joining accumulated_text into the stored message
         # would duplicate it in persisted history (and replay it next turn).
         state.turn_messages.append(_assistant_message_from_response(response, final_text))
-        context.add_messages(state.turn_messages)
+        context.add_messages(_without_thread_handoff_advisory(state.turn_messages))
 
         # The user-facing reply is the final answer only. Per-iteration narration
         # is streamed to the live "building" message.
@@ -1130,6 +1150,47 @@ class _ConversationRunner:
         context.pending_embed_attachment = msg_ctx.embed_attachment
         context.pending_thread_request = msg_ctx.thread_request
         context.pending_thread_close_request = msg_ctx.thread_close_request
+
+    def _maybe_append_thread_handoff_advisory(
+        self,
+        state: _ConversationRunState,
+    ) -> None:
+        """Append one optional handoff hint without changing the cached prefix.
+
+        The hint is an extra content part on the latest completed tool result,
+        which is already the growing suffix of a ReAct request. Tool schemas and
+        earlier messages stay byte-stable for provider prompt caches. The helper
+        runs only after the complete tool batch, so every provider still sees a
+        valid assistant-call/tool-result sequence.
+        """
+        threshold = self.request.thread_handoff_suggest_after_tool_calls
+        if (
+            threshold <= 0
+            or state.thread_handoff_advisory_emitted
+            or state.substantive_tool_call_count < threshold
+            or not self.request.guild_id
+            or self.request.thread_id is not None
+            or not any(tool.name == "move_to_thread" for tool in state.tools)
+        ):
+            return
+
+        for index in range(len(state.turn_messages) - 1, -1, -1):
+            message = state.turn_messages[index]
+            if message.role != "tool":
+                continue
+            state.turn_messages[index] = replace(
+                message,
+                content=[
+                    *message.content,
+                    ContentPart.from_text(_thread_handoff_advisory(threshold)),
+                ],
+            )
+            state.thread_handoff_advisory_emitted = True
+            log.info(
+                "Suggested move_to_thread after %d substantive tool calls",
+                state.substantive_tool_call_count,
+            )
+            return
 
     async def _chat_with_limit(
         self,
@@ -1227,6 +1288,10 @@ class _ToolCallOutcome:
     duration_ms: int
     tool_name_errors: int
     arg_parse_errors: int
+    # True only after the registry accepted and completed the dispatch. Unknown
+    # names, malformed arguments, and calls skipped after a terminal handoff do
+    # not count as substantive work.
+    dispatched: bool = False
     # (tools, tool_schemas, activated) when a dispatch activated new searchable
     # tools and the loop's exposed tool surface must be rebuilt.
     refreshed: tuple[list[ToolEntry], list[dict[str, Any]], set[str]] | None = None
@@ -1338,6 +1403,7 @@ async def _resolve_tool_call(
         duration_ms=duration_ms,
         tool_name_errors=tool_name_errors,
         arg_parse_errors=arg_parse_errors,
+        dispatched=True,
         refreshed=refreshed,
     )
 
@@ -1350,6 +1416,37 @@ def _text_of(parts: list[ContentPart]) -> str:
         elif part.text:
             chunks.append(part.text)
     return "\n".join(chunks)
+
+
+def _thread_handoff_advisory(threshold: int) -> str:
+    return (
+        f"{THREAD_HANDOFF_ADVISORY_TAG}\n"
+        f"This turn has completed at least {threshold} substantive tool actions "
+        "in a shared channel. If meaningful work remains, you may call "
+        "move_to_thread now. If you are preparing the final answer, continue "
+        "inline. This is an optional, one-time runtime suggestion.\n"
+        f"</thread_handoff_advisory>"
+    )
+
+
+def _without_thread_handoff_advisory(
+    messages: list[ConversationMessage],
+) -> list[ConversationMessage]:
+    """Remove the in-turn-only advisory before retaining local conversation state."""
+    cleaned: list[ConversationMessage] = []
+    for message in messages:
+        content = [
+            part
+            for part in message.content
+            if not (
+                part.type is ContentPartType.TEXT
+                and (part.text or "").startswith(THREAD_HANDOFF_ADVISORY_TAG)
+            )
+        ]
+        cleaned.append(
+            message if len(content) == len(message.content) else replace(message, content=content)
+        )
+    return cleaned
 
 
 def _has_compactable_turn_history(

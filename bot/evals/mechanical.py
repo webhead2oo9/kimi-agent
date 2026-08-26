@@ -19,6 +19,7 @@ _PENALTY_RAW_JSON = 15.0
 _PENALTY_FAILED_REPLY_CHECK = 15.0
 _PENALTY_OVER_BUDGET = 10.0
 _PENALTY_MISSING_ATTACHMENT = 20.0
+_PENALTY_INCOMPLETE_TURN = 25.0
 
 
 @dataclass
@@ -44,6 +45,11 @@ class MechanicalResult:
     # Index (in flattened call order) of the first should_use tool call; -1 = never.
     # Informational only, not scored.
     first_expected_call_index: int = -1
+    # Human-readable turn/reason pairs for any ReAct loop that did not complete.
+    incomplete_turns: list[str] = field(default_factory=list)
+    # Non-fixture errors. Scripted fault-injection remains visible in tool_errors
+    # but should not make a deliberately recovered scenario look unhealthy.
+    live_tool_errors: int = 0
     # Weighted composite in [0, 100]; the harness-eval regression number.
     score: float = 0.0
 
@@ -62,6 +68,7 @@ class MechanicalResult:
             or self.over_budget
             or self.raw_json_reply
             or self.missing_attachment
+            or self.incomplete_turns
         )
 
 
@@ -117,6 +124,11 @@ def compute_mechanical(scenario: Scenario, run: ScenarioRun) -> MechanicalResult
     )
     expected = set(scenario.expect.should_use_tools)
     first_expected = next((i for i, record in enumerate(calls) if record.tool in expected), -1)
+    incomplete_turns = [
+        f"turn {index}={turn.termination_reason}"
+        for index, turn in enumerate(run.turns, start=1)
+        if turn.termination_reason != "completed"
+    ]
 
     score = 100.0
     score -= _PENALTY_MISSING_TOOL * len(missing)
@@ -129,6 +141,7 @@ def compute_mechanical(scenario: Scenario, run: ScenarioRun) -> MechanicalResult
         score -= _PENALTY_OVER_BUDGET
     if missing_attachment:
         score -= _PENALTY_MISSING_ATTACHMENT
+    score -= _PENALTY_INCOMPLETE_TURN * len(incomplete_turns)
     raw_json = _looks_like_raw_json(final_text)
     if raw_json:
         score -= _PENALTY_RAW_JSON
@@ -147,5 +160,7 @@ def compute_mechanical(scenario: Scenario, run: ScenarioRun) -> MechanicalResult
         over_budget=over_budget,
         missing_attachment=missing_attachment,
         first_expected_call_index=first_expected,
+        incomplete_turns=incomplete_turns,
+        live_tool_errors=live_errors,
         score=round(max(score, 0.0), 1),
     )

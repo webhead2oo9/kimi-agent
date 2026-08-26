@@ -53,6 +53,21 @@ the **Create Public Threads**, **Send Messages in Threads**, and **Manage Thread
 permissions; private threads, forum channels, and announcement channels are out of
 scope.
 
+### In-turn suggestion
+
+`THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` defaults to `5`. During an ordinary
+guild-channel turn, after that many completed **substantive** tool actions, the
+ReAct loop adds one optional model-facing note: call `move_to_thread` if meaningful
+work remains, or finish inline when the answer is already imminent. `plan`,
+`browse_tools`, and the thread-control tools do not count. `0` disables the note.
+
+The suggestion is never an automatic move. It is emitted at most once, only when
+`move_to_thread` is visible for that turn, and never in a DM or an existing thread.
+The runtime appends it as a separate content part on the latest tool result, then
+removes it before retaining conversation history. This preserves the append-only
+ReAct transcript and provider prompt-cache prefix: the initial prompt, earlier
+messages, and tool schemas are not rewritten when the threshold trips.
+
 `THREAD_AUTO_HANDOFF_ENABLED` (default `false`, requires `THREAD_HANDOFF_ENABLED`)
 turns on the **deterministic backstop** described below. It is opt-in *per channel*: a
 channel enrolls by declaring a threshold in its fragment frontmatter
@@ -60,7 +75,6 @@ channel enrolls by declaring a threshold in its fragment frontmatter
 
 ```yaml
 ---
-pinned_tools: [move_to_thread]
 auto_thread_min_lines: 4   # fire when the reply has > 4 lines
 auto_thread_min_chars: 600 # ...or > 600 chars (catches a single wrapped wall of text)
 ---
@@ -158,8 +172,9 @@ it, and "you can reply now" typed into a paused thread never reaches the bot.
 
 ### Tool visibility
 
-`leave_thread`, `pause_thread_replies` and `resume_thread_replies` are **core** tools
-(not searchable) that the turn masks whenever they have nothing to act on
+All four thread tools are **core** tools (not searchable). The turn masks
+`leave_thread`, `pause_thread_replies` and `resume_thread_replies` when they
+have nothing to act on
 (`config/fragments/tool_policy.py:thread_state_blocked_tools`, applied through the
 `extra_blocked_tools` argument to `build_turn_dependencies`):
 
@@ -169,11 +184,11 @@ it, and "you can reply now" typed into a paused thread never reaches the bot.
 | managed, auto-responding | `leave_thread`, `pause_thread_replies` |
 | managed, paused | `leave_thread`, `resume_thread_replies` |
 
-They are core rather than searchable because "stop replying to everything" has to work
-on the first ask, and a searchable tool only exists after the model has run
-`browse_tools`. The mask, not the search pool, is what keeps them out of every other
-turn's tool list. `move_to_thread` stays searchable: it is offered anywhere, so the
-catalog is the right home for it.
+They are core because both starting a useful thread and "stop replying to
+everything" should work on the first ask, without a `browse_tools` round trip.
+`move_to_thread` is visible in ordinary guild channels where policy permits
+handoff and is masked in DMs; the lifecycle mask, not the search pool, keeps the
+other three out of turns where they cannot act.
 
 ### Instructions inside the thread
 
@@ -297,13 +312,13 @@ remain until the operator removes them.
 ## Flow
 
 1. **Model opt-in.** During a normal mention-gated turn in a regular channel, the model
-   calls `move_to_thread(name)` (browse-tools-only/searchable, `MEMBER` tier, mirroring
-   `build_discord_embed`). The tool validates and queues a single-slot pending request:
-   `ConversationContext.pending_thread_request` → `TurnResult.thread_request`.
-   Validation is side-effect free, and a second call replaces the first. The tool
-   rejects immediately when the turn is already inside a thread (known from the turn's
-   `thread_id`, which is derived and never a model argument) *unless* a different
-   `channel` was named, and when the name is empty; names are sanitized and truncated
+   calls the core `move_to_thread(name)` tool (`MEMBER` tier). The tool validates and
+   queues a single-slot pending request:
+   `ConversationContext.pending_thread_request` → `TurnResult.thread_request`. Validation
+   is side-effect free; a second call replaces the first. The tool rejects immediately
+   when the turn is already inside a thread (known from the turn's `thread_id`, derived and
+   never a model argument) *unless* a different `channel` was named, or when the name is
+   empty; names are sanitized and truncated
    to Discord's 100-char cap. The terse tool description points at an instruction-only
    `start-thread` skill for guidance on *when* starting a thread is appropriate (long
    troubleshooting, multi-message back-and-forth), which keeps the registry

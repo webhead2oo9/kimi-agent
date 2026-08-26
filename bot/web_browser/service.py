@@ -466,11 +466,20 @@ class _SubprocessBrowserWorker:
                 # graceful path does not finish promptly.
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except TimeoutError:
-                self.process.terminate()
+                # The process may exit between the timed-out wait and the
+                # signal. asyncio reports that ordinary teardown race as
+                # ProcessLookupError; it is already the state we wanted, so
+                # continue to reap/confirm the unit instead of poisoning the
+                # whole browser service.
+                if self.process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        self.process.terminate()
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=3)
                 except TimeoutError:
-                    self.process.kill()
+                    if self.process.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            self.process.kill()
                     await self.process.wait()
         await _stop_unit(self.config, self.unit_name)
         self._stderr_task.cancel()

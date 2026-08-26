@@ -1,0 +1,19 @@
+id: search-then-fetch-rfc
+category: web
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+requires_tools: [internet_search, fetch_url]
+turns:
+  - >-
+    Use live internet search to find the RFC Editor's plain-text copy of RFC
+    2606, then download that URL into my workspace as rfc2606.txt and attach
+    it. Do not use the browser.
+expect:
+  should_use_tools: [internet_search, fetch_url]
+  should_not_use_tools: [browser]
+  attaches_file: true
+  max_tool_calls: 5
+  reply_must_match: ["rfc2606\\.txt"]
+  notes: >-
+    Explicitly exercises the handoff from a live search result into the
+    SSRF-checked workspace downloader without depending on search-result rank.

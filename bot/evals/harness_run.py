@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import subprocess
@@ -43,6 +44,7 @@ from evals.cassette import (
     tape_provenance,
 )
 from evals.harness import ScenarioRun, run_scenario_for_model
+from evals.identity import EvalIdentity, new_eval_run_nonce
 from evals.mechanical import MechanicalResult, compute_mechanical
 from evals.models import ModelsConfig, ModelSpec, build_eval_provider, load_models
 from evals.cost import (
@@ -94,6 +96,20 @@ def _git(repo_dir: Path, args: list[str]) -> str | None:
             timeout=10,
         )
     # TimeoutExpired subclasses SubprocessError, not OSError, so it needs naming.
+    except OSError, UnicodeError, subprocess.TimeoutExpired:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _git_bytes(repo_dir: Path, args: list[str]) -> bytes | None:
+    """Run git without decoding output, for diffs that may contain binary data."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=repo_dir,
+            capture_output=True,
+            timeout=10,
+        )
     except OSError, subprocess.TimeoutExpired:
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -129,39 +145,66 @@ def run_data_paths(repo_dir: Path, cassette_dir: Path | str) -> tuple[str, ...]:
 
 
 def git_short_sha(repo_dir: Path, *, data_paths: Sequence[str] = ()) -> str:
-    """HEAD's short sha, suffixed `-dirty` when tracked *source* differs from it.
+    """HEAD's short sha, with a hash of effective tracked worktree changes.
 
     The sha is the run's identity: two runs stamped the same sha are supposed to
     have executed the same code, and without the dirty check a run against an
     edited working tree claims a tree it never ran. So the marker has to mean
-    "the code was edited" and nothing else: untracked files are excluded
-    (`--untracked-files=no`) and so is everything under `data_paths`, which a run
-    writes as part of doing its job (see `run_data_paths`). Pathspecs are anchored
-    at the repo root (`:(top)`) because the check runs from evals/.
+    "the executed tracked bytes differ" and nothing else: a diff from HEAD
+    naturally excludes untracked files and index-only state, and everything
+    under `data_paths` is excluded because a run writes it as part of doing its
+    job (see `run_data_paths`). A bare `-dirty` makes every edited tree look
+    identical, so the suffix includes the first 12 hex characters of SHA-256
+    over a configuration-independent binary diff from HEAD. Pathspecs are
+    anchored at the repo root (`:(top)`) because the check runs from evals/.
 
     Failure is cautious, not clean: `rev-parse` succeeding proves git works, so a
-    `status` that then fails (index.lock contention, the timeout on a slow tree,
-    a permissions error) is the *ambiguous* case, and answering it with a bare
-    sha is exactly the "claimed a commit it never executed" failure the marker
-    exists to prevent. `-unknown` says the check could not be run.
+    diff that then fails (the timeout on a slow tree, a permissions error) is the
+    *ambiguous* case, and answering it with a bare sha is exactly the "claimed a
+    commit it never executed" failure the marker exists to prevent. `-unknown`
+    says the check could not be run.
     """
     sha = _git(repo_dir, ["rev-parse", "--short", "HEAD"])
     if sha is None or not sha.strip():
         return "nogit"
-    status = _git(
+    pathspecs = [
+        ":(top)",
+        *(f":(top,exclude){path}" for path in data_paths),
+    ]
+    diff = _git_bytes(
         repo_dir,
         [
-            "status",
-            "--porcelain",
-            "--untracked-files=no",
+            "-c",
+            "core.quotePath=true",
+            "-c",
+            "diff.ignoreSubmodules=none",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--unified=3",
+            "--inter-hunk-context=0",
+            "-O/dev/null",
+            "--submodule=short",
+            "--ignore-submodules=none",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "HEAD",
             "--",
-            ":(top)",
-            *(f":(top,exclude){path}" for path in data_paths),
+            *pathspecs,
         ],
     )
-    if status is None:
+    if diff is None:
         return f"{sha.strip()}-unknown"
-    return f"{sha.strip()}-dirty" if status.strip() else sha.strip()
+    if not diff:
+        return sha.strip()
+    digest = hashlib.sha256(diff).hexdigest()[:12]
+    return f"{sha.strip()}-dirty-{digest}"
 
 
 def make_run_dir(base: Path, *, sha: str, now: datetime | None = None) -> Path:
@@ -202,6 +245,7 @@ class RepResult:
 def _rep_row(rep: RepResult) -> dict:
     row = asdict(rep.mechanical)
     row["passed"] = rep.mechanical.passed
+    row["eval_identity"] = rep.run.identity.as_dict() if rep.run.identity else None
     row["sources"] = rep.sources
     row["usage"] = usage_dict(rep.run.total_usage)
     row["provider_calls"] = rep.run.provider_calls
@@ -251,6 +295,7 @@ def build_summary(
     cassette_model_key: str = "",
     cassette_tapes: dict[str, str] | None = None,
     skipped_scenarios: dict[str, list[str]] | None = None,
+    eval_run_nonce: str = "",
 ) -> dict:
     scenarios: dict[str, dict[str, Any]] = {
         scenario_id: {
@@ -281,6 +326,7 @@ def build_summary(
         "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha,
         "model": model,
+        "eval_run_nonce": eval_run_nonce,
         "repeat": repeat,
         "max_tokens": max_tokens,
         "requested_max_tokens": requested_max_tokens or max_tokens,
@@ -357,6 +403,9 @@ def render_harness_report(summary: dict) -> str:
                 flags.append("raw-json")
             if rep["repeated_calls"]:
                 flags.append(f"repeats:{rep['repeated_calls']}")
+            if rep.get("live_tool_errors", rep["tool_errors"]):
+                flags.append(f"tool-errors:{rep.get('live_tool_errors', rep['tool_errors'])}")
+            flags.extend(f"incomplete:{turn}" for turn in rep.get("incomplete_turns", []))
         unique_flags = sorted(set(flags))
         lines.append(
             f"| {scenario_id} | {agg['score_mean']} ({agg['score_min']}–{agg['score_max']}) "
@@ -415,12 +464,15 @@ def write_transcripts(path: Path, results: dict[str, tuple[Scenario, list[RepRes
                 row = {
                     "scenario": scenario_id,
                     "rep": index,
+                    "eval_identity": rep.run.identity.as_dict() if rep.run.identity else None,
                     "score": rep.mechanical.score,
                     "passed": rep.mechanical.passed,
                     "turns": [
                         {
                             "user": turn.user_message,
                             "reply": turn.final_text,
+                            "termination_reason": turn.termination_reason,
+                            "provider_calls": turn.provider_calls,
                             "tool_calls": [
                                 {
                                     "tool": record.tool,
@@ -519,6 +571,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     provider = InstrumentedProvider(build_eval_provider(spec))
+    eval_run_nonce = new_eval_run_nonce()
     gateway = StubGateway()
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
@@ -570,8 +623,17 @@ async def _run(args: argparse.Namespace) -> int:
                     memory_client=eval_registry.memory_manager.active_client(),
                     preference_store=eval_registry.preference_store,
                     bot_name=settings.bot_name,
+                    thread_handoff_suggest_after_tool_calls=(
+                        settings.thread_handoff_suggest_after_tool_calls
+                    ),
                     compactor=compactor,
                     max_tokens=max_tokens,
+                    identity=EvalIdentity(
+                        run_nonce=eval_run_nonce,
+                        arm=spec.label,
+                        scenario_id=scenario.id,
+                        repetition=rep_index,
+                    ),
                 )
                 sources: dict[str, int] = {}
                 for record in run.all_tool_calls:
@@ -621,6 +683,7 @@ async def _run(args: argparse.Namespace) -> int:
         cassette_model_key=model_key,
         cassette_tapes=tapes,
         skipped_scenarios=skipped,
+        eval_run_nonce=eval_run_nonce,
     )
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (run_dir / "report.md").write_text(render_harness_report(summary), encoding="utf-8")

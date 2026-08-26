@@ -25,6 +25,11 @@ counts are bounded by deployment configuration.
 
 ## Pages, state, and snapshots
 
+These names are globals inside every browser snippet. There is no `browser`
+global and no need to create the initial page; use `page` directly, or
+`openPage(...)` for another tab. `context.newPage()` is part of the context
+mutation surface this deployment removes.
+
 - `page`: current page.
 - `pages`: live array of pages in the conversation session.
 - `openPage(url?)`, `usePage(pageIdOrIndex)`, `closePage(pageIdOrIndex?)`:

@@ -63,6 +63,10 @@ CASSETTE_MODES = ("off", "record", "replay", "strict")
 CASSETTE_RECORDED_TOOLS = frozenset(
     {
         "discord_text_search",
+        # Live web search/read is network-backed and read-only. Replaying it
+        # freezes volatile result ordering and content without skipping any
+        # local side effect.
+        "internet_search",
         # Hindsight reads: network-backed and read-only, so replay is safe and
         # makes repeats deterministic.
         "recall_user",

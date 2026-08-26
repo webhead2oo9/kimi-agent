@@ -70,6 +70,9 @@ class Scenario:
     # harness_run.missing_expected_tools): declaring a tool here says the gap is
     # expected on some hosts, so an undeclared gap keeps failing loudly.
     requires_tools: list[str] = field(default_factory=list)
+    # Trusted text files seeded through the real workspace tool before turn 1.
+    # The eval identity keeps every repetition in its own temporary workspace.
+    workspace_files: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         # A bare string is accepted wherever a turn is expected, and normalized
@@ -154,6 +157,21 @@ def _faults(path: str | Path, raw: list[Any] | None) -> list[Fault]:
     return faults
 
 
+def _workspace_files(path: str | Path, raw: Any) -> tuple[tuple[str, str], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError(f"Scenario {path}: workspace_files must be a path-to-content mapping")
+    files: list[tuple[str, str]] = []
+    for file_path, content in raw.items():
+        if not isinstance(file_path, str) or not file_path.strip():
+            raise ValueError(f"Scenario {path}: workspace file paths must be non-empty strings")
+        if not isinstance(content, str):
+            raise ValueError(f"Scenario {path}: workspace file {file_path!r} content must be text")
+        files.append((file_path, content))
+    return tuple(files)
+
+
 def load_scenario(path: str | Path) -> Scenario:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     for required in ("id", "trust_tier"):
@@ -186,6 +204,7 @@ def load_scenario(path: str | Path) -> Scenario:
         ),
         faults=_faults(path, raw.get("faults")),
         requires_tools=[str(t) for t in (raw.get("requires_tools") or [])],
+        workspace_files=_workspace_files(path, raw.get("workspace_files")),
     )
 
 

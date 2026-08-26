@@ -132,6 +132,7 @@ _MINIMUMS: dict[str, int | float] = {
     "react_turn_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,
     "react_temperature": 0,
     "new_user_onboarding_turns": 0,  # 0 disables the onboarding note
+    "thread_handoff_suggest_after_tool_calls": 0,  # 0 disables the suggestion
     "compaction_trigger_tokens": 1,
     "compaction_keep_recent_iterations": 1,
     "compaction_keep_recent_tokens": 1,

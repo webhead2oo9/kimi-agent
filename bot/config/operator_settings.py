@@ -87,6 +87,8 @@ class SettingSpec:
 
 _EXCLUDED_FIELDS = frozenset(
     {
+        "control_plane_enabled",
+        "control_plane_auto_restart",
         "plugin_modules",
         "kimi_modules",
         "code_exec_extra_ro_binds",

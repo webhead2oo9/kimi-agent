@@ -36,6 +36,10 @@ _SKIP_PREFIXES = (".venv/", "tests/", "workspaces/", "data/", "skills/store/")
 #                              reader in config/ resolves them. tools/config_spec
 #                              is a stdlib-only leaf, held there by
 #                              test_import_isolation.py.
+#   app <-> modules            app composes the module runtime services, while
+#                              modules/testing drives ModuleManager (which
+#                              lives in app/) the way the bot does. Moving the
+#                              manager into modules/ would break the cycle.
 _ALLOWED_EDGES: dict[str, set[str]] = {
     "agent": {
         "config",
@@ -60,6 +64,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "kimi_agent_module_api",
         "memory",
         "moderation",
+        "modules",
         "observability",
         "providers",
         "sandbox",
@@ -86,7 +91,15 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "workspace",
     },
     "config": {"providers", "tools", "trust", "utils"},
-    "discord_adapter": {"agent", "memory", "storage", "tools", "trust", "workspace"},
+    "discord_adapter": {
+        "agent",
+        "kimi_agent_module_api",
+        "memory",
+        "storage",
+        "tools",
+        "trust",
+        "workspace",
+    },
     # The offline harness drives the production core, so it sees what app sees.
     "evals": {
         "agent",
@@ -102,8 +115,11 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
     },
     "memory": {"providers", "storage", "utils"},
-    "kimi_agent_module_api": {"config", "discord_adapter", "storage", "tools", "trust"},
+    "kimi_agent_module_api": {"config", "trust", "utils"},
     "moderation": {"observability", "providers", "trust", "utils"},
+    # Module API runtime services. Grows as each service lands; the app edge is
+    # the harness cycle documented above.
+    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
     "scripts": {"app", "codex"},

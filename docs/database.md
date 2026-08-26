@@ -55,6 +55,10 @@ and reads.
 - `_SCHEMA_SQL` creates the complete baseline for a new database.
 - The `schema_version` table records which schema changes have been applied and
   when.
+- **`module_scheduler_jobs`** holds durable module jobs (`module_name`,
+  `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns,
+  attempt and last error). Core owns it; modules reach it only through
+  `ctx.scheduler`.
 - `module_schema_versions` records the latest applied version for each active
   application module. Module migrations run transactionally before module
   startup, and module tables are not part of the core baseline.

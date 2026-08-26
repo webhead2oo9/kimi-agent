@@ -27,6 +27,7 @@ from storage.coding_tasks import (
     CodingTaskStatus,
     CodingTaskStore,
 )
+from storage import coding_tasks as coding_tasks_module
 from storage.db import Database, SCHEMA_VERSION
 from storage.usage import UsageStore
 from tools.code_exec import CodeExecRuntimeGuards
@@ -90,10 +91,66 @@ def _steering_service(
             settings=SimpleNamespace(
                 coding_task_max_queued_per_user=max_queued_per_user,
                 coding_task_max_queued_per_workspace=max_queued_per_workspace,
+                staff_ids=frozenset(),
             )
         ),
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_status_accepts_the_eight_character_task_reference_shown_to_users(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        service = _steering_service(
+            store,
+            max_queued_per_user=10,
+            max_queued_per_workspace=10,
+        )
+
+        result = await service.status_from_tool(_control_context(), task_id=task.id[:8])
+
+        assert result is not None
+        assert result["task_id"] == task.id
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_short_task_reference_rejects_ambiguous_authorized_prefix(
+    tmp_path, monkeypatch
+) -> None:
+    ids = iter(
+        (
+            "12345678aaaaaaaaaaaaaaaaaaaaaaaa",
+            "12345678bbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+    )
+    monkeypatch.setattr(
+        coding_tasks_module,
+        "uuid4",
+        lambda: SimpleNamespace(hex=next(ids)),
+    )
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        await _create(store, root_key="root-1")
+        await _create(store, root_key="root-2")
+        service = _steering_service(
+            store,
+            max_queued_per_user=10,
+            max_queued_per_workspace=10,
+        )
+
+        result = await service.status_from_tool(_control_context(), task_id="12345678")
+
+        assert result is None
+    finally:
+        await db.close()
 
 
 def _control_context(*, user_id: str = "u1") -> MessageContext:

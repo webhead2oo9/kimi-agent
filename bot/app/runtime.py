@@ -75,7 +75,7 @@ from app.control_plane import (
     apply_managed_settings,
     managed_models_path,
 )
-from app.modules import ModuleRuntimeContext, module_capabilities
+from app.modules import ModuleRuntimeBase, module_capabilities
 from app.proposals import DurableProposalService
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
@@ -112,6 +112,15 @@ from commands.privacy_cmd import (
     register_privacy_command,
     run_privacy_deletion,
 )
+from commands.modules_cmd import register_modules_command
+from discord_adapter.module_actions import DiscordActionsImpl, TrustLookupImpl
+from discord_adapter.module_events import ModuleEventPublisher
+from discord_adapter.module_interactions import InteractionRuntime
+from modules.actions import DeclaredDiscordActions
+from modules.events import EventBusImpl
+from modules.guild_settings import GuildSettingsService
+from modules.http import ModuleHttpRuntime
+from modules.scheduler import DurableScheduler
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
@@ -135,7 +144,7 @@ from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
 from moderation.types import Direction
 from storage.auto_retain import AutoRetainStore
-from observability.events import start_event_writer, stop_event_writer
+from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from providers.assets import write_generated_assets
 from providers.types import ContentPart
 from skills.loader import SkillsIndexCache
@@ -256,6 +265,7 @@ class KimiApplication:
     usage_store: UsageStore | None = None
     coding_task_store: CodingTaskStore | None = None
     coding_tasks: CodingTaskService | None = None
+    _module_event_publisher: ModuleEventPublisher | None = None
     privacy_deletion_store: PrivacyDeletionRequestStore | None = None
     user_memory_bank_state_store: UserMemoryBankStateStore | None = None
     privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier)
@@ -301,10 +311,7 @@ class KimiApplication:
         self.skills_index_cache = SkillsIndexCache(catalog=self.tools.skill_catalog)
         self._guild_activation_cache = paths.GuildActivationCache(
             Path(self.settings.config_dir).resolve(),
-            lambda content: server_setup_activation(
-                content,
-                validators=(self.tools.module_manager.validate_guild_config,),
-            ),
+            server_setup_activation,
         )
         self._guild_activation_cache.refresh()
         self._ready_init_lock = asyncio.Lock()
@@ -321,7 +328,13 @@ class KimiApplication:
         directory synchronously while processing a Discord event.
         """
         setup = self._guild_activation_cache.snapshot()
-        return (self.settings.allowed_guilds | set(setup.active)) - set(setup.deactivated)
+        active = (self.settings.allowed_guilds | set(setup.active)) - set(setup.deactivated)
+        guild_settings = self.tools.module_manager.guild_settings
+        if guild_settings is not None:
+            # An enforcement module with an invalid guild document takes the
+            # guild offline rather than running unmoderated.
+            active -= guild_settings.blocked_guilds()
+        return active
 
     def guild_activation_state(self, guild_id: int) -> dict[str, Any]:
         setup = self._guild_activation_cache.snapshot()
@@ -354,6 +367,20 @@ class KimiApplication:
             await asyncio.to_thread(self._guild_activation_cache.refresh)
         else:
             await asyncio.to_thread(self._guild_activation_cache.refresh_guild, guild_id)
+        await self._refresh_module_guild_settings(guild_id)
+
+    def _known_guild_ids(self) -> set[int]:
+        setup = self._guild_activation_cache.snapshot()
+        known = set(self.settings.allowed_guilds) | set(setup.active) | set(setup.deactivated)
+        known |= {int(guild.id) for guild in getattr(self.bot, "guilds", ())}
+        return known
+
+    async def _refresh_module_guild_settings(self, guild_id: int | None) -> None:
+        service = self.tools.module_manager.guild_settings
+        if service is None:
+            return
+        targets = {guild_id} if guild_id is not None else self._known_guild_ids()
+        await asyncio.to_thread(service.refresh, targets)
 
     async def activate_managed_config(self, config_dir: Path) -> None:
         """Switch live fragment readers to one validated immutable revision."""
@@ -362,10 +389,7 @@ class KimiApplication:
         paths.set_default_config_dir(resolved)
         self._guild_activation_cache = paths.GuildActivationCache(
             resolved,
-            lambda content: server_setup_activation(
-                content,
-                validators=(self.tools.module_manager.validate_guild_config,),
-            ),
+            server_setup_activation,
         )
         await self.refresh_guild_activation()
 
@@ -487,7 +511,16 @@ class KimiApplication:
                 await self.moderation_service.close()
             except Exception:
                 log.exception("Error closing moderation service")
+        if self.tools.module_manager.scheduler is not None:
+            await self.tools.module_manager.scheduler.close()
         await self.tools.module_manager.close()
+        if self.tools.module_manager.http is not None:
+            await self.tools.module_manager.http.close()
+        if self._module_event_publisher is not None:
+            self._module_event_publisher.uninstall()
+            self._module_event_publisher = None
+        if self.tools.module_manager.events is not None:
+            await self.tools.module_manager.events.close()
         await self.memory_manager.close()
         await self.provider_manager.close()
         await self.database.close()
@@ -767,6 +800,18 @@ class KimiApplication:
             self.blocked_user_store,
             self.trust_resolver,
         )
+        module_manager = self.tools.module_manager
+        register_modules_command(
+            self.bot,
+            owner_user_id=self.settings.owner_user_id,
+            requested=lambda: module_manager.load_state.requested,
+            specs=lambda: module_manager.specs,
+            health=module_manager.health_snapshot,
+            resolved_hosts=lambda name: tuple(
+                f"{rule.host}{' (private)' if rule.private else ''}"
+                for rule in module_manager.host_rules(name)
+            ),
+        )
         register_usage_command(
             self.bot,
             self.usage_store,
@@ -797,21 +842,61 @@ class KimiApplication:
             browser_data_store=self.tools.browser_service,
             cancel_user_work=self._cancel_user_for_privacy,
         )
-        await self.tools.module_manager.start(
-            ModuleRuntimeContext(
-                bot=self.bot,
+        module_manager = self.tools.module_manager
+        module_manager.health.on_change = lambda name, health: emit_module_health(
+            module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
+        )
+        module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
+        module_manager.scheduler = DurableScheduler(
+            self.database, on_health=module_manager.health.mark
+        )
+        module_manager.http = ModuleHttpRuntime(user_agent=f"{self.settings.bot_name}-modules")
+        module_manager.guild_settings = GuildSettingsService(
+            config_dir=lambda: Path(self.settings.config_dir),
+            schemas=module_manager.guild_settings_schemas,
+            on_health=module_manager.health.mark,
+        )
+        await self._refresh_module_guild_settings(None)
+        self._module_event_publisher = ModuleEventPublisher(
+            self.bot, module_manager.events.publish_core
+        )
+        self._module_event_publisher.install()
+        module_trust = TrustLookupImpl(self.bot, self.trust_resolver)
+        is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
+        interaction_runtime = InteractionRuntime(self.bot)
+        interaction_runtime.install()
+        await module_manager.start(
+            ModuleRuntimeBase(
                 database=self.database,
-                trust_resolver=self.trust_resolver,
-                gateway=self.discord_gateway,
-                config_dir=self.tools.module_manager.config_dir,
-                is_guild_active=lambda guild_id: guild_id in self.active_guilds(),
-                get_module=self.tools.module_manager.get,
+                bot=self.bot,
+                is_guild_active=is_guild_active,
+                current_config_dir=lambda: Path(self.settings.config_dir),
                 capabilities=module_capabilities(self.settings),
+                trust=module_trust,
                 proposals=self.proposal_service,
                 configuration=self.configuration_service,
                 restart=self.restart_coordinator,
-            )
+            ),
+            customize=lambda spec, ports: {
+                **ports,
+                "interactions": interaction_runtime.router_for(
+                    spec.name, trust=module_trust, is_guild_active=is_guild_active
+                ),
+                "discord": DeclaredDiscordActions(
+                    DiscordActionsImpl(
+                        bot=self.bot,
+                        trust=module_trust,
+                        module_name=spec.name,
+                        is_guild_active=is_guild_active,
+                        override_target_policy=spec.permissions.override_target_policy,
+                    ),
+                    spec.name,
+                    spec.permissions.discord_actions,
+                ),
+            },
         )
+        # Persisted module jobs re-bind to handlers registered during start().
+        module_manager.scheduler.start()
         # Start the durable scheduler only after pending privacy deletions have
         # replayed and their barriers are installed. This prevents recovered
         # work from racing a deletion request during READY initialization.

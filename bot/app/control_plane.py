@@ -506,6 +506,13 @@ def _document_target(target: str) -> tuple[Path, bool]:
     kind, separator, identifier = target.partition(":")
     if not separator or not identifier:
         raise ValueError("document target must use '<kind>:<identifier>'")
+    if kind == "guild" and ":" in identifier:
+        guild_id, _, module_name = identifier.partition(":")
+        if not _SNOWFLAKE.fullmatch(guild_id) or int(guild_id) <= 0:
+            raise ValueError("guild module target must use a positive numeric Discord id")
+        if not _SAFE_NAME.fullmatch(module_name):
+            raise ValueError("invalid module name in guild module target")
+        return Path("guild-modules") / guild_id / f"{module_name}.md", True
     if kind in {"guild", "channel"}:
         if not _SNOWFLAKE.fullmatch(identifier) or int(identifier) <= 0:
             raise ValueError(f"{kind} target must be a positive numeric Discord id")
@@ -541,6 +548,10 @@ def _validate_document(target: str, content: str) -> None:
         metadata, body = split_frontmatter_strict(content)
     except FrontmatterError as exc:
         raise ValueError(f"invalid {kind} configuration document: {exc}") from exc
+    if kind == "guild" and ":" in target.partition(":")[2]:
+        if body.strip():
+            raise ValueError("guild module settings cannot contain a Markdown body")
+        return
     if kind in {"module", "plugin"}:
         if content.strip() and not content.lstrip().startswith("---"):
             raise ValueError(f"{kind} configuration must use YAML frontmatter")

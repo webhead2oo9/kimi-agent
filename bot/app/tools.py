@@ -200,7 +200,6 @@ def build_runtime_tools(
         settings.kimi_module_list,
         core_settings=settings,
         registry=registry,
-        gateway=gateway,
     )
 
     def reload_executable_skill_tools() -> int:

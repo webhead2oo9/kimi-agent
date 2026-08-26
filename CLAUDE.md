@@ -49,7 +49,8 @@ Before handing off Python changes, run everything CI runs (`.github/workflows/ci
 - `import discord` is confined to `discord_adapter/`, `app/`, and `commands/` (`tests/test_architecture_boundaries.py`). `tools/`, `workspace/`, and everything else are discord-free plain data and logic.
 - `agent/core.py` is provider-agnostic: no provider imports. Provider-specific parsing stays under `providers/`; `providers/types.py` is the shared vocabulary (`ContentPart`, `ConversationMessage`, `ProviderRequest`, `ProviderResponse`, `ToolCall`, `GeneratedAsset`, `ProviderCapability`).
 - `tools/registry.py:dispatch` is the privilege boundary. `min_tier`, `owner_only`, `guild_ids`, and the operator denylist are all re-checked there, and a tool the caller may not use is masked as `"Unknown tool"`, never refused, so existence never leaks. Never rely on prompt text for staff-only behavior.
-- `app/runtime.py:build_app` is the composition root; `bot.py` is only the entry point; tool/client wiring is `app/tools.py`.
+- `modules/` implements the module API services (`kimi_agent_module_api` is the
+contract package; `modules/testing.py` the integration harness). `app/runtime.py:build_app` is the composition root; `bot.py` is only the entry point; tool/client wiring is `app/tools.py`.
 - Fail-closed vs fail-open is principled: privilege gates and credential-gated registration fail closed; curation-only operator fragments (pins, channel/guild denylists, tool config) fail open to last-known-good; startup validation (models, deployment-wide tool policy, `settings.md`, executable-skill sandbox) aborts rather than degrades.
 
 **Code style**

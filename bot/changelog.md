@@ -39,6 +39,9 @@ Kimi's user-facing release notes for server owners, staff, and members.
   removed, reducing leaked sessions and cross-run interference after failures.
 - Replayed eval internet searches now preserve the live backend-call budget,
   keeping cassette runs aligned with production search limits.
+- Eval runs can use one shared vision model to caption image fixtures once and
+  give every candidate the same cached visual evidence, including text-only
+  models, while reporting caption-assisted coverage explicitly.
 
 ## 1.0.0 (2026-08-24)
 

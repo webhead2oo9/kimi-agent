@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -176,14 +177,16 @@ def image_part(name: str) -> ContentPart:
     )
 
 
-def _reply_context(turn: TurnSpec) -> ReplyContext | None:
+def _reply_context(turn: TurnSpec, *, include_images: bool = True) -> ReplyContext | None:
     if not turn.reply_images:
         return None
     return ReplyContext(
         referenced_message_id="900000000000000001",
         author_name=turn.reply_author,
         text=turn.reply_text,
-        image_parts=tuple(image_part(name) for name in turn.reply_images),
+        image_parts=(
+            tuple(image_part(name) for name in turn.reply_images) if include_images else ()
+        ),
     )
 
 
@@ -200,6 +203,7 @@ async def run_scenario_for_model(
     max_tokens: int = 65_536,
     thread_handoff_suggest_after_tool_calls: int = 0,
     identity: EvalIdentity | None = None,
+    image_captions: Mapping[int, ContentPart] | None = None,
 ) -> ScenarioRun:
     started_at = time.monotonic()
     identity = identity or EvalIdentity(
@@ -220,7 +224,7 @@ async def run_scenario_for_model(
     # makes "how much context did this tool cost" answerable per tool.
     registry.set_provider_call_counter(lambda: len(provider.calls))
 
-    for turn in scenario.turns:
+    for turn_index, turn in enumerate(scenario.turns):
         user_message = turn.text
         gateway.set_fixture(trigger_content=user_message, trigger_author_id=identity.user_id)
         provider.reset()
@@ -234,6 +238,7 @@ async def run_scenario_for_model(
             context=context,
         )
 
+        caption = image_captions.get(turn_index) if image_captions is not None else None
         result = await run_conversation(
             request=ConversationRunRequest(
                 user_message=user_message,
@@ -252,8 +257,12 @@ async def run_scenario_for_model(
                 bot_name=bot_name,
                 recalled_memories=recalled,
                 compactor=compactor,
-                input_parts=[image_part(name) for name in turn.images] or None,
-                reply_context=_reply_context(turn),
+                input_parts=(
+                    [caption]
+                    if caption is not None
+                    else [image_part(name) for name in turn.images] or None
+                ),
+                reply_context=_reply_context(turn, include_images=caption is None),
             )
         )
         run.turns.append(

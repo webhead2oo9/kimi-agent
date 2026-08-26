@@ -81,6 +81,11 @@ def test_load_models_parses_baseline_candidate_judge(tmp_path):
         "    provider_name: anthropic\n"
         "    model: claude-x\n"
         "    max_output_tokens: 32768\n"
+        "image_captioner:\n"
+        "  label: luna-captioner\n"
+        "  provider_name: codex\n"
+        "  model: gpt-5.6-luna\n"
+        "  capabilities: [text, image_input]\n"
         "judge:\n"
         "  label: judge\n"
         "  provider_name: anthropic\n"
@@ -94,6 +99,31 @@ def test_load_models_parses_baseline_candidate_judge(tmp_path):
     assert models.candidates["newone"].effective_max_tokens(65_536) == 32_768
     assert models.candidates["newone"].effective_max_tokens(16_384) == 16_384
     assert models.judge.model == "claude-opus"
+    assert models.image_captioner is not None
+    assert models.image_captioner.model == "gpt-5.6-luna"
+
+
+def test_load_models_rejects_nonvision_image_captioner(tmp_path):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "baseline:\n"
+        "  provider_name: anthropic\n"
+        "  model: base\n"
+        "image_captioner:\n"
+        "  provider_name: anthropic\n"
+        "  model: blind\n"
+        "  capabilities: [text]\n"
+        "judge:\n"
+        "  provider_name: anthropic\n"
+        "  model: judge\n"
+    )
+
+    try:
+        load_models(path)
+    except ValueError as exc:
+        assert "image_input" in str(exc)
+    else:
+        raise AssertionError("expected a nonvision image_captioner to be rejected")
 
 
 def test_load_models_tolerates_missing_candidates_and_panel(tmp_path):

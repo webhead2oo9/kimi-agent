@@ -8,7 +8,14 @@ from evals.identity import EvalIdentity
 from evals.scenario import Expect, Scenario, TurnSpec
 from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
-from providers.types import ProviderRequest, ProviderResponse, ToolCall
+from providers.image_caption import format_image_caption, is_image_caption
+from providers.types import (
+    ContentPart,
+    ContentPartType,
+    ProviderRequest,
+    ProviderResponse,
+    ToolCall,
+)
 from trust.tiers import TrustTier
 
 
@@ -298,6 +305,48 @@ def test_run_scenario_threads_bot_name_into_system_prompt():
         )
     )
     assert "EvalBotName" in scripted.requests[0].system_prompt
+
+
+def test_run_scenario_uses_caption_instead_of_either_image_rail():
+    scripted = _Scripted([ProviderResponse(content="described")])
+    scenario = Scenario(
+        id="captioned",
+        category="vision",
+        trust_tier=TrustTier.MEMBER,
+        turns=[
+            TurnSpec(
+                text="compare them",
+                images=("checker-yellow.png",),
+                reply_images=("bands-rgb.png",),
+                reply_author="Ana",
+                reply_text="my pattern",
+            )
+        ],
+    )
+    caption = ContentPart.from_text(
+        format_image_caption("Image 1: checkerboard. Image 2: colored bands.")
+    )
+
+    asyncio.run(
+        run_scenario_for_model(
+            scenario,
+            provider=InstrumentedProvider(scripted),
+            registry=InstrumentedRegistry(),
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            image_captions={0: caption},
+        )
+    )
+
+    [request] = scripted.requests
+    all_parts = [
+        *request.current_user_parts,
+        *(part for message in request.messages for part in message.content),
+        *(part for message in request.continuation_context_messages for part in message.content),
+    ]
+    assert all(part.type is not ContentPartType.IMAGE for part in all_parts)
+    assert any(is_image_caption(part.text or "") for part in request.current_user_parts)
 
 
 def test_run_scenario_threads_compactor_into_run_conversation():

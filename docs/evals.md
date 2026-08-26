@@ -34,8 +34,9 @@ uv run python -m evals.compare evals/runs/harness/<A>/summary.json evals/runs/ha
 
 You can point the runner elsewhere with `--models` (default
 `evals/models.yaml`), `--scenarios` (`evals/scenarios`), `--cassettes`
-(`evals/cassettes`), and `--out` (`evals/runs/harness`), which override the
-catalog, scenario directory, tape directory, and output root respectively.
+(`evals/cassettes`), `--captions` (`evals/captions`), and `--out`
+(`evals/runs/harness`), which override the catalog, scenario directory, tool
+tape directory, shared image-caption cache, and output root respectively.
 
 Each run writes an immutable `evals/runs/harness/<utc>-<git-sha>/` directory
 containing `summary.json` (a stable schema that `evals.compare` reads),
@@ -245,24 +246,35 @@ hosted model rejects them. The check is therefore **fail-closed on the spec**:
 an arm that does not declare `image_input` is treated as unable to see images,
 no matter what its provider claims.
 
-Because the image scenarios live in the default scenario tree, both runners
-**skip** them for a blind arm and log what was dropped, rather than refusing
-the run (refusing would block every ordinary run on a text-only model). A run
-whose selected scenarios are *all* image scenarios still exits non-zero, since
-there is nothing left to do. `evals.run` additionally requires **both** arms to
-see images, because one model reading the picture while the other reads only
-the caption is not a model comparison.
+Set top-level `image_captioner` in `evals/models.yaml` to a model that declares
+`image_input`. Both runners then send each ordered image roster to that model
+once, cache the description under `evals/captions/`, and pass the same
+production-format caption to every evaluated model—including models with
+native vision. Current-message images remain ordered before replied-message
+images and the caption labels their sources. Reports and summaries identify the
+captioner and caption-assisted scenarios.
+
+This mode deliberately measures how each chat model reasons over fixed visual
+evidence; it does not compare native vision quality. The cache key includes the
+caption prompt version, captioner model, source labels, and image-byte hashes,
+so later models see exactly the same caption. Delete the ignored cache (or bump
+the prompt version in code) to intentionally regenerate it.
+
+When `image_captioner` is absent, the previous fail-closed behavior remains:
+the harness runs visual scenarios only for an arm declaring `image_input`, and
+the head-to-head runner requires both arms to declare it. Ineligible image
+scenarios are skipped loudly.
 
 ```bash
-# Vision arm
+# Caption-assisted visual run (when image_captioner is configured)
 uv run python -m evals.harness_run --model vision-example \
   --scenarios evals/scenarios/vision --repeat 3
 ```
 
-Note that the harness runs **one** provider per arm, so it does not exercise
-the `chat` → `chat_images` role handoff (that lives in `ProviderManager`, which
-evals bypass). What these scenarios cover is everything downstream of routing:
-that image bytes reach the model, on both rails, in the documented order.
+The caption request uses the same marker, prompt, token ceiling, and image order
+as production image distillation. Caption calls are setup work and are not
+included in candidate token, latency, turn, or cost metrics; the cached caption
+is the common fixture being evaluated.
 
 ### Faults (error-recovery scenarios)
 

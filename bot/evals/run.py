@@ -8,7 +8,8 @@ from pathlib import Path
 from app.providers import close_provider
 from config.settings import settings
 from evals.capture import InstrumentedProvider
-from evals.harness import run_scenario_for_model
+from evals.harness import image_part, run_scenario_for_model
+from evals.image_caption import caption_scenario_turns
 from evals.identity import EvalIdentity, new_eval_run_nonce
 from evals.judge import judge_pair, load_rubric
 from evals.mechanical import compute_mechanical
@@ -25,29 +26,38 @@ EVALS_DIR = Path(__file__).resolve().parent
 
 def plan_matrix(candidate: str, models: ModelsConfig, scenario_ids: list[str]) -> list[str]:
     run_count = len(scenario_ids) * 2
-    return [
+    lines = [
         f"Candidate: {candidate} ({models.candidates[candidate].model})",
         f"Baseline:  {models.baseline.label} ({models.baseline.model})",
         f"Judge:     {models.judge.label} ({models.judge.model})",
         f"Scenarios: {', '.join(scenario_ids)}",
         f"Total live run_conversation calls: {run_count} (scenarios x 2 models)",
     ]
+    if models.image_captioner is not None:
+        lines.insert(
+            3,
+            f"Image captioner: {models.image_captioner.label} ({models.image_captioner.model})",
+        )
+    return lines
 
 
 async def _run(args: argparse.Namespace) -> int:
     models = load_models(args.models)
+    caption_cache_dir = Path(getattr(args, "captions", EVALS_DIR / "captions"))
     scenarios = load_scenarios(args.scenarios)
     rubric = load_rubric(args.rubric)
     if args.candidate not in models.candidates:
         log.error("Unknown candidate %r; known: %s", args.candidate, list(models.candidates))
         return 2
 
-    # Both arms answer the same scenarios and are judged head to head, so an
-    # image scenario is only fair when *both* can see the image. One arm reading
-    # the picture while the other reads the caption is not a model comparison.
+    # A shared captioner gives both arms identical visual evidence. Without one,
+    # preserve the direct-image path and require native vision on both arms.
     scenarios, visual = split_image_scenarios(scenarios)
     candidate_spec = models.candidates[args.candidate]
-    if visual and candidate_spec.supports_images() and models.baseline.supports_images():
+    if visual and (
+        models.image_captioner is not None
+        or (candidate_spec.supports_images() and models.baseline.supports_images())
+    ):
         scenarios = [*scenarios, *visual]
     elif visual:
         blind = [
@@ -72,6 +82,11 @@ async def _run(args: argparse.Namespace) -> int:
     candidate = InstrumentedProvider(build_eval_provider(models.candidates[args.candidate]))
     baseline = InstrumentedProvider(build_eval_provider(models.baseline))
     judge = build_eval_provider(models.judge)
+    caption_provider = (
+        build_eval_provider(models.image_captioner)
+        if models.image_captioner is not None and visual
+        else None
+    )
 
     gateway = StubGateway()
     eval_registry: EvalRegistry | None = None
@@ -83,6 +98,16 @@ async def _run(args: argparse.Namespace) -> int:
         # (same wiring as app/runtime.py).
         compactor = eval_registry.provider_manager.build_compactor()
         for scenario in scenarios:
+            image_captions = (
+                await caption_scenario_turns(
+                    scenario,
+                    caption_provider,
+                    cache_dir=caption_cache_dir,
+                    image_loader=image_part,
+                )
+                if caption_provider is not None and any(turn.has_images for turn in scenario.turns)
+                else None
+            )
             cand_run = await run_scenario_for_model(
                 scenario,
                 provider=candidate,
@@ -101,6 +126,7 @@ async def _run(args: argparse.Namespace) -> int:
                     scenario_id=scenario.id,
                     repetition=0,
                 ),
+                image_captions=image_captions,
             )
             base_run = await run_scenario_for_model(
                 scenario,
@@ -120,6 +146,7 @@ async def _run(args: argparse.Namespace) -> int:
                     scenario_id=scenario.id,
                     repetition=0,
                 ),
+                image_captions=image_captions,
             )
             judge_result = await judge_pair(
                 judge, scenario, candidate_run=cand_run, baseline_run=base_run, rubric=rubric
@@ -142,10 +169,18 @@ async def _run(args: argparse.Namespace) -> int:
         await close_provider(candidate)
         await close_provider(baseline)
         await close_provider(judge)
+        if caption_provider is not None:
+            await close_provider(caption_provider)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     md = render_report(candidate.model, baseline.model, reports, rubric)
+    if models.image_captioner is not None and visual:
+        md = (
+            f"> Visual evidence was captioned once by `{models.image_captioner.model}` "
+            "and shared identically between both arms.\n\n"
+            f"{md}"
+        )
     (out_dir / "report.md").write_text(md)
     write_raw_jsonl(out_dir / "raw.jsonl", reports)
     candidate_tokens = sum(report.candidate_run.total_tokens for report in reports)
@@ -162,6 +197,7 @@ def main() -> None:
     parser.add_argument("--models", default=str(EVALS_DIR / "models.yaml"))
     parser.add_argument("--rubric", default=str(EVALS_DIR / "rubric.yaml"))
     parser.add_argument("--scenarios", default=str(EVALS_DIR / "scenarios"))
+    parser.add_argument("--captions", default=str(EVALS_DIR / "captions"))
     parser.add_argument("--out", default=str(EVALS_DIR / "runs" / "latest"))
     parser.add_argument(
         "--dry-run",

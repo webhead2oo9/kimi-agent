@@ -28,6 +28,18 @@ candidates:
     api_key_env: EVAL_VISION_API_KEY
     capabilities: [text, tool_calling, image_input]
 
+# Optional shared image transcription model. When configured, both harness and
+# qualification runs send every image here once, cache the resulting caption,
+# and give that same text to every evaluated model (including native-vision
+# models). This keeps visual evidence constant across model arms.
+image_captioner:
+  label: captioner-example
+  provider_name: openai_compat
+  model: provider/vision-model
+  base_url: https://eval-gateway.example.invalid/v1
+  api_key_env: EVAL_VISION_API_KEY
+  capabilities: [text, image_input]
+
 # The qualification runner uses this judge. Keep real judge routing in the ignored
 # models.yaml alongside the other live eval profiles.
 judge:

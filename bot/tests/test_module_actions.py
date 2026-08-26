@@ -147,6 +147,15 @@ async def test_target_policy_protects_bot_self_bots_and_equal_tier() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bot_actor_may_act_below_staff_only() -> None:
+    impl, guild, _ = _actions(staff={10})
+    await impl.kick(1, 20, actor_id=None, reason="automated")
+    assert guild.kicks == [(20, "[mod] automated")]
+    with pytest.raises(TargetProtected):
+        await impl.kick(1, 10, actor_id=None, reason="staff")
+
+
+@pytest.mark.asyncio
 async def test_override_lets_a_declared_module_act_on_equal_tier() -> None:
     impl, guild, _ = _actions(staff={10, 20}, override=True)
     await impl.ban(1, 20, actor_id=10, reason="r", delete_message_seconds=10**9)

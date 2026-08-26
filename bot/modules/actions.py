@@ -66,7 +66,7 @@ class DeclaredDiscordActions:
         guild_id: int,
         user_id: int,
         *,
-        actor_id: int,
+        actor_id: int | None,
         reason: str,
         delete_message_seconds: int = 0,
     ) -> None:
@@ -79,12 +79,18 @@ class DeclaredDiscordActions:
             delete_message_seconds=delete_message_seconds,
         )
 
-    async def kick(self, guild_id: int, user_id: int, *, actor_id: int, reason: str) -> None:
+    async def kick(self, guild_id: int, user_id: int, *, actor_id: int | None, reason: str) -> None:
         self._gate("kick")
         await self._inner.kick(guild_id, user_id, actor_id=actor_id, reason=reason)
 
     async def timeout(
-        self, guild_id: int, user_id: int, *, actor_id: int, reason: str, duration_seconds: int
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        actor_id: int | None,
+        reason: str,
+        duration_seconds: int,
     ) -> None:
         self._gate("timeout")
         await self._inner.timeout(

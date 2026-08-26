@@ -143,11 +143,13 @@ class DiscordActionsImpl:
         except discord.HTTPException as exc:
             raise DiscordActionError(f"message {ref.message_id} is not available") from exc
 
-    async def _check_target(self, guild_id: int, user_id: int, actor_id: int) -> discord.Member:
+    async def _check_target(
+        self, guild_id: int, user_id: int, actor_id: int | None
+    ) -> discord.Member:
         bot_user = self._bot.user
         if bot_user is not None and user_id == int(bot_user.id):
             raise TargetProtected("the bot cannot moderate itself")
-        if user_id == actor_id:
+        if actor_id is not None and user_id == actor_id:
             raise TargetProtected("a member cannot be moderated by themselves")
         member = await _member_or_none(self._bot, guild_id, user_id)
         if member is None:
@@ -156,7 +158,13 @@ class DiscordActionsImpl:
             raise TargetProtected("bots cannot be moderated by modules")
         if not self._override:
             target = _TIER_ORDER[await self._trust.tier(guild_id, user_id)]
-            actor = _TIER_ORDER[await self._trust.tier(guild_id, actor_id)]
+            # An automated module acts with staff authority: it may touch
+            # anyone below staff, never staff.
+            actor = (
+                _TIER_ORDER["staff"]
+                if actor_id is None
+                else _TIER_ORDER[await self._trust.tier(guild_id, actor_id)]
+            )
             if target >= actor:
                 raise TargetProtected("target's trust tier is not below the actor's")
         return member
@@ -237,7 +245,7 @@ class DiscordActionsImpl:
         guild_id: int,
         user_id: int,
         *,
-        actor_id: int,
+        actor_id: int | None,
         reason: str,
         delete_message_seconds: int = 0,
     ) -> None:
@@ -252,7 +260,7 @@ class DiscordActionsImpl:
         except discord.HTTPException as exc:
             raise DiscordActionError("ban failed") from exc
 
-    async def kick(self, guild_id: int, user_id: int, *, actor_id: int, reason: str) -> None:
+    async def kick(self, guild_id: int, user_id: int, *, actor_id: int | None, reason: str) -> None:
         guild = self._guild(guild_id)
         member = await self._check_target(guild_id, user_id, actor_id)
         try:
@@ -261,7 +269,13 @@ class DiscordActionsImpl:
             raise DiscordActionError("kick failed") from exc
 
     async def timeout(
-        self, guild_id: int, user_id: int, *, actor_id: int, reason: str, duration_seconds: int
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        actor_id: int | None,
+        reason: str,
+        duration_seconds: int,
     ) -> None:
         self._guild(guild_id)
         if duration_seconds <= 0:

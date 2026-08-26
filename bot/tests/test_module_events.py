@@ -127,8 +127,17 @@ def _message(**overrides: Any) -> Any:
 
 
 def test_message_snapshot_carries_ids_and_attachments_only() -> None:
-    snap = message_snapshot(_message())
+    snap = message_snapshot(
+        _message(
+            embeds=[
+                SimpleNamespace(
+                    image=SimpleNamespace(proxy_url="https://p/x.png", url=None), thumbnail=None
+                )
+            ]
+        )
+    )
     assert snap.ref.guild_id == 1 and snap.ref.message_id == 3
+    assert snap.embed_image_urls == ("https://p/x.png",)
     assert snap.attachments[0].filename == "a.png"
     assert snap.created_at == dt.datetime(2026, 1, 1, tzinfo=dt.UTC).timestamp()
 
@@ -156,13 +165,17 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     await publisher.on_message_delete(_message(content="gone"))
     before = _message(content="old")
     await publisher.on_message_edit(before, _message(content="new"))
-    member_before = SimpleNamespace(roles=[SimpleNamespace(id=1)], timed_out_until=None, nick=None)
+    member_before = SimpleNamespace(
+        roles=[SimpleNamespace(id=1, name="one")], timed_out_until=None, nick=None
+    )
     member_after = SimpleNamespace(
         id=4,
         guild=SimpleNamespace(id=1),
-        roles=[SimpleNamespace(id=1), SimpleNamespace(id=2)],
+        roles=[SimpleNamespace(id=1, name="one"), SimpleNamespace(id=2, name="two")],
         timed_out_until=dt.datetime(2026, 1, 2, tzinfo=dt.UTC),
         nick="n",
+        display_name="n",
+        bot=False,
     )
     await publisher.on_member_update(member_before, member_after)  # type: ignore[arg-type]
 
@@ -183,6 +196,7 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     update = published[3][1]
     assert isinstance(update, ev.MemberUpdateEvent)
     assert update.roles_added == (2,) and update.timed_out_until_after is not None
+    assert update.role_names == {2: "two"}
 
     publisher.uninstall()
     assert bot.listeners == []
@@ -202,7 +216,9 @@ def test_audit_entry_maps_timeout_from_member_update() -> None:
         after=SimpleNamespace(timed_out_until=dt.datetime(2026, 1, 2, tzinfo=dt.UTC)),
         created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
     )
-    event = audit_entry_event(entry)  # type: ignore[arg-type]
+    event = audit_entry_event(entry, self_user_id=7)  # type: ignore[arg-type]
     assert event is not None
+    assert event.actor_is_self is True
     assert event.action == "timeout" and event.actor_id == 7 and event.target_id == 8
+    assert event.until == dt.datetime(2026, 1, 2, tzinfo=dt.UTC).timestamp()
     assert event.changes[0][0] == "timed_out_until"

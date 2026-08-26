@@ -74,11 +74,14 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
     async def _fake_registry(settings, *, gateway):
         return _FakeEvalRegistry()
 
+    identities = []
+
     async def _fake_scenario_run(scenario_arg, **kwargs):
-        del kwargs
+        identities.append(kwargs["identity"])
         return ScenarioRun(
             scenario_id=scenario_arg.id,
             model_label="m",
+            identity=kwargs["identity"],
             turns=[TurnRecord("q", "an answer", [], 10, 5)],
         )
 
@@ -123,3 +126,6 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
 
     report = (tmp_path / "report.md").read_text()
     assert "Candidate tokens: 10 | Baseline tokens: 10" in report
+    assert len({identity.user_id for identity in identities}) == 2
+    assert identities[0].arm == "candidate:cand"
+    assert identities[1].arm == "baseline:base"

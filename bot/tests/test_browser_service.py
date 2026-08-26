@@ -72,6 +72,9 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     bridge = (PROJECT_ROOT / "web_browser/bridge.mjs").read_text(encoding="utf-8")
     installer = (PROJECT_ROOT / "deploy/betterwright/install.sh").read_text(encoding="utf-8")
     docs = (REPO_ROOT / "docs/browser.md").read_text(encoding="utf-8")
+    tool = (PROJECT_ROOT / "tools/browser.py").read_text(encoding="utf-8")
+    skill = (PROJECT_ROOT / "skills/builtin/browser/SKILL.md").read_text(encoding="utf-8")
+    api = (PROJECT_ROOT / "skills/builtin/browser/reference/api.md").read_text(encoding="utf-8")
 
     assert "VERSION=1.10.0" in installer
     assert "BetterWright **1.10.0**" in docs
@@ -80,6 +83,12 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "allowLoopback: false" in bridge
     assert "vault: false" in bridge
     assert 'downloadPolicy: "deny"' in bridge
+    assert "there is no " in tool and "`browser` global" in tool
+    assert "There is no `browser` global" in skill
+    assert "There is no `browser`" in api
+    assert "openPage(url)" in tool
+    assert "context.newPage()" not in tool
+    assert "Do not call `browser.newPage()`,\n  `context.newPage()`" in skill
     assert "CloakBrowser" not in installer
     assert "FONTCONFIG_FILE" not in installer
 
@@ -127,7 +136,7 @@ class _ReadStream:
 
 class _FakeProcess:
     def __init__(self, *, stdout: _ReadStream | None = None, returncode: int | None = 0) -> None:
-        self.stdin = None
+        self.stdin: Any | None = None
         self.stdout = stdout
         self.stderr = _ReadStream()
         self.returncode = returncode
@@ -141,6 +150,62 @@ class _FakeProcess:
 
     async def wait(self) -> int:
         return self.returncode or 0
+
+
+@pytest.mark.asyncio
+async def test_worker_close_tolerates_process_exit_before_terminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Stdin:
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    class _RacingProcess(_FakeProcess):
+        def __init__(self) -> None:
+            super().__init__(returncode=None)
+            self.stderr = _ReadStream()
+            self.stdin = _Stdin()
+            self.terminate_calls = 0
+            self.kill_calls = 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            raise ProcessLookupError
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+
+    process = _RacingProcess()
+    real_wait_for = browser_service.asyncio.wait_for
+    wait_calls = 0
+
+    async def timeout_graceful_wait(awaitable: Any, timeout: float) -> Any:
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            awaitable.close()
+            raise TimeoutError
+        return await real_wait_for(awaitable, timeout)
+
+    async def stop_unit(config: BrowserServiceConfig, unit_name: str) -> None:
+        del config, unit_name
+
+    monkeypatch.setattr(browser_service.asyncio, "wait_for", timeout_graceful_wait)
+    monkeypatch.setattr(browser_service, "_stop_unit", stop_unit)
+    worker = _SubprocessBrowserWorker(
+        _config(tmp_path),
+        tmp_path / "profile",
+        process,  # type: ignore[arg-type]
+        "browser-race",
+    )
+
+    await worker.close()
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
 
 
 @pytest.mark.asyncio

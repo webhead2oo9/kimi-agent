@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
+import evals.registry as registry_module
 from app.tool_surfaces import surface_tools
 from config.settings import Settings, settings
 from evals.capture import InstrumentedRegistry
-from evals.registry import compose_tools
-from evals.stub_gateway import SAFE_STUB_TOOLS, StubGateway
+from evals.identity import EvalIdentity
+from evals.registry import build_eval_registry, compose_tools
+from evals.stub_gateway import SAFE_STUB_TOOLS, StubCodingControls, StubGateway
 from tests.helpers import PROJECT_ROOT
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
@@ -89,10 +91,11 @@ def test_compose_tools_returns_a_provider_manager(eval_settings):
     from app.providers import ProviderManager
 
     registry = InstrumentedRegistry()
-    _memory_manager, provider_manager = compose_tools(
+    _memory_manager, provider_manager, runtime_tools = compose_tools(
         eval_settings, registry=registry, gateway=StubGateway()
     )
     assert isinstance(provider_manager, ProviderManager)
+    assert runtime_tools.registry is registry
 
 
 def test_compose_tools_registers_default_on_thread_and_coding_surfaces(eval_settings):
@@ -115,6 +118,7 @@ def test_compose_tools_registers_default_on_thread_and_coding_surfaces(eval_sett
         "coding_task_status",
         "coding_task_message",
         "coding_task_cancel",
+        "coding_task_retry_delivery",
     ):
         assert registry.has_tool(name), name
 
@@ -139,6 +143,73 @@ def test_coding_start_dispatches_into_the_stub_not_a_real_scheduler(eval_setting
     assert ctx.terminal_handoff is not None
 
 
+def test_stub_coding_controls_partition_state_by_eval_user():
+    async def exercise():
+        controls = StubCodingControls()
+        first_ctx = MessageContext(
+            user_id="eval-user-a",
+            user_name="n",
+            guild_id=None,
+            channel_id="c",
+            thread_id=None,
+            trust_tier=TrustTier.MEMBER,
+        )
+        second_ctx = MessageContext(
+            user_id="eval-user-b",
+            user_name="n",
+            guild_id=None,
+            channel_id="c",
+            thread_id=None,
+            trust_tier=TrustTier.MEMBER,
+        )
+
+        first_start = await controls.start_from_tool(
+            first_ctx, objective="first", acceptance_criteria=[], context_text=""
+        )
+        second_start = await controls.start_from_tool(
+            second_ctx, objective="second", acceptance_criteria=[], context_text=""
+        )
+        next_first_start = await controls.start_from_tool(
+            first_ctx, objective="first again", acceptance_criteria=[], context_text=""
+        )
+        await controls.steer_from_tool(first_ctx, task_id="eval-task-1", message="keep the helper")
+        await controls.cancel_from_tool(second_ctx, task_id="eval-task-1", reason="superseded")
+        retry = await controls.retry_delivery_from_tool(first_ctx, task_id="eval-task-1")
+        return controls, first_start, second_start, next_first_start, retry
+
+    controls, first_start, second_start, next_first_start, retry = asyncio.run(exercise())
+    assert first_start["task_id"] == "eval-task-1"
+    assert second_start["task_id"] == "eval-task-1"
+    assert next_first_start["task_id"] == "eval-task-2"
+    assert retry == {"task_id": "eval-task-1", "delivery_retry_requested": True}
+    assert controls._users["eval-user-a"].steered == [("eval-task-1", "keep the helper")]
+    assert controls._users["eval-user-a"].cancelled == []
+    assert controls._users["eval-user-a"].delivery_retries == ["eval-task-1"]
+    assert controls._users["eval-user-b"].steered == []
+    assert controls._users["eval-user-b"].cancelled == ["eval-task-1"]
+    assert controls._users["eval-user-b"].delivery_retries == []
+
+
+def test_coding_retry_delivery_dispatches_into_the_stub(eval_settings):
+    registry = InstrumentedRegistry()
+    compose_tools(eval_settings, registry=registry, gateway=StubGateway())
+    ctx = MessageContext(
+        user_id="eval-user",
+        user_name="n",
+        guild_id=None,
+        channel_id="c",
+        thread_id=None,
+        trust_tier=TrustTier.MEMBER,
+        activated_tools={"coding_task_retry_delivery"},
+    )
+    result = json.loads(
+        asyncio.run(
+            registry.dispatch("coding_task_retry_delivery", {"task_id": "eval-task-1"}, ctx)
+        )
+    )
+    assert result == {"task_id": "eval-task-1", "delivery_retry_requested": True}
+
+
 def test_move_to_thread_works_without_a_live_handoff_manager(eval_settings):
     """The null manager must not turn tool SELECTION grading into a tool error."""
 
@@ -155,3 +226,285 @@ def test_move_to_thread_works_without_a_live_handoff_manager(eval_settings):
     )
     asyncio.run(registry.dispatch("move_to_thread", {"name": "launcher rollback"}, ctx))
     assert ctx.thread_request is not None
+
+
+def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_settings):
+    async def exercise() -> Path:
+        eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
+        state_dir = eval_registry._db_dir
+        assert state_dir is not None
+        try:
+            first = EvalIdentity("run-a", "candidate", "edit-note", 0)
+            second = EvalIdentity("run-a", "candidate", "edit-note", 1)
+            first_ctx = MessageContext(
+                user_id=first.user_id,
+                user_name="webhead",
+                guild_id=None,
+                channel_id="channel",
+                thread_id=None,
+                trust_tier=TrustTier.MEMBER,
+                context_key=first.context_key,
+            )
+            second_ctx = MessageContext(
+                user_id=second.user_id,
+                user_name="webhead",
+                guild_id=None,
+                channel_id="channel",
+                thread_id=None,
+                trust_tier=TrustTier.MEMBER,
+                context_key=second.context_key,
+            )
+
+            written = json.loads(
+                await eval_registry.registry.dispatch(
+                    "write_file",
+                    {"path": "marker.txt", "content": "first repetition", "attach": False},
+                    first_ctx,
+                )
+            )
+            assert written["path"] == "marker.txt"
+            first_read = await eval_registry.registry.dispatch(
+                "read_file", {"path": "marker.txt"}, first_ctx
+            )
+            second_read = await eval_registry.registry.dispatch(
+                "read_file", {"path": "marker.txt"}, second_ctx
+            )
+            assert "first repetition" in first_read
+            assert json.loads(second_read)["error"] == "Workspace file not found: marker.txt"
+
+            workspace_manager = eval_registry.runtime_tools.workspace_manager
+            generated_root = workspace_manager.generated_job_dir(
+                first.context_key,
+                "fixture-output",
+                owner_user_id=first.user_id,
+            )
+            generated_file = generated_root / "marker.txt"
+            generated_file.write_text("first generated artifact", encoding="utf-8")
+            generated_path = workspace_manager.relative_generated_file_path(generated_file)
+            resolved = workspace_manager.resolve_context_generated_file(
+                generated_path,
+                context_key=first.context_key,
+                must_exist=True,
+            )
+            assert resolved.path == generated_file
+            with pytest.raises(
+                ValueError, match="Generated file is outside this conversation context"
+            ):
+                workspace_manager.resolve_context_generated_file(
+                    generated_path,
+                    context_key=second.context_key,
+                    must_exist=True,
+                )
+            assert str(state_dir) != str(eval_settings.workspace_dir)
+            return state_dir
+        finally:
+            await eval_registry.close()
+
+    state_dir = asyncio.run(exercise())
+    assert not state_dir.exists()
+
+
+def test_eval_registry_closes_browser_before_removing_temporary_state(eval_settings, monkeypatch):
+    async def exercise() -> tuple[Path, list[str]]:
+        eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
+        state_dir = eval_registry._db_dir
+        assert state_dir is not None
+        calls: list[str] = []
+        real_browser_close = eval_registry.runtime_tools.browser_service.close
+        real_modules_close = eval_registry.runtime_tools.module_manager.close
+        real_memory_close = eval_registry.memory_manager.close
+        real_provider_close = eval_registry.provider_manager.close
+        real_database_close = eval_registry._database.close
+
+        async def close_browser() -> None:
+            assert state_dir.exists()
+            calls.append("browser")
+            await real_browser_close()
+
+        async def close_modules() -> None:
+            assert state_dir.exists()
+            calls.append("modules")
+            await real_modules_close()
+
+        async def close_memory() -> None:
+            assert state_dir.exists()
+            calls.append("memory")
+            await real_memory_close()
+
+        async def close_provider() -> None:
+            assert state_dir.exists()
+            calls.append("provider")
+            await real_provider_close()
+
+        async def close_database() -> None:
+            assert state_dir.exists()
+            calls.append("database")
+            await real_database_close()
+
+        monkeypatch.setattr(eval_registry.runtime_tools.browser_service, "close", close_browser)
+        monkeypatch.setattr(eval_registry.runtime_tools.module_manager, "close", close_modules)
+        monkeypatch.setattr(eval_registry.memory_manager, "close", close_memory)
+        monkeypatch.setattr(eval_registry.provider_manager, "close", close_provider)
+        monkeypatch.setattr(eval_registry._database, "close", close_database)
+        await eval_registry.close()
+        await eval_registry.close()  # Idempotent: owners are closed only once.
+        return state_dir, calls
+
+    state_dir, calls = asyncio.run(exercise())
+    assert calls == ["browser", "modules", "memory", "provider", "database"]
+    assert not state_dir.exists()
+
+
+def test_eval_registry_closes_browser_when_initialization_fails(eval_settings, monkeypatch):
+    async def exercise() -> tuple[Path, list[str]]:
+        real_compose_tools = registry_module.compose_tools
+        calls: list[str] = []
+        state_dir: Path | None = None
+
+        def compose_with_failing_memory(*args, **kwargs):
+            nonlocal state_dir
+            memory_manager, provider_manager, runtime_tools = real_compose_tools(*args, **kwargs)
+            state_dir = Path(args[0].browser_profiles_dir).parent
+
+            async def close_browser() -> None:
+                assert state_dir is not None and state_dir.exists()
+                calls.append("browser")
+
+            async def close_modules() -> None:
+                assert state_dir is not None and state_dir.exists()
+                calls.append("modules")
+
+            async def fail_ready(*_args, **_kwargs) -> None:
+                raise RuntimeError("memory initialization failed")
+
+            runtime_tools.browser_service.close = close_browser
+            runtime_tools.module_manager.close = close_modules
+            memory_manager.ensure_ready = fail_ready
+            return memory_manager, provider_manager, runtime_tools
+
+        monkeypatch.setattr(registry_module, "compose_tools", compose_with_failing_memory)
+        with pytest.raises(RuntimeError, match="memory initialization failed"):
+            await build_eval_registry(eval_settings, gateway=StubGateway())
+        assert state_dir is not None
+        return state_dir, calls
+
+    state_dir, calls = asyncio.run(exercise())
+    assert calls == ["browser", "modules"]
+    assert not state_dir.exists()
+
+
+def test_eval_registry_preserves_initialization_and_cleanup_errors(eval_settings, monkeypatch):
+    async def exercise() -> Path:
+        real_compose_tools = registry_module.compose_tools
+        state_dir: Path | None = None
+
+        def compose_with_failures(*args, **kwargs):
+            nonlocal state_dir
+            memory_manager, provider_manager, runtime_tools = real_compose_tools(*args, **kwargs)
+            state_dir = Path(args[0].browser_profiles_dir).parent
+
+            async def fail_browser_close() -> None:
+                raise RuntimeError("browser cleanup failed")
+
+            async def fail_ready(*_args, **_kwargs) -> None:
+                raise RuntimeError("memory initialization failed")
+
+            runtime_tools.browser_service.close = fail_browser_close
+            memory_manager.ensure_ready = fail_ready
+            return memory_manager, provider_manager, runtime_tools
+
+        monkeypatch.setattr(registry_module, "compose_tools", compose_with_failures)
+        with pytest.raises(BaseExceptionGroup) as raised:
+            await build_eval_registry(eval_settings, gateway=StubGateway())
+        messages = {str(error) for error in raised.value.exceptions}
+        assert "memory initialization failed" in messages
+        assert "browser cleanup failed" in messages
+        assert state_dir is not None
+        return state_dir
+
+    state_dir = asyncio.run(exercise())
+    assert not state_dir.exists()
+
+
+def test_eval_registry_retries_failed_state_directory_removal(eval_settings, monkeypatch):
+    async def exercise() -> tuple[Path, int]:
+        eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
+        state_dir = eval_registry._db_dir
+        assert state_dir is not None
+        real_rmtree = registry_module.shutil.rmtree
+        attempts = 0
+
+        def fail_once(path: Path) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("state directory is busy")
+            real_rmtree(path)
+
+        monkeypatch.setattr(registry_module.shutil, "rmtree", fail_once)
+        with pytest.raises(OSError, match="state directory is busy"):
+            await eval_registry.close()
+        assert state_dir.exists()
+        await eval_registry.close()
+        await eval_registry.close()
+        return state_dir, attempts
+
+    state_dir, attempts = asyncio.run(exercise())
+    assert attempts == 2
+    assert not state_dir.exists()
+
+
+def test_eval_registry_continues_cleanup_after_browser_close_fails(eval_settings, monkeypatch):
+    async def exercise() -> tuple[Path, list[str]]:
+        eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
+        state_dir = eval_registry._db_dir
+        assert state_dir is not None
+        calls: list[str] = []
+        browser_attempts = 0
+        real_browser_close = eval_registry.runtime_tools.browser_service.close
+        real_modules_close = eval_registry.runtime_tools.module_manager.close
+        real_memory_close = eval_registry.memory_manager.close
+        real_provider_close = eval_registry.provider_manager.close
+        real_database_close = eval_registry._database.close
+
+        async def close_browser() -> None:
+            nonlocal browser_attempts
+            calls.append("browser")
+            browser_attempts += 1
+            if browser_attempts == 1:
+                raise RuntimeError("browser cleanup failed")
+            await real_browser_close()
+
+        async def close_modules() -> None:
+            calls.append("modules")
+            await real_modules_close()
+
+        async def close_memory() -> None:
+            calls.append("memory")
+            await real_memory_close()
+
+        async def close_provider() -> None:
+            calls.append("provider")
+            await real_provider_close()
+
+        async def close_database() -> None:
+            calls.append("database")
+            await real_database_close()
+
+        monkeypatch.setattr(eval_registry.runtime_tools.browser_service, "close", close_browser)
+        monkeypatch.setattr(eval_registry.runtime_tools.module_manager, "close", close_modules)
+        monkeypatch.setattr(eval_registry.memory_manager, "close", close_memory)
+        monkeypatch.setattr(eval_registry.provider_manager, "close", close_provider)
+        monkeypatch.setattr(eval_registry._database, "close", close_database)
+
+        with pytest.raises(RuntimeError, match="browser cleanup failed"):
+            await eval_registry.close()
+        assert not state_dir.exists()
+        await eval_registry.close()
+        await eval_registry.close()
+        return state_dir, calls
+
+    state_dir, calls = asyncio.run(exercise())
+    expected_order = ["browser", "modules", "memory", "provider", "database"]
+    assert calls == [*expected_order, *expected_order]
+    assert not state_dir.exists()

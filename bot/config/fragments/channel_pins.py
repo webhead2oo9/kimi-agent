@@ -5,7 +5,7 @@ YAML frontmatter at the top of that channel's prompt fragment
 (``config/channels/<channel_id>.md``)::
 
     ---
-    pinned_tools: [move_to_thread, discord_text_search]
+    pinned_tools: [discord_text_search]
     ---
     You are in #off-topic, for casual chat (not support).
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 
 from agent.backfill import BackfilledMessage
 from app.tool_surfaces import surface_tools
@@ -100,27 +101,44 @@ def install_safe_stubs(registry: ToolRegistry) -> None:
         )
 
 
+@dataclass
+class _StubCodingUserState:
+    started: list[str] = field(default_factory=list)
+    cancelled: list[str] = field(default_factory=list)
+    steered: list[tuple[str, str]] = field(default_factory=list)
+    delivery_retries: list[str] = field(default_factory=list)
+
+
 class StubCodingControls:
     """In-memory CodingTaskControls so the chat-side coding tools exist in evals.
 
     Production registers these against the real scheduler in app/coding_tasks.py;
-    here every call lands in this object. Scenarios grade whether the model
-    DELEGATES appropriately (start_coding_task vs answering inline), which only
-    needs the tool registered and the call captured, so no job is ever spawned.
+    here every call lands in this object. Mutable chat-control state is partitioned
+    by the eval's synthetic user id, so arms and repetitions sharing one registry
+    still receive independent task sequences. No job is ever spawned.
     """
 
     def __init__(self) -> None:
-        self.started: list[str] = []
-        self.cancelled: list[str] = []
-        self.steered: list[tuple[str, str]] = []
+        self._users: dict[str, _StubCodingUserState] = {}
+        # Coding-worker controls are not registered in evals; retain their no-op
+        # storage only to satisfy the production control interface used by the cast.
         self.plans: dict[str, list[dict[str, str]]] = {}
         self.progress: dict[str, str] = {}
 
+    def _state(self, ctx: MessageContext) -> _StubCodingUserState:
+        return self._users.setdefault(ctx.user_id, _StubCodingUserState())
+
     async def start_from_tool(
-        self, ctx: object, *, objective: str, acceptance_criteria: list[str], context_text: str
+        self,
+        ctx: MessageContext,
+        *,
+        objective: str,
+        acceptance_criteria: list[str],
+        context_text: str,
     ) -> dict[str, object]:
-        task_id = f"eval-task-{len(self.started) + 1}"
-        self.started.append(objective)
+        state = self._state(ctx)
+        task_id = f"eval-task-{len(state.started) + 1}"
+        state.started.append(objective)
         return {
             "accepted": True,
             "task_id": task_id,
@@ -128,20 +146,28 @@ class StubCodingControls:
             "objective": objective,
         }
 
-    async def status_from_tool(self, ctx: object, *, task_id: str | None) -> dict[str, object]:
+    async def status_from_tool(
+        self, ctx: MessageContext, *, task_id: str | None
+    ) -> dict[str, object]:
         return {"task_id": task_id or "eval-task-1", "status": "running", "plan": []}
 
     async def steer_from_tool(
-        self, ctx: object, *, task_id: str, message: str
+        self, ctx: MessageContext, *, task_id: str, message: str
     ) -> dict[str, object]:
-        self.steered.append((task_id, message))
+        self._state(ctx).steered.append((task_id, message))
         return {"task_id": task_id, "delivered": True}
 
     async def cancel_from_tool(
-        self, ctx: object, *, task_id: str, reason: str
+        self, ctx: MessageContext, *, task_id: str, reason: str
     ) -> dict[str, object]:
-        self.cancelled.append(task_id)
+        self._state(ctx).cancelled.append(task_id)
         return {"task_id": task_id, "cancelled": True, "reason": reason}
+
+    async def retry_delivery_from_tool(
+        self, ctx: MessageContext, *, task_id: str
+    ) -> dict[str, object]:
+        self._state(ctx).delivery_retries.append(task_id)
+        return {"task_id": task_id, "delivery_retry_requested": True}
 
     async def set_plan(self, task_id: str, steps: list[dict[str, str]]) -> None:
         self.plans[task_id] = steps

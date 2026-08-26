@@ -4,7 +4,7 @@
 #
 # Pre-activate searchable tools in this channel without browse_tools. Pins never
 # widen privileges, and a blocked tool always wins over a pin.
-pinned_tools: [move_to_thread]
+pinned_tools: [discord_text_search]
 blocked_tools: [teach]
 #
 # Thread switches. Both are tri-state: omit the key to inherit the server value

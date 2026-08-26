@@ -4,9 +4,13 @@ trust_tier: MEMBER
 channel: { name: general-chat, id: "800000000000000003" }
 requires_tools: [browser]
 turns:
-  - "can you open the status page for our git host and tell me if the incident from this morning is resolved yet?"
+  - >-
+    can you open GitHub's status page at https://www.githubstatus.com/ and tell me
+    whether any incident reported there this morning is resolved yet?
 expect:
   should_use_tools: [browser]
   notes: >-
-    A live page whose current state is the whole question. Graded on reaching for
-    the browser rather than answering from stale knowledge or a cached summary.
+    A named live page whose current state is the whole question. Graded on
+    reaching for the browser rather than answering from stale knowledge or a
+    cached summary. The explicit URL keeps host discovery from becoming an
+    accidental prerequisite for a browser-behavior scenario.

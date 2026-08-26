@@ -138,6 +138,11 @@ def _tool_config_channel_id(source: TurnPreparationInput) -> str:
     return resolve_parent_channel_id(channel) or source.channel_id
 
 
+def _platform_scope_blocked_tools(guild_id: str | None) -> frozenset[str]:
+    """Hide platform actions that cannot exist in the current conversation scope."""
+    return frozenset() if guild_id else frozenset({"move_to_thread"})
+
+
 async def build_turn_dependencies(
     app: Any,
     source: TurnPreparationInput,
@@ -226,6 +231,7 @@ async def build_turn_dependencies(
                 load_channel=hooks.load_channel_blocked_tools,
             )
             | extra_blocked_tools
+            | _platform_scope_blocked_tools(source.guild_id)
         )
         # The tri-state fragment switch and an explicit move_to_thread deny both
         # gate creation. Channel still wins over guild for the switch, but no

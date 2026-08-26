@@ -8,8 +8,8 @@ tags: [discord, thread, handoff, conversation]
 
 Use this when someone asks for a thread or a discussion clearly benefits from a
 separate multi-turn space. Thread handoff is optional. `move_to_thread` is
-searchable, so use `browse_tools` when needed; if it is unavailable, say that
-thread creation is not enabled here.
+part of the main toolset whenever handoff is enabled in the current channel; if
+it is unavailable, say that thread creation is not enabled here.
 
 `move_to_thread` starts a public thread from the current user message. The
 current reply becomes the first message in that thread, so answer normally and

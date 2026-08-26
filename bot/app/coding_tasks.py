@@ -37,6 +37,9 @@ from workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
+CODING_TASK_REF_LENGTH = 8
+_LOWER_HEX_CHARS = frozenset("0123456789abcdef")
+
 TaskNotifier = Callable[[CodingTask, ConversationContext | None], Awaitable[None]]
 UserActivityGuard = Callable[[str], AbstractAsyncContextManager[None]]
 BlockedToolsResolver = Callable[[str, str], frozenset[str]]
@@ -815,9 +818,24 @@ class CodingTaskService:
         return candidates[0] if len(candidates) == 1 else None
 
     async def _authorized_task(self, ctx: MessageContext, task_id: str) -> CodingTask | None:
-        task = await self._store.get_task(task_id)
-        if task is None:
+        normalized_id = task_id.lower()
+        task = await self._store.get_task(normalized_id)
+        if task is None and (
+            CODING_TASK_REF_LENGTH <= len(normalized_id) < 32
+            and set(normalized_id) <= _LOWER_HEX_CHARS
+        ):
+            matches = await self._store.list_tasks_by_id_prefix(normalized_id)
+            authorized_matches = [
+                candidate for candidate in matches if self._can_control_task(ctx, candidate)
+            ]
+            # A short reference is safe only while it identifies exactly one task
+            # visible to this caller. Never guess if UUID prefixes collide.
+            return authorized_matches[0] if len(authorized_matches) == 1 else None
+        if task is None or not self._can_control_task(ctx, task):
             return None
+        return task
+
+    def _can_control_task(self, ctx: MessageContext, task: CodingTask) -> bool:
         if task.user_id != ctx.user_id:
             same_guild_staff = (
                 ctx.trust_tier >= TrustTier.STAFF
@@ -826,8 +844,8 @@ class CodingTaskService:
             )
             globally_configured_staff = ctx.user_id in self._runtime.settings.staff_ids
             if not same_guild_staff and not globally_configured_staff:
-                return None
-        return task
+                return False
+        return True
 
     async def _notify_id(self, task_id: str, context: ConversationContext | None = None) -> None:
         task = await self._store.get_task(task_id)

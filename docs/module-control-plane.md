@@ -1,9 +1,14 @@
-# Experimental module control plane
+# Module control plane
 
-This feature exists only on the paired `experimental/module-control-plane`
-branches of Kimi Agent and `kimi-agent-modules`. It is an owner-operated
-configuration mechanism for trusted, separately installed modules. It is not a
-plugin sandbox or a defense against a malicious installed Python package.
+The control plane lets the bot owner change Kimi's managed configuration
+through reviewed proposals instead of hand-editing files on the host. Trusted
+application modules can inspect redacted configuration and propose changes;
+only the owner can approve one, and every approval becomes an immutable
+revision that can be rolled back. It is off by default.
+
+Two things it is not: a plugin sandbox, and a defense against a malicious
+installed Python package. Modules run in-process with the bot's full trust;
+the control plane governs *configuration*, not code.
 
 ## Enable it
 

@@ -52,13 +52,14 @@ launch with `uv run --with-requirements modules.lock python bot.py`. Private
 Git access has to be provisioned on the host; local versioned wheels are an
 equivalent source if you prefer an offline deployment.
 
-The companion repository is
-[`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules).
-It currently contains `community_moderation`, the dependent
-`image_fingerprints` package, and the experimental `config_admin` proposal
-module. It is private during initial development, and
-each package's configuration, privacy, and FingerPrint Hub deployment details
-live alongside that package rather than here.
+The modules Kimi ships with live in the companion repository,
+[`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules):
+`community_moderation` (staff cases, `/mod`, and the moderation log),
+`image_fingerprints` (known-bad image enforcement, which depends on
+`community_moderation`), and `config_admin` (staff-facing proposal tools for
+the control plane). Each package documents its own configuration, privacy
+posture, and any external service it talks to, so this page stays about the
+contract they share.
 
 ## Declarations
 
@@ -224,7 +225,7 @@ context and `runtime.ports[name]` its fakes for assertions. Module test suites
 may import that harness; module production source may import only
 `kimi_agent_module_api`.
 
-## Experimental control-plane API
+## Control-plane API
 
 The module API can advertise `proposals.v1`, `config.v1`, and `restart.v1` when
 the control plane is enabled. A trusted module may inspect redacted managed

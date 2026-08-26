@@ -46,6 +46,9 @@ def message_ref(message: discord.Message) -> MessageRef:
         guild_id=int(message.guild.id) if message.guild is not None else 0,
         channel_id=int(message.channel.id),
         message_id=int(message.id),
+        parent_channel_id=(
+            int(parent) if (parent := getattr(message.channel, "parent_id", None)) else None
+        ),
     )
 
 

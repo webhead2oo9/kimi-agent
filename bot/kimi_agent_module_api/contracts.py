@@ -450,6 +450,8 @@ class MessageRef:
     guild_id: int
     channel_id: int
     message_id: int
+    # Parent channel when the message is in a thread; None otherwise.
+    parent_channel_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

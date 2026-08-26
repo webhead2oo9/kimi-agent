@@ -64,13 +64,13 @@ log = logging.getLogger(__name__)
 
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     """Build the stable capability advertisement for one core configuration."""
-    available = (
-        frozenset({"proposals.v1", "config.v1", "restart.v1"})
-        if core_settings.control_plane_enabled
-        else frozenset()
-    )
+    available = {"discord.history.v1"}
+    if core_settings.message_content_intent:
+        available.add("discord.message_content.v1")
+    if core_settings.control_plane_enabled:
+        available.update({"proposals.v1", "config.v1", "restart.v1"})
     return ModuleCapabilities(
-        available=available,
+        available=frozenset(available),
         members_intent=bool(core_settings.members_intent),
         message_content_intent=bool(core_settings.message_content_intent),
     )
@@ -80,6 +80,7 @@ def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
 class ModuleLoadState:
     requested: tuple[str, ...] = ()
     loaded: tuple[str, ...] = ()
+    disabled: tuple[tuple[str, str, str], ...] = ()
 
 
 def _installed_specs(requested: Sequence[str]) -> dict[str, ModuleSpec]:
@@ -198,6 +199,25 @@ def _validate_declarations(spec: ModuleSpec) -> None:
         raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
 
 
+def _activation_disabled(
+    specs: Sequence[ModuleSpec], capabilities: ModuleCapabilities
+) -> dict[str, str]:
+    disabled: dict[str, str] = {}
+    for spec in specs:
+        missing = [
+            capability
+            for capability in spec.activation_capabilities
+            if capability not in capabilities.available
+        ]
+        if missing:
+            disabled[spec.name] = "missing activation capability " + ", ".join(missing)
+            continue
+        unavailable_dependencies = [name for name in spec.dependencies if name in disabled]
+        if unavailable_dependencies:
+            disabled[spec.name] = "dependency disabled: " + ", ".join(unavailable_dependencies)
+    return disabled
+
+
 @dataclass(frozen=True)
 class ModuleRuntimeBase:
     """Core-side inputs the manager turns into per-module contexts."""
@@ -273,7 +293,9 @@ class ModuleManager:
             installed=installed,
         )
         capabilities = module_capabilities(core_settings)
-        for spec in specs:
+        disabled = _activation_disabled(specs, capabilities)
+        active_specs = tuple(spec for spec in specs if spec.name not in disabled)
+        for spec in active_specs:
             before = registry.registered_names()
             try:
                 prepared = settings_registry.prepare(spec.settings) if spec.settings else None
@@ -296,16 +318,28 @@ class ModuleManager:
                 raise
             manager._modules[spec.name] = instance
             log.info("Kimi module composed: %s %s", spec.name, spec.version)
-        manager._specs = tuple(specs)
+        for spec in specs:
+            if reason := disabled.get(spec.name):
+                log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
+        manager._specs = active_specs
         manager.load_state = ModuleLoadState(
             requested=tuple(names),
-            loaded=tuple(spec.name for spec in specs),
+            loaded=tuple(spec.name for spec in active_specs),
+            disabled=tuple(
+                (spec.name, spec.version, disabled[spec.name])
+                for spec in specs
+                if spec.name in disabled
+            ),
         )
         return manager
 
     @property
     def specs(self) -> Mapping[str, ModuleSpec]:
         return {spec.name: spec for spec in self._specs}
+
+    @property
+    def disabled_modules(self) -> Mapping[str, tuple[str, str]]:
+        return {name: (version, reason) for name, version, reason in self.load_state.disabled}
 
     @property
     def guild_settings_schemas(self) -> Mapping[str, Any]:

@@ -22,13 +22,19 @@ def render_status(
     specs: Mapping[str, ModuleSpec],
     health: Mapping[str, ModuleHealth],
     *,
+    disabled: Mapping[str, tuple[str, str]] | None = None,
     now: float | None = None,
 ) -> str:
     if not requested:
         return "No application modules are configured (`KIMI_MODULES` is empty)."
     now = time.time() if now is None else now
     lines = ["**Modules**"]
+    disabled = disabled or {}
     for name in requested:
+        if name in disabled:
+            version, reason = disabled[name]
+            lines.append(f"â€¢ â¸ï¸ `{name}` {version} â€” disabled: {reason}")
+            continue
         spec = specs.get(name)
         state = health.get(name)
         version = spec.version if spec is not None else "?"
@@ -119,6 +125,7 @@ class ModulesGroup(app_commands.Group):
         requested: Callable[[], tuple[str, ...]],
         specs: Callable[[], Mapping[str, ModuleSpec]],
         health: Callable[[], Mapping[str, ModuleHealth]],
+        disabled: Callable[[], Mapping[str, tuple[str, str]]] | None = None,
         tools: Callable[[str], tuple[str, ...]] | None = None,
         resolved_hosts: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
@@ -128,6 +135,7 @@ class ModulesGroup(app_commands.Group):
         self._requested = requested
         self._specs = specs
         self._health = health
+        self._disabled = disabled
         self._tools = tools
 
     async def _owner(self, interaction: discord.Interaction) -> bool:
@@ -141,7 +149,13 @@ class ModulesGroup(app_commands.Group):
         if not await self._owner(interaction):
             return
         await send_message(
-            interaction, render_status(self._requested(), self._specs(), self._health())
+            interaction,
+            render_status(
+                self._requested(),
+                self._specs(),
+                self._health(),
+                disabled=self._disabled() if self._disabled is not None else None,
+            ),
         )
 
     @app_commands.command(name="manifest", description="What each module declares it uses")
@@ -161,6 +175,7 @@ def register_modules_command(
     requested: Callable[[], tuple[str, ...]],
     specs: Callable[[], Mapping[str, ModuleSpec]],
     health: Callable[[], Mapping[str, ModuleHealth]],
+    disabled: Callable[[], Mapping[str, tuple[str, str]]] | None = None,
     tools: Callable[[str], tuple[str, ...]] | None = None,
     resolved_hosts: Callable[[str], tuple[str, ...]] | None = None,
 ) -> Any:
@@ -169,6 +184,7 @@ def register_modules_command(
         requested=requested,
         specs=specs,
         health=health,
+        disabled=disabled,
         tools=tools,
         resolved_hosts=resolved_hosts,
     )

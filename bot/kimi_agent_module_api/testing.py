@@ -17,6 +17,7 @@ from typing import Any
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     Backoff,
+    ChannelSnapshot,
     CommandSpec,
     Event,
     EventHandler,
@@ -28,6 +29,7 @@ from kimi_agent_module_api.contracts import (
     JobInfo,
     JobRun,
     MemberSnapshot,
+    MessagePage,
     MessageRef,
     MessageSnapshot,
     ModuleHealth,
@@ -193,6 +195,11 @@ class FakeDiscordActions:
         self.calls: list[DiscordCall] = []
         self.messages: dict[MessageRef, MessageSnapshot] = {}
         self.members: dict[tuple[int, int], MemberSnapshot] = {}
+        self.channels: dict[tuple[int, int], ChannelSnapshot] = {}
+        self.histories: dict[tuple[int, int], list[MessageSnapshot]] = {}
+        self.pins: dict[tuple[int, int], tuple[MessageSnapshot, ...]] = {}
+        self.public_threads: dict[tuple[int, int], tuple[ChannelSnapshot, ...]] = {}
+        self.channel_access: dict[tuple[int, int, int], bool] = {}
         self._next_message_id = 1000
 
     def _record(self, action: str, *args: Any, **kwargs: Any) -> None:
@@ -284,6 +291,49 @@ class FakeDiscordActions:
     async def fetch_member(self, guild_id: int, user_id: int) -> MemberSnapshot | None:
         self._record("fetch_member", guild_id, user_id)
         return self.members.get((guild_id, user_id))
+
+    async def fetch_channel(self, guild_id: int, channel_id: int) -> ChannelSnapshot | None:
+        self._record("fetch_channel", guild_id, channel_id)
+        return self.channels.get((guild_id, channel_id))
+
+    async def fetch_messages(
+        self, guild_id: int, channel_id: int, *, after_message_id: int | None = None,
+        before_message_id: int | None = None, limit: int = 100,
+    ) -> MessagePage:
+        self._record(
+            "fetch_messages", guild_id, channel_id, after_message_id=after_message_id,
+            before_message_id=before_message_id, limit=limit,
+        )
+        messages = sorted(
+            self.histories.get((guild_id, channel_id), ()),
+            key=lambda message: message.ref.message_id,
+        )
+        if after_message_id is not None:
+            candidates = [message for message in messages if message.ref.message_id > after_message_id]
+            selected = candidates[:limit]
+            cursor = selected[-1].ref.message_id if selected else None
+        else:
+            candidates = [
+                message for message in messages
+                if before_message_id is None or message.ref.message_id < before_message_id
+            ]
+            selected = candidates[-limit:]
+            cursor = selected[0].ref.message_id if selected else None
+        return MessagePage(tuple(selected), cursor, len(candidates) > len(selected))
+
+    async def fetch_pins(self, guild_id: int, channel_id: int) -> tuple[MessageSnapshot, ...]:
+        self._record("fetch_pins", guild_id, channel_id)
+        return self.pins.get((guild_id, channel_id), ())
+
+    async def fetch_public_threads(
+        self, guild_id: int, parent_channel_id: int
+    ) -> tuple[ChannelSnapshot, ...]:
+        self._record("fetch_public_threads", guild_id, parent_channel_id)
+        return self.public_threads.get((guild_id, parent_channel_id), ())
+
+    async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
+        self._record("check_channel_access", guild_id, user_id, channel_id)
+        return self.channel_access.get((guild_id, user_id, channel_id), False)
 
 
 @dataclass(slots=True)

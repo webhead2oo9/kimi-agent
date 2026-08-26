@@ -132,6 +132,21 @@ Each started module receives its own frozen `ModuleRuntimeContext` carrying
   `permissions.override_target_policy`. Every action is scoped to guilds
   core considers active, audit reasons are prefixed with the module name,
   and outgoing messages never ping.
+- `ctx.interactions`: slash commands and persistent components without the
+  Discord SDK. `add_command(CommandSpec, handler)` builds the app command
+  (top-level or one group level; `string`/`integer`/`boolean`/`user`/
+  `channel`/`role` options with choices, bounds, and autocomplete), gates
+  it by the spec's `min_tier` before the handler runs, and hands the handler
+  a `ModuleInteraction` whose option values are stable IDs. `respond`,
+  `defer`, `edit_original`, and `follow_up` never ping. Buttons and selects
+  are `ButtonSpec`/`SelectSpec` values whose custom IDs are
+  `m:<module>:<key>:...`; `register_component(kind, key, handler)` binds the
+  handler (optionally with an expiry) and core routes clicks through one
+  persistent dispatcher, so a button still works after a restart as long as
+  the module re-registers its key in `start()`. Registrations are removed
+  when the module closes; core syncs the command tree once per READY.
+  Not supported: modals, attachment/number option kinds, context menus,
+  per-guild command scoping, localization.
 - `ctx.trust.tier(guild_id, user_id)`: read-only trust lookup (`member`,
   `regular`, `staff`) for modules that keep their own protections.
 

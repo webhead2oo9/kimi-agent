@@ -115,6 +115,7 @@ from commands.privacy_cmd import (
 from commands.modules_cmd import register_modules_command
 from discord_adapter.module_actions import DiscordActionsImpl, TrustLookupImpl
 from discord_adapter.module_events import ModuleEventPublisher
+from discord_adapter.module_interactions import InteractionRuntime
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl
 from commands.proposals_cmd import register_proposals_command
@@ -827,6 +828,8 @@ class KimiApplication:
         self._module_event_publisher.install()
         module_trust = TrustLookupImpl(self.bot, self.trust_resolver)
         is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
+        interaction_runtime = InteractionRuntime(self.bot)
+        interaction_runtime.install()
         await module_manager.start(
             ModuleRuntimeContext(
                 bot=self.bot,
@@ -845,6 +848,9 @@ class KimiApplication:
             ),
             customize=lambda spec, module_ctx: replace(
                 module_ctx,
+                interactions=interaction_runtime.router_for(
+                    spec.name, trust=module_trust, is_guild_active=is_guild_active
+                ),
                 discord=DeclaredDiscordActions(
                     DiscordActionsImpl(
                         bot=self.bot,

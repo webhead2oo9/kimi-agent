@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 import pytest
 
 from evals.harness import FIXTURE_IMAGE_DIR, _reply_context, image_part
+from evals.image_caption import caption_images, caption_scenario_turns
 from evals.models import ModelSpec, load_models
 from evals.scenario import Scenario, TurnSpec, load_scenarios, split_image_scenarios
-from providers.types import ContentPartType
+from providers.image_caption import is_image_caption
+from providers.types import ContentPartType, ProviderRequest, ProviderResponse
 from trust.tiers import TrustTier
 
 
@@ -45,6 +48,69 @@ def test_reply_context_is_built_only_when_reply_images_exist() -> None:
     assert reply is not None
     assert reply.author_name == "Ana"
     assert len(reply.image_parts) == 1
+    captioned_reply = _reply_context(
+        TurnSpec(text="hi", reply_images=("bands-rgb.png",)), include_images=False
+    )
+    assert captioned_reply is not None
+    assert captioned_reply.image_parts == ()
+
+
+class _Captioner:
+    model = "gpt-5.6-luna"
+
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+
+    async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+        self.requests.append(request)
+        return ProviderResponse(content="Image 1: red, green, and blue bands.", model=self.model)
+
+
+def test_caption_images_reuses_hash_keyed_cache(tmp_path) -> None:
+    provider = _Captioner()
+    images = [("current user message", image_part("bands-rgb.png"))]
+
+    first = asyncio.run(caption_images(provider, images, cache_dir=tmp_path))
+    second = asyncio.run(caption_images(provider, images, cache_dir=tmp_path))
+
+    assert len(provider.requests) == 1
+    assert first == second
+    assert is_image_caption(first.text or "")
+    request = provider.requests[0]
+    assert request.reasoning_enabled is False
+    assert request.tools == []
+    assert any("current user message" in (part.text or "") for part in request.current_user_parts)
+
+
+def test_caption_scenario_preserves_current_then_reply_source_order(tmp_path) -> None:
+    provider = _Captioner()
+    scenario = Scenario(
+        id="both",
+        category="vision",
+        trust_tier=TrustTier.MEMBER,
+        turns=[
+            TurnSpec(
+                text="compare",
+                images=("checker-yellow.png",),
+                reply_images=("bands-rgb.png",),
+            )
+        ],
+    )
+
+    captions = asyncio.run(
+        caption_scenario_turns(
+            scenario,
+            provider,
+            cache_dir=tmp_path,
+            image_loader=image_part,
+        )
+    )
+
+    assert list(captions) == [0]
+    labels = [part.text for part in provider.requests[0].current_user_parts if part.text]
+    assert labels.index("Image 1 (current user message):") < labels.index(
+        "Image 2 (message being replied to):"
+    )
 
 
 def test_split_image_scenarios_separates_both_rails_from_plain_ones() -> None:

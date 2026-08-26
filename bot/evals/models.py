@@ -73,6 +73,10 @@ class ModelsConfig:
     # Reserved for the deferred multi-judge panel (parsed from judge.panel in YAML); the
     # v1 run loop uses the single `judge` and ignores this.
     judge_panel: list[ModelSpec] = field(default_factory=list)
+    # Optional shared vision arm. Kept after the original positional fields so
+    # existing ModelsConfig(base, candidates, judge, panel) callers stay valid.
+    # When present, all compared chat models receive the identical caption.
+    image_captioner: ModelSpec | None = None
 
 
 def _spec_from(label: str, data: dict[str, Any]) -> ModelSpec:
@@ -113,8 +117,20 @@ def load_models(path: str | Path) -> ModelsConfig:
     candidates = {
         name: _spec_from(name, data) for name, data in (raw.get("candidates") or {}).items()
     }
+    captioner_raw = raw.get("image_captioner")
+    image_captioner = (
+        _spec_from("image-captioner", captioner_raw) if captioner_raw is not None else None
+    )
+    if image_captioner is not None and not image_captioner.supports_images():
+        raise ValueError("image_captioner must declare the image_input capability")
     panel = [_spec_from(f"judge-{i}", d) for i, d in enumerate(judge_raw.get("panel", []))]
-    return ModelsConfig(baseline=baseline, candidates=candidates, judge=judge, judge_panel=panel)
+    return ModelsConfig(
+        baseline=baseline,
+        candidates=candidates,
+        judge=judge,
+        image_captioner=image_captioner,
+        judge_panel=panel,
+    )
 
 
 def eval_provider_config(spec: ModelSpec, *, api_key: str) -> ProviderConfig:

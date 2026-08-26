@@ -43,7 +43,8 @@ from evals.cassette import (
     load_cassette,
     tape_provenance,
 )
-from evals.harness import ScenarioRun, run_scenario_for_model
+from evals.harness import ScenarioRun, image_part, run_scenario_for_model
+from evals.image_caption import caption_scenario_turns
 from evals.identity import EvalIdentity, new_eval_run_nonce
 from evals.mechanical import MechanicalResult, compute_mechanical
 from evals.models import ModelsConfig, ModelSpec, build_eval_provider, load_models
@@ -318,6 +319,8 @@ def build_summary(
     cassette_tapes: dict[str, str] | None = None,
     skipped_scenarios: dict[str, list[str]] | None = None,
     eval_run_nonce: str = "",
+    image_captioner: str = "",
+    captioned_scenarios: list[str] | None = None,
 ) -> dict:
     scenarios: dict[str, dict[str, Any]] = {
         scenario_id: {
@@ -357,6 +360,8 @@ def build_summary(
         "git_sha": git_sha,
         "model": model,
         "eval_run_nonce": eval_run_nonce,
+        "image_captioner": image_captioner,
+        "captioned_scenarios": captioned_scenarios or [],
         "repeat": repeat,
         "max_tokens": max_tokens,
         "requested_max_tokens": requested_max_tokens or max_tokens,
@@ -396,6 +401,16 @@ def render_harness_report(summary: dict) -> str:
             f"**Run:** {summary['run_id']} | **Repeats:** {summary['repeat']} | "
             f"**Max tokens/call:** {max_tokens_cell} | "
             f"**Cassette:** {_cassette_cell(summary)}"
+        ),
+        *(
+            [
+                (
+                    f"**Visual evidence:** captioned by {summary['image_captioner']} "
+                    f"for {len(summary.get('captioned_scenarios', []))} scenario(s)"
+                )
+            ]
+            if summary.get("image_captioner")
+            else []
         ),
         (
             f"**Overall score:** {totals['score_mean']} | "
@@ -543,6 +558,7 @@ async def _run(args: argparse.Namespace) -> int:
             "run are unsound for comparison (default is 3)."
         )
     models = load_models(args.models)
+    caption_cache_dir = Path(getattr(args, "captions", EVALS_DIR / "captions"))
     spec = resolve_model_spec(models, args.model)
     if spec is None:
         known = sorted([*models.candidates, models.baseline.label])
@@ -569,13 +585,11 @@ async def _run(args: argparse.Namespace) -> int:
     # scenarios (and a call count) the real run would skip, which is the one
     # thing a dry run exists to get right.
     #
-    # A text-only model given an image scenario either 400s or answers from the
-    # caption alone, and either way scores as a model weakness rather than an
-    # unrunnable scenario. Skip loudly rather than refusing the whole run: the
-    # image scenarios sit in the default tree, so refusing would block every
-    # ordinary harness run on a text-only arm.
+    # A configured shared captioner makes the visual evidence identical for every
+    # candidate, including native-vision models. Without one, retain the direct
+    # image path and its fail-closed capability gate.
     scenarios, visual = split_image_scenarios(scenarios)
-    if visual and spec.supports_images():
+    if visual and (models.image_captioner is not None or spec.supports_images()):
         scenarios = [*scenarios, *visual]
     elif visual:
         log.warning(
@@ -596,6 +610,11 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Model:     {spec.label} ({spec.model})")
         max_tokens_note = f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
         print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
+        if models.image_captioner is not None:
+            print(
+                f"Image captions: {models.image_captioner.label} "
+                f"({models.image_captioner.model}; cache: {caption_cache_dir})"
+            )
         print(f"Scenarios: {', '.join(s.id for s in scenarios)}")
         print(f"Cassette:  {args.cassette} (dir: {cassette_dir}, tapes: {model_key})")
         # Tape provenance before anything is spent: a scenario with no tape runs
@@ -614,6 +633,11 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     provider = InstrumentedProvider(build_eval_provider(spec))
+    caption_provider = (
+        build_eval_provider(models.image_captioner)
+        if models.image_captioner is not None and visual
+        else None
+    )
     eval_run_nonce = new_eval_run_nonce()
     gateway = StubGateway()
     tapes: dict[str, str] = {}
@@ -654,6 +678,16 @@ async def _run(args: argparse.Namespace) -> int:
             if args.cassette == "record":
                 cassette.clear()
             reps: list[RepResult] = []
+            image_captions = (
+                await caption_scenario_turns(
+                    scenario,
+                    caption_provider,
+                    cache_dir=caption_cache_dir,
+                    image_loader=image_part,
+                )
+                if caption_provider is not None and any(turn.has_images for turn in scenario.turns)
+                else None
+            )
             registry.configure_cassette(cassette, args.cassette)
             for rep_index in range(args.repeat):
                 cassette.reset_cursors()
@@ -677,6 +711,7 @@ async def _run(args: argparse.Namespace) -> int:
                         scenario_id=scenario.id,
                         repetition=rep_index,
                     ),
+                    image_captions=image_captions,
                 )
                 sources: dict[str, int] = {}
                 for record in run.all_tool_calls:
@@ -708,6 +743,8 @@ async def _run(args: argparse.Namespace) -> int:
         if eval_registry is not None:
             await eval_registry.close()
         await close_provider(provider)
+        if caption_provider is not None:
+            await close_provider(caption_provider)
 
     base_out = Path(args.out)
     sha = git_short_sha(EVALS_DIR, data_paths=run_data_paths(EVALS_DIR, cassette_dir))
@@ -727,6 +764,10 @@ async def _run(args: argparse.Namespace) -> int:
         cassette_tapes=tapes,
         skipped_scenarios=skipped,
         eval_run_nonce=eval_run_nonce,
+        image_captioner=(models.image_captioner.model if models.image_captioner else ""),
+        captioned_scenarios=[
+            scenario.id for scenario in scenarios if any(turn.has_images for turn in scenario.turns)
+        ],
     )
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (run_dir / "report.md").write_text(render_harness_report(summary), encoding="utf-8")
@@ -755,6 +796,7 @@ def main() -> None:
     parser.add_argument("--models", default=str(EVALS_DIR / "models.yaml"))
     parser.add_argument("--scenarios", default=str(EVALS_DIR / "scenarios"))
     parser.add_argument("--cassettes", default=str(EVALS_DIR / "cassettes"))
+    parser.add_argument("--captions", default=str(EVALS_DIR / "captions"))
     parser.add_argument(
         "--cassette",
         choices=CASSETTE_MODES,

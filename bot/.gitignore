@@ -199,6 +199,7 @@ transcripts/
 
 # Eval harness output
 evals/cassettes/
+evals/captions/
 evals/runs/
 evals/results/
 evals/latest/

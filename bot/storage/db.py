@@ -386,6 +386,27 @@ CREATE TABLE IF NOT EXISTS control_proposal_events (
 CREATE INDEX IF NOT EXISTS idx_control_proposal_events_proposal
     ON control_proposal_events(proposal_id, id);
 
+CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
+    job_id           TEXT PRIMARY KEY,
+    module_name      TEXT NOT NULL,
+    job_key          TEXT NOT NULL,
+    handler          TEXT NOT NULL,
+    run_at           REAL NOT NULL,
+    interval_seconds REAL,
+    jitter_seconds   REAL NOT NULL DEFAULT 0,
+    backoff_json     TEXT NOT NULL DEFAULT '{}',
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    attempt          INTEGER NOT NULL DEFAULT 0,
+    leased_until     REAL,
+    lease_token      TEXT,
+    last_error       TEXT,
+    created_at       REAL NOT NULL,
+    updated_at       REAL NOT NULL,
+    UNIQUE (module_name, job_key)
+);
+CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
+    ON module_scheduler_jobs(run_at, leased_until);
+
 """
 
 
@@ -505,6 +526,34 @@ async def _ensure_control_plane_schema(conn: aiosqlite.Connection) -> None:
         await conn.execute(statement)
 
 
+async def _ensure_module_runtime_schema(conn: aiosqlite.Connection) -> None:
+    """Core-owned module runtime tables, adopted idempotently like the ledger."""
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
+            job_id           TEXT PRIMARY KEY,
+            module_name      TEXT NOT NULL,
+            job_key          TEXT NOT NULL,
+            handler          TEXT NOT NULL,
+            run_at           REAL NOT NULL,
+            interval_seconds REAL,
+            jitter_seconds   REAL NOT NULL DEFAULT 0,
+            backoff_json     TEXT NOT NULL DEFAULT '{}',
+            payload_json     TEXT NOT NULL DEFAULT '{}',
+            attempt          INTEGER NOT NULL DEFAULT 0,
+            leased_until     REAL,
+            lease_token      TEXT,
+            last_error       TEXT,
+            created_at       REAL NOT NULL,
+            updated_at       REAL NOT NULL,
+            UNIQUE (module_name, job_key)
+        )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
+            ON module_scheduler_jobs(run_at, leased_until)"""
+    )
+
+
 def _sql_quote(value: str) -> str:
     """Quote a string as a SQL literal. PRAGMA key does not accept bound
     parameters, so the passphrase must be embedded; double single-quotes."""
@@ -589,6 +638,7 @@ class Database:
             )"""
         )
         await _ensure_control_plane_schema(conn)
+        await _ensure_module_runtime_schema(conn)
         await conn.commit()
 
         log.info("Database ready at %s (schema v%d)", self._path, SCHEMA_VERSION)

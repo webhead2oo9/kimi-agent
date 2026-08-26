@@ -72,6 +72,15 @@ class HealthRegistry:
                 log.exception("Module health observer failed for %s", module_name)
         return health
 
+    def merge_metrics(self, module_name: str, metrics: Mapping[str, float]) -> None:
+        """Update metrics without changing state or detail (e.g. event counters)."""
+        current = self._states.get(module_name)
+        state = current.state if current is not None else "healthy"
+        detail = current.detail if current is not None else ""
+        merged = dict(current.metrics) if current is not None else {}
+        merged.update(metrics)
+        self.set(module_name, state, detail, merged)
+
     def forget(self, module_name: str) -> None:
         self._states.pop(module_name, None)
 

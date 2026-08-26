@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from app.proposals import ConfigProposalService, ProposalHost
+from app.proposals import (
+    CONTENT_MAX_BYTES,
+    SUMMARY_MAX_CHARS,
+    ConfigProposalService,
+    ProposalHost,
+)
 from kimi_agent_module_api import ProposalActor, ProposalError
 from kimi_agent_module_api.contracts import MessageRef, build_custom_id
 from kimi_agent_module_api.testing import FakeInteraction, FakeInteractions
@@ -39,6 +44,7 @@ class _HostState:
         self.config_dir = config_dir
         self.poster = poster or _Poster()
         self.review_channel: str | None = None
+        self.review_channel_configured = False
         self.channels = {
             INVOKING_CHANNEL: GUILD,
             REVIEW_CHANNEL: GUILD,
@@ -46,6 +52,7 @@ class _HostState:
         }
         self.refreshes: list[int] = []
         self.health = ""
+        self.health_hook: Any = None
         self.refresh_error: Exception | None = None
 
     async def channel_guild_id(self, channel_id: int) -> int | None:
@@ -56,6 +63,11 @@ class _HostState:
         if self.refresh_error is not None:
             raise self.refresh_error
 
+    def verify(self, guild_id: int) -> str:
+        if self.health_hook is not None:
+            return str(self.health_hook(guild_id))
+        return self.health
+
     def host(self) -> ProposalHost:
         return ProposalHost(
             config_dir=lambda: self.config_dir,
@@ -64,7 +76,8 @@ class _HostState:
             known_modules=lambda: ("config_admin", "moderation"),
             post_review=self.poster,
             on_applied=self.refresh,
-            verify_guild=lambda _guild_id: self.health,
+            verify_guild=self.verify,
+            review_channel_configured=lambda _guild_id: self.review_channel_configured,
         )
 
 
@@ -127,6 +140,38 @@ async def test_snapshot_propose_and_get_are_guild_scoped(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_channel_and_guild_module_targets_are_scoped_and_known(tmp_path: Path) -> None:
+    database, state, service, view = await _service(tmp_path)
+    try:
+        channel_target = f"channel:{INVOKING_CHANNEL}"
+        snapshot = await view.snapshot(channel_target, actor=_actor())
+        assert snapshot.content == ""
+        with pytest.raises(ProposalError, match="actor's guild"):
+            await view.snapshot(channel_target, actor=_actor(OTHER_GUILD, 999))
+
+        module_target = f"guild:{GUILD}:moderation"
+        ref = await view.propose(
+            target=module_target,
+            content="---\nenabled: true\n---\n",
+            summary="Enable moderation",
+            actor=_actor(),
+        )
+        assert ref.target == module_target
+        with pytest.raises(ProposalError, match="unknown guild module"):
+            await view.propose(
+                target=f"guild:{GUILD}:unknown",
+                content="---\nenabled: true\n---\n",
+                summary="Unknown module",
+                actor=_actor(),
+            )
+        with pytest.raises(ProposalError, match="unknown proposal module"):
+            service.view_for("unknown")
+        assert state.poster.calls
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_review_channel_must_belong_to_actor_guild(tmp_path: Path) -> None:
     database, state, _service_impl, view = await _service(tmp_path)
     try:
@@ -134,6 +179,82 @@ async def test_review_channel_must_belong_to_actor_guild(tmp_path: Path) -> None
         with pytest.raises(ProposalError, match="review channel"):
             await view.propose(target=TARGET, content=CONTENT, summary="bad route", actor=_actor())
         assert state.poster.calls == []
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_malformed_configured_review_channel_does_not_fall_back(tmp_path: Path) -> None:
+    database, state, _service_impl, view = await _service(tmp_path)
+    try:
+        state.review_channel_configured = True
+        with pytest.raises(ProposalError, match="configured proposal review channel is invalid"):
+            await view.propose(target=TARGET, content=CONTENT, summary="bad route", actor=_actor())
+        assert state.poster.calls == []
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_invoking_channel_is_rejected(tmp_path: Path) -> None:
+    database, state, _service_impl, view = await _service(tmp_path)
+    try:
+        with pytest.raises(ProposalError, match="review channel"):
+            await view.propose(
+                target=TARGET,
+                content=CONTENT,
+                summary="no route",
+                actor=_actor(channel_id=998),
+            )
+        assert state.poster.calls == []
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_expected_revision_and_input_bounds_are_enforced(tmp_path: Path) -> None:
+    database, _state, _service_impl, view = await _service(tmp_path)
+    try:
+        with pytest.raises(ProposalError, match="changed since it was inspected"):
+            await view.propose(
+                target=TARGET,
+                content=CONTENT,
+                summary="stale",
+                actor=_actor(),
+                expected_revision="not-the-live-revision",
+            )
+        with pytest.raises(ProposalError, match="1 MB"):
+            await view.propose(
+                target=TARGET,
+                content="x" * (CONTENT_MAX_BYTES + 1),
+                summary="too large",
+                actor=_actor(),
+            )
+        with pytest.raises(ProposalError, match="characters or fewer"):
+            await view.propose(
+                target=TARGET,
+                content=CONTENT,
+                summary="x" * (SUMMARY_MAX_CHARS + 1),
+                actor=_actor(),
+            )
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_symlink_target_is_rejected(tmp_path: Path) -> None:
+    database, _state, _service_impl, view = await _service(tmp_path)
+    try:
+        outside = tmp_path / "outside.md"
+        outside.write_text(CONTENT, encoding="utf-8")
+        target = tmp_path / "config" / "servers" / f"{GUILD}.md"
+        target.parent.mkdir(parents=True)
+        try:
+            target.symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+        with pytest.raises(ProposalError, match="regular file"):
+            await view.snapshot(TARGET, actor=_actor())
     finally:
         await database.close()
 
@@ -202,6 +323,36 @@ async def test_operator_edit_after_proposal_is_not_clobbered_without_expected_re
 
 
 @pytest.mark.asyncio
+async def test_stored_content_is_revalidated_at_approval(tmp_path: Path) -> None:
+    database, _state, service, view = await _service(tmp_path)
+    router = FakeInteractions("proposals")
+    service.install(router)
+    try:
+        ref = await view.propose(target=TARGET, content=CONTENT, summary="tamper", actor=_actor())
+        invalid = "not frontmatter"
+        async with database.write_transaction() as conn:
+            await conn.execute(
+                "UPDATE config_proposals SET content=?,content_revision=? WHERE proposal_id=?",
+                (invalid, hashlib.sha256(invalid.encode()).hexdigest(), ref.proposal_id),
+            )
+        interaction = FakeInteraction(
+            guild_id=GUILD,
+            custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
+        )
+        await router.components[("button", "approve")](interaction)
+
+        assert interaction.last.kind == "follow_up"
+        assert interaction.last.ephemeral
+        assert interaction.last.content is not None
+        assert "Not applied" in interaction.last.content
+        assert not (tmp_path / "config" / "servers" / f"{GUILD}.md").exists()
+        pending = await view.get(ref.proposal_id, actor=_actor())
+        assert pending is not None and pending.state == "pending"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_invalid_health_rolls_back_and_leaves_pending(tmp_path: Path) -> None:
     database, state, service, view = await _service(tmp_path)
     router = FakeInteractions("proposals")
@@ -230,6 +381,43 @@ async def test_invalid_health_rolls_back_and_leaves_pending(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_failed_baseline_restore_is_reported_without_claiming_rollback(
+    tmp_path: Path,
+) -> None:
+    database, state, service, view = await _service(tmp_path)
+    router = FakeInteractions("proposals")
+    service.install(router)
+    try:
+        path = tmp_path / "config" / "servers" / f"{GUILD}.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("---\nbot_active: true\n---\nBaseline.\n", encoding="utf-8")
+        ref = await view.propose(
+            target=TARGET, content=CONTENT, summary="rollback conflict", actor=_actor()
+        )
+        operator_content = "---\nbot_active: true\n---\nOperator changed it again.\n"
+
+        def change_during_health_check(_guild_id: int) -> str:
+            path.write_text(operator_content, encoding="utf-8")
+            return "guild health failed"
+
+        state.health_hook = change_during_health_check
+        interaction = FakeInteraction(
+            guild_id=GUILD,
+            custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
+        )
+        await router.components[("button", "approve")](interaction)
+
+        assert path.read_text(encoding="utf-8") == operator_content
+        assert interaction.last.kind == "follow_up"
+        assert interaction.last.content is not None
+        assert "left untouched" in interaction.last.content
+        pending = await view.get(ref.proposal_id, actor=_actor())
+        assert pending is not None and pending.state == "pending"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_interrupted_write_is_recovered_by_second_service(tmp_path: Path) -> None:
     database, state, service, view = await _service(tmp_path)
     try:
@@ -248,6 +436,76 @@ async def test_interrupted_write_is_recovered_by_second_service(tmp_path: Path) 
         await router.components[("button", "approve")](interaction)
         recovered = await restarted.view_for("config_admin").get(ref.proposal_id, actor=_actor())
         assert recovered is not None and recovered.state == "applied"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_database_decision_failure_is_recoverable(tmp_path: Path) -> None:
+    database, state, service, view = await _service(tmp_path)
+    router = FakeInteractions("proposals")
+    service.install(router)
+    try:
+        ref = await view.propose(target=TARGET, content=CONTENT, summary="recover", actor=_actor())
+
+        async def fail_decision(*_args: Any, **_kwargs: Any) -> bool:
+            raise RuntimeError("database write failed")
+
+        service._store.decide = fail_decision
+        first = FakeInteraction(
+            guild_id=GUILD,
+            custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
+        )
+        with pytest.raises(RuntimeError, match="database write failed"):
+            await router.components[("button", "approve")](first)
+
+        path = tmp_path / "config" / "servers" / f"{GUILD}.md"
+        assert path.read_bytes() == CONTENT.encode("utf-8")
+        pending = await view.get(ref.proposal_id, actor=_actor())
+        assert pending is not None and pending.state == "pending"
+
+        restarted = ConfigProposalService(database, state.host())
+        recovered_router = FakeInteractions("proposals")
+        restarted.install(recovered_router)
+        second = FakeInteraction(
+            guild_id=GUILD,
+            custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
+        )
+        await recovered_router.components[("button", "approve")](second)
+        recovered = await restarted.view_for("config_admin").get(ref.proposal_id, actor=_actor())
+        assert recovered is not None and recovered.state == "applied"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_reject_after_interrupted_approval_restores_baseline(tmp_path: Path) -> None:
+    database, state, service, view = await _service(tmp_path)
+    router = FakeInteractions("proposals")
+    service.install(router)
+    try:
+        path = tmp_path / "config" / "servers" / f"{GUILD}.md"
+        path.parent.mkdir(parents=True)
+        baseline = "---\nbot_active: true\n---\nBaseline.\n"
+        path.write_text(baseline, encoding="utf-8")
+        ref = await view.propose(
+            target=TARGET, content=CONTENT, summary="reject interrupted write", actor=_actor()
+        )
+        path.write_bytes(CONTENT.encode("utf-8"))
+
+        interaction = FakeInteraction(
+            guild_id=GUILD,
+            user_id=56,
+            custom_id=build_custom_id("proposals", "reject", ref.proposal_id),
+        )
+        await router.components[("button", "reject")](interaction)
+
+        assert path.read_text(encoding="utf-8") == baseline
+        decided = await view.get(ref.proposal_id, actor=_actor())
+        assert decided is not None and decided.state == "rejected"
+        assert state.refreshes == [GUILD]
+        assert interaction.last.kind == "edit"
+        assert interaction.last.components == ()
     finally:
         await database.close()
 

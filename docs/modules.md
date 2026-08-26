@@ -55,7 +55,9 @@ equivalent source if you prefer an offline deployment.
 The modules Kimi ships with live in the companion repository,
 [`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules):
 `community_moderation` (staff cases, `/mod`, and the moderation log),
-`image_fingerprints` (known-bad image enforcement, which depends on
+`image_fingerprints` (known-bad image enforcement backed by a read-only sync
+from a self-hostable
+[FingerPrint Hub](https://github.com/webhead2oo9/FingerPrint-Hub); it depends on
 `community_moderation`), and `config_admin` (staff-facing proposal tools for
 the control plane). Each package documents its own configuration, privacy
 posture, and any external service it talks to, so this page stays about the

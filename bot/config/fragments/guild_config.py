@@ -64,7 +64,7 @@ from config.fragments.channel_pins import (
     parse_pinned_tools,
     parse_tristate,
 )
-from utils.frontmatter import split_frontmatter
+from utils.frontmatter import FrontmatterError, split_frontmatter, split_frontmatter_strict
 from config import paths
 from trust.resolver import EMPTY_GUILD_TRUST, GuildTrust
 
@@ -314,14 +314,27 @@ def proposal_channel_id_is_configured(
     *,
     config_dir: Path | None = None,
 ) -> bool:
-    """Return whether the guild fragment declares ``proposal_channel_id``.
+    """Return whether invoking-channel fallback must be disabled.
 
-    This deliberately distinguishes an absent key from a present but malformed
-    value so proposal routing can fail closed instead of silently falling back
-    to the invoking channel.
+    A valid fragment disables fallback when it declares ``proposal_channel_id``.
+    A malformed or unreadable existing fragment also disables fallback because
+    the service cannot safely prove that the key is absent. Only a missing file
+    or valid fragment without the key permits the invoking channel.
     """
-    result = read_guild_frontmatter(guild_id, config_dir=config_dir)
-    return result is not None and "proposal_channel_id" in result[0]
+    if not guild_id or not _ID_RE.match(guild_id):
+        return True
+    fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
+    try:
+        text = fragment.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        meta, _body = split_frontmatter_strict(text)
+    except FrontmatterError:
+        return True
+    return "proposal_channel_id" in meta
 
 
 def load_guild_trust(

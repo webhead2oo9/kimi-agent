@@ -360,6 +360,11 @@ def test_proposal_channel_is_read_and_blocks_activation_when_malformed(tmp_path)
     assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
     _write_guild_fragment(tmp_path, "---\nbot_active: true\n---\n")
     assert not proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nproposal_channel_id: [\n---\n")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nproposal_channel_id: 123\n")
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
     assert (
         server_setup_activation("---\nbot_active: true\nproposal_channel_id: nope\n---\n") is None
     )

@@ -43,8 +43,8 @@ For a tagged Git deployment, keep the module requirements outside the core
 lock:
 
 ```text
-kimi-agent-community-moderation @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@community-moderation-v0.1.0#subdirectory=packages/community-moderation
-kimi-agent-image-fingerprints @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@image-fingerprints-v0.1.0#subdirectory=packages/image-fingerprints
+kimi-agent-community-moderation @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@community-moderation-v0.2.0#subdirectory=packages/community-moderation
+kimi-agent-image-fingerprints @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@image-fingerprints-v0.2.0#subdirectory=packages/image-fingerprints
 ```
 
 Install that deployment-owned file after each core sync, or layer it on at

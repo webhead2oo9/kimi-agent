@@ -9,7 +9,7 @@ A Python 3.14 Discord bot: a generalist assistant for Discord communities, named
 This file is the map; per-subsystem behavior docs live in [`docs/`](docs/README.md) and [`docs/architecture.md`](docs/architecture.md) is the orientation-level tree. Design rationale belongs in a doc, not here. Two upkeep rules:
 
 - When a change alters behavior described in a `docs/*.md`, update that doc in the same change. Docs describe current behavior only; do not keep obsolete implementation plans around after their work has landed unless asked for an archival plan.
-- `bot/changelog.md` is the **user-facing** record for server staff and members: plain language, grouped Fixed/New/Changed, with each release dated. When a change alters something a member or server owner would notice, describe the behavior, not the implementation.
+- Release history belongs in tagged GitHub releases, not a rolling document in the repository. Put operator-facing changes and any required migration steps in the notes for the release that ships them.
 
 The deployment host and process supervisor are deliberately not recorded here. Ask rather than inferring them, and never invent or carry over host paths, service units, or restart commands.
 
@@ -24,7 +24,7 @@ ENV_FILE=.env.dev uv run python bot.py        # dev instance: test guild + own D
 uv --preview-features audit-command audit --locked  # locked dependency vulnerabilities
 uv run ruff check .                           # lint
 uv run ruff format --check .                  # formatting: the ONLY line-length enforcement (E501 is unselected)
-uv run mypy .                                 # types
+uv run mypy .                                 # types (Windows fallback: uv run python -m mypy .)
 uv run python -m pytest -q                    # all tests
 uv run python -m pytest tests/test_core_smoke.py -k "test_name"
 git diff --check                              # whitespace
@@ -120,7 +120,7 @@ Shared discovery merges code-owned, read-only `skills/builtin/<name>/SKILL.md` d
 
 ### Code Execution
 
-Optional Linux-only `run_code` (`tools/code_exec.py`, `REGULAR`) executes inline Python/shell or workspace files through `sandbox/runner.py`: systemd whole-tree cgroups, Bubblewrap namespaces/mounts, libseccomp deny-list, rlimits, capped tmpfs/output/workspace growth, and a hard core-dump boundary. `CODE_EXEC_NETWORK_MODE` is deployment-wide: `none`, explicit-risk host networking, or an operator-provisioned `netns` entered through a root-owned helper that accepts no namespace selector. Enabling never bypasses `sandbox_available()`; a failed full-profile probe leaves the tool unregistered. Runs hold the same per-workspace lock as file mutations. Persistent `.venv`/`.pio` trees have separate quotas and fd-relative no-follow cleanup. See [`docs/code-exec.md`](docs/code-exec.md).
+Optional Linux-only `run_code` (`tools/code_exec.py`, `MEMBER`) executes inline Python/shell or workspace files through `sandbox/runner.py`: systemd whole-tree cgroups, Bubblewrap namespaces/mounts, libseccomp deny-list, rlimits, capped tmpfs/output/workspace growth, and a hard core-dump boundary. `CODE_EXEC_NETWORK_MODE` is deployment-wide: `none`, explicit-risk host networking, or an operator-provisioned `netns` entered through a root-owned helper that accepts no namespace selector. Enabling never bypasses `sandbox_available()`; a failed full-profile probe leaves the tool unregistered. Runs hold the same per-workspace lock as file mutations. Persistent `.venv`/`.pio` trees have separate quotas and fd-relative no-follow cleanup. See [`docs/code-exec.md`](docs/code-exec.md).
 
 Optional durable coding tasks (`app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py`) split repository work from the foreground Discord turn. Registration requires `CODING_TASKS_ENABLED`, a tool-capable `roles.coding`, and the live code sandbox. SQLite schema v2 contains task/event/job state plus durable task context and input metadata; startup recovers nonterminal tasks and marks uncertain jobs interrupted. Workers are globally bounded, serialize writes per workspace, checkpoint after tool batches, and expose only workspace, plan/progress, and managed-job tools. `/stop` and exact bot-directed `stop|cancel|abort` bypass admission to cancel foreground and background work; `/privacy` invokes the same teardown before deletion. See [`docs/coding-agent.md`](docs/coding-agent.md).
 

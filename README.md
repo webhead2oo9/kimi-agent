@@ -90,7 +90,6 @@ state.
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |
 | Contribute code | [`CLAUDE.md`](CLAUDE.md), the developer map |
-| See what changed | [`bot/changelog.md`](bot/changelog.md) |
 
 ## License
 

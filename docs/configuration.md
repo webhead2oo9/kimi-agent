@@ -742,6 +742,19 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
 | `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
 
+## Experimental module control plane
+
+These environment-owned bootstrap settings enable the owner-approved module
+proposal system described in [module-control-plane.md](module-control-plane.md).
+They cannot themselves be changed by a proposal.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `CONTROL_PLANE_ENABLED` | bool | `false` | Advertise the experimental proposal, managed-config, and restart capabilities to compatible modules. Requires `OWNER_USER_ID`. |
+| `CONTROL_PLANE_DIR` | path | `data/control-plane` | Private root for immutable managed revisions, the restart journal, and encrypted credentials. |
+| `CONTROL_PLANE_KEY` | secret | `""` | Base64-encoded 32-byte AES-GCM master key. Required only to stage or resolve managed credentials; keep it outside proposals and managed config. |
+| `CONTROL_PLANE_AUTO_RESTART` | bool | `true` | Close cleanly with restart exit code 75 after an approved restart-required proposal. Run through the control-plane launcher to restart and roll back automatically. |
+
 ## Storage
 
 | Env var | Type | Default | Description |

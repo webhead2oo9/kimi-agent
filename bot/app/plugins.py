@@ -63,6 +63,7 @@ __all__ = [
     "build_plugin_context",
     "load_plugins",
     "load_plugins_with_settings",
+    "validate_plugin_selection",
 ]
 
 
@@ -140,6 +141,21 @@ def load_plugins(module_names: Sequence[str], ctx: PluginContext) -> list[str]:
     registrations rolled back, and every other plugin still loads.
     """
     return load_plugins_with_settings(module_names, ctx)[0]
+
+
+def validate_plugin_selection(module_names: Sequence[str]) -> None:
+    """Import and validate plugin entry contracts before staging a restart."""
+    if len(set(module_names)) != len(tuple(module_names)):
+        raise RuntimeError("PLUGIN_MODULES contains a duplicate module name")
+    for name in module_names:
+        module = importlib.import_module(name)
+        version = getattr(module, "PLUGIN_API_VERSION", PLUGIN_API_VERSION)
+        if version != PLUGIN_API_VERSION:
+            raise RuntimeError(
+                f"plugin {name!r} requires API {version!r}; core provides {PLUGIN_API_VERSION}"
+            )
+        if not callable(getattr(module, "register", None)):
+            raise RuntimeError(f"plugin {name!r} exposes no callable register(ctx)")
 
 
 def load_plugins_with_settings(

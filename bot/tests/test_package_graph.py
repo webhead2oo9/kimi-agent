@@ -57,6 +57,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "commands",
         "config",
         "discord_adapter",
+        "kimi_agent_module_api",
         "memory",
         "moderation",
         "observability",
@@ -76,6 +77,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "codex": {"utils"},
     "commands": {
         "discord_adapter",
+        "kimi_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -100,10 +102,11 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
     },
     "memory": {"providers", "storage", "utils"},
+    "kimi_agent_module_api": {"config", "discord_adapter", "storage", "tools", "trust"},
     "moderation": {"observability", "providers", "trust", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
-    "scripts": {"codex"},
+    "scripts": {"app", "codex"},
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": set(),

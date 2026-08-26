@@ -304,7 +304,7 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
     assert not state_dir.exists()
 
 
-def test_eval_registry_closes_browser_before_removing_temporary_state(eval_settings):
+def test_eval_registry_closes_browser_before_removing_temporary_state(eval_settings, monkeypatch):
     async def exercise() -> tuple[Path, list[str]]:
         eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
         state_dir = eval_registry._db_dir
@@ -341,11 +341,11 @@ def test_eval_registry_closes_browser_before_removing_temporary_state(eval_setti
             calls.append("database")
             await real_database_close()
 
-        eval_registry.runtime_tools.browser_service.close = close_browser
-        eval_registry.runtime_tools.module_manager.close = close_modules
-        eval_registry.memory_manager.close = close_memory
-        eval_registry.provider_manager.close = close_provider
-        eval_registry._database.close = close_database
+        monkeypatch.setattr(eval_registry.runtime_tools.browser_service, "close", close_browser)
+        monkeypatch.setattr(eval_registry.runtime_tools.module_manager, "close", close_modules)
+        monkeypatch.setattr(eval_registry.memory_manager, "close", close_memory)
+        monkeypatch.setattr(eval_registry.provider_manager, "close", close_provider)
+        monkeypatch.setattr(eval_registry._database, "close", close_database)
         await eval_registry.close()
         await eval_registry.close()  # Idempotent: owners are closed only once.
         return state_dir, calls
@@ -454,7 +454,7 @@ def test_eval_registry_retries_failed_state_directory_removal(eval_settings, mon
     assert not state_dir.exists()
 
 
-def test_eval_registry_continues_cleanup_after_browser_close_fails(eval_settings):
+def test_eval_registry_continues_cleanup_after_browser_close_fails(eval_settings, monkeypatch):
     async def exercise() -> tuple[Path, list[str]]:
         eval_registry = await build_eval_registry(eval_settings, gateway=StubGateway())
         state_dir = eval_registry._db_dir
@@ -491,11 +491,11 @@ def test_eval_registry_continues_cleanup_after_browser_close_fails(eval_settings
             calls.append("database")
             await real_database_close()
 
-        eval_registry.runtime_tools.browser_service.close = close_browser
-        eval_registry.runtime_tools.module_manager.close = close_modules
-        eval_registry.memory_manager.close = close_memory
-        eval_registry.provider_manager.close = close_provider
-        eval_registry._database.close = close_database
+        monkeypatch.setattr(eval_registry.runtime_tools.browser_service, "close", close_browser)
+        monkeypatch.setattr(eval_registry.runtime_tools.module_manager, "close", close_modules)
+        monkeypatch.setattr(eval_registry.memory_manager, "close", close_memory)
+        monkeypatch.setattr(eval_registry.provider_manager, "close", close_provider)
+        monkeypatch.setattr(eval_registry._database, "close", close_database)
 
         with pytest.raises(RuntimeError, match="browser cleanup failed"):
             await eval_registry.close()

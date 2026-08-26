@@ -5,7 +5,7 @@ from agent.compaction import CompactionConfig, Compactor
 from evals.capture import InstrumentedProvider, InstrumentedRegistry
 from evals.harness import ScenarioRun, run_scenario_for_model
 from evals.identity import EvalIdentity
-from evals.scenario import Expect, Scenario
+from evals.scenario import Expect, Scenario, TurnSpec
 from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse, ToolCall
@@ -250,7 +250,7 @@ def test_run_scenario_uses_one_identity_context_key_per_multi_turn_run():
                 id=scenario.id,
                 category=scenario.category,
                 trust_tier=scenario.trust_tier,
-                turns=["other repetition"],
+                turns=[TurnSpec(text="other repetition")],
             ),
             provider=InstrumentedProvider(
                 _Scripted(

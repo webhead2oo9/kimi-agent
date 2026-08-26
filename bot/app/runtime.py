@@ -118,6 +118,7 @@ from discord_adapter.module_events import ModuleEventPublisher
 from discord_adapter.module_interactions import InteractionRuntime
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl
+from modules.guild_settings import GuildSettingsService
 from modules.scheduler import DurableScheduler
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
@@ -329,7 +330,13 @@ class KimiApplication:
         directory synchronously while processing a Discord event.
         """
         setup = self._guild_activation_cache.snapshot()
-        return (self.settings.allowed_guilds | set(setup.active)) - set(setup.deactivated)
+        active = (self.settings.allowed_guilds | set(setup.active)) - set(setup.deactivated)
+        guild_settings = self.tools.module_manager.guild_settings
+        if guild_settings is not None:
+            # An enforcement module with an invalid guild document takes the
+            # guild offline rather than running unmoderated.
+            active -= guild_settings.blocked_guilds()
+        return active
 
     def guild_activation_state(self, guild_id: int) -> dict[str, Any]:
         setup = self._guild_activation_cache.snapshot()
@@ -362,6 +369,20 @@ class KimiApplication:
             await asyncio.to_thread(self._guild_activation_cache.refresh)
         else:
             await asyncio.to_thread(self._guild_activation_cache.refresh_guild, guild_id)
+        await self._refresh_module_guild_settings(guild_id)
+
+    def _known_guild_ids(self) -> set[int]:
+        setup = self._guild_activation_cache.snapshot()
+        known = set(self.settings.allowed_guilds) | set(setup.active) | set(setup.deactivated)
+        known |= {int(guild.id) for guild in getattr(self.bot, "guilds", ())}
+        return known
+
+    async def _refresh_module_guild_settings(self, guild_id: int | None) -> None:
+        service = self.tools.module_manager.guild_settings
+        if service is None:
+            return
+        targets = {guild_id} if guild_id is not None else self._known_guild_ids()
+        await asyncio.to_thread(service.refresh, targets)
 
     async def activate_managed_config(self, config_dir: Path) -> None:
         """Switch live fragment readers to one validated immutable revision."""
@@ -828,6 +849,12 @@ class KimiApplication:
         module_manager.scheduler = DurableScheduler(
             self.database, on_health=module_manager.health.mark
         )
+        module_manager.guild_settings = GuildSettingsService(
+            config_dir=lambda: Path(self.settings.config_dir),
+            schemas=module_manager.guild_settings_schemas,
+            on_health=module_manager.health.mark,
+        )
+        await self._refresh_module_guild_settings(None)
         self._module_event_publisher = ModuleEventPublisher(
             self.bot, module_manager.events.publish_core
         )

@@ -35,8 +35,11 @@ profile, so do not use CLI commands or try to select either one.
 Read `reference/api.md` before the first call when you need more than basic
 navigation and `page.title()`. A few easy mistakes to avoid:
 
-- `snapshot()`, `screenshot()`, and `context` are globals. Do not call
-  `page.snapshot()` or `page.context()`.
+- `page`, `context`, `snapshot()`, `screenshot()`, and `human` are globals.
+  There is no `browser` global: use the existing `page`, or
+  `await openPage(url)` for another tab. Do not call `browser.newPage()`,
+  `context.newPage()`,
+  `page.snapshot()`, or `page.context()`.
 - `snapshot()` returns text. Search it directly, for example
   `const snap = await snapshot(); return snap.includes('Settings');`.
 - `human.click()` takes a selector, Locator, ElementHandle, or bounds. A

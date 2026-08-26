@@ -13,6 +13,19 @@ Kimi's user-facing release notes for server owners, staff, and members.
   Off by default (`CONTROL_PLANE_ENABLED`).
 - Application modules install through a versioned public module API and can
   declare the control-plane capabilities they need.
+- Long, tool-heavy conversations in shared channels can now receive a one-time
+  suggestion to continue in a Discord thread. Server owners can tune the
+  threshold with `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS`, or set it to `0` to
+  disable the suggestion.
+- Thread handoff is available to the model without a preliminary tool-discovery
+  step, improving explicit thread requests and multi-turn troubleshooting.
+- Model evaluation runs now isolate identities, workspaces, attachments,
+  browser profiles, generated artifacts, coding controls, and databases across
+  models and repetitions. Reports also identify modified source trees, flag
+  incomplete turns, and cover browser, internet search, URL download, vision,
+  and workspace behavior more directly.
+- Eval browser and runtime resources are closed before temporary state is
+  removed, reducing leaked sessions and cross-run interference after failures.
 
 ## 1.0.0 (2026-08-24)
 

@@ -2,9 +2,15 @@ id: single-edit-stays-inline
 category: coding
 trust_tier: REGULAR
 channel: { name: dev-help, id: "800000000000000004" }
+workspace_files:
+  notes.md: |
+    teh release checklist
+    - run the test suite
+    - update the changelog
 turns:
   - "in my notes.md can you fix the typo on the first line? it says 'teh' instead of 'the'"
 expect:
+  should_use_tools: [edit_file]
   should_not_use_tools: [start_coding_task]
   max_tool_calls: 4
   notes: >-

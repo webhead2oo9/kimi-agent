@@ -191,7 +191,11 @@ def test_cassette_records_covers_source_tools_and_plugin_declarations(monkeypatc
     monkeypatch.setattr(tool_surfaces, "_SURFACE_TOOLS", {})
 
     assert cassette_records("discord_text_search")
+    assert cassette_records("internet_search")
     assert cassette_records("recall_user")
+    # Downloads must stay live: replaying one would skip the workspace write
+    # and outgoing-attachment side effects the eval is meant to exercise.
+    assert not cassette_records("fetch_url")
     assert not cassette_records("write_file")
     assert not cassette_records("matplotlib_chart")
     assert not cassette_records("browse_tools")

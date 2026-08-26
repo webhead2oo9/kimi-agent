@@ -25,10 +25,12 @@ write through immediately instead of riding a rail: they change thread state rat
 than the outgoing reply, and "stop replying" should stick even if the rest of the
 turn fails.
 
-Those three are registered as core (not searchable) tools and masked out of every
-turn with no thread to act on (see ``config/fragments/tool_policy.py:thread_state_blocked_tools``).
-Being core is what makes "stop replying to everything" work on the first ask,
-rather than only after the model has run ``browse_tools``.
+All four are registered as core (not searchable) tools. ``move_to_thread`` is
+therefore available on the first ask in any channel where handoff is allowed;
+the three lifecycle tools are masked out of every turn with no thread to act on
+(see ``config/fragments/tool_policy.py:thread_state_blocked_tools``). Being core
+is what makes both handoff and "stop replying to everything" work without a
+preliminary ``browse_tools`` call.
 
 All four are registered only when ``THREAD_HANDOFF_ENABLED`` is true. Nothing
 here imports ``discord``.
@@ -424,8 +426,11 @@ def init_thread_tools(
             "Start a new Discord thread from the current user message, including "
             "for a brand-new conversation. Your current reply becomes the "
             "thread's first message and you keep responding there without needing "
-            "mentions. Can also open the thread in another channel when someone "
-            "asks for that. See the 'start-thread' skill for when to use it."
+            "mentions. Use it when someone asks for a thread, or proactively when "
+            "detailed step-by-step troubleshooting or another multi-turn discussion "
+            "would clutter a busy channel. Can also open the thread in another "
+            "channel when someone asks for that. See the 'start-thread' skill for "
+            "the full behavior."
         ),
         parameters={
             "type": "object",
@@ -462,7 +467,6 @@ def init_thread_tools(
         },
         handler=move_handler,
         min_tier=TrustTier.MEMBER,
-        searchable=True,
         category="Discord",
     )
     registry.register(

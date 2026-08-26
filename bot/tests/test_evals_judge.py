@@ -85,6 +85,15 @@ def test_build_judge_packet_includes_rubric_anchors_notes_and_replies(tmp_path):
     assert "5=solves it" in packet
 
 
+def test_build_judge_packet_exposes_incomplete_turns(tmp_path):
+    candidate = _run("cand")
+    candidate.turns[0].termination_reason = "max_iterations"
+
+    packet = build_judge_packet(_scenario(), candidate, _run("base"), _rubric(tmp_path), swap=False)
+
+    assert "TERMINATION: max_iterations" in packet
+
+
 def test_judge_pair_maps_blind_labels_back_to_models(tmp_path):
     payload = json.dumps(
         {

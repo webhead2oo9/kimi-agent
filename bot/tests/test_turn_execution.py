@@ -606,7 +606,7 @@ async def test_execute_turn_passes_prepared_state_to_run_conversation(
             workspace_dir=tmp_path,
             run_conversation=run_conversation,
         ),
-        config=_config(),
+        config=replace(_config(), thread_handoff_suggest_after_tool_calls=9),
     )
 
     assert result.response_text == "ok"
@@ -628,6 +628,7 @@ async def test_execute_turn_passes_prepared_state_to_run_conversation(
     assert call["reply_context"] is None
     assert call["max_iterations"] == 7
     assert call["max_tokens"] == 1234
+    assert call["thread_handoff_suggest_after_tool_calls"] == 9
     assert call["trigger_discord_message_id"] == "777"
 
 

@@ -91,7 +91,15 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "workspace",
     },
     "config": {"providers", "tools", "trust", "utils"},
-    "discord_adapter": {"agent", "memory", "storage", "tools", "trust", "workspace"},
+    "discord_adapter": {
+        "agent",
+        "kimi_agent_module_api",
+        "memory",
+        "storage",
+        "tools",
+        "trust",
+        "workspace",
+    },
     # The offline harness drives the production core, so it sees what app sees.
     "evals": {
         "agent",

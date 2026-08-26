@@ -109,6 +109,32 @@ Each started module receives its own frozen `ModuleRuntimeContext` carrying
   it starts later. `get` returns a proxy that raises `ServiceUnavailable`
   once the provider closes.
 
+- `ctx.events.publish(topic, payload)` / `ctx.events.subscribe(pattern,
+  handler)`: an in-process bus. A module publishes only under
+  `<module_name>.*`; subscribing to `discord.*` or a sibling's topics
+  requires the topic (or `<namespace>.*`) in `permissions.event_topics`.
+  Core publishes normalized `discord.message`, `discord.message_edit`,
+  `discord.message_delete`, `discord.member_join`, `discord.member_remove`,
+  `discord.member_update`, and `discord.audit_log_entry` events
+  (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
+  re-fetched, never SDK objects. `publish` returns immediately; each
+  subscriber module has a bounded queue and a small worker pool with a
+  per-handler timeout, failures are logged and counted in that module's
+  health metrics, and a full queue drops its oldest pending event. Events
+  are lost on restart; durable work belongs in the scheduler.
+- `ctx.discord`: the declared Discord operations (`send_message`,
+  `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`,
+  `fetch_message`, `fetch_member`) on stable IDs, returning public
+  snapshots. Calling an undeclared action raises
+  `UndeclaredDiscordAction`. `ban`, `kick`, and `timeout` refuse the bot,
+  the acting user, other bots, and any member whose trust tier is not
+  below the actor's, unless the spec sets
+  `permissions.override_target_policy`. Every action is scoped to guilds
+  core considers active, audit reasons are prefixed with the module name,
+  and outgoing messages never ping.
+- `ctx.trust.tier(guild_id, user_id)`: read-only trust lookup (`member`,
+  `regular`, `staff`) for modules that keep their own protections.
+
 The bot owner can inspect all of this with `/modules status` (health per
 module) and `/modules manifest` (every declaration, including escape
 hatches such as `raw_bot`).

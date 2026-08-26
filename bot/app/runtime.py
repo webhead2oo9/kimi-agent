@@ -113,6 +113,10 @@ from commands.privacy_cmd import (
     run_privacy_deletion,
 )
 from commands.modules_cmd import register_modules_command
+from discord_adapter.module_actions import DiscordActionsImpl, TrustLookupImpl
+from discord_adapter.module_events import ModuleEventPublisher
+from modules.actions import DeclaredDiscordActions
+from modules.events import EventBusImpl
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
@@ -257,6 +261,7 @@ class KimiApplication:
     usage_store: UsageStore | None = None
     coding_task_store: CodingTaskStore | None = None
     coding_tasks: CodingTaskService | None = None
+    _module_event_publisher: ModuleEventPublisher | None = None
     privacy_deletion_store: PrivacyDeletionRequestStore | None = None
     user_memory_bank_state_store: UserMemoryBankStateStore | None = None
     privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier)
@@ -489,6 +494,11 @@ class KimiApplication:
             except Exception:
                 log.exception("Error closing moderation service")
         await self.tools.module_manager.close()
+        if self._module_event_publisher is not None:
+            self._module_event_publisher.uninstall()
+            self._module_event_publisher = None
+        if self.tools.module_manager.events is not None:
+            await self.tools.module_manager.events.close()
         await self.memory_manager.close()
         await self.provider_manager.close()
         await self.database.close()
@@ -806,10 +816,18 @@ class KimiApplication:
             browser_data_store=self.tools.browser_service,
             cancel_user_work=self._cancel_user_for_privacy,
         )
-        self.tools.module_manager.health.on_change = lambda name, health: emit_module_health(
+        module_manager = self.tools.module_manager
+        module_manager.health.on_change = lambda name, health: emit_module_health(
             module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
         )
-        await self.tools.module_manager.start(
+        module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
+        self._module_event_publisher = ModuleEventPublisher(
+            self.bot, module_manager.events.publish_core
+        )
+        self._module_event_publisher.install()
+        module_trust = TrustLookupImpl(self.bot, self.trust_resolver)
+        is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
+        await module_manager.start(
             ModuleRuntimeContext(
                 bot=self.bot,
                 database=self.database,
@@ -822,7 +840,23 @@ class KimiApplication:
                 proposals=self.proposal_service,
                 configuration=self.configuration_service,
                 restart=self.restart_coordinator,
-            )
+                trust=module_trust,
+                current_config_dir=lambda: Path(self.settings.config_dir),
+            ),
+            customize=lambda spec, module_ctx: replace(
+                module_ctx,
+                discord=DeclaredDiscordActions(
+                    DiscordActionsImpl(
+                        bot=self.bot,
+                        trust=module_trust,
+                        module_name=spec.name,
+                        is_guild_active=is_guild_active,
+                        override_target_policy=spec.permissions.override_target_policy,
+                    ),
+                    spec.name,
+                    spec.permissions.discord_actions,
+                ),
+            ),
         )
         # Start the durable scheduler only after pending privacy deletions have
         # replayed and their barriers are installed. This prevents recovered

@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from discord_adapter.gateway import DiscordGateway
     from tools.registry import ToolRegistry
 
+from modules.actions import DeclaredDiscordActions
+from modules.events import EventBusImpl, ModuleEventView
 from modules.health import HealthRegistry
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl, validate_table_aliases
@@ -189,6 +191,7 @@ class ModuleManager:
     _contexts: dict[str, ModuleRuntimeContext] = field(default_factory=dict)
     health: HealthRegistry = field(default_factory=HealthRegistry)
     services: ServiceRegistryImpl = field(default_factory=ServiceRegistryImpl)
+    events: EventBusImpl | None = None
 
     @property
     def config_dir(self) -> Path:
@@ -307,6 +310,18 @@ class ModuleManager:
                     services=ModuleServiceView(
                         self.services, spec.name, spec.provides, spec.consumes
                     ),
+                    events=(
+                        ModuleEventView(self.events, spec.name, spec.permissions)
+                        if self.events is not None
+                        else None
+                    ),
+                    discord=(
+                        DeclaredDiscordActions(
+                            ctx.discord, spec.name, spec.permissions.discord_actions
+                        )
+                        if ctx.discord is not None
+                        else None
+                    ),
                 )
                 if customize is not None:
                     module_ctx = customize(spec, module_ctx)
@@ -346,6 +361,8 @@ class ModuleManager:
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
             finally:
+                if self.events is not None:
+                    await self.events.close_module(name)
                 self.services.retire_module(name)
                 self.health.forget(name)
                 self._contexts.pop(name, None)

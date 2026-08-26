@@ -534,10 +534,12 @@ class DiscordActions(Protocol):
     async def fetch_member(self, guild_id: int, user_id: int) -> MemberSnapshot | None: ...
 
 
-type TrustTierName = Literal["blocked", "member", "trusted", "staff", "owner"]
+type TrustTierName = Literal["member", "regular", "staff"]
 
 
 class TrustLookup(Protocol):
+    """Read-only trust tier lookup, mirroring core's member < regular < staff."""
+
     async def tier(self, guild_id: int, user_id: int) -> TrustTierName: ...
 
 

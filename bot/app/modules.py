@@ -50,6 +50,7 @@ from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl, ModuleEventView
 from modules.guild_settings import GuildSettingsService
 from modules.health import HealthRegistry
+from modules.http import ModuleHttpRuntime, ResolvedHostRule, resolve_host_rules
 from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl, validate_table_aliases
@@ -196,6 +197,8 @@ class ModuleManager:
     events: EventBusImpl | None = None
     scheduler: DurableScheduler | None = None
     guild_settings: GuildSettingsService | None = None
+    http: ModuleHttpRuntime | None = None
+    _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
 
     @property
     def config_dir(self) -> Path:
@@ -240,6 +243,10 @@ class ModuleManager:
                     _register_guild_validator=manager._register_guild_validator,
                     _register_tool_labels=register_tool_labels,
                     _declare_surface_tools=declare_surface_tools,
+                )
+                settings_values = prepared.active.model_dump() if prepared is not None else None
+                manager._host_rules[spec.name] = resolve_host_rules(
+                    spec.name, spec.permissions.http_hosts, settings_values
                 )
                 instance = spec.create(ctx)
             except Exception:
@@ -335,6 +342,11 @@ class ModuleManager:
                         if self.guild_settings is not None and spec.guild_settings is not None
                         else None
                     ),
+                    http=(
+                        self.http.client_for(spec.name, self._host_rules.get(spec.name, ()))
+                        if self.http is not None
+                        else None
+                    ),
                     discord=(
                         DeclaredDiscordActions(
                             ctx.discord, spec.name, spec.permissions.discord_actions
@@ -369,6 +381,9 @@ class ModuleManager:
             )
         elif current is None or current.state == "starting":
             self.health.set(spec.name, "healthy")
+
+    def host_rules(self, name: str) -> tuple[ResolvedHostRule, ...]:
+        return self._host_rules.get(name, ())
 
     def health_snapshot(self) -> Mapping[str, ModuleHealth]:
         return self.health.snapshot()

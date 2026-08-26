@@ -119,6 +119,7 @@ from discord_adapter.module_interactions import InteractionRuntime
 from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl
 from modules.guild_settings import GuildSettingsService
+from modules.http import ModuleHttpRuntime
 from modules.scheduler import DurableScheduler
 from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
@@ -519,6 +520,8 @@ class KimiApplication:
         if self.tools.module_manager.scheduler is not None:
             await self.tools.module_manager.scheduler.close()
         await self.tools.module_manager.close()
+        if self.tools.module_manager.http is not None:
+            await self.tools.module_manager.http.close()
         if self._module_event_publisher is not None:
             self._module_event_publisher.uninstall()
             self._module_event_publisher = None
@@ -810,6 +813,10 @@ class KimiApplication:
             requested=lambda: module_manager.load_state.requested,
             specs=lambda: module_manager.specs,
             health=module_manager.health_snapshot,
+            resolved_hosts=lambda name: tuple(
+                f"{rule.host}{' (private)' if rule.private else ''}"
+                for rule in module_manager.host_rules(name)
+            ),
         )
         register_usage_command(
             self.bot,
@@ -849,6 +856,7 @@ class KimiApplication:
         module_manager.scheduler = DurableScheduler(
             self.database, on_health=module_manager.health.mark
         )
+        module_manager.http = ModuleHttpRuntime(user_agent=f"{self.settings.bot_name}-modules")
         module_manager.guild_settings = GuildSettingsService(
             config_dir=lambda: Path(self.settings.config_dir),
             schemas=module_manager.guild_settings_schemas,

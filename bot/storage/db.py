@@ -354,40 +354,29 @@ CREATE TABLE IF NOT EXISTS coding_command_jobs (
 CREATE INDEX IF NOT EXISTS idx_coding_jobs_task
     ON coding_command_jobs(task_id, created_at);
 
-CREATE TABLE IF NOT EXISTS control_proposals (
+CREATE TABLE IF NOT EXISTS config_proposals (
     proposal_id       TEXT PRIMARY KEY,
     module_name       TEXT NOT NULL,
-    action            TEXT NOT NULL,
+    guild_id          TEXT NOT NULL,
     target            TEXT NOT NULL,
+    content           TEXT NOT NULL,
+    content_revision  TEXT NOT NULL,
+    base_exists       INTEGER NOT NULL CHECK (base_exists IN (0, 1)),
+    base_content      TEXT NOT NULL,
+    base_revision     TEXT NOT NULL,
     summary           TEXT NOT NULL,
-    changes_json      TEXT NOT NULL,
     actor_json        TEXT NOT NULL,
-    expected_revision TEXT,
-    preview_json      TEXT NOT NULL,
-    state             TEXT NOT NULL CHECK (state IN (
-                          'pending','rejected','stale','applying',
-                          'restart_pending','applied','failed','rolled_back'
-                      )),
+    state             TEXT NOT NULL CHECK (state IN ('pending','applied','rejected')),
     decided_by        TEXT,
     decision_reason   TEXT NOT NULL DEFAULT '',
-    result_message    TEXT NOT NULL DEFAULT '',
+    message_channel_id TEXT,
+    message_id        TEXT,
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_control_proposals_state_time
-    ON control_proposals(state, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS control_proposal_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    proposal_id TEXT NOT NULL REFERENCES control_proposals(proposal_id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL,
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    created_at  REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_control_proposal_events_proposal
-    ON control_proposal_events(proposal_id, id);
+CREATE INDEX IF NOT EXISTS idx_config_proposals_state_time
+    ON config_proposals(state, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
     job_id           TEXT PRIMARY KEY,
@@ -504,40 +493,31 @@ async def _apply_migrations(conn: aiosqlite.Connection, current: int) -> None:
             raise
 
 
-async def _ensure_control_plane_schema(conn: aiosqlite.Connection) -> None:
-    """Let pre-control-plane v1 development databases adopt the v1 tables."""
+async def _ensure_config_proposal_schema(conn: aiosqlite.Connection) -> None:
+    """Adopt the guild-fragment proposal table without changing core schema v2."""
     statements = (
-        """CREATE TABLE IF NOT EXISTS control_proposals (
+        """CREATE TABLE IF NOT EXISTS config_proposals (
             proposal_id TEXT PRIMARY KEY,
             module_name TEXT NOT NULL,
-            action TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
             target TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_revision TEXT NOT NULL,
+            base_exists INTEGER NOT NULL CHECK (base_exists IN (0, 1)),
+            base_content TEXT NOT NULL,
+            base_revision TEXT NOT NULL,
             summary TEXT NOT NULL,
-            changes_json TEXT NOT NULL,
             actor_json TEXT NOT NULL,
-            expected_revision TEXT,
-            preview_json TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN (
-                'pending','rejected','stale','applying','restart_pending',
-                'applied','failed','rolled_back'
-            )),
+            state TEXT NOT NULL CHECK (state IN ('pending','applied','rejected')),
             decided_by TEXT,
             decision_reason TEXT NOT NULL DEFAULT '',
-            result_message TEXT NOT NULL DEFAULT '',
+            message_channel_id TEXT,
+            message_id TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )""",
-        """CREATE INDEX IF NOT EXISTS idx_control_proposals_state_time
-            ON control_proposals(state, created_at DESC)""",
-        """CREATE TABLE IF NOT EXISTS control_proposal_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proposal_id TEXT NOT NULL REFERENCES control_proposals(proposal_id) ON DELETE CASCADE,
-            kind TEXT NOT NULL,
-            payload_json TEXT NOT NULL DEFAULT '{}',
-            created_at REAL NOT NULL
-        )""",
-        """CREATE INDEX IF NOT EXISTS idx_control_proposal_events_proposal
-            ON control_proposal_events(proposal_id, id)""",
+        """CREATE INDEX IF NOT EXISTS idx_config_proposals_state_time
+            ON config_proposals(state, created_at DESC)""",
     )
     for statement in statements:
         await conn.execute(statement)
@@ -653,7 +633,7 @@ class Database:
                 PRIMARY KEY (module_name, version)
             )"""
         )
-        await _ensure_control_plane_schema(conn)
+        await _ensure_config_proposal_schema(conn)
         await _ensure_module_runtime_schema(conn)
         await conn.commit()
 

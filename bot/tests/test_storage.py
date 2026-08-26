@@ -43,6 +43,12 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_tasks'"
         ) as cur:
             assert await cur.fetchone() is None
+        async with db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('config_proposals','control_proposals','control_proposal_events') "
+            "ORDER BY name"
+        ) as cur:
+            assert [row["name"] for row in await cur.fetchall()] == ["config_proposals"]
     finally:
         await db.close()
 
@@ -131,6 +137,49 @@ async def _v1_database_with_coding_task(path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+async def _legacy_v2_database_with_control_tables(path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                name TEXT,
+                applied_at TEXT
+            );
+            INSERT INTO schema_version VALUES (1, 'initial_schema', 'now');
+            INSERT INTO schema_version VALUES (2, 'coding_task_context_inputs', 'now');
+            CREATE TABLE control_proposals (proposal_id TEXT PRIMARY KEY);
+            CREATE TABLE control_proposal_events (event_id INTEGER PRIMARY KEY);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_v2_database_adopts_proposals_and_keeps_legacy_tables(tmp_path) -> None:
+    path = tmp_path / "legacy-v2.db"
+    await _legacy_v2_database_with_control_tables(path)
+
+    db = Database(path)
+    await db.connect()
+    try:
+        async with db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('config_proposals','control_proposals','control_proposal_events') "
+            "ORDER BY name"
+        ) as cur:
+            assert [row["name"] for row in await cur.fetchall()] == [
+                "config_proposals",
+                "control_proposal_events",
+                "control_proposals",
+            ]
+    finally:
+        await db.close()
 
 
 async def _add_note_column(conn) -> None:

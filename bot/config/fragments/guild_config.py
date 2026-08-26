@@ -36,6 +36,9 @@ affordances ride the frontmatter:
   ``skill_create``, ``skill_edit``) is announced, so an ephemeral confirmation
   still leaves a shared audit trail. Absent means no learn logging; see
   :func:`load_learn_log_channel_id` and ``app/learn_log.py``.
+* ``proposal_channel_id``: where module-authored configuration proposals are
+  reviewed by staff. Absent means the invoking channel is used; see
+  :func:`load_proposal_channel_id` and ``app/proposals.py``.
 * Application modules may own additional keys. Their validators join
   :func:`server_setup_activation` while the module is active, so a malformed
   module security boundary cannot activate the guild.
@@ -61,7 +64,7 @@ from config.fragments.channel_pins import (
     parse_pinned_tools,
     parse_tristate,
 )
-from utils.frontmatter import split_frontmatter
+from utils.frontmatter import FrontmatterError, split_frontmatter, split_frontmatter_strict
 from config import paths
 from trust.resolver import EMPTY_GUILD_TRUST, GuildTrust
 
@@ -105,10 +108,12 @@ def server_setup_activation(
         raw = meta.get(key)
         if raw is not None and not isinstance(raw, list):
             return None
-    for key in ("learn_log_channel_id",):
+    for key in ("learn_log_channel_id", "proposal_channel_id"):
         raw = meta.get(key)
-        if raw is not None and not _ID_RE.match(str(raw).strip()):
-            return None
+        if raw is not None:
+            token = str(raw).strip()
+            if not _ID_RE.match(token) or int(token) <= 0:
+                return None
     if any(not validator(meta) for validator in validators):
         return None
     return decision
@@ -278,6 +283,69 @@ def load_learn_log_channel_id(
         log.warning("Ignoring non-numeric learn_log_channel_id in %s", source)
         return None
     return token
+
+
+def load_proposal_channel_id(
+    guild_id: str,
+    *,
+    config_dir: Path | None = None,
+) -> str | None:
+    """Read the guild's optional staff proposal-review channel.
+
+    Channel ownership and sendability are checked by the proposal service at
+    use time. This loader only accepts a positive numeric Discord ID.
+    """
+    _fallback_blocked, channel_id = _proposal_channel_route(guild_id, config_dir=config_dir)
+    return channel_id
+
+
+def _proposal_channel_route(
+    guild_id: str,
+    *,
+    config_dir: Path | None,
+) -> tuple[bool, str | None]:
+    """Return ``(fallback_blocked, valid_channel_id)`` without following links."""
+    if not guild_id or not _ID_RE.match(guild_id):
+        return True, None
+    fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
+    try:
+        fragment.lstat()
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    text = paths.read_regular_utf8(fragment)
+    if text is None:
+        log.warning("Refusing proposal routing from non-regular or unreadable %s", fragment)
+        return True, None
+    try:
+        meta, _body = split_frontmatter_strict(text)
+    except FrontmatterError:
+        log.warning("Refusing proposal routing from malformed %s", fragment)
+        return True, None
+    if "proposal_channel_id" not in meta:
+        return False, None
+    token = str(meta["proposal_channel_id"]).strip()
+    if not _ID_RE.match(token) or int(token) <= 0:
+        log.warning("Ignoring non-numeric proposal_channel_id in %s", fragment)
+        return True, None
+    return True, token
+
+
+def proposal_channel_id_is_configured(
+    guild_id: str,
+    *,
+    config_dir: Path | None = None,
+) -> bool:
+    """Return whether invoking-channel fallback must be disabled.
+
+    A valid fragment disables fallback when it declares ``proposal_channel_id``.
+    A malformed or unreadable existing fragment also disables fallback because
+    the service cannot safely prove that the key is absent. Only a missing file
+    or valid fragment without the key permits the invoking channel.
+    """
+    fallback_blocked, _channel_id = _proposal_channel_route(guild_id, config_dir=config_dir)
+    return fallback_blocked
 
 
 def load_guild_trust(

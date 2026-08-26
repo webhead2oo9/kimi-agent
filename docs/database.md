@@ -59,6 +59,11 @@ and reads.
   `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns,
   attempt and last error). Core owns it; modules reach it only through
   `ctx.scheduler`.
+- **`config_proposals`** holds guild-scoped fragment proposals, including the
+  proposed content hash and exact pre-change baseline needed for conflict
+  detection and rollback. Old `control_proposals` and
+  `control_proposal_events` tables may remain in upgraded databases but are
+  orphaned and never read; fresh databases do not create them.
 - `module_schema_versions` records the latest applied version for each active
   application module. Module migrations run transactionally before module
   startup, and module tables are not part of the core baseline.

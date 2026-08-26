@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
@@ -36,6 +35,8 @@ from config.fragments.guild_config import (
     load_guild_blocked_tools,
     load_guild_pinned_tools,
     load_guild_trust,
+    load_proposal_channel_id,
+    proposal_channel_id_is_configured,
     server_setup_activation,
 )
 from agent.context import ContextManager
@@ -68,16 +69,8 @@ from app.conversation_routing import (
 from app.consent import PrivacyConsentGate
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
-from app.control_plane import (
-    RESTART_EXIT_CODE,
-    ControlPlaneStore,
-    ManagedConfigurationService,
-    RestartCoordinator,
-    apply_managed_settings,
-    managed_models_path,
-)
 from app.modules import ModuleRuntimeBase, module_capabilities
-from app.proposals import DurableProposalService
+from app.proposals import ConfigProposalService, ProposalHost, ROUTER_NAME
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
 from app.memory import MemoryManager
@@ -122,7 +115,6 @@ from modules.events import EventBusImpl
 from modules.guild_settings import GuildSettingsService
 from modules.http import ModuleHttpRuntime
 from modules.scheduler import DurableScheduler
-from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
 from config import paths
@@ -252,10 +244,7 @@ class KimiApplication:
     memory_manager: MemoryManager
     tools: RuntimeTools
     database: Database
-    proposal_service: DurableProposalService | None = None
-    configuration_service: ManagedConfigurationService | None = None
-    restart_coordinator: RestartCoordinator | None = None
-    control_plane_store: ControlPlaneStore | None = None
+    proposal_service: ConfigProposalService | None = None
     context_manager: ContextManager | None = None
     conversation_store: ConversationStore | None = None
     preference_store: PreferenceStore | None = None
@@ -383,16 +372,23 @@ class KimiApplication:
         targets = {guild_id} if guild_id is not None else self._known_guild_ids()
         await asyncio.to_thread(service.refresh, targets)
 
-    async def activate_managed_config(self, config_dir: Path) -> None:
-        """Switch live fragment readers to one validated immutable revision."""
-        resolved = await asyncio.to_thread(config_dir.resolve)
-        self.settings.config_dir = str(resolved)
-        paths.set_default_config_dir(resolved)
-        self._guild_activation_cache = paths.GuildActivationCache(
-            resolved,
-            server_setup_activation,
-        )
-        await self.refresh_guild_activation()
+    async def _channel_guild_id(self, channel_id: int) -> int | None:
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except discord.NotFound, discord.Forbidden, discord.HTTPException:
+                return None
+        guild = getattr(channel, "guild", None)
+        return None if guild is None else int(guild.id)
+
+    def _proposal_guild_health(self, guild_id: int) -> str:
+        if self.guild_activation_state(guild_id)["setup_state"] == "invalid":
+            return "the guild configuration is invalid"
+        service = self.tools.module_manager.guild_settings
+        if service is not None and guild_id in service.blocked_guilds():
+            return "module guild settings would disable this guild"
+        return ""
 
     async def _guild_activation_refresh_loop(self) -> None:
         while True:
@@ -441,8 +437,6 @@ class KimiApplication:
         )
         if self._startup_error is not None:
             raise RuntimeError("Kimi Agent startup failed") from self._startup_error
-        if self.restart_coordinator is not None and self.restart_coordinator.requested:
-            return RESTART_EXIT_CODE
         return 0
 
     async def close(self) -> None:
@@ -714,14 +708,6 @@ class KimiApplication:
                 GUILD_ACTIVATION_REFRESH_SECONDS,
             )
 
-        handshake_revision = os.environ.get("KIMI_CONTROL_REVISION", "").strip()
-        if handshake_revision and self.control_plane_store is not None:
-            self.control_plane_store.mark_healthy(handshake_revision)
-            if self.proposal_service is not None:
-                await self.proposal_service.reconcile_control_state(
-                    self.control_plane_store.state()
-                )
-
     async def _first_init_core(self) -> None:
         """One-time startup wiring: DB connect, stores, gates, slash commands.
 
@@ -729,8 +715,6 @@ class KimiApplication:
         marks ``db_initialized`` only after the complete startup path succeeds.
         """
         await self.database.connect()
-        if self.proposal_service is not None:
-            await self.proposal_service.reconcile_interrupted_applications()
         self.conversation_store = ConversationStore(self.database)
         self.preference_store = PreferenceStore(self.database)
         self.blocked_user_store = BlockedUserStore(self.database)
@@ -791,13 +775,6 @@ class KimiApplication:
             self.model_selection_store,
             owner_user_id=self.settings.owner_user_id,
         )
-        if self.proposal_service is not None:
-            register_proposals_command(
-                self.bot,
-                self.proposal_service,
-                owner_user_id=self.settings.owner_user_id,
-                configuration=self.configuration_service,
-            )
         register_moderation_command(
             self.bot,
             self.blocked_user_store,
@@ -874,6 +851,37 @@ class KimiApplication:
         is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
         interaction_runtime = InteractionRuntime(self.bot)
         interaction_runtime.install()
+        proposal_actions = DiscordActionsImpl(
+            bot=self.bot,
+            trust=module_trust,
+            module_name=ROUTER_NAME,
+            is_guild_active=is_guild_active,
+        )
+        self.proposal_service = ConfigProposalService(
+            self.database,
+            ProposalHost(
+                config_dir=lambda: Path(self.settings.config_dir),
+                review_channel_id=lambda guild_id: load_proposal_channel_id(
+                    guild_id, config_dir=Path(self.settings.config_dir)
+                ),
+                channel_guild_id=self._channel_guild_id,
+                known_modules=lambda: module_manager.load_state.loaded,
+                post_review=proposal_actions.send_message,
+                on_applied=self.refresh_guild_activation,
+                verify_guild=self._proposal_guild_health,
+                review_channel_configured=lambda guild_id: proposal_channel_id_is_configured(
+                    guild_id, config_dir=Path(self.settings.config_dir)
+                ),
+            ),
+        )
+        self.proposal_service.install(
+            interaction_runtime.router_for(
+                ROUTER_NAME,
+                trust=module_trust,
+                is_guild_active=is_guild_active,
+            )
+        )
+        await self.proposal_service.warn_unattached()
 
         def customize_module_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
             module_is_guild_active = ports["is_guild_active"]
@@ -906,8 +914,6 @@ class KimiApplication:
                 capabilities=module_capabilities(self.settings),
                 trust=module_trust,
                 proposals=self.proposal_service,
-                configuration=self.configuration_service,
-                restart=self.restart_coordinator,
             ),
             customize=customize_module_ports,
         )
@@ -2560,24 +2566,12 @@ def build_app(settings: Settings) -> KimiApplication:
     # precedence would make that edit silently do nothing
     # (config/operator_settings.py).
     apply_operator_settings(settings)
-    inherited_settings = settings.model_dump(mode="python")
     inherited_settings_values = MappingProxyType(
         {
             field: tuple(value) if isinstance(value, list) else value
             for field, value in settings_values(settings).items()
         }
     )
-    control_store: ControlPlaneStore | None = None
-    if settings.control_plane_enabled:
-        if not settings.owner_user_id.strip():
-            raise RuntimeError("CONTROL_PLANE_ENABLED requires OWNER_USER_ID")
-        control_store = ControlPlaneStore(
-            settings.control_plane_dir,
-            master_key=settings.control_plane_key.get_secret_value(),
-            base_config_dir=settings.config_dir,
-        )
-        apply_managed_settings(settings, control_store)
-        settings.config_dir = str(control_store.effective_config_dir(Path(settings.config_dir)))
     # Point the process-wide config-dir default at the fully resolved instance
     # directory before anything reads prompt or fragment paths.
     paths.set_default_config_dir(Path(settings.config_dir).resolve())
@@ -2624,14 +2618,7 @@ def build_app(settings: Settings) -> KimiApplication:
         bot_user_provider=lambda: bot.user,
         trust_resolver=trust_resolver,
     )
-    provider_manager = (
-        build_provider_manager(settings)
-        if control_store is None
-        else build_provider_manager(
-            settings,
-            model_config_path=managed_models_path(settings, control_store),
-        )
-    )
+    provider_manager = build_provider_manager(settings)
     registry = ToolRegistry()
     # Built before the tool layer so both knowledge sinks (community memory and
     # skill documents) can be handed the same audit hook at registration.
@@ -2649,27 +2636,6 @@ def build_app(settings: Settings) -> KimiApplication:
         path=settings.database_path,
         encryption_key=settings.database_encryption_key.get_secret_value() or None,
     )
-    restart = (
-        RestartCoordinator(enabled=settings.control_plane_auto_restart)
-        if control_store is not None
-        else None
-    )
-    proposal_service = (
-        DurableProposalService(database, owner_user_id=settings.owner_user_id)
-        if control_store is not None
-        else None
-    )
-    configuration_service = (
-        ManagedConfigurationService(
-            proposals=proposal_service,
-            store=control_store,
-            settings=settings,
-            inherited_settings=inherited_settings,
-            restart=restart,
-        )
-        if proposal_service is not None and control_store is not None and restart is not None
-        else None
-    )
     application = KimiApplication(
         settings=settings,
         inherited_settings_values=inherited_settings_values,
@@ -2680,10 +2646,6 @@ def build_app(settings: Settings) -> KimiApplication:
         memory_manager=memory_manager,
         moderation_service=moderation_service,
         learn_log=learn_log,
-        proposal_service=proposal_service,
-        configuration_service=configuration_service,
-        restart_coordinator=restart,
-        control_plane_store=control_store,
         tools=build_runtime_tools(
             settings,
             gateway,
@@ -2703,10 +2665,6 @@ def build_app(settings: Settings) -> KimiApplication:
         ),
         database=database,
     )
-    if restart is not None:
-        restart.bind(bot.close)
-    if configuration_service is not None:
-        configuration_service.bind_live_activation(application.activate_managed_config)
     bot._agent_application = application
     bot.event(application.on_ready)
     bot.event(application.on_disconnect)

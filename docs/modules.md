@@ -64,8 +64,8 @@ The modules Kimi ships with live in the companion repository,
 `image_fingerprints` (known-bad image enforcement backed by a read-only sync
 from a self-hostable
 [FingerPrint Hub](https://github.com/webhead2oo9/FingerPrint-Hub); it depends on
-`community_moderation`), and `config_admin` (staff-facing proposal tools for
-the control plane). Each package documents its own configuration, privacy
+`community_moderation`), and `config_admin` (staff-facing, guild-scoped
+configuration proposal tools). Each package documents its own configuration, privacy
 posture, and any external service it talks to, so this page stays about the
 contract they share.
 
@@ -163,13 +163,13 @@ the ports are a contract and an audit surface, not a sandbox.
   `legacy=True`, with the module marked `degraded` naming those guilds.
   `guild_ids()` lists the active guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
-  `revision`), refreshed on the guild-activation cadence and on managed
-  config activation; `is_enabled(guild_id)` is the guild being active and
+  `revision`), refreshed on the guild-activation cadence and immediately after
+  an approved proposal; `is_enabled(guild_id)` is the guild being active and
   the document valid; `on_change(callback)` fires per changed guild. An
   invalid document follows the schema's `invalid_policy`: `disable_module`
   turns the module off for that guild, `disable_guild` (the default) takes
-  the guild out of the bot's active set until it is fixed. The owner edits
-  these documents through `guild:<guild_id>:<module_name>` proposals.
+  the guild out of the bot's active set until it is fixed. Staff can propose
+  replacements through `guild:<guild_id>:<module_name>` and approve them in Discord.
 - `ctx.scheduler`: durable jobs. `register(name, handler)` in `start()`
   binds a handler by name; `run_at(key, when, name, payload)` and
   `run_every(key, interval, name, payload, jitter_seconds=, backoff=)`
@@ -212,6 +212,12 @@ the ports are a contract and an audit surface, not a sandbox.
   credentials in errors. Wildcard hosts are not supported.
 - `ctx.trust.tier(guild_id, user_id)`: read-only trust lookup (`member`,
   `regular`, `staff`) for modules that keep their own protections.
+- `ctx.proposals`: a `proposals.v2` port already bound to this module. Its
+  `snapshot`, `propose`, and `get` methods require a `ProposalActor` and enforce
+  that reads, status, targets, and the review channel all belong to the actor's
+  guild. Supported targets are `guild:<id>`, `channel:<id>`, and
+  `guild:<id>:<module>`. Settings, models, prompts, tool policy,
+  deployment-wide module/plugin configuration, and secrets are excluded.
 
 The bot owner can inspect all of this with `/modules status` (health per
 module) and `/modules manifest` (every declaration, including escape
@@ -221,7 +227,7 @@ hatches such as `raw_bot`).
 
 `kimi_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
-`FakeHttp`, and friends). They import nothing beyond the standard library and
+`FakeHttp`, `FakeProposals`, and friends). They import nothing beyond the standard library and
 the contracts, so a module can unit-test its logic with only the API package
 installed. `FakeDiscordActions` enforces the module's declared actions,
 `FakeInteractions.component_min_tiers[(kind, key)]` lets tests check a
@@ -237,14 +243,21 @@ tool registry for assertions. Module test suites
 may import that harness; module production source may import only
 `kimi_agent_module_api`.
 
-## Control-plane API
+## Configuration proposals
 
-The module API can advertise `proposals.v1`, `config.v1`, and `restart.v1` when
-the control plane is enabled. A trusted module may inspect redacted managed
-configuration, create a durable proposal, or register an action in its own
-namespace. Only the configured bot owner can approve a proposal. See
-[module-control-plane.md](module-control-plane.md) for activation, restart,
-rollback, and the deliberately excluded operations.
+Core always advertises `proposals.v2`. A module receives a module-bound port,
+so it cannot attribute a proposal to another installed module. Snapshot and
+status reads are actor-scoped just like writes. Creation records the exact live
+fragment as a rollback baseline and its SHA-256 revision; approval refuses to
+clobber a later operator edit even when the caller omitted an expected
+revision. The review card goes to the guild's `proposal_channel_id` or the
+invoking channel, after core proves that channel belongs to the same guild.
+Persistent Approve/Reject buttons require staff tier and survive restarts.
+
+Approval writes only below `CONFIG_DIR`, refreshes guild activation and module
+guild settings, and rolls back to the recorded baseline if the candidate makes
+the guild invalid. The stored baseline and proposed-content hash also let a
+retry reconcile a process interruption without an eight-state workflow.
 
 ## Modules versus operator plugins
 

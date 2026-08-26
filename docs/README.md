@@ -53,8 +53,6 @@ the subsystem it covers.
 - [Privacy policy](privacy-policy.md): the member-facing plain-language policy.
 - [Application modules](modules.md): versioned optional commands, listeners,
   schema, background work, and LLM tools.
-- [Module control plane](module-control-plane.md): owner-reviewed configuration
-  proposals, managed revisions, supervised restart, and rollback.
 - [Observability](observability.md): structured local event output.
 - [Operator plugins](plugins.md): deployment-owned Python extensions.
 - [Evals](evals.md): offline model qualification and cassette behavior.

@@ -215,7 +215,7 @@ the [shared skill stores guide](../bot/skills/README.md) and
 | Tool | Visibility | Tier | Purpose and availability |
 |------|------------|------|--------------------------|
 | `build_discord_embed` | Searchable | Member | Queue one validated rich embed for the current reply. Always registered; see [Discord Embed Builder](embeds.md). |
-| `move_to_thread` | Core | Member | Move the conversation into a new managed public thread, optionally in an allowlisted target channel. Requires `THREAD_HANDOFF_ENABLED`; hidden in DMs and wherever policy disables handoff. |
+| `move_to_thread` | Core | Member | Move the conversation into a new managed public thread, optionally in an allowlisted target channel. Requires `THREAD_HANDOFF_ENABLED`; hidden in DMs, existing threads/forums, announcement channels, and wherever policy disables handoff. |
 | `leave_thread` | Contextual core | Member | Send a final reply, then lock and archive the current managed thread. |
 | `pause_thread_replies` | Contextual core | Member | Keep the managed thread open but return it to mention/reply/name invocation. |
 | `resume_thread_replies` | Contextual core | Member | Restore automatic replies for the current paused managed thread. |

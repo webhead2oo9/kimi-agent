@@ -73,6 +73,13 @@ CROSS_CHANNEL_POINTER = "Moved this over to {thread}, see you there! 🧵"
 CROSS_CHANNEL_ARCHIVE_MINUTES: Literal[1440] = 1440
 
 
+def _cannot_create_local_thread(channel: Any) -> bool:
+    """Whether Discord cannot anchor a new thread on this message surface."""
+    if isinstance(channel, (discord.Thread, discord.ForumChannel)):
+        return True
+    return isinstance(channel, discord.TextChannel) and channel.is_news()
+
+
 def _can_open_thread(permissions: discord.Permissions) -> bool:
     """Whether this permission set allows opening and using a thread here.
 
@@ -124,21 +131,26 @@ class ThreadHandoffBoundary:
         return self._get_manager()
 
     def _thread_state_blocked_tools(self, message: discord.Message) -> frozenset[str]:
-        """Mask the thread-state tools this turn has nothing to act on.
+        """Mask thread tools that cannot act on the current Discord surface.
 
         Outside a managed thread that hides all of them; inside one it hides
         whichever of pause/resume does not apply, so exactly one of the pair is
-        ever offered.
+        ever offered. Thread creation is also hidden inside threads (including
+        forum posts), forum parents, and announcement channels.
         """
         channel = message.channel
         thread_id = channel.id if isinstance(channel, discord.Thread) else None
         manager = self.thread_handoff
         if thread_id is None or manager is None or not manager.is_managed(thread_id):
-            return thread_state_blocked_tools(managed=False, auto_responding=False)
-        return thread_state_blocked_tools(
-            managed=True,
-            auto_responding=manager.is_auto_responding(thread_id),
-        )
+            blocked = thread_state_blocked_tools(managed=False, auto_responding=False)
+        else:
+            blocked = thread_state_blocked_tools(
+                managed=True,
+                auto_responding=manager.is_auto_responding(thread_id),
+            )
+        if _cannot_create_local_thread(channel):
+            blocked |= {"move_to_thread"}
+        return blocked
 
     def _thread_handoff_creation_allowed(self, message: discord.Message) -> bool:
         """Resolve the live creation policy for the message's parent channel."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
@@ -66,7 +67,16 @@ from app.conversation_routing import (
 from app.consent import PrivacyConsentGate
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
-from app.modules import ModuleRuntimeContext
+from app.control_plane import (
+    RESTART_EXIT_CODE,
+    ControlPlaneStore,
+    ManagedConfigurationService,
+    RestartCoordinator,
+    apply_managed_settings,
+    managed_models_path,
+)
+from app.modules import ModuleRuntimeContext, module_capabilities
+from app.proposals import DurableProposalService
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
 from app.memory import MemoryManager
@@ -102,6 +112,7 @@ from commands.privacy_cmd import (
     register_privacy_command,
     run_privacy_deletion,
 )
+from commands.proposals_cmd import register_proposals_command
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
 from config import paths
@@ -231,6 +242,10 @@ class KimiApplication:
     memory_manager: MemoryManager
     tools: RuntimeTools
     database: Database
+    proposal_service: DurableProposalService | None = None
+    configuration_service: ManagedConfigurationService | None = None
+    restart_coordinator: RestartCoordinator | None = None
+    control_plane_store: ControlPlaneStore | None = None
     context_manager: ContextManager | None = None
     conversation_store: ConversationStore | None = None
     preference_store: PreferenceStore | None = None
@@ -340,6 +355,20 @@ class KimiApplication:
         else:
             await asyncio.to_thread(self._guild_activation_cache.refresh_guild, guild_id)
 
+    async def activate_managed_config(self, config_dir: Path) -> None:
+        """Switch live fragment readers to one validated immutable revision."""
+        resolved = await asyncio.to_thread(config_dir.resolve)
+        self.settings.config_dir = str(resolved)
+        paths.set_default_config_dir(resolved)
+        self._guild_activation_cache = paths.GuildActivationCache(
+            resolved,
+            lambda content: server_setup_activation(
+                content,
+                validators=(self.tools.module_manager.validate_guild_config,),
+            ),
+        )
+        await self.refresh_guild_activation()
+
     async def _guild_activation_refresh_loop(self) -> None:
         while True:
             await asyncio.sleep(GUILD_ACTIVATION_REFRESH_SECONDS)
@@ -350,7 +379,7 @@ class KimiApplication:
             except Exception:
                 log.exception("Could not refresh guild activation config")
 
-    def run(self) -> None:
+    def run(self) -> int:
         if not self.settings.discord_bot_token.get_secret_value():
             log.error("DISCORD_BOT_TOKEN is not set")
             sys.exit(1)
@@ -387,6 +416,9 @@ class KimiApplication:
         )
         if self._startup_error is not None:
             raise RuntimeError("Kimi Agent startup failed") from self._startup_error
+        if self.restart_coordinator is not None and self.restart_coordinator.requested:
+            return RESTART_EXIT_CODE
+        return 0
 
     async def close(self) -> None:
         if self._closed:
@@ -648,6 +680,14 @@ class KimiApplication:
                 GUILD_ACTIVATION_REFRESH_SECONDS,
             )
 
+        handshake_revision = os.environ.get("KIMI_CONTROL_REVISION", "").strip()
+        if handshake_revision and self.control_plane_store is not None:
+            self.control_plane_store.mark_healthy(handshake_revision)
+            if self.proposal_service is not None:
+                await self.proposal_service.reconcile_control_state(
+                    self.control_plane_store.state()
+                )
+
     async def _first_init_core(self) -> None:
         """One-time startup wiring: DB connect, stores, gates, slash commands.
 
@@ -715,6 +755,13 @@ class KimiApplication:
             self.model_selection_store,
             owner_user_id=self.settings.owner_user_id,
         )
+        if self.proposal_service is not None:
+            register_proposals_command(
+                self.bot,
+                self.proposal_service,
+                owner_user_id=self.settings.owner_user_id,
+                configuration=self.configuration_service,
+            )
         register_moderation_command(
             self.bot,
             self.blocked_user_store,
@@ -759,6 +806,10 @@ class KimiApplication:
                 config_dir=self.tools.module_manager.config_dir,
                 is_guild_active=lambda guild_id: guild_id in self.active_guilds(),
                 get_module=self.tools.module_manager.get,
+                capabilities=module_capabilities(self.settings),
+                proposals=self.proposal_service,
+                configuration=self.configuration_service,
+                restart=self.restart_coordinator,
             )
         )
         # Start the durable scheduler only after pending privacy deletions have
@@ -2393,21 +2444,33 @@ def _turn_entry_hooks() -> TurnEntryHooks:
 
 
 def build_app(settings: Settings) -> KimiApplication:
-    # Point the process-wide config-dir default at the operator's instance
-    # directory before anything reads prompt/fragment paths.
-    paths.set_default_config_dir(Path(settings.config_dir).resolve())
+    # Layer the operator's settings file over the environment, before any
+    # of it is captured into the config objects built below. The file wins over
+    # .env on purpose: it is the operator's deliberate edit, so environment
+    # precedence would make that edit silently do nothing
+    # (config/operator_settings.py).
+    apply_operator_settings(settings)
+    inherited_settings = settings.model_dump(mode="python")
     inherited_settings_values = MappingProxyType(
         {
             field: tuple(value) if isinstance(value, list) else value
             for field, value in settings_values(settings).items()
         }
     )
-    # Then layer the operator's settings file over the environment, before any
-    # of it is captured into the config objects built below. The file wins over
-    # .env on purpose: it is the operator's deliberate edit, so environment
-    # precedence would make that edit silently do nothing
-    # (config/operator_settings.py).
-    apply_operator_settings(settings)
+    control_store: ControlPlaneStore | None = None
+    if settings.control_plane_enabled:
+        if not settings.owner_user_id.strip():
+            raise RuntimeError("CONTROL_PLANE_ENABLED requires OWNER_USER_ID")
+        control_store = ControlPlaneStore(
+            settings.control_plane_dir,
+            master_key=settings.control_plane_key.get_secret_value(),
+            base_config_dir=settings.config_dir,
+        )
+        apply_managed_settings(settings, control_store)
+        settings.config_dir = str(control_store.effective_config_dir(Path(settings.config_dir)))
+    # Point the process-wide config-dir default at the fully resolved instance
+    # directory before anything reads prompt or fragment paths.
+    paths.set_default_config_dir(Path(settings.config_dir).resolve())
     # The deployment-wide tool denylist is the security-sensitive scope: prime
     # its last-known-good cache and reject a malformed cold-start policy before
     # the bot connects. Later live reload failures retain this validated value.
@@ -2451,7 +2514,14 @@ def build_app(settings: Settings) -> KimiApplication:
         bot_user_provider=lambda: bot.user,
         trust_resolver=trust_resolver,
     )
-    provider_manager = build_provider_manager(settings)
+    provider_manager = (
+        build_provider_manager(settings)
+        if control_store is None
+        else build_provider_manager(
+            settings,
+            model_config_path=managed_models_path(settings, control_store),
+        )
+    )
     registry = ToolRegistry()
     # Built before the tool layer so both knowledge sinks (community memory and
     # skill documents) can be handed the same audit hook at registration.
@@ -2465,6 +2535,31 @@ def build_app(settings: Settings) -> KimiApplication:
         on_learn=learn_log.record,
     )
     moderation_service = build_moderation_service(settings)
+    database = Database(
+        path=settings.database_path,
+        encryption_key=settings.database_encryption_key.get_secret_value() or None,
+    )
+    restart = (
+        RestartCoordinator(enabled=settings.control_plane_auto_restart)
+        if control_store is not None
+        else None
+    )
+    proposal_service = (
+        DurableProposalService(database, owner_user_id=settings.owner_user_id)
+        if control_store is not None
+        else None
+    )
+    configuration_service = (
+        ManagedConfigurationService(
+            proposals=proposal_service,
+            store=control_store,
+            settings=settings,
+            inherited_settings=inherited_settings,
+            restart=restart,
+        )
+        if proposal_service is not None and control_store is not None and restart is not None
+        else None
+    )
     application = KimiApplication(
         settings=settings,
         inherited_settings_values=inherited_settings_values,
@@ -2475,6 +2570,10 @@ def build_app(settings: Settings) -> KimiApplication:
         memory_manager=memory_manager,
         moderation_service=moderation_service,
         learn_log=learn_log,
+        proposal_service=proposal_service,
+        configuration_service=configuration_service,
+        restart_coordinator=restart,
+        control_plane_store=control_store,
         tools=build_runtime_tools(
             settings,
             gateway,
@@ -2492,11 +2591,12 @@ def build_app(settings: Settings) -> KimiApplication:
                 ctx, thread_id
             ),
         ),
-        database=Database(
-            path=settings.database_path,
-            encryption_key=settings.database_encryption_key.get_secret_value() or None,
-        ),
+        database=database,
     )
+    if restart is not None:
+        restart.bind(bot.close)
+    if configuration_service is not None:
+        configuration_service.bind_live_activation(application.activate_managed_config)
     bot._agent_application = application
     bot.event(application.on_ready)
     bot.event(application.on_disconnect)

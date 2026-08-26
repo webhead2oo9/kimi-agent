@@ -15,7 +15,7 @@ logging.basicConfig(
 
 def main() -> None:
     app = build_app(settings)
-    app.run()
+    raise SystemExit(app.run())
 
 
 if __name__ == "__main__":

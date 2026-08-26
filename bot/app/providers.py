@@ -262,9 +262,11 @@ class ProviderManager:
         self.persona = None
 
 
-def build_provider_manager(settings: Settings) -> ProviderManager:
+def build_provider_manager(
+    settings: Settings, *, model_config_path: Path | None = None
+) -> ProviderManager:
     model_config, revision = load_model_config_with_revision(
-        Path(settings.config_dir) / "models.yaml"
+        model_config_path or Path(settings.config_dir) / "models.yaml"
     )
     return ProviderManager(
         settings=settings,

@@ -639,6 +639,7 @@ forums are never eligible.
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `THREAD_HANDOFF_ENABLED` | bool | `true` | Registers the thread tools (`move_to_thread`, `leave_thread`, `pause_thread_replies`, `resume_thread_replies`). On by default, with no external dependency. Keep off while `MESSAGE_CONTENT_INTENT` is false (thread auto-reply needs the intent). |
+| `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` | int | `5` | After this many completed substantive tool actions in an eligible non-thread guild turn, append one optional `move_to_thread` advisory before the next model iteration. Planning, tool discovery, and thread-control calls do not count. `0` disables the advisory. |
 | `THREAD_AUTO_HANDOFF_ENABLED` | bool | `false` | Deterministic backstop: when the model does not thread but produces a long reply in a channel that opted in via frontmatter (`auto_thread_min_lines` / `auto_thread_min_chars` in `config/channels/<id>.md`, or `auto_thread_always: true` to enroll with no length check), synthesize the handoff. Requires `THREAD_HANDOFF_ENABLED`. Successful automatic and model-requested handoffs react to the parent message with 🧵. |
 
 ---

@@ -485,6 +485,7 @@ def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled(monke
 
 def test_handle_message_wires_usage_dependencies_with_scoped_model(monkeypatch):
     app = _build_test_app(monkeypatch)
+    app.settings.thread_handoff_suggest_after_tool_calls = 8
     app.context_manager = cast(ContextManager, object())
     app.conversation_store = None
     app.memory_manager.client = None
@@ -512,8 +513,9 @@ def test_handle_message_wires_usage_dependencies_with_scoped_model(monkeypatch):
     captured = {}
 
     async def fake_handle_turn(source, *, dependencies, preparation_config, execution_config):
-        _ = source, preparation_config, execution_config
+        _ = source, preparation_config
         captured["dependencies"] = dependencies
+        captured["execution_config"] = execution_config
         from agent.turn import TurnResult
 
         return TurnResult(response_text="ok")
@@ -529,6 +531,11 @@ def test_handle_message_wires_usage_dependencies_with_scoped_model(monkeypatch):
     assert dependencies.usage_store is not None
     assert dependencies.model_config is model_config
     assert dependencies.resolved_model_name == "premium"
+    assert (
+        captured["execution_config"].thread_handoff_suggest_after_tool_calls
+        == app.settings.thread_handoff_suggest_after_tool_calls
+        == 8
+    )
 
 
 # --- Backfill / persistence / concurrency integration ---

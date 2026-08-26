@@ -1,0 +1,18 @@
+id: internet-search-official-docs
+category: web
+trust_tier: MEMBER
+channel: { name: tech-talk, id: "800000000000000002" }
+requires_tools: [internet_search]
+turns:
+  - >-
+    Search the live internet for the official Python documentation page for
+    asyncio TaskGroup. Give me the page title and its python.org URL. Use web
+    search for this; do not open a browser or download a file.
+expect:
+  should_use_tools: [internet_search]
+  should_not_use_tools: [browser, fetch_url]
+  max_tool_calls: 3
+  reply_must_match: ["python\\.org", "asyncio-task\\.html"]
+  notes: >-
+    Search-only coverage. The assertion checks official-domain discovery, not
+    volatile ranking, snippets, or page wording.

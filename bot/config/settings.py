@@ -385,6 +385,9 @@ class Settings(BaseSettings):
     # Successful handoffs react to the parent message with a thread emoji on both
     # the automatic and model-requested paths.
     thread_auto_handoff_enabled: bool = False
+    # One-time, model-facing suggestion after this many substantive tool calls in
+    # an eligible channel turn. The tool remains optional; 0 disables the note.
+    thread_handoff_suggest_after_tool_calls: int = 5
 
     # Instance layout: where operator data lives. Defaults match the in-repo
     # tree; a deployment can point these (plus the data-path settings below) at
@@ -499,6 +502,15 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError(
                 f"{(info.field_name or 'value').upper()} must be a positive integer, got {value}"
+            )
+        return value
+
+    @field_validator("thread_handoff_suggest_after_tool_calls")
+    @classmethod
+    def _require_non_negative_thread_handoff_suggestion_threshold(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(
+                f"THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS must be 0 or greater, got {value}"
             )
         return value
 

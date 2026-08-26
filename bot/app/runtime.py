@@ -1914,6 +1914,9 @@ class KimiApplication:
                     temperature=self.settings.react_temperature,
                     bot_name=self.settings.bot_name,
                     timeout_seconds=self.settings.react_turn_timeout_seconds,
+                    thread_handoff_suggest_after_tool_calls=(
+                        self.settings.thread_handoff_suggest_after_tool_calls
+                    ),
                 ),
             )
 

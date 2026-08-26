@@ -3,8 +3,9 @@ import json
 
 from agent.compaction import CompactionConfig, Compactor
 from evals.capture import InstrumentedProvider, InstrumentedRegistry
-from evals.harness import run_scenario_for_model
-from evals.scenario import Expect, Scenario
+from evals.harness import ScenarioRun, run_scenario_for_model
+from evals.identity import EvalIdentity
+from evals.scenario import Expect, Scenario, TurnSpec
 from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse, ToolCall
@@ -21,6 +22,15 @@ class _Scripted(LLMProvider):
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
         self.requests.append(request)
         return self._responses.pop(0)
+
+
+def test_scenario_run_preserves_original_positional_field_order():
+    turns = []
+    run = ScenarioRun("scenario", "model", turns, 123)
+
+    assert run.turns is turns
+    assert run.wall_time_ms == 123
+    assert run.identity is None
 
 
 def test_run_scenario_captures_reply_and_tool_trace():
@@ -69,6 +79,94 @@ def test_run_scenario_captures_reply_and_tool_trace():
     assert provider._inner.requests[0].max_tokens == 65_536
 
 
+def test_run_scenario_seeds_workspace_files_outside_model_tool_trace():
+    writes: list[tuple[dict, str]] = []
+
+    async def write_file(args, ctx):
+        writes.append((args, ctx.context_key))
+        return json.dumps({"path": args["path"], "written": True})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="write_file",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=write_file,
+    )
+    scenario = Scenario(
+        id="seeded-workspace",
+        category="coding",
+        trust_tier=TrustTier.MEMBER,
+        turns=["fix it"],
+        workspace_files=(("notes.md", "teh first line\n"),),
+    )
+    identity = EvalIdentity("run", "candidate", scenario.id, 0)
+
+    run = asyncio.run(
+        run_scenario_for_model(
+            scenario,
+            provider=InstrumentedProvider(_Scripted([ProviderResponse(content="done")])),
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=identity,
+        )
+    )
+
+    assert writes == [
+        (
+            {"path": "notes.md", "content": "teh first line\n", "attach": False},
+            identity.context_key,
+        )
+    ]
+    assert run.all_tool_calls == []
+
+
+def test_run_scenario_captures_max_iteration_termination():
+    async def probe(args, ctx):
+        return json.dumps({"ok": True})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="probe",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=probe,
+    )
+    provider = InstrumentedProvider(
+        _Scripted(
+            [
+                ProviderResponse(
+                    tool_calls=[ToolCall(id=str(index), name="probe", arguments={})],
+                    finish_reason="tool_calls",
+                )
+                for index in range(10)
+            ]
+        )
+    )
+    scenario = Scenario(
+        id="exhausted",
+        category="tooling",
+        trust_tier=TrustTier.MEMBER,
+        turns=["keep probing"],
+    )
+
+    run = asyncio.run(
+        run_scenario_for_model(
+            scenario,
+            provider=provider,
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+        )
+    )
+
+    assert run.turns[0].termination_reason == "max_iterations"
+    assert run.turns[0].provider_calls == 10
+
+
 def test_run_scenario_multi_turn_accumulates_records_and_carries_context():
     scripted = _Scripted(
         [ProviderResponse(content="first reply"), ProviderResponse(content="second reply")]
@@ -96,6 +194,85 @@ def test_run_scenario_multi_turn_accumulates_records_and_carries_context():
     # One reused context: turn 2's request carries turn 1's exchange, so it has more
     # history messages than turn 1's request.
     assert len(scripted.requests[1].messages) > len(scripted.requests[0].messages)
+
+
+def test_run_scenario_uses_one_identity_context_key_per_multi_turn_run():
+    observed_context_keys: list[str] = []
+
+    async def probe(args, ctx):
+        observed_context_keys.append(ctx.context_key)
+        return json.dumps({"context_key": ctx.context_key})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="probe",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=probe,
+    )
+    scenario = Scenario(
+        id="context-isolation",
+        category="tooling",
+        trust_tier=TrustTier.MEMBER,
+        turns=["first", "second"],
+    )
+    first = EvalIdentity("run", "candidate", scenario.id, 0)
+    second = EvalIdentity("run", "candidate", scenario.id, 1)
+
+    async def exercise() -> None:
+        first_provider = InstrumentedProvider(
+            _Scripted(
+                [
+                    ProviderResponse(
+                        tool_calls=[ToolCall(id="1", name="probe", arguments={})],
+                        finish_reason="tool_calls",
+                    ),
+                    ProviderResponse(content="first done"),
+                    ProviderResponse(
+                        tool_calls=[ToolCall(id="2", name="probe", arguments={})],
+                        finish_reason="tool_calls",
+                    ),
+                    ProviderResponse(content="second done"),
+                ]
+            )
+        )
+        await run_scenario_for_model(
+            scenario,
+            provider=first_provider,
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=first,
+        )
+        await run_scenario_for_model(
+            Scenario(
+                id=scenario.id,
+                category=scenario.category,
+                trust_tier=scenario.trust_tier,
+                turns=[TurnSpec(text="other repetition")],
+            ),
+            provider=InstrumentedProvider(
+                _Scripted(
+                    [
+                        ProviderResponse(
+                            tool_calls=[ToolCall(id="3", name="probe", arguments={})],
+                            finish_reason="tool_calls",
+                        ),
+                        ProviderResponse(content="other done"),
+                    ]
+                )
+            ),
+            registry=registry,
+            gateway=StubGateway(),
+            memory_client=None,
+            preference_store=None,
+            identity=second,
+        )
+
+    asyncio.run(exercise())
+    assert observed_context_keys == [first.context_key, first.context_key, second.context_key]
+    assert first.context_key != second.context_key
 
 
 def test_run_scenario_threads_bot_name_into_system_prompt():

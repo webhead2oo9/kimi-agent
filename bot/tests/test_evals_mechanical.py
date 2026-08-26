@@ -39,6 +39,7 @@ def test_mechanical_counts_tool_errors():
     run = _run([ToolCallRecord("probe", {}, '{"error": "boom"}', ok=False, duration_ms=1)])
     m = compute_mechanical(scenario, run)
     assert m.tool_errors == 1
+    assert m.live_tool_errors == 1
 
 
 def test_mechanical_flags_raw_json_reply():
@@ -61,6 +62,30 @@ def test_mechanical_clean_run_scores_100_and_passes():
     assert m.score == 100.0
     assert m.passed is True
     assert m.first_expected_call_index == 0
+
+
+def test_mechanical_incomplete_turn_is_scored_and_fails():
+    scenario = Scenario(id="s", category="tooling", trust_tier=TrustTier.MEMBER, turns=["q"])
+    run = ScenarioRun(
+        scenario_id="s",
+        model_label="m",
+        turns=[
+            TurnRecord(
+                "q",
+                "I ran out of steps trying to help.",
+                [],
+                tokens=10,
+                latency_ms=5,
+                termination_reason="max_iterations",
+            )
+        ],
+    )
+
+    m = compute_mechanical(scenario, run)
+
+    assert m.incomplete_turns == ["turn 1=max_iterations"]
+    assert m.score == 75.0
+    assert m.passed is False
 
 
 def test_mechanical_counts_repeats_only_after_a_success():
@@ -109,6 +134,7 @@ def test_mechanical_recovered_fault_is_free():
     )
     m = compute_mechanical(scenario, run)
     assert m.tool_errors == 1  # still visible in the raw count
+    assert m.live_tool_errors == 0
     assert m.unrecovered_errors == 0
     assert m.score == 100.0  # scripted fault + clean recovery costs nothing
     assert m.passed is True

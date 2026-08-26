@@ -2,6 +2,7 @@ id: quick-question-stays
 category: threads
 trust_tier: MEMBER
 channel: { name: general-chat, id: "800000000000000003" }
+guild: { name: Kimi Community, id: "700000000000000001" }
 turns:
   - "quick one, what port does the dedicated server use by default?"
 expect:

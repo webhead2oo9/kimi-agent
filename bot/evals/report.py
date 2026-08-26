@@ -71,7 +71,11 @@ def render_report(
     for r in reports:
         flag = (
             " ⚠️"
-            if (r.candidate_mechanical.missing_tools or r.candidate_mechanical.tool_errors)
+            if (
+                r.candidate_mechanical.missing_tools
+                or r.candidate_mechanical.live_tool_errors
+                or r.candidate_mechanical.incomplete_turns
+            )
             else ""
         )
         lines += [
@@ -79,6 +83,8 @@ def render_report(
             "",
             f"- Missing tools: {r.candidate_mechanical.missing_tools or 'none'}",
             f"- Unexpected tools: {r.candidate_mechanical.unexpected_tools or 'none'}",
+            f"- Incomplete turns: {r.candidate_mechanical.incomplete_turns or 'none'}",
+            f"- Candidate passed: {r.candidate_mechanical.passed}",
             f"- Candidate verdict: {r.judge.candidate_verdict}",
             f"- Candidate reply: {_last_reply(r.candidate_run)}",
             f"- Baseline reply: {_last_reply(r.baseline_run)}",
@@ -95,7 +101,19 @@ def _row(report: ScenarioReport, which: str) -> dict[str, Any]:
         "scenario": report.scenario_id,
         "role": which,
         "model": run.model_label,
+        "eval_identity": run.identity.as_dict() if run.identity else None,
         "final_text": run.turns[-1].final_text if run.turns else "",
+        "passed": mech.passed,
+        "incomplete_turns": mech.incomplete_turns,
+        "turns": [
+            {
+                "user": turn.user_message,
+                "reply": turn.final_text,
+                "termination_reason": turn.termination_reason,
+                "provider_calls": turn.provider_calls,
+            }
+            for turn in run.turns
+        ],
         "tool_calls": [
             {"tool": rec.tool, "args": rec.args, "ok": rec.ok, "duration_ms": rec.duration_ms}
             for rec in run.all_tool_calls

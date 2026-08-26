@@ -75,7 +75,7 @@ from app.control_plane import (
     apply_managed_settings,
     managed_models_path,
 )
-from app.modules import ModuleRuntimeContext, module_capabilities
+from app.modules import ModuleRuntimeBase, module_capabilities
 from app.proposals import DurableProposalService
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
@@ -311,10 +311,7 @@ class KimiApplication:
         self.skills_index_cache = SkillsIndexCache(catalog=self.tools.skill_catalog)
         self._guild_activation_cache = paths.GuildActivationCache(
             Path(self.settings.config_dir).resolve(),
-            lambda content: server_setup_activation(
-                content,
-                validators=(self.tools.module_manager.validate_guild_config,),
-            ),
+            server_setup_activation,
         )
         self._guild_activation_cache.refresh()
         self._ready_init_lock = asyncio.Lock()
@@ -392,10 +389,7 @@ class KimiApplication:
         paths.set_default_config_dir(resolved)
         self._guild_activation_cache = paths.GuildActivationCache(
             resolved,
-            lambda content: server_setup_activation(
-                content,
-                validators=(self.tools.module_manager.validate_guild_config,),
-            ),
+            server_setup_activation,
         )
         await self.refresh_guild_activation()
 
@@ -872,27 +866,23 @@ class KimiApplication:
         interaction_runtime = InteractionRuntime(self.bot)
         interaction_runtime.install()
         await module_manager.start(
-            ModuleRuntimeContext(
-                bot=self.bot,
+            ModuleRuntimeBase(
                 database=self.database,
-                trust_resolver=self.trust_resolver,
-                gateway=self.discord_gateway,
-                config_dir=self.tools.module_manager.config_dir,
-                is_guild_active=lambda guild_id: guild_id in self.active_guilds(),
-                get_module=self.tools.module_manager.get,
+                bot=self.bot,
+                is_guild_active=is_guild_active,
+                current_config_dir=lambda: Path(self.settings.config_dir),
                 capabilities=module_capabilities(self.settings),
+                trust=module_trust,
                 proposals=self.proposal_service,
                 configuration=self.configuration_service,
                 restart=self.restart_coordinator,
-                trust=module_trust,
-                current_config_dir=lambda: Path(self.settings.config_dir),
             ),
-            customize=lambda spec, module_ctx: replace(
-                module_ctx,
-                interactions=interaction_runtime.router_for(
+            customize=lambda spec, ports: {
+                **ports,
+                "interactions": interaction_runtime.router_for(
                     spec.name, trust=module_trust, is_guild_active=is_guild_active
                 ),
-                discord=DeclaredDiscordActions(
+                "discord": DeclaredDiscordActions(
                     DiscordActionsImpl(
                         bot=self.bot,
                         trust=module_trust,
@@ -903,7 +893,7 @@ class KimiApplication:
                     spec.name,
                     spec.permissions.discord_actions,
                 ),
-            ),
+            },
         )
         # Persisted module jobs re-bind to handlers registered during start().
         module_manager.scheduler.start()

@@ -66,9 +66,8 @@ async def test_harness_starts_modules_with_per_module_contexts(tmp_path: Path) -
         assert beta.ctx.module_name == "beta"
         assert alpha.ctx is runtime.ctx_for("alpha")
         assert alpha.ctx.events is not beta.ctx.events
-        assert alpha.ctx.storage is not None and alpha.ctx.storage.table("x") == '"alpha_x"'
+        assert alpha.ctx.storage.table("x") == '"alpha_x"'
         assert runtime.manager.health.get("alpha") is not None
-        assert alpha.ctx.current_config_dir is not None
         assert alpha.ctx.current_config_dir() == runtime.config_dir
 
         cursor = await runtime.database.conn.execute(
@@ -96,7 +95,6 @@ async def test_harness_fakes_enforce_declared_discord_actions(tmp_path: Path) ->
     )
     try:
         ctx = runtime.ctx_for("guarded")
-        assert ctx.discord is not None
         await ctx.discord.send_message(42, "hello")
         assert runtime.ports["guarded"].discord.calls_for("send_message")[0].args[0] == 42
         with pytest.raises(UndeclaredDiscordAction):

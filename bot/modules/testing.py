@@ -6,6 +6,8 @@ applies their migrations, and starts them with a runtime context whose ports
 are the real implementations where core has them and the public fakes from
 ``kimi_agent_module_api.testing`` elsewhere. Health, services, and storage are
 always the real core implementations; inspect them via ``runtime.manager``.
+``fake_ports`` is the same substitution for tests that drive ``ModuleManager``
+directly.
 Module-package tests may import this; module production source may not.
 """
 
@@ -17,8 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.modules import ModuleManager, ModuleRuntimeContext, ModuleSpec
+from app.modules import ModuleManager, ModuleRuntimeBase, ModuleRuntimeContext, ModuleSpec
 from config.settings import Settings
+from kimi_agent_module_api import ModuleCapabilities
 from kimi_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
@@ -139,7 +142,6 @@ async def build_test_runtime(
             tuple(names),
             core_settings=settings,
             registry=ToolRegistry(),
-            gateway=object(),  # type: ignore[arg-type]
             installed=installed,
         )
     finally:
@@ -167,31 +169,28 @@ async def build_test_runtime(
         ports[spec.name] = created
         return created
 
-    base = ModuleRuntimeContext(
-        bot=bot,  # type: ignore[arg-type]
+    base = ModuleRuntimeBase(
         database=database,
-        trust_resolver=object(),  # type: ignore[arg-type]
-        gateway=object(),  # type: ignore[arg-type]
-        config_dir=config_dir,
+        bot=bot,
         is_guild_active=active_guilds or (lambda _guild_id: True),
-        get_module=manager.get,
-        trust=trust_lookup,
         current_config_dir=lambda: config_dir,
+        capabilities=ModuleCapabilities(
+            available=frozenset(), members_intent=False, message_content_intent=False
+        ),
+        trust=trust_lookup,
     )
 
-    def per_module(spec: ModuleSpec, ctx: ModuleRuntimeContext) -> ModuleRuntimeContext:
-        from dataclasses import replace
-
+    def per_module(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
         p = ports_for(spec)
-        return replace(
-            ctx,
-            events=p.events,
-            scheduler=p.scheduler,
-            discord=p.discord,
-            interactions=p.interactions,
-            guild_settings=p.guild_settings,
-            http=p.http,
-        )
+        return {
+            **ports,
+            "events": p.events,
+            "scheduler": p.scheduler,
+            "discord": p.discord,
+            "interactions": p.interactions,
+            "guild_settings": p.guild_settings,
+            "http": p.http,
+        }
 
     runtime = TestRuntime(
         manager=manager,
@@ -210,11 +209,24 @@ async def build_test_runtime(
     return runtime
 
 
+def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
+    """``customize`` for manager tests: public fakes for the Discord-bound ports."""
+    return {
+        **ports,
+        "events": ports.get("events") or FakeEvents(spec.name),
+        "scheduler": ports.get("scheduler") or FakeScheduler(),
+        "discord": FakeDiscordActions(spec.name, spec.permissions.discord_actions),
+        "interactions": FakeInteractions(spec.name),
+        "http": ports.get("http") or FakeHttp(),
+    }
+
+
 __all__ = [
     "FakeBot",
     "FakeTree",
     "ModulePorts",
     "TestRuntime",
     "build_test_runtime",
+    "fake_ports",
     "write_guild_config",
 ]

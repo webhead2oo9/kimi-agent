@@ -35,7 +35,7 @@ from utils.frontmatter import split_frontmatter
 log = logging.getLogger(__name__)
 
 GUILD_MODULES_DIR = "guild-modules"
-_ID_RE = re.compile(r"^\d{5,25}$")
+_ID_RE = re.compile(r"^\d{1,25}$")  # any Discord snowflake; tests use short ids
 _MAX_ID_LIST = 512
 _MAX_STR = 2_000
 

@@ -1559,18 +1559,15 @@ async def test_execute_turn_blocks_output_before_asset_writes_and_clears_pending
     assert context.pending_allowed_file_roots == []
     assert context.pending_embed is None
     assert context.pending_embed_attachment is None
-    # The OUTPUT check screens every outbound image rail, not just text: the embed
-    # (its own text is assembled from embed=, so text= is just the reply body), the
-    # embed attachment, and native generated assets all reach the moderation service.
+    # Generic queued images are delivery artifacts. The explicitly owned embed image
+    # and native generated assets remain first-class moderation inputs.
     call = moderation.calls[0]
     assert call["text"] == "unsafe output"
     assert call["direction"] is Direction.OUTPUT
     assert call["generated_assets"] == [asset]
     assert call["embed"].title == "Unsafe"
     assert call["embed_attachment"].filename == "unsafe.png"
-    # Both image rails are screened: the queued output file and the embed attachment.
-    assert len(call["images"]) == 2
-    assert {part.media_type for part in call["images"]} == {"image/png"}
+    assert "images" not in call
 
 
 @pytest.mark.asyncio
@@ -1628,7 +1625,9 @@ async def test_execute_turn_keeps_output_moderation_for_member_below_exempt_tier
 
 
 @pytest.mark.asyncio
-async def test_execute_turn_moderates_queued_utf8_workspace_files(tmp_path: Path) -> None:
+async def test_execute_turn_excludes_queued_utf8_workspace_files_from_moderation(
+    tmp_path: Path,
+) -> None:
     context = ConversationContext(key="guild:100:main")
     output_root = tmp_path / "workspaces" / "u"
     output_root.mkdir(parents=True)
@@ -1649,19 +1648,20 @@ async def test_execute_turn_moderates_queued_utf8_workspace_files(tmp_path: Path
         config=_config(),
     )
 
-    assert result.response_text == "output blocked"
-    assert result.blocked_by_moderation is True
-    assert result.output_files == ()
-    assert result.allowed_file_roots == ()
+    assert result.response_text == "see attached"
+    assert result.blocked_by_moderation is False
+    assert len(result.output_files) == 1
+    assert Path(result.output_files[0]).name == "tool-output.txt"
+    assert Path(result.output_files[0]).read_text(encoding="utf-8") == "unsafe attachment body"
+    assert len(result.allowed_file_roots) == 1
     assert context.pending_output_files == []
     assert context.pending_allowed_file_roots == []
-    assert moderation.calls[0]["text"] == (
-        "see attached\n\nAttachment tool-output.txt:\nunsafe attachment body"
-    )
+    assert moderation.calls[0]["text"] == "see attached"
+    assert "images" not in moderation.calls[0]
 
 
 @pytest.mark.asyncio
-async def test_execute_turn_blocks_opaque_binary_workspace_file(
+async def test_execute_turn_delivers_opaque_binary_workspace_file(
     tmp_path: Path,
 ) -> None:
     context = ConversationContext(key="guild:100:main")
@@ -1684,29 +1684,14 @@ async def test_execute_turn_blocks_opaque_binary_workspace_file(
         config=_config(),
     )
 
-    assert result.response_text == "output blocked"
-    assert result.blocked_by_moderation is True
-    assert result.output_files == ()
+    assert result.response_text == "see attached"
+    assert result.blocked_by_moderation is False
+    assert len(result.output_files) == 1
+    assert Path(result.output_files[0]).name == "archive.zip"
+    assert Path(result.output_files[0]).read_bytes() == b"PK\x03\x04\x00binary\x00payload"
     assert context.pending_output_files == []
-    assert moderation.calls == []
-
-
-def test_load_output_moderation_content_marks_missing_and_oversized_files(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import agent.turn as turn_module
-
-    oversized = tmp_path / "large.txt"
-    oversized.write_text("too large", encoding="utf-8")
-    missing = tmp_path / "gone.txt"
-    monkeypatch.setattr(turn_module, "_OUTPUT_MODERATION_MAX_IMAGE_BYTES", 4)
-
-    content = turn_module._load_output_moderation_content([str(oversized), str(missing)])
-
-    assert content.text == ""
-    assert content.images == []
-    assert content.unavailable_files == ("large.txt", "gone.txt")
+    assert moderation.calls[0]["text"] == "see attached"
+    assert "images" not in moderation.calls[0]
 
 
 def test_execute_turn_forwards_compactor():

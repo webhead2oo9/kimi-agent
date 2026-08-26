@@ -11,6 +11,7 @@ import pytest
 import discord_adapter.io as discord_io
 from agent.activity import ActivityUpdate
 from discord_adapter.io import send_response, suppress_link_previews
+from tools.embeds import EmbedSpec
 
 
 class RecordingChannel:
@@ -143,6 +144,156 @@ async def test_send_response_retry_preserves_file_upload(tmp_path: Path) -> None
     assert channel.calls[0]["files"]
     assert channel.calls[1]["content"] == "Here is the artifact."
     assert channel.calls[1]["files"]
+
+
+@pytest.mark.asyncio
+async def test_send_response_omits_only_files_over_guild_limit(tmp_path: Path) -> None:
+    fitting = tmp_path / "fits.zip"
+    fitting.write_bytes(b"1234")
+    oversized = tmp_path / "too-large.zip"
+    oversized.write_bytes(b"12345")
+    channel = RecordingChannel()
+    channel.guild = SimpleNamespace(filesize_limit=4)
+    channel.fail_next_file_upload = False
+
+    sent = await send_response(
+        cast(discord.abc.Messageable, channel),
+        "The files are attached.",
+        output_files=[str(fitting), str(oversized)],
+        allowed_file_roots=[tmp_path],
+    )
+
+    assert channel.calls[0]["content"].startswith("Delivery notice:")
+    assert "too-large.zip: 5 bytes" in channel.calls[0]["content"]
+    assert "Ignore any claim below that an omitted file was attached." in channel.calls[0][
+        "content"
+    ]
+    assert "**" not in channel.calls[0]["content"]
+    assert "`" not in channel.calls[0]["content"]
+    assert channel.calls[0]["content"].endswith("The files are attached.")
+    uploaded = channel.calls[0]["files"]
+    assert [Path(file.fp.name).name for file in uploaded] == ["fits.zip"]
+    assert sent.attachment_plan is not None
+    assert [item.filename for item in sent.attachment_plan.omitted] == ["too-large.zip"]
+
+
+@pytest.mark.asyncio
+async def test_send_response_uses_default_limit_without_guild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "artifact.zip"
+    output.write_bytes(b"12345")
+    channel = RecordingChannel()
+    channel.fail_next_file_upload = False
+    monkeypatch.setattr(discord_io, "DISCORD_DEFAULT_FILE_SIZE_LIMIT_BYTES", 4)
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "Done.",
+        output_files=[str(output)],
+        allowed_file_roots=[tmp_path],
+    )
+
+    assert "4 bytes per-file limit" in channel.calls[0]["content"]
+    assert not channel.calls[0].get("files")
+
+
+@pytest.mark.asyncio
+async def test_send_response_notice_keeps_exact_sizes_after_human_rounding(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "artifact.zip"
+    output.write_bytes(b"x" * 36_332)
+    channel = RecordingChannel()
+    channel.guild = SimpleNamespace(filesize_limit=36_331)
+    channel.fail_next_file_upload = False
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "Done.",
+        output_files=[str(output)],
+        allowed_file_roots=[tmp_path],
+    )
+
+    notice = channel.calls[0]["content"]
+    assert "35.5 KiB (36,331 bytes) per-file limit" in notice
+    assert "artifact.zip: 35.5 KiB (36,332 bytes)" in notice
+
+
+@pytest.mark.asyncio
+async def test_send_response_notice_neutralizes_filename_formatting_and_mentions(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "# @everyone__`report`.zip"
+    output.write_bytes(b"12345")
+    channel = RecordingChannel()
+    channel.guild = SimpleNamespace(filesize_limit=4)
+    channel.fail_next_file_upload = False
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "Done.",
+        output_files=[str(output)],
+        allowed_file_roots=[tmp_path],
+    )
+
+    notice = channel.calls[0]["content"]
+    assert "@everyone" not in notice
+    assert "__" not in notice
+    assert "`" not in notice
+    assert "\n# " not in notice
+    assert "File # ＠everyone＿＿｀report｀.zip" in notice
+    allowed_mentions = channel.calls[0]["allowed_mentions"]
+    assert allowed_mentions.everyone is False
+    assert allowed_mentions.users is False
+    assert allowed_mentions.roles is False
+
+
+@pytest.mark.asyncio
+async def test_send_response_puts_oversize_notice_in_first_long_chunk(tmp_path: Path) -> None:
+    output = tmp_path / "artifact.zip"
+    output.write_bytes(b"12345")
+    channel = RecordingChannel()
+    channel.guild = SimpleNamespace(filesize_limit=4)
+    channel.fail_next_file_upload = False
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "response-start\n" + ("detail " * 1000),
+        output_files=[str(output)],
+        allowed_file_roots=[tmp_path],
+    )
+
+    assert len(channel.calls) > 1
+    assert channel.calls[0]["content"].startswith("Delivery notice:")
+    assert "response-start" in channel.calls[0]["content"]
+    assert all(not call.get("files") for call in channel.calls)
+
+
+@pytest.mark.asyncio
+async def test_send_response_skips_embed_when_owned_attachment_is_oversized(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "preview.png"
+    image.write_bytes(b"12345")
+    other = tmp_path / "report.txt"
+    other.write_bytes(b"1234")
+    channel = RecordingChannel()
+    channel.guild = SimpleNamespace(filesize_limit=4)
+    channel.fail_next_file_upload = False
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "Report ready.",
+        output_files=[str(image), str(other)],
+        allowed_file_roots=[tmp_path],
+        embed=EmbedSpec(title="Preview", image="attachment://preview.png"),
+    )
+
+    assert "embeds" not in channel.calls[0]
+    uploaded = channel.calls[0]["files"]
+    assert [Path(file.fp.name).name for file in uploaded] == ["report.txt"]
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,6 @@ and executes.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import logging
 import shutil
@@ -48,7 +47,7 @@ from agent.core import (
 )
 from agent.reply_context import ReplyContext
 from workspace import WorkspaceKey, WorkspaceManager, workspace_owner_key
-from utils.image_types import normalize_image_data_url, sniff_image_media_type
+from utils.image_types import normalize_image_data_url
 from memory.mutations import user_memory_mutation
 from moderation.files import (
     MAX_TEXT_MODERATION_BYTES,
@@ -1120,35 +1119,14 @@ async def execute_turn(
 
     if _should_moderate_output(moderation_service, turn.trust_tier):
         assert moderation_service is not None
-        # Screen every outbound image rail, not just text: native model image output
-        # (generated_assets), embed image URL + attachment, and the queued output files
-        # that were queued for the reply. Reading the output files is
-        # blocking I/O, so it is offloaded. The embed's own text is assembled from
-        # embed= inside the service, so text= is just the reply body.
-        output_content = await _await_with_deadline(
-            asyncio.to_thread(
-                _load_output_moderation_content,
-                turn.context.pending_output_files,
-            ),
-            deadline,
-        )
-        if output_content.unavailable_files:
-            log.warning(
-                "Blocking output with unmoderatable queued files: %s",
-                ", ".join(output_content.unavailable_files),
-            )
-            _clear_pending_response_artifacts(turn.context)
-            # These files could not be screened at all, so this is a hold, not a
-            # verdict on their content.
-            return TurnResult(
-                response_text=moderation_service.refusal_for(Direction.OUTPUT, error=True),
-                blocked_by_moderation=True,
-            )
+        # Generic queued workspace files are delivery artifacts, not assistant-authored
+        # content. Screen the reply plus explicitly supported first-class modalities:
+        # native generated assets and the embed (including its owned image attachment).
+        # The embed's text is assembled from embed= inside the service.
         decision = await _await_with_deadline(
             moderation_service.check(
-                text=_join_moderation_text(run_result.text, output_content.text),
+                text=run_result.text,
                 direction=Direction.OUTPUT,
-                images=output_content.images,
                 generated_assets=run_result.generated_assets,
                 embed=turn.context.pending_embed,
                 embed_attachment=turn.context.pending_embed_attachment,
@@ -1269,8 +1247,9 @@ async def _stage_pending_response_files(
 ) -> None:
     """Snapshot queued attachments before moderation and delivery.
 
-    Copying queued files under the shared workspace activity lease makes the
-    exact bytes checked by output moderation the bytes later handed to Discord.
+    Copying under the shared workspace activity lease freezes the delivery bytes,
+    preserves containment, and gives embed-image moderation the same owned image
+    that Discord later receives. Generic queued files are not moderation inputs.
     """
 
     manager = dependencies.workspace_manager
@@ -1994,73 +1973,6 @@ def _content_part_image_urls(part: ContentPart | None) -> set[str]:
         return set()
     normalized, _media_type = normalize_image_data_url(part.image_url, part.media_type)
     return {part.image_url, normalized}
-
-
-# Bounds for loading queued output files into the OUTPUT moderation request. A
-# non-empty file outside these representable bounds is marked unavailable and blocks
-# the attachment rail; empty files are content-free and intentionally allowed.
-_OUTPUT_MODERATION_MAX_IMAGE_BYTES = 20 * 1024 * 1024
-_OUTPUT_MODERATION_MAX_IMAGES = 10
-
-
-@dataclass(frozen=True)
-class _OutputModerationContent:
-    text: str
-    images: list[ContentPart]
-    unavailable_files: tuple[str, ...] = ()
-
-
-def _load_output_moderation_content(files: Sequence[str]) -> _OutputModerationContent:
-    """Load text-capable files and images from the outbound attachment rail.
-
-    pending_output_files carries imported or written workspace files queued with
-    queue_file. UTF-8 text within ``moderation.files``' shared bound is
-    included in the OUTPUT text check; supported images use the image rail. Opaque,
-    oversized, excess-image, and unreadable files are returned as unavailable so the
-    enabled output policy can fail closed before Discord delivery.
-    """
-    text_chunks: list[str] = []
-    images: list[ContentPart] = []
-    unavailable_files: list[str] = []
-    for raw in files:
-        path = Path(raw)
-        try:
-            size = path.stat().st_size
-            if size <= 0 or size > _OUTPUT_MODERATION_MAX_IMAGE_BYTES:
-                if size > _OUTPUT_MODERATION_MAX_IMAGE_BYTES:
-                    unavailable_files.append(path.name)
-                continue
-            payload = path.read_bytes()
-        except OSError:
-            log.warning("Could not read queued output file for moderation", exc_info=True)
-            unavailable_files.append(path.name or raw)
-            continue
-        media_type = sniff_image_media_type(payload)
-        if media_type is not None:
-            if len(images) >= _OUTPUT_MODERATION_MAX_IMAGES:
-                unavailable_files.append(path.name)
-                continue
-            encoded = base64.b64encode(payload).decode("ascii")
-            images.append(
-                ContentPart.from_image_url(
-                    url=f"data:{media_type};base64,{encoded}",
-                    media_type=media_type,
-                )
-            )
-            continue
-
-        try:
-            text = text_from_file_bytes(path.name, payload)
-        except UnsupportedModerationFile:
-            unavailable_files.append(path.name)
-            continue
-        if text:
-            text_chunks.append(text)
-    return _OutputModerationContent(
-        text=_join_moderation_text(*text_chunks),
-        images=images,
-        unavailable_files=tuple(unavailable_files),
-    )
 
 
 def _clear_pending_response_artifacts(context: ConversationContext) -> None:

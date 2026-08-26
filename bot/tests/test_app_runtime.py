@@ -12,7 +12,12 @@ import pytest
 from app import runtime as app_runtime
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
-from discord_adapter.io import chunk_message, suppress_link_previews
+from discord_adapter.io import (
+    attachment_delivery_notice,
+    chunk_message,
+    prepare_attachment_delivery,
+    suppress_link_previews,
+)
 from storage.db import Database
 from storage.coding_tasks import CodingTask, CodingTaskStatus
 from storage.model_selection import ModelSelectionStore
@@ -403,7 +408,8 @@ async def test_coding_output_moderation_honors_exempt_task_tier() -> None:
         status=False,
     )
 
-    assert result == "full coding report"
+    assert result.text == "full coding report"
+    assert result.blocked is False
     assert app_runtime.KimiApplication._should_moderate_coding_output(app, task) is False
     check.assert_not_awaited()
 
@@ -435,7 +441,8 @@ async def test_coding_output_moderation_uses_checkpoint_task_tier() -> None:
         status=False,
     )
 
-    assert result == "full coding report"
+    assert result.text == "full coding report"
+    assert result.blocked is False
     check.assert_awaited_once_with(
         text="full coding report",
         direction=app_runtime.Direction.OUTPUT,
@@ -444,6 +451,132 @@ async def test_coding_output_moderation_uses_checkpoint_task_tier() -> None:
         thread_id=None,
         trust_tier=TrustTier.MEMBER.value,
     )
+
+
+@pytest.mark.asyncio
+async def test_coding_output_moderation_marks_blocked_result() -> None:
+    check = AsyncMock(return_value=SimpleNamespace(blocked=True, error=False))
+    service = SimpleNamespace(
+        enabled=True,
+        output_exempt_tier=None,
+        check=check,
+        refusal_for=lambda _direction, *, error: f"refused:{error}",
+    )
+    app = object.__new__(app_runtime.KimiApplication)
+    app.moderation_service = cast(Any, service)
+    task = cast(
+        CodingTask,
+        SimpleNamespace(
+            checkpoint={"trust_tier": TrustTier.MEMBER.value},
+            user_id="42",
+            channel_id="10",
+            thread_id=None,
+        ),
+    )
+
+    result = await app._moderate_coding_text(task, "blocked report", status=False)
+
+    assert result.text == "refused:False"
+    assert result.blocked is True
+
+
+@pytest.mark.asyncio
+async def test_durable_attachment_plan_freezes_limit_and_plain_notice(tmp_path: Path) -> None:
+    output = tmp_path / "large.zip"
+    output.write_bytes(b"12345")
+    channel = cast(
+        discord.TextChannel | discord.Thread,
+        SimpleNamespace(guild=SimpleNamespace(filesize_limit=4)),
+    )
+    save_plan = AsyncMock(side_effect=lambda _task_id, plan: plan)
+    gateway = SimpleNamespace(
+        prepare_attachment_delivery=lambda target, **kwargs: prepare_attachment_delivery(
+            target,
+            **kwargs,
+        )
+    )
+    app = object.__new__(app_runtime.KimiApplication)
+    app.discord_gateway = cast(Any, gateway)
+    app.coding_task_store = cast(
+        Any,
+        SimpleNamespace(
+            set_delivery_attachment_plan_if_absent=save_plan,
+        ),
+    )
+    task = cast(CodingTask, SimpleNamespace(id="task-1", checkpoint={}))
+
+    plan = await app_runtime.KimiApplication._prepare_coding_attachment_delivery(
+        app,
+        task,
+        channel,
+        output_files=[str(output)],
+        allowed_roots=[str(tmp_path)],
+    )
+
+    assert plan.files == ()
+    assert [item.filename for item in plan.omitted] == ["large.zip"]
+    frozen = save_plan.await_args.args[1]
+    notice = frozen["notice_text"]
+    assert notice == attachment_delivery_notice(plan)
+    assert "**" not in notice
+    assert "`" not in notice
+
+    channel.guild.filesize_limit = 100
+    recovered_task = cast(
+        CodingTask,
+        SimpleNamespace(id="task-1", checkpoint={"delivery": {"attachment_plan": frozen}}),
+    )
+    recovered = await app_runtime.KimiApplication._prepare_coding_attachment_delivery(
+        app,
+        recovered_task,
+        channel,
+        output_files=[str(output)],
+        allowed_roots=[str(tmp_path)],
+    )
+
+    assert recovered.effective_limit_bytes == 4
+    assert recovered.files == ()
+    assert attachment_delivery_notice(recovered) == notice
+    save_plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_durable_delivery_notice_is_persisted_in_assistant_transcript() -> None:
+    save_messages = AsyncMock()
+    app = object.__new__(app_runtime.KimiApplication)
+    app.conversation_store = cast(
+        Any,
+        SimpleNamespace(save_channel_messages=save_messages),
+    )
+    task = cast(
+        CodingTask,
+        SimpleNamespace(
+            id="3ff8bac7f9e24ed19a65d267c188d7ea",
+            conversation_id=7,
+        ),
+    )
+    notice = (
+        "Delivery notice: Discord did not attach large.zip because it exceeds the limit."
+    )
+    message = cast(
+        discord.Message,
+        SimpleNamespace(
+            id=123,
+            content=f"**Coding result `3ff8bac7`**\n{notice}\n\nReport body.",
+            created_at=None,
+        ),
+    )
+
+    await app_runtime.KimiApplication._persist_coding_final_messages(
+        app,
+        task,
+        [message],
+        channel_id="10",
+    )
+
+    records = save_messages.await_args.args[1]
+    assert records[0].content == f"{notice}\n\nReport body."
+    assert save_messages.await_args.kwargs == {"context_channel_id": "10"}
 
 
 def test_build_app_wires_shared_registry(monkeypatch) -> None:

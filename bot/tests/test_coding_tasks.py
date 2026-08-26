@@ -935,6 +935,74 @@ async def test_checkpoint_journal_stores_metadata_not_full_transcript(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_delivery_attachment_plan_is_frozen_and_status_metadata_is_sanitized(
+    tmp_path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        await store.set_checkpoint(
+            task.id,
+            {
+                "delivery": {
+                    "thread_id": "99",
+                    "output_files": ["C:/private/workspace/large.zip"],
+                }
+            },
+        )
+        first_plan = {
+            "effective_limit_bytes": 10,
+            "notice_text": "Delivery notice: large.zip was omitted.",
+            "omitted": [
+                {
+                    "path": "C:/private/workspace/large.zip",
+                    "filename": "large.zip",
+                    "size_bytes": 11,
+                    "reason": "oversize",
+                }
+            ],
+        }
+        competing_plan = {
+            "effective_limit_bytes": 20,
+            "notice_text": "different",
+            "omitted": [],
+        }
+
+        frozen = await store.set_delivery_attachment_plan_if_absent(task.id, first_plan)
+        repeated = await store.set_delivery_attachment_plan_if_absent(task.id, competing_plan)
+
+        assert frozen == first_plan
+        assert repeated == first_plan
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        delivery = refreshed.checkpoint["delivery"]
+        assert delivery["thread_id"] == "99"
+        assert delivery["output_files"] == ["C:/private/workspace/large.zip"]
+        assert delivery["attachment_plan"] == first_plan
+        assert [event.kind for event in await store.events(task.id)].count(
+            "delivery_attachment_plan"
+        ) == 1
+
+        payload = CodingTaskService._task_payload(refreshed)
+        assert payload["attachment_outcomes"] == {
+            "effective_limit_bytes": 10,
+            "omitted": [
+                {
+                    "filename": "large.zip",
+                    "size_bytes": 11,
+                    "reason": "oversize",
+                }
+            ],
+        }
+        assert "C:/private" not in json.dumps(payload["attachment_outcomes"])
+        assert "notice_text" not in json.dumps(payload["attachment_outcomes"])
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_coding_task_keeps_caller_tier_and_current_tool_policy(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()

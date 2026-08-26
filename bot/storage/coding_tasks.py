@@ -767,6 +767,46 @@ class CodingTaskStore:
                 (message_id, now, task_id),
             )
 
+    async def set_delivery_attachment_plan_if_absent(
+        self,
+        task_id: str,
+        attachment_plan: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Atomically freeze durable attachment preparation before final delivery."""
+
+        now = time.time()
+        async with self._db.write_transaction() as conn:
+            async with conn.execute(
+                "SELECT checkpoint_json, final_discord_message_id FROM coding_tasks WHERE id = ?",
+                (task_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None or row[1] is not None:
+                return None
+            checkpoint = _json_dict(str(row[0]))
+            delivery = checkpoint.get("delivery")
+            delivery = dict(delivery) if isinstance(delivery, dict) else {}
+            existing = delivery.get("attachment_plan")
+            if isinstance(existing, dict):
+                return dict(existing)
+            frozen = dict(attachment_plan)
+            delivery["attachment_plan"] = frozen
+            checkpoint["delivery"] = delivery
+            await conn.execute(
+                "UPDATE coding_tasks SET checkpoint_json = ?, updated_at = ? WHERE id = ? "
+                "AND final_discord_message_id IS NULL",
+                (json.dumps(checkpoint), now, task_id),
+            )
+            omitted = frozen.get("omitted")
+            await self._append_event_conn(
+                conn,
+                task_id,
+                "delivery_attachment_plan",
+                {"omitted_count": len(omitted) if isinstance(omitted, list) else 0},
+                now,
+            )
+            return frozen
+
     async def record_delivery_failure(
         self,
         task_id: str,

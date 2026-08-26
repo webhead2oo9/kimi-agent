@@ -444,14 +444,19 @@ Non-image files go through the shared 256 KiB UTF-8 extraction boundary in
 `moderation/files.py`. Ambient Discord text attachments are read once and
 screened, and the checked bytes are cached for `import_attachment`; binary,
 non-UTF-8, and oversized inputs stay visible as metadata but their content is
-withheld from tools. While moderation is enabled, files queued from responding
-turns reject unsupported opaque inputs. On output, queued UTF-8 files are
-included in the response's OUTPUT check along with the reply and embed text and
-any images. If any queued file is opaque, oversized, unreadable, or otherwise
-can't be represented to the text/image backend, the attachment rail is cleared
-and `MODERATION_ERROR_REFUSAL` is returned. Those files were never screened, so
-this is a hold rather than a verdict on them. Empty files have nothing to score
-and are allowed through.
+withheld from tools. On output, moderation covers the assistant's reply, embed
+text and owned embed image, and native model-generated images. Generic workspace
+files queued for Discord delivery are not moderation inputs, regardless of file
+type.
+
+Before delivery, each queued file is checked against the target guild's current
+Discord upload limit (`guild.filesize_limit`), with a conservative 10 MiB
+fallback when no guild limit is available. Files within the limit are still
+sent; only oversized files are omitted. The first response chunk gets a short
+plain-text notice naming each omission. That delivered notice is persisted in
+the assistant transcript, so later turns know the file was not attached. A
+durable coding task also checkpoints the limit and omission notice before send,
+making crash recovery idempotent without retrying a known-oversized upload.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -465,7 +470,7 @@ and are allowed through.
 | `MODERATION_OUTPUT_EXEMPT_TIER` | tier\|blank | "" | If set, users at or above this tier skip final response/activity output moderation. Input moderation still applies. |
 | `MODERATION_INPUT_REFUSAL` | str | `That message didn't pass my content filter, so I didn't read it. Try rewording it.` | Reply sent when input moderation flags the member's own message. |
 | `MODERATION_OUTPUT_REFUSAL` | str | `I wrote a reply, but it didn't pass my content filter, so I'm not posting it. Nothing's wrong on your end; try asking a different way.` | Reply sent when output moderation flags the bot's generated response. The member's message was fine. |
-| `MODERATION_ERROR_REFUSAL` | str | `I can't run my content check right now, so I'm holding this one back. Try again in a minute.` | Reply sent when the check could not run at all: a backend outage, or a queued file that cannot be screened. Distinct from the two above so an outage does not read as a refusal to answer. |
+| `MODERATION_ERROR_REFUSAL` | str | `I can't run my content check right now, so I'm holding this one back. Try again in a minute.` | Reply sent when the check could not run at all, such as a moderation backend outage. Distinct from the two above so an outage does not read as a refusal to answer. |
 
 ---
 

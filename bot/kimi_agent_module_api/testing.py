@@ -297,24 +297,36 @@ class FakeDiscordActions:
         return self.channels.get((guild_id, channel_id))
 
     async def fetch_messages(
-        self, guild_id: int, channel_id: int, *, after_message_id: int | None = None,
-        before_message_id: int | None = None, limit: int = 100,
+        self,
+        guild_id: int,
+        channel_id: int,
+        *,
+        after_message_id: int | None = None,
+        before_message_id: int | None = None,
+        limit: int = 100,
     ) -> MessagePage:
         self._record(
-            "fetch_messages", guild_id, channel_id, after_message_id=after_message_id,
-            before_message_id=before_message_id, limit=limit,
+            "fetch_messages",
+            guild_id,
+            channel_id,
+            after_message_id=after_message_id,
+            before_message_id=before_message_id,
+            limit=limit,
         )
         messages = sorted(
             self.histories.get((guild_id, channel_id), ()),
             key=lambda message: message.ref.message_id,
         )
         if after_message_id is not None:
-            candidates = [message for message in messages if message.ref.message_id > after_message_id]
+            candidates = [
+                message for message in messages if message.ref.message_id > after_message_id
+            ]
             selected = candidates[:limit]
             cursor = selected[-1].ref.message_id if selected else None
         else:
             candidates = [
-                message for message in messages
+                message
+                for message in messages
                 if before_message_id is None or message.ref.message_id < before_message_id
             ]
             selected = candidates[-limit:]

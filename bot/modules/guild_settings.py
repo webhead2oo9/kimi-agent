@@ -119,7 +119,7 @@ class GuildSettingsService:
             legacy_path = base / "servers" / f"{guild_id}.md"
             try:
                 legacy_text = legacy_path.read_text(encoding="utf-8")
-            except (FileNotFoundError, OSError):
+            except FileNotFoundError, OSError:
                 legacy_text = ""
             try:
                 legacy_meta, _ = split_frontmatter_strict(legacy_text) if legacy_text else ({}, "")

@@ -154,13 +154,8 @@ def test_missing_activation_capability_soft_disables_module_and_dependents(
 
     assert manager.load_state.loaded == ()
     assert created == []
-    disabled_reasons = {
-        name: reason for name, _version, reason in manager.load_state.disabled
-    }
-    assert (
-        "missing activation capability discord.message_content.v1"
-        in disabled_reasons["index"]
-    )
+    disabled_reasons = {name: reason for name, _version, reason in manager.load_state.disabled}
+    assert "missing activation capability discord.message_content.v1" in disabled_reasons["index"]
     assert manager.disabled_modules["consumer"][1] == "dependency disabled: index"
 
 

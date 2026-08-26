@@ -112,13 +112,21 @@ class DeclaredDiscordActions:
         return await self._inner.fetch_channel(guild_id, channel_id)
 
     async def fetch_messages(
-        self, guild_id: int, channel_id: int, *, after_message_id: int | None = None,
-        before_message_id: int | None = None, limit: int = 100,
+        self,
+        guild_id: int,
+        channel_id: int,
+        *,
+        after_message_id: int | None = None,
+        before_message_id: int | None = None,
+        limit: int = 100,
     ) -> MessagePage:
         self._gate("fetch_messages")
         return await self._inner.fetch_messages(
-            guild_id, channel_id, after_message_id=after_message_id,
-            before_message_id=before_message_id, limit=limit,
+            guild_id,
+            channel_id,
+            after_message_id=after_message_id,
+            before_message_id=before_message_id,
+            limit=limit,
         )
 
     async def fetch_pins(self, guild_id: int, channel_id: int) -> tuple[MessageSnapshot, ...]:

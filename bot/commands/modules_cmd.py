@@ -72,9 +72,7 @@ def render_manifest(
         if spec.requires_capabilities:
             lines.append(f"  capabilities: {', '.join(spec.requires_capabilities)}")
         if spec.activation_capabilities:
-            lines.append(
-                "  activation capabilities: " + ", ".join(spec.activation_capabilities)
-            )
+            lines.append("  activation capabilities: " + ", ".join(spec.activation_capabilities))
         if spec.provides:
             lines.append("  provides: " + ", ".join(f"{d.name}@{d.version}" for d in spec.provides))
         if spec.consumes:

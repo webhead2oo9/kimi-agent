@@ -142,6 +142,37 @@ def test_message_snapshot_carries_ids_and_attachments_only() -> None:
     assert snap.created_at == dt.datetime(2026, 1, 1, tzinfo=dt.UTC).timestamp()
 
 
+def test_message_snapshot_carries_history_projection_fields() -> None:
+    snap = message_snapshot(
+        _message(
+            pinned=True,
+            edited_at=dt.datetime(2026, 1, 2, tzinfo=dt.UTC),
+            reference=SimpleNamespace(message_id=99),
+            author=SimpleNamespace(id=4, bot=False, display_name="Ada"),
+            embeds=[
+                SimpleNamespace(
+                    title="Decision",
+                    description="Ship the index",
+                    fields=[SimpleNamespace(name="Owner", value="Ada")],
+                    footer=SimpleNamespace(text="approved"),
+                    author=SimpleNamespace(name="Review"),
+                    image=None,
+                    thumbnail=None,
+                )
+            ],
+        )
+    )
+
+    assert snap.reply_to_message_id == 99
+    assert snap.pinned is True
+    assert snap.edited_at == dt.datetime(2026, 1, 2, tzinfo=dt.UTC).timestamp()
+    assert snap.author_display_name == "Ada"
+    assert all(
+        expected in snap.embed_texts[0]
+        for expected in ("Decision", "Ship the index", "Review", "Owner: Ada", "approved")
+    )
+
+
 class _Bot:
     def __init__(self) -> None:
         self.listeners: list[tuple[Any, str]] = []

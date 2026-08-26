@@ -114,6 +114,78 @@ def test_empty_configuration_discovers_nothing(tmp_path: Path) -> None:
     assert manager.config_dir == tmp_path
 
 
+def test_missing_activation_capability_soft_disables_module_and_dependents(
+    tmp_path: Path,
+) -> None:
+    created: list[str] = []
+
+    def create(name: str) -> Callable[[ModuleLoadContext], FakeModule]:
+        def factory(_ctx: ModuleLoadContext) -> FakeModule:
+            created.append(name)
+            return FakeModule(name, [])
+
+        return factory
+
+    installed = {
+        "index": ModuleSpec(
+            name="index",
+            version="1",
+            create=create("index"),
+            activation_capabilities=("discord.message_content.v1",),
+        ),
+        "consumer": ModuleSpec(
+            name="consumer",
+            version="1",
+            create=create("consumer"),
+            dependencies=("index",),
+        ),
+    }
+    settings = Settings(
+        _env_file=None,
+        config_dir=str(tmp_path),
+        message_content_intent=False,
+    )  # type: ignore[call-arg]
+    manager = ModuleManager.load(
+        ("consumer", "index"),
+        core_settings=settings,
+        registry=ToolRegistry(),
+        installed=installed,
+    )
+
+    assert manager.load_state.loaded == ()
+    assert created == []
+    disabled_reasons = {
+        name: reason for name, _version, reason in manager.load_state.disabled
+    }
+    assert (
+        "missing activation capability discord.message_content.v1"
+        in disabled_reasons["index"]
+    )
+    assert manager.disabled_modules["consumer"][1] == "dependency disabled: index"
+
+
+def test_missing_required_capability_remains_a_startup_error(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        config_dir=str(tmp_path),
+        message_content_intent=False,
+    )  # type: ignore[call-arg]
+    spec = ModuleSpec(
+        name="index",
+        version="1",
+        create=lambda _ctx: FakeModule("index", []),
+        requires_capabilities=("discord.message_content.v1",),
+    )
+
+    with pytest.raises(RuntimeError, match="requires unavailable capability"):
+        ModuleManager.load(
+            ("index",),
+            core_settings=settings,
+            registry=ToolRegistry(),
+            installed={"index": spec},
+        )
+
+
 def test_discovery_imports_only_configured_entrypoints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

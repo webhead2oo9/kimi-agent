@@ -56,7 +56,7 @@ class GuildActivationSnapshot:
     invalid: frozenset[int] = frozenset()
 
 
-def _read_regular_utf8(path: Path) -> str | None:
+def read_regular_utf8(path: Path) -> str | None:
     """Read one bounded regular file without following a final symlink."""
     try:
         before = path.lstat()
@@ -116,7 +116,7 @@ def _classify_guild_file(
         return None
     except OSError:
         return guild_id, "invalid"
-    content = _read_regular_utf8(path)
+    content = read_regular_utf8(path)
     if content is None:
         return guild_id, "invalid"
     try:

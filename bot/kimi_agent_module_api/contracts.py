@@ -537,6 +537,56 @@ class MessageRef:
     parent_channel_id: int | None = None
 
 
+type ProposalState = Literal["pending", "applied", "rejected"]
+
+
+class ProposalError(RuntimeError):
+    """A configuration proposal could not be read, created, or decided."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalActor:
+    user_id: str
+    source: str
+    guild_id: str | None = None
+    channel_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSnapshot:
+    target: str
+    revision: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalRef:
+    proposal_id: str
+    target: str
+    state: ProposalState
+    message: MessageRef | None = None
+    decided_by: str | None = None
+    decision_reason: str = ""
+
+
+class ProposalService(Protocol):
+    """Guild-scoped fragment proposals, already bound to one module."""
+
+    async def snapshot(self, target: str, *, actor: ProposalActor) -> ConfigSnapshot: ...
+
+    async def propose(
+        self,
+        *,
+        target: str,
+        content: str,
+        summary: str,
+        actor: ProposalActor,
+        expected_revision: str | None = None,
+    ) -> ProposalRef: ...
+
+    async def get(self, proposal_id: str, *, actor: ProposalActor) -> ProposalRef | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AttachmentSnapshot:
     attachment_id: int

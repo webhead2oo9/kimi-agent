@@ -20,7 +20,12 @@ from app.learn_turn import (
     build_learn_registry,
     learn_turn_blocked_tools,
 )
-from config.fragments.guild_config import load_learn_log_channel_id, server_setup_activation
+from config.fragments.guild_config import (
+    load_learn_log_channel_id,
+    load_proposal_channel_id,
+    proposal_channel_id_is_configured,
+    server_setup_activation,
+)
 from tools.learn import (
     SCOPE_THIS_GUILD,
     SINK_COMMUNITY_MEMORY,
@@ -344,6 +349,49 @@ def test_malformed_learn_log_channel_blocks_guild_activation() -> None:
         server_setup_activation(f"---\nbot_active: true\nlearn_log_channel_id: {CHANNEL_ID}\n---\n")
         is True
     )
+
+
+def test_proposal_channel_is_read_and_blocks_activation_when_malformed(tmp_path) -> None:
+    _write_guild_fragment(tmp_path, f"---\nproposal_channel_id: {CHANNEL_ID}\n---\n")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) == CHANNEL_ID
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nproposal_channel_id: nope\n---\n")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nbot_active: true\n---\n")
+    assert not proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nproposal_channel_id: [\n---\n")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    _write_guild_fragment(tmp_path, "---\nproposal_channel_id: 123\n")
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+    assert (
+        server_setup_activation("---\nbot_active: true\nproposal_channel_id: nope\n---\n") is None
+    )
+    assert (
+        server_setup_activation(f"---\nbot_active: true\nproposal_channel_id: {CHANNEL_ID}\n---\n")
+        is True
+    )
+
+
+def test_proposal_channel_routing_rejects_symlinked_fragments(tmp_path) -> None:
+    servers = tmp_path / "servers"
+    servers.mkdir()
+    fragment = servers / f"{GUILD_ID}.md"
+    outside = tmp_path / "outside.md"
+    outside.write_text(f"---\nproposal_channel_id: {CHANNEL_ID}\n---\n", encoding="utf-8")
+    try:
+        fragment.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
+
+    fragment.unlink()
+    fragment.symlink_to(tmp_path / "missing.md")
+    assert load_proposal_channel_id(GUILD_ID, config_dir=tmp_path) is None
+    assert proposal_channel_id_is_configured(GUILD_ID, config_dir=tmp_path)
 
 
 # ---- source link and turn wiring ----------------------------------------

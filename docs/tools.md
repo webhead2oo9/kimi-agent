@@ -22,15 +22,14 @@ them:
 | `/stop` | Member | Cancel the current response/coding work, all of the member's work, or one owned coding task. |
 | `/usage` | Member; expanded for staff | Show the current user's usage, or let staff inspect another user or server totals. |
 | `/models` | Owner | Inspect or change the global chat-model override. |
-| `/proposals list`, `show`, `approve`, `reject`, `stage-secret` | Owner; gated | Review and decide durable managed-configuration proposals, or stage a write-only credential reference. Registered only when `CONTROL_PLANE_ENABLED=true`. |
 | `/moderation block`, `unblock`, `status` | Staff | Manage bot-level user blocks. |
 | `/mod note`, `warn`, `timeout`, `kick`, `ban`, `history`, `case` | Staff | Create Discord moderation actions/cases and inspect case history. |
 | **Teach Kimi** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
 
-The proposal control plane is off by default. The optional `config_admin`
-module lets staff draft configuration changes; only the configured bot owner
-can review and decide them through `/proposals`. See
-[Module control plane](module-control-plane.md) for the full workflow.
+The optional `config_admin` module lets staff inspect guild-scoped fragments
+and draft full-content replacements. Core posts each proposal as a persistent
+Discord card; a staff member in that guild approves or rejects it with the
+card's buttons.
 
 ## Visibility and access
 

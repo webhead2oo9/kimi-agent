@@ -263,6 +263,13 @@ value means no learn logging at all (and, like the other id keys, a malformed va
 `bot_active` activation instead of being silently ignored). A logging failure never fails
 the teaching itself.
 
+`proposal_channel_id:` is the staff review channel for configuration proposals
+created by application modules such as `config_admin`. When absent, the bot
+uses the channel where the proposal was invoked. In either case core resolves
+the channel and requires it to belong to this guild before posting. A malformed
+numeric value invalidates `bot_active` activation rather than silently routing
+a configuration card somewhere else.
+
 A third thread key exists at **guild scope only**: `thread_targets:`, a list of numeric
 channel ids the bot may open a thread in *other than the one it was asked in* ("take this
 to #bot-spam"). Absent or empty means the capability is off in that guild; each community
@@ -743,19 +750,6 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is untracked; a missing store contributes no private skills, while shipped built-ins remain available. |
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
 | `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
-
-## Module control plane
-
-These environment-owned bootstrap settings enable the owner-approved module
-proposal system described in [module-control-plane.md](module-control-plane.md).
-They cannot themselves be changed by a proposal.
-
-| Env var | Type | Default | Description |
-|---|---|---|---|
-| `CONTROL_PLANE_ENABLED` | bool | `false` | Advertise the experimental proposal, managed-config, and restart capabilities to compatible modules. Requires `OWNER_USER_ID`. |
-| `CONTROL_PLANE_DIR` | path | `data/control-plane` | Private root for immutable managed revisions, the restart journal, and encrypted credentials. |
-| `CONTROL_PLANE_KEY` | secret | `""` | Base64-encoded 32-byte AES-GCM master key. Required only to stage or resolve managed credentials; keep it outside proposals and managed config. |
-| `CONTROL_PLANE_AUTO_RESTART` | bool | `true` | Close cleanly with restart exit code 75 after an approved restart-required proposal. Run through the control-plane launcher to restart and roll back automatically. |
 
 ## Storage
 

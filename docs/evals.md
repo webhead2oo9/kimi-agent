@@ -336,6 +336,15 @@ totals. The gap between them is local harness and tool time; cassette hits make
 that gap smaller than a fully live production turn would, so only compare arms
 that use equivalent cassette provenance.
 
+The summary and report count **user turns** (scenario messages handled)
+separately from **model turns** (provider calls, including ReAct iterations
+after tools). Effective output throughput is normalized output tokens divided
+by provider-call latency. It includes time-to-first-token and request overhead,
+so it measures user-observed provider speed rather than a generation-only
+streaming rate. Missing output usage or zero provider latency is reported as
+`n/a`, never as a misleading zero. Turns and throughput are diagnostic only
+and do not change the mechanical score.
+
 Under the delta table the report also splits the failures, because a score
 delta cannot tell "this model failed" apart from "nothing passes this
 scenario", and two runs can report an identical overall pass rate while

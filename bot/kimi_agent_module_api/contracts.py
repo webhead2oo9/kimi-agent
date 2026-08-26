@@ -156,6 +156,72 @@ class GuildSettingsSchema:
     validate: Callable[[Mapping[str, Any]], Sequence[str]] | None = None
 
 
+_GUILD_ID_RE = re.compile(r"^\d{1,25}$")
+_GUILD_SETTING_LIST_MAX = 512
+_GUILD_SETTING_STRING_MAX = 2_000
+
+
+def coerce_guild_setting_value(field_spec: GuildSettingField, raw: Any) -> tuple[Any, str | None]:
+    """Validate and normalize a configured value or the field's default."""
+    if raw is None:
+        if field_spec.required:
+            return None, f"{field_spec.name} is required"
+        if field_spec.default is None:
+            return None, None
+        raw = field_spec.default
+    kind = field_spec.kind
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return raw, None
+        return None, f"{field_spec.name} must be true or false"
+    if kind == "int":
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None, f"{field_spec.name} must be an integer"
+        return raw, None
+    if kind == "id":
+        token = str(raw).strip()
+        if not _GUILD_ID_RE.match(token):
+            return None, f"{field_spec.name} must be a numeric Discord id"
+        return int(token), None
+    if kind == "id_list":
+        if not isinstance(raw, (list, tuple)):
+            return None, f"{field_spec.name} must be a list of Discord ids"
+        if len(raw) > _GUILD_SETTING_LIST_MAX:
+            return None, f"{field_spec.name} has more than {_GUILD_SETTING_LIST_MAX} entries"
+        ids: list[int] = []
+        for entry in raw:
+            token = str(entry).strip()
+            if not _GUILD_ID_RE.match(token):
+                return None, f"{field_spec.name} contains a non-numeric id {entry!r}"
+            ids.append(int(token))
+        return tuple(ids), None
+    if kind == "str":
+        if not isinstance(raw, str):
+            return None, f"{field_spec.name} must be text"
+        if len(raw) > _GUILD_SETTING_STRING_MAX:
+            return None, (
+                f"{field_spec.name} is longer than {_GUILD_SETTING_STRING_MAX} characters"
+            )
+        return raw, None
+    if kind == "str_list":
+        if not isinstance(raw, (list, tuple)):
+            return None, f"{field_spec.name} must be a list of text values"
+        if len(raw) > _GUILD_SETTING_LIST_MAX:
+            return None, f"{field_spec.name} has more than {_GUILD_SETTING_LIST_MAX} entries"
+        items: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, str) or len(entry) > _GUILD_SETTING_STRING_MAX:
+                return None, f"{field_spec.name} contains an invalid entry {entry!r}"
+            items.append(entry)
+        return tuple(items), None
+    if kind == "enum":
+        token = str(raw).strip()
+        if token not in field_spec.choices:
+            return None, f"{field_spec.name} must be one of {', '.join(field_spec.choices)}"
+        return token, None
+    return None, f"{field_spec.name} has unsupported kind {kind!r}"
+
+
 # --------------------------------------------------------------------------
 # Naming rules shared by declarations and runtime ports
 # --------------------------------------------------------------------------
@@ -322,6 +388,13 @@ def validate_guild_settings_schema(module_name: str, schema: GuildSettingsSchema
             raise ModuleContractError(
                 f"module {module_name!r} setting {field_spec.name!r} is required with a default"
             )
+        if field_spec.default is not None:
+            _value, error = coerce_guild_setting_value(field_spec, field_spec.default)
+            if error is not None:
+                raise ModuleContractError(
+                    f"module {module_name!r} setting {field_spec.name!r} has an invalid "
+                    f"default: {error}"
+                )
 
 
 # --------------------------------------------------------------------------

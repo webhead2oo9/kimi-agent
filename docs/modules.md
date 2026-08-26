@@ -136,13 +136,18 @@ the ports are a contract and an audit surface, not a sandbox.
   the acting user, other bots, and any member whose trust tier is not
   below the actor's, unless the spec sets
   `permissions.override_target_policy`. Every action is scoped to guilds
-  core considers active, audit reasons are prefixed with the module name,
-  and outgoing messages never ping.
+  core considers active. A `MessageRef` cannot be reused across guilds: core
+  checks the channel's guild before asking Discord to fetch or delete the
+  message. Discord caps audit-log reasons at 512 characters, so that limit
+  includes the module prefix and core keeps the beginning of your reason (where
+  correlation markers normally live). Outgoing messages never ping.
 - `ctx.guild_settings`: the module's typed per-guild settings, declared as
   `ModuleSpec.guild_settings` (fields of kind `int`, `id`, `id_list`, `str`,
   `str_list`, `enum`, `bool`, plus an optional validator). Values live in
   `<CONFIG_DIR>/guild-modules/<guild_id>/<module_name>.md` (frontmatter
-  only); until a guild has that document, the schema's field names are
+  only). These documents are parsed strictly. Broken frontmatter markers or
+  invalid YAML make the snapshot invalid instead of quietly behaving like
+  empty settings. Until a guild has that document, the schema's field names are
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
@@ -172,11 +177,14 @@ the ports are a contract and an audit surface, not a sandbox.
   a `ModuleInteraction` whose option values are stable IDs. `respond`,
   `defer`, `edit_original`, and `follow_up` never ping. Buttons and selects
   are `ButtonSpec`/`SelectSpec` values whose custom IDs are
-  `m:<module>:<key>:...`; `register_component(kind, key, handler)` binds the
-  handler (optionally with an expiry) and core routes clicks through one
-  persistent dispatcher, so a button still works after a restart as long as
-  the module re-registers its key in `start()`. Registrations are removed
-  when the module closes; core syncs the command tree once per READY.
+  `m:<module>:<key>:...`. Components default to member access. If a button or
+  select can do privileged work, register it with `min_tier="regular"` or
+  `min_tier="staff"`; core checks the person who actually clicked it and
+  rejects unauthorized clicks ephemerally before your handler runs. You can
+  also give a registration an expiry. One persistent dispatcher routes clicks,
+  so a button still works after a restart as long as the module re-registers
+  its key in `start()`. Registrations are removed when the module closes; core
+  syncs the command tree once per READY.
   Not supported: modals, attachment/number option kinds, context menus,
   per-guild command scoping, localization.
 - `ctx.http`: outbound HTTP limited to the hosts in
@@ -203,8 +211,10 @@ hatches such as `raw_bot`).
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
 `FakeHttp`, and friends). They import nothing beyond the standard library and
 the contracts, so a module can unit-test its logic with only the API package
-installed. `FakeDiscordActions` enforces the module's declared actions, and
-`FakeScheduler.run_due(now)` runs jobs only when the test advances time.
+installed. `FakeDiscordActions` enforces the module's declared actions,
+`FakeInteractions.component_min_tiers[(kind, key)]` lets tests check a
+component's access tier, and `FakeScheduler.run_due(now)` runs jobs only when
+the test advances time.
 
 For composition tests, core's `modules.testing.build_test_runtime(tmp_path,
 names)` loads the named modules through the real `ModuleManager`, applies their

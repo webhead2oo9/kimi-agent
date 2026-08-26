@@ -20,7 +20,14 @@ from app.modules import (
     ModuleSpec,
 )
 from kimi_agent_module_api import ModuleCapabilities
+from kimi_agent_module_api.contracts import (
+    GuildSettingField,
+    GuildSettingsSchema,
+    ServiceDeclaration,
+    ServiceRequirement,
+)
 from kimi_agent_module_api.testing import FakeTrust
+from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.testing import fake_ports
 from config.settings import Settings
 from storage.db import Database
@@ -179,6 +186,70 @@ def test_invalid_required_module_configuration_fails_startup(
 ) -> None:
     with pytest.raises(RuntimeError, match=match):
         _manager(tmp_path, names, installed)
+
+
+def test_service_requirement_must_match_the_provider_declaration(tmp_path: Path) -> None:
+    provider = ModuleSpec(
+        name="provider",
+        version="1",
+        provides=(ServiceDeclaration("cases", 1),),
+        create=lambda _ctx: FakeModule("provider", []),
+    )
+    consumer = ModuleSpec(
+        name="consumer",
+        version="1",
+        dependencies=("provider",),
+        consumes=(ServiceRequirement("missing", 1, provider="provider"),),
+        create=lambda _ctx: FakeModule("consumer", []),
+    )
+    with pytest.raises(RuntimeError, match="does not declare"):
+        _manager(
+            tmp_path,
+            ("consumer", "provider"),
+            {"provider": provider, "consumer": consumer},
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path: Path) -> None:
+    guild_id = 123
+    seen: list[ModuleRuntimeContext] = []
+
+    class CaptureModule(FakeModule):
+        async def start(self, ctx: ModuleRuntimeContext) -> None:
+            seen.append(ctx)
+
+    module = CaptureModule("optional", [])
+    schema = GuildSettingsSchema(
+        fields=(GuildSettingField("channels", "id_list"),),
+        invalid_policy="disable_module",
+    )
+    spec = ModuleSpec(
+        name="optional",
+        version="1",
+        guild_settings=schema,
+        create=lambda _ctx: module,
+    )
+    manager = _manager(tmp_path, ("optional",), {"optional": spec})
+    settings_path = tmp_path / GUILD_MODULES_DIR / str(guild_id) / "optional.md"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("---\nchannels: [invalid]\n---\n", encoding="utf-8")
+    manager.guild_settings = GuildSettingsService(
+        config_dir=lambda: tmp_path,
+        schemas=manager.guild_settings_schemas,
+    )
+    manager.guild_settings.refresh((guild_id,))
+    database = Database(tmp_path / "bot.db")
+    await database.connect()
+    try:
+        await manager.start(_base(database, manager), customize=fake_ports)
+        assert seen[0].is_guild_active(guild_id) is False
+        settings_path.write_text("---\nchannels: []\n---\n", encoding="utf-8")
+        manager.guild_settings.refresh((guild_id,))
+        assert seen[0].is_guild_active(guild_id) is True
+    finally:
+        await manager.close()
+        await database.close()
 
 
 def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path) -> None:

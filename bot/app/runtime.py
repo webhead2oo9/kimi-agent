@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord import app_commands
 from discord.ext import commands
+from kimi_agent_module_api import ModuleSpec
 from pydantic import SecretStr
 
 from agent.attachments import (
@@ -848,13 +849,18 @@ class KimiApplication:
         )
         module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
         module_manager.scheduler = DurableScheduler(
-            self.database, on_health=module_manager.health.mark
+            self.database,
+            on_health=lambda module, state, detail: module_manager.health.mark(
+                module, state, detail, source="scheduler"
+            ),
         )
         module_manager.http = ModuleHttpRuntime(user_agent=f"{self.settings.bot_name}-modules")
         module_manager.guild_settings = GuildSettingsService(
             config_dir=lambda: Path(self.settings.config_dir),
             schemas=module_manager.guild_settings_schemas,
-            on_health=module_manager.health.mark,
+            on_health=lambda module, state, detail: module_manager.health.mark(
+                module, state, detail, source="guild_settings"
+            ),
         )
         await self._refresh_module_guild_settings(None)
         self._module_event_publisher = ModuleEventPublisher(
@@ -865,6 +871,29 @@ class KimiApplication:
         is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
         interaction_runtime = InteractionRuntime(self.bot)
         interaction_runtime.install()
+
+        def customize_module_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
+            module_is_guild_active = ports["is_guild_active"]
+            return {
+                **ports,
+                "interactions": interaction_runtime.router_for(
+                    spec.name,
+                    trust=module_trust,
+                    is_guild_active=module_is_guild_active,
+                ),
+                "discord": DeclaredDiscordActions(
+                    DiscordActionsImpl(
+                        bot=self.bot,
+                        trust=module_trust,
+                        module_name=spec.name,
+                        is_guild_active=module_is_guild_active,
+                        override_target_policy=spec.permissions.override_target_policy,
+                    ),
+                    spec.name,
+                    spec.permissions.discord_actions,
+                ),
+            }
+
         await module_manager.start(
             ModuleRuntimeBase(
                 database=self.database,
@@ -877,23 +906,7 @@ class KimiApplication:
                 configuration=self.configuration_service,
                 restart=self.restart_coordinator,
             ),
-            customize=lambda spec, ports: {
-                **ports,
-                "interactions": interaction_runtime.router_for(
-                    spec.name, trust=module_trust, is_guild_active=is_guild_active
-                ),
-                "discord": DeclaredDiscordActions(
-                    DiscordActionsImpl(
-                        bot=self.bot,
-                        trust=module_trust,
-                        module_name=spec.name,
-                        is_guild_active=is_guild_active,
-                        override_target_policy=spec.permissions.override_target_policy,
-                    ),
-                    spec.name,
-                    spec.permissions.discord_actions,
-                ),
-            },
+            customize=customize_module_ports,
         )
         # Persisted module jobs re-bind to handlers registered during start().
         module_manager.scheduler.start()

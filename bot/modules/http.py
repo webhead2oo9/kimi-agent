@@ -39,6 +39,7 @@ DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 _CHUNK = 64 * 1024
 _METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "instance-data"})
 _METADATA_ADDRESSES = ("169.254.169.254", "fd00:ec2::254", "100.100.100.200")
+_CROSS_ORIGIN_SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
 
 
 class ModuleHttpError(RuntimeError):
@@ -107,6 +108,15 @@ def _is_private_address(host: str) -> bool:
     except ValueError:
         return False
     return not ip.is_global
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HostNotAllowed("invalid port") from exc
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
 
 
 class ModuleHttpRuntime:
@@ -194,6 +204,7 @@ class ModuleHttpImpl:
         json_body: Any = None,
     ) -> tuple[aiohttp.ClientResponse, ResolvedHostRule]:
         current = url
+        request_headers = dict(headers or {})
         for _hop in range(MAX_REDIRECTS + 1):
             rule, current = self._check(current)
             session = self._runtime.session(private=rule.private)
@@ -201,7 +212,7 @@ class ModuleHttpImpl:
                 response = await session.request(
                     method,
                     current,
-                    headers=dict(headers or {}),
+                    headers=request_headers,
                     json=json_body,
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds),
@@ -215,7 +226,14 @@ class ModuleHttpImpl:
                 response.release()
                 if not location:
                     raise ModuleHttpError("redirect without a Location header")
-                current = urljoin(current, location)
+                redirected = urljoin(current, location)
+                if _origin(redirected) != _origin(current):
+                    request_headers = {
+                        name: value
+                        for name, value in request_headers.items()
+                        if name.lower() not in _CROSS_ORIGIN_SENSITIVE_HEADERS
+                    }
+                current = redirected
                 if response.status == 303 or (response.status in (301, 302) and method == "POST"):
                     method, json_body = "GET", None
                 continue

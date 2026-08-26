@@ -16,7 +16,6 @@ document is fixed, so an active guild can never run with broken moderation.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -29,74 +28,19 @@ from kimi_agent_module_api.contracts import (
     GuildSettingsSchema,
     GuildSettingsSnapshot,
     HealthState,
+    coerce_guild_setting_value,
 )
 from utils.frontmatter import FrontmatterError, split_frontmatter_strict
 
 log = logging.getLogger(__name__)
 
 GUILD_MODULES_DIR = "guild-modules"
-_ID_RE = re.compile(r"^\d{1,25}$")  # any Discord snowflake; tests use short ids
-_MAX_ID_LIST = 512
-_MAX_STR = 2_000
-
 type ChangeCallback = Callable[[int], None]
 
 
 def coerce_value(field_spec: GuildSettingField, raw: Any) -> tuple[Any, str | None]:
     """Return (value, error). ``None`` raw means "use the default"."""
-    if raw is None:
-        if field_spec.required:
-            return None, f"{field_spec.name} is required"
-        return field_spec.default, None
-    kind = field_spec.kind
-    if kind == "bool":
-        if isinstance(raw, bool):
-            return raw, None
-        return None, f"{field_spec.name} must be true or false"
-    if kind == "int":
-        if isinstance(raw, bool) or not isinstance(raw, int):
-            return None, f"{field_spec.name} must be an integer"
-        return raw, None
-    if kind == "id":
-        token = str(raw).strip()
-        if not _ID_RE.match(token):
-            return None, f"{field_spec.name} must be a numeric Discord id"
-        return int(token), None
-    if kind == "id_list":
-        if not isinstance(raw, list):
-            return None, f"{field_spec.name} must be a list of Discord ids"
-        if len(raw) > _MAX_ID_LIST:
-            return None, f"{field_spec.name} has more than {_MAX_ID_LIST} entries"
-        ids: list[int] = []
-        for entry in raw:
-            token = str(entry).strip()
-            if not _ID_RE.match(token):
-                return None, f"{field_spec.name} contains a non-numeric id {entry!r}"
-            ids.append(int(token))
-        return tuple(ids), None
-    if kind == "str":
-        if not isinstance(raw, str):
-            return None, f"{field_spec.name} must be text"
-        if len(raw) > _MAX_STR:
-            return None, f"{field_spec.name} is longer than {_MAX_STR} characters"
-        return raw, None
-    if kind == "str_list":
-        if not isinstance(raw, list):
-            return None, f"{field_spec.name} must be a list of text values"
-        if len(raw) > _MAX_ID_LIST:
-            return None, f"{field_spec.name} has more than {_MAX_ID_LIST} entries"
-        items: list[str] = []
-        for entry in raw:
-            if not isinstance(entry, str) or len(entry) > _MAX_STR:
-                return None, f"{field_spec.name} contains an invalid entry {entry!r}"
-            items.append(entry)
-        return tuple(items), None
-    if kind == "enum":
-        token = str(raw).strip()
-        if token not in field_spec.choices:
-            return None, f"{field_spec.name} must be one of {', '.join(field_spec.choices)}"
-        return token, None
-    return None, f"{field_spec.name} has unsupported kind {kind!r}"
+    return coerce_guild_setting_value(field_spec, raw)
 
 
 def coerce_document(

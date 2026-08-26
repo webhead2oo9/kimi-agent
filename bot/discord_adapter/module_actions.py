@@ -19,6 +19,7 @@ import discord
 from discord.ext import commands
 
 from discord_adapter.module_events import member_snapshot, message_snapshot
+from discord_adapter.module_interactions import build_view
 from kimi_agent_module_api.contracts import (
     MemberSnapshot,
     MessageRef,
@@ -197,7 +198,7 @@ class DiscordActionsImpl:
                 guild_id=reply_to.guild_id,
             )
         if components:
-            kwargs["view"] = components[0]
+            kwargs["view"] = build_view(components, self._module_name)
         try:
             sent = await channel.send(content, **kwargs)
         except discord.HTTPException as exc:

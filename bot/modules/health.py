@@ -40,6 +40,8 @@ class HealthRegistry:
 
     clock: Callable[[], float] = time.time
     on_change: Callable[[str, ModuleHealth], None] | None = None
+    _module_states: dict[str, ModuleHealth] = field(default_factory=dict)
+    _constraints: dict[tuple[str, str], ModuleHealth] = field(default_factory=dict)
     _states: dict[str, ModuleHealth] = field(default_factory=dict)
 
     def snapshot(self) -> Mapping[str, ModuleHealth]:
@@ -55,16 +57,77 @@ class HealthRegistry:
         detail: str = "",
         metrics: Mapping[str, float] | None = None,
     ) -> ModuleHealth:
-        health = ModuleHealth(
+        health = self._build(state, detail, metrics)
+        self._module_states[module_name] = health
+        return self._refresh(module_name)
+
+    def set_constraint(
+        self,
+        module_name: str,
+        source: str,
+        state: HealthState,
+        detail: str = "",
+        metrics: Mapping[str, float] | None = None,
+    ) -> ModuleHealth:
+        """Set one core-owned health constraint without erasing module reports."""
+        key = (module_name, source)
+        if state == "healthy" and not detail and not metrics:
+            self._constraints.pop(key, None)
+        else:
+            self._constraints[key] = self._build(state, detail, metrics)
+        return self._refresh(module_name)
+
+    def _build(
+        self,
+        state: HealthState,
+        detail: str,
+        metrics: Mapping[str, float] | None,
+    ) -> ModuleHealth:
+        return ModuleHealth(
             state=state,
             detail=detail[:HEALTH_DETAIL_MAX_LENGTH],
             metrics=_bounded_metrics(metrics),
             updated_at=self.clock(),
         )
+
+    def _refresh(self, module_name: str) -> ModuleHealth:
+        candidates = [
+            health for (name, _source), health in self._constraints.items() if name == module_name
+        ]
+        module_health = self._module_states.get(module_name)
+        if module_health is not None:
+            candidates.append(module_health)
+        if not candidates:
+            self._states.pop(module_name, None)
+            return ModuleHealth(state="healthy", updated_at=self.clock())
+
+        order: dict[HealthState, int] = {
+            "healthy": 0,
+            "starting": 1,
+            "degraded": 2,
+            "failed": 3,
+        }
+        worst_level = max(order[health.state] for health in candidates)
+        worst = [health for health in candidates if order[health.state] == worst_level]
+        details = list(dict.fromkeys(health.detail for health in worst if health.detail))
+        metrics: dict[str, float] = {}
+        for health in candidates:
+            metrics.update(health.metrics)
+        health = ModuleHealth(
+            state=worst[0].state,
+            detail="; ".join(details)[:HEALTH_DETAIL_MAX_LENGTH],
+            metrics=_bounded_metrics(metrics),
+            updated_at=self.clock(),
+        )
         previous = self._states.get(module_name)
         self._states[module_name] = health
-        if previous is None or previous.state != state:
-            log.info("Kimi module %s is %s%s", module_name, state, f": {detail}" if detail else "")
+        if previous is None or previous.state != health.state:
+            log.info(
+                "Kimi module %s is %s%s",
+                module_name,
+                health.state,
+                f": {health.detail}" if health.detail else "",
+            )
         if self.on_change is not None:
             try:
                 self.on_change(module_name, health)
@@ -72,13 +135,20 @@ class HealthRegistry:
                 log.exception("Module health observer failed for %s", module_name)
         return health
 
-    def mark(self, module_name: str, state: HealthState, detail: str = "") -> None:
-        """``set`` for callers that need a ``None``-returning callback."""
-        self.set(module_name, state, detail)
+    def mark(
+        self,
+        module_name: str,
+        state: HealthState,
+        detail: str = "",
+        *,
+        source: str = "core",
+    ) -> None:
+        """Set a core constraint for callers that need a ``None`` return."""
+        self.set_constraint(module_name, source, state, detail)
 
     def merge_metrics(self, module_name: str, metrics: Mapping[str, float]) -> None:
         """Update metrics without changing state or detail (e.g. event counters)."""
-        current = self._states.get(module_name)
+        current = self._module_states.get(module_name)
         state = current.state if current is not None else "healthy"
         detail = current.detail if current is not None else ""
         merged = dict(current.metrics) if current is not None else {}
@@ -86,7 +156,15 @@ class HealthRegistry:
         self.set(module_name, state, detail, merged)
 
     def forget(self, module_name: str) -> None:
+        self._module_states.pop(module_name, None)
+        self._constraints = {
+            key: health for key, health in self._constraints.items() if key[0] != module_name
+        }
         self._states.pop(module_name, None)
+
+    def module_state(self, module_name: str) -> ModuleHealth | None:
+        """Return only the state reported by lifecycle/module code."""
+        return self._module_states.get(module_name)
 
     def reporter_for(self, module_name: str) -> ModuleHealthReporter:
         return ModuleHealthReporter(self, module_name)

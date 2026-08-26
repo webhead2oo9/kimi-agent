@@ -66,6 +66,25 @@ async def server() -> AsyncIterator[TestServer]:
     async def away(request: web.Request) -> web.Response:
         raise web.HTTPFound(location="https://evil.example.org/x")
 
+    async def cross_origin(request: web.Request) -> web.Response:
+        raise web.HTTPFound(location=f"http://localhost:{request.url.port}/headers")
+
+    async def malformed_port(_request: web.Request) -> web.Response:
+        return web.Response(
+            status=302,
+            headers={"Location": "http://localhost:not-a-port/headers"},
+        )
+
+    async def headers(request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "authorization": request.headers.get("Authorization"),
+                "cookie": request.headers.get("Cookie"),
+                "proxy_authorization": request.headers.get("Proxy-Authorization"),
+                "x_test": request.headers.get("X-Test"),
+            }
+        )
+
     async def posted(request: web.Request) -> web.Response:
         return web.json_response({"got": await request.json()})
 
@@ -73,6 +92,9 @@ async def server() -> AsyncIterator[TestServer]:
     app.router.add_get("/big", big)
     app.router.add_get("/hop", hop)
     app.router.add_get("/away", away)
+    app.router.add_get("/cross-origin", cross_origin)
+    app.router.add_get("/malformed-port", malformed_port)
+    app.router.add_get("/headers", headers)
     app.router.add_post("/post", posted)
     test_server = TestServer(app)
     await test_server.start_server()
@@ -140,6 +162,48 @@ async def test_policy_refuses_undeclared_hosts_schemes_ports_and_redirects(
         public = _client(server, runtime, private=False)
         with pytest.raises(HostNotAllowed):
             await public.get(f"{base}/ok")
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer) -> None:
+    runtime = ModuleHttpRuntime()
+    port = _port(server)
+    client = runtime.client_for(
+        "mod",
+        (
+            ResolvedHostRule("127.0.0.1", frozenset({"http"}), frozenset({port}), True),
+            ResolvedHostRule("localhost", frozenset({"http"}), frozenset({port}), True),
+        ),
+    )
+    try:
+        response = await client.get(
+            f"http://127.0.0.1:{port}/cross-origin",
+            headers={
+                "Authorization": "Bearer secret",
+                "Cookie": "session=secret",
+                "Proxy-Authorization": "Basic secret",
+                "X-Test": "kept",
+            },
+        )
+        assert response.json() == {
+            "authorization": None,
+            "cookie": None,
+            "proxy_authorization": None,
+            "x_test": "kept",
+        }
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_redirect_with_malformed_port_is_a_policy_error(server: TestServer) -> None:
+    runtime = ModuleHttpRuntime()
+    client = _client(server, runtime)
+    try:
+        with pytest.raises(HostNotAllowed, match="invalid port"):
+            await client.get(f"http://127.0.0.1:{_port(server)}/malformed-port")
     finally:
         await runtime.close()
 

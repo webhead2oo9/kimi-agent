@@ -47,6 +47,10 @@ def test_coercion_rules() -> None:
     assert coerce_value(GuildSettingField("x", "bool"), "yes")[1] is not None
     assert coerce_value(GuildSettingField("x", "enum", choices=("a",)), "b")[1] is not None
     assert coerce_value(GuildSettingField("x", "str", default="d"), None) == ("d", None)
+    assert coerce_value(GuildSettingField("x", "id", default=str(CHANNEL)), None) == (
+        CHANNEL,
+        None,
+    )
     assert coerce_value(GuildSettingField("x", "int", required=True), None)[1] == "x is required"
 
 

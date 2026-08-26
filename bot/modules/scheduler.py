@@ -165,7 +165,11 @@ class DurableScheduler:
     def register(self, module_name: str, handler_name: str, handler: JobHandler) -> None:
         _validate("x", handler_name)
         self._handlers[(module_name, handler_name)] = handler
-        self._paused_reported.discard((module_name, handler_name))
+        marker = (module_name, handler_name)
+        was_paused = marker in self._paused_reported
+        self._paused_reported.discard(marker)
+        if was_paused:
+            self._clear_paused_health_if_recovered(module_name)
         self._wake.set()
 
     def unregister_module(self, module_name: str) -> None:
@@ -234,10 +238,32 @@ class DurableScheduler:
 
     async def cancel(self, module_name: str, key: str) -> bool:
         async with self._database.write_transaction() as conn:
+            existing = await conn.execute(
+                f"SELECT handler FROM {TABLE} WHERE module_name = ? AND job_key = ?",
+                (module_name, key),
+            )
+            row = await existing.fetchone()
             cursor = await conn.execute(
                 f"DELETE FROM {TABLE} WHERE module_name = ? AND job_key = ?", (module_name, key)
             )
-            return bool(cursor.rowcount)
+            removed = bool(cursor.rowcount)
+            if removed and row is not None:
+                handler_name = str(row["handler"])
+                remaining = await conn.execute(
+                    f"SELECT 1 FROM {TABLE} WHERE module_name = ? AND handler = ? LIMIT 1",
+                    (module_name, handler_name),
+                )
+                if await remaining.fetchone() is None:
+                    self._paused_reported.discard((module_name, handler_name))
+        if removed:
+            self._clear_paused_health_if_recovered(module_name)
+        return removed
+
+    def _clear_paused_health_if_recovered(self, module_name: str) -> None:
+        if self._on_health is not None and not any(
+            name == module_name for name, _handler in self._paused_reported
+        ):
+            self._on_health(module_name, "healthy", "")
 
     async def list_jobs(self, module_name: str) -> Sequence[JobInfo]:
         cursor = await self._database.conn.execute(

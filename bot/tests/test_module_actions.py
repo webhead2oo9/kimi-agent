@@ -15,7 +15,12 @@ from discord_adapter.module_actions import (
     TargetProtected,
     TrustLookupImpl,
 )
-from kimi_agent_module_api.contracts import MessageRef, OutgoingEmbed, UndeclaredDiscordAction
+from kimi_agent_module_api.contracts import (
+    ButtonSpec,
+    MessageRef,
+    OutgoingEmbed,
+    UndeclaredDiscordAction,
+)
 from modules.actions import DeclaredDiscordActions
 from trust.tiers import TrustTier
 
@@ -138,6 +143,7 @@ async def test_audit_reason_caps_the_combined_prefix_and_preserves_leading_corre
     marker = "[kimi-case:abc123]"
     await impl.kick(1, 20, actor_id=10, reason=f"{marker} {'x' * 600}")
     audit_reason = guild.kicks[0][1]
+    assert audit_reason is not None
     assert len(audit_reason) == 512
     assert audit_reason.startswith(f"[mod] {marker} ")
 
@@ -207,6 +213,17 @@ async def test_send_and_fetch_use_snapshots_and_safe_mentions() -> None:
     assert content == "@everyone hi"
     assert kwargs["allowed_mentions"].everyone is False
     assert kwargs["embed"].title == "t"
+
+    await impl.send_message(
+        2,
+        "controls",
+        components=(ButtonSpec(key="confirm", label="Confirm"),),
+    )
+    view = channel.sent[1][1]["view"]
+    assert isinstance(view, discord.ui.View)
+    button = view.children[0]
+    assert isinstance(button, discord.ui.Button)
+    assert button.custom_id == "m:mod:confirm"
 
     channel.messages[5] = SimpleNamespace(
         id=5,

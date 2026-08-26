@@ -238,6 +238,8 @@ def test_guild_settings_schema_rules() -> None:
         (GuildSettingField("x", "enum"),),
         (GuildSettingField("x", "str", choices=("a",)),),
         (GuildSettingField("x", "int", required=True, default=1),),
+        (GuildSettingField("x", "int", default="not-an-int"),),
+        (GuildSettingField("x", "enum", choices=("a", "b"), default="c"),),
     ):
         with pytest.raises(ModuleContractError):
             validate_guild_settings_schema("m", GuildSettingsSchema(fields=bad))

@@ -57,6 +57,24 @@ def test_registry_notifies_observers_and_survives_observer_errors() -> None:
     assert registry.worst == "healthy"
 
 
+def test_core_constraints_survive_module_reports_and_clear_independently() -> None:
+    registry = HealthRegistry(clock=lambda: 10.0)
+    registry.set_constraint("m", "guild_settings", "degraded", "invalid guild settings")
+    registry.set("m", "starting")
+    registry.reporter_for("m").report("healthy")
+    assert registry.get("m") == ModuleHealth("degraded", "invalid guild settings", updated_at=10.0)
+
+    registry.set_constraint("m", "scheduler", "degraded", "missing handler")
+    health = registry.get("m")
+    assert health is not None and health.detail == "invalid guild settings; missing handler"
+    registry.set_constraint("m", "guild_settings", "healthy")
+    health = registry.get("m")
+    assert health is not None and health.detail == "missing handler"
+    registry.set_constraint("m", "scheduler", "healthy")
+    health = registry.get("m")
+    assert health is not None and health.state == "healthy"
+
+
 class _Module:
     migrations = ()
 

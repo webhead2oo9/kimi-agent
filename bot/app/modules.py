@@ -169,6 +169,19 @@ def validate_module_selection(
                 f"Kimi module {spec.name!r} requires unavailable capability {missing_capability!r}"
             )
         _validate_declarations(spec)
+    by_name = {spec.name: spec for spec in specs}
+    for spec in specs:
+        for requirement in spec.consumes:
+            provider = by_name[requirement.provider]
+            if not any(
+                declaration.name == requirement.name and declaration.version == requirement.version
+                for declaration in provider.provides
+            ):
+                raise RuntimeError(
+                    f"Kimi module {spec.name!r} consumes {requirement.name}@"
+                    f"{requirement.version} from {requirement.provider!r}, but that provider "
+                    "does not declare it"
+                )
     return tuple(specs)
 
 
@@ -362,9 +375,16 @@ class ModuleManager:
             raise
 
     def _ports_for(self, spec: ModuleSpec, base: ModuleRuntimeBase) -> dict[str, Any]:
+        def is_module_guild_active(guild_id: int) -> bool:
+            if not base.is_guild_active(guild_id):
+                return False
+            if self.guild_settings is None or spec.guild_settings is None:
+                return True
+            return self.guild_settings.get(guild_id, spec.name).valid
+
         return {
             "module_name": spec.name,
-            "is_guild_active": base.is_guild_active,
+            "is_guild_active": is_module_guild_active,
             "current_config_dir": base.current_config_dir,
             "capabilities": base.capabilities,
             "events": (
@@ -403,12 +423,17 @@ class ModuleManager:
     def _settle_health(self, spec: ModuleSpec) -> None:
         """After a clean start: healthy unless the module said otherwise."""
         missing = undeclared_provisions(spec.name, spec.provides, self.services.provided_by)
-        current = self.health.get(spec.name)
+        current = self.health.module_state(spec.name)
         if missing:
-            self.health.set(
-                spec.name, "degraded", "declared but did not provide " + ", ".join(missing)
+            self.health.set_constraint(
+                spec.name,
+                "services",
+                "degraded",
+                "declared but did not provide " + ", ".join(missing),
             )
-        elif current is None or current.state == "starting":
+        else:
+            self.health.set_constraint(spec.name, "services", "healthy")
+        if current is None or current.state == "starting":
             self.health.set(spec.name, "healthy")
 
     def host_rules(self, name: str) -> tuple[ResolvedHostRule, ...]:

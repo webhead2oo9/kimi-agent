@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from workspace import WorkspaceKey, ENV_DIR_NAMES, WorkspaceManager, WorkspacePathSymlinkError
 from tools.downloads import safe_filename
@@ -539,26 +540,19 @@ async def _import_attachment(deps: FileToolDeps, args: dict, ctx: MessageContext
         )
     attachment = matches[0]
     try:
-        if attachment.size > deps.config.max_import_bytes:
-            return tool_error(
-                f"attachment {filename} is {attachment.size} bytes, "
-                f"over the {deps.config.max_import_bytes} byte import limit"
-            )
         # Network read happens before the lease: holding every workspace's
         # maintenance barrier hostage to a slow Discord CDN read stalls
         # unrelated users' tools.
         try:
-            payload = await attachment.read()
-        except Exception as e:
-            return tool_error(f"failed to read attachment {filename}: {e}")
-        if len(payload) > deps.config.max_import_bytes:
-            return tool_error(
-                f"attachment {filename} is {len(payload)} bytes, "
-                f"over the {deps.config.max_import_bytes} byte import limit"
+            payload = await read_attachment_payload(
+                attachment,
+                max_import_bytes=deps.config.max_import_bytes,
             )
+        except ValueError as e:
+            return tool_error(str(e))
         async with workspace_activity(deps.locks, ctx):
             outcome = await asyncio.to_thread(
-                _import_attachment_sync,
+                import_attachment_payload_sync,
                 deps,
                 ctx.workspace_key,
                 dest_arg,
@@ -572,7 +566,28 @@ async def _import_attachment(deps: FileToolDeps, args: dict, ctx: MessageContext
         return deps.scrubbed_error(e, ctx.workspace_key)
 
 
-def _import_attachment_sync(
+async def read_attachment_payload(attachment: Any, *, max_import_bytes: int) -> bytes:
+    """Read one importable attachment with the workspace tool's byte limits."""
+
+    filename = str(attachment.filename)
+    if attachment.size > max_import_bytes:
+        raise ValueError(
+            f"attachment {filename} is {attachment.size} bytes, "
+            f"over the {max_import_bytes} byte import limit"
+        )
+    try:
+        payload = await attachment.read()
+    except Exception as exc:
+        raise ValueError(f"failed to read attachment {filename}: {exc}") from exc
+    if len(payload) > max_import_bytes:
+        raise ValueError(
+            f"attachment {filename} is {len(payload)} bytes, "
+            f"over the {max_import_bytes} byte import limit"
+        )
+    return payload
+
+
+def import_attachment_payload_sync(
     deps: FileToolDeps,
     workspace_key: WorkspaceKey,
     dest_arg: object,

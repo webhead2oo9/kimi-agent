@@ -108,7 +108,8 @@ def test_coding_delivery_text_uses_readable_short_task_reference() -> None:
     task = SimpleNamespace(
         id=task_id,
         status=CodingTaskStatus.QUEUED,
-        objective="Review the workspace",
+        objective="Review the entire workspace and produce a detailed report",
+        display_summary="Review the workspace",
         milestone="",
         plan=[],
     )
@@ -122,6 +123,8 @@ def test_coding_delivery_text_uses_readable_short_task_reference() -> None:
     assert "coding-status:" not in status_text
     assert "coding-result:" not in result_text
     assert "Coding task `3ff8bac7`: queued" in status_text
+    assert "Review the workspace" in status_text
+    assert "produce a detailed report" not in status_text
     assert result_text.startswith("**Coding result `3ff8bac7`**\n")
     assert (
         app_runtime.KimiApplication._strip_coding_delivery_marker(
@@ -130,6 +133,24 @@ def test_coding_delivery_text_uses_readable_short_task_reference() -> None:
         )
         == "Implemented the requested change."
     )
+
+
+def test_coding_status_replaces_summary_with_worker_plan() -> None:
+    task = SimpleNamespace(
+        id="3ff8bac7f9e24ed19a65d267c188d7ea",
+        status=CodingTaskStatus.RUNNING,
+        objective="Raw durable objective",
+        display_summary="Queued summary",
+        milestone="Repository inspected",
+        plan=[{"content": "Update the parser", "status": "in_progress"}],
+    )
+
+    status = app_runtime.KimiApplication._coding_status_text(cast(CodingTask, task))
+
+    assert "Update the parser" in status
+    assert "Repository inspected" in status
+    assert "Raw durable objective" not in status
+    assert "Queued summary" not in status
 
 
 def test_coding_status_wire_text_suppresses_link_previews() -> None:

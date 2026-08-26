@@ -260,32 +260,52 @@ class DurableProposalService:
                     decided_by=owner_user_id,
                     reason="target revision changed before approval",
                 )
-            await self._store.transition(
-                proposal_id,
-                from_state="pending",
-                to_state="applying",
-                decided_by=owner_user_id,
-            )
-            applying = await self._required(proposal_id)
             try:
-                result = await handler.apply(applying)
-            except Exception as exc:
+                await self._store.transition(
+                    proposal_id,
+                    from_state="pending",
+                    to_state="applying",
+                    decided_by=owner_user_id,
+                )
+                applying = await self._required(proposal_id)
+                try:
+                    result = await handler.apply(applying)
+                except Exception as exc:
+                    return await self._store.transition(
+                        proposal_id,
+                        from_state="applying",
+                        to_state="failed",
+                        result_message=str(exc),
+                    )
+                target_state: ProposalState = (
+                    "restart_pending" if result.activation != "live" else "applied"
+                )
                 return await self._store.transition(
                     proposal_id,
                     from_state="applying",
-                    to_state="failed",
-                    result_message=str(exc),
+                    to_state=target_state,
+                    result_message=result.message,
+                    event_payload={"revision": result.revision, "activation": result.activation},
                 )
-            target_state: ProposalState = (
-                "restart_pending" if result.activation != "live" else "applied"
-            )
-            return await self._store.transition(
-                proposal_id,
-                from_state="applying",
-                to_state=target_state,
-                result_message=result.message,
-                event_payload={"revision": result.revision, "activation": result.activation},
-            )
+            except asyncio.CancelledError as cancellation:
+                # The transition to ``applying`` is durable, so its compensation
+                # must outlive repeated shutdown cancellation too.  The helper is
+                # idempotent when cancellation landed before that transition or
+                # after a terminal transition committed.
+                cleanup = asyncio.create_task(
+                    self._fail_interrupted_application(proposal_id),
+                    name=f"proposal_cancel:{proposal_id}",
+                )
+                try:
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            continue
+                    await cleanup
+                except Exception as cleanup_error:
+                    raise cancellation from cleanup_error
+                raise cancellation
 
     async def reject(
         self, proposal_id: str, *, owner_user_id: str, reason: str = ""
@@ -321,6 +341,28 @@ class DurableProposalService:
                 to_state="rolled_back",
                 result_message=str(state["rollback_reason"]),
             )
+
+    async def reconcile_interrupted_applications(self) -> None:
+        """Fail proposals left mid-application by a previous process."""
+        while records := await self._store.list(state="applying"):
+            for record in records:
+                await self._fail_interrupted_application(record.proposal_id)
+
+    async def _fail_interrupted_application(self, proposal_id: str) -> None:
+        try:
+            await self._store.transition(
+                proposal_id,
+                from_state="applying",
+                to_state="failed",
+                result_message=(
+                    "Application was interrupted before completion; review the target state "
+                    "before creating a replacement proposal."
+                ),
+            )
+        except ProposalNotPending:
+            # Cancellation may have arrived just before ``applying`` was
+            # committed or just after a terminal transition committed.
+            return
 
     def _handler(self, action: str) -> tuple[str, ProposalActionHandler]:
         try:

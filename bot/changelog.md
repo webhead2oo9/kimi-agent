@@ -4,8 +4,18 @@ Kimi's user-facing release notes for server owners, staff, and members.
 
 ## Unreleased
 
+### Fixed
+
+- Interrupted configuration approvals no longer leave proposals permanently
+  stuck while applying; incomplete approvals recover as failed after restart.
+- Replacing a running module job no longer lets the old invocation delete or
+  overwrite the replacement, and paused orphan jobs no longer delay runnable
+  scheduled work behind them.
+
 ### New
 
+- Background coding tasks can now carry bounded conversation context, selected
+  attachments, workspace starting files, and concise plan-aware status text.
 - Experimental owner-approved configuration control plane. Trusted modules can
   propose configuration changes; the bot owner reviews them with
   `/proposals list`, `/proposals show`, `/proposals approve`,
@@ -42,6 +52,12 @@ Kimi's user-facing release notes for server owners, staff, and members.
 - Eval runs can use one shared vision model to caption image fixtures once and
   give every candidate the same cached visual evidence, including text-only
   models, while reporting caption-assisted coverage explicitly.
+
+### Changed
+
+- Startup now upgrades the core database to schema v2 automatically. Before
+  upgrading, operators should take a WAL-consistent backup. Returning to an
+  older release requires restoring the matching backup as well.
 
 ## 1.0.0 (2026-08-24)
 

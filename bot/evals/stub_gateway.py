@@ -135,6 +135,10 @@ class StubCodingControls:
         objective: str,
         acceptance_criteria: list[str],
         context_text: str,
+        display_summary: str = "",
+        include_conversation: bool = False,
+        attachment_names: list[str] | None = None,
+        file_paths: list[str] | None = None,
     ) -> dict[str, object]:
         state = self._state(ctx)
         task_id = f"eval-task-{len(state.started) + 1}"

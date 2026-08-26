@@ -74,6 +74,7 @@ class RuntimeTools:
     attachment_dir: Path
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
+    workspace_config: WorkspaceToolConfig
     attachment_store: AttachmentStore
     personal_skill_manager: PersonalSkillManager
     skill_admin_service: SkillAdminService
@@ -142,10 +143,11 @@ def build_runtime_tools(
         init_block_user_tool(registry, get_blocked_user_store)
     _register_discord_text_search(settings, registry)
     _register_internet_search(settings, registry)
+    workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
         registry,
         workspace_manager,
-        config=_workspace_tool_config(settings),
+        config=workspace_config,
     )
     browser_service = _register_browser(
         settings,
@@ -246,6 +248,7 @@ def build_runtime_tools(
         attachment_dir=attachment_dir,
         workspace_manager=workspace_manager,
         workspace_locks=workspace_locks,
+        workspace_config=workspace_config,
         attachment_store=attachment_store,
         personal_skill_manager=personal_skill_manager,
         skill_admin_service=skill_admin_service,

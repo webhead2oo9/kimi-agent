@@ -116,6 +116,11 @@ class MessageContext:
     reply_image_parts: list[ContentPart] = field(default_factory=list)
     edit_target_image: ContentPart | None = None
     attachments: list[AttachmentRef] = field(default_factory=list)
+    # Bounded, text-only copy of the context visible to the foreground model
+    # immediately before it delegates to a coding task. The core rebuilds this
+    # only for start_coding_task; handlers may persist it, but it contains no
+    # system prompt, tool schemas, provider payloads, call arguments, or images.
+    handoff_context_messages: list[dict[str, str]] = field(default_factory=list)
     activity_reporter: ActivityReporter | None = None
     # Dedicated coding workers hold the shared workspace lock for their whole
     # lifetime. Their internal workspace tools must not reacquire the non-

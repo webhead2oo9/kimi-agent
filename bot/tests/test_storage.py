@@ -36,7 +36,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "initial_schema"
+        assert version_row["name"] == "coding_task_context_inputs"
         assert version_row["applied_at"]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -67,15 +67,82 @@ async def _baseline_database_with_data(path) -> None:
         conn.close()
 
 
+async def _v1_database_with_coding_task(path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                name TEXT,
+                applied_at TEXT
+            );
+            INSERT INTO schema_version VALUES (1, 'initial_schema', 'now');
+
+            CREATE TABLE coding_tasks (
+                id TEXT PRIMARY KEY,
+                conversation_id INTEGER,
+                root_key TEXT NOT NULL,
+                workspace_key TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL DEFAULT '',
+                guild_id TEXT,
+                channel_id TEXT NOT NULL,
+                thread_id TEXT,
+                handoff_pending INTEGER NOT NULL DEFAULT 0
+                    CHECK (handoff_pending IN (0, 1)),
+                trigger_discord_message_id TEXT NOT NULL DEFAULT '',
+                objective TEXT NOT NULL,
+                acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+                context_text TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL CHECK (status IN (
+                    'queued','recovering','running','waiting_for_job',
+                    'waiting_for_input','cancelling','completed','failed',
+                    'cancelled','timed_out'
+                )),
+                plan_json TEXT NOT NULL DEFAULT '[]',
+                milestone TEXT NOT NULL DEFAULT '',
+                checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                result_text TEXT NOT NULL DEFAULT '',
+                error_text TEXT NOT NULL DEFAULT '',
+                cancel_requested INTEGER NOT NULL DEFAULT 0
+                    CHECK (cancel_requested IN (0, 1)),
+                status_discord_message_id TEXT,
+                final_discord_message_id TEXT,
+                delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (delivery_state IN (
+                    'pending','status_sent','final_pending','delivered','failed'
+                )),
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                started_at REAL,
+                finished_at REAL,
+                deadline_at REAL NOT NULL,
+                heartbeat_at REAL NOT NULL
+            );
+            INSERT INTO coding_tasks (
+                id, root_key, workspace_key, user_id, channel_id, objective,
+                status, created_at, updated_at, deadline_at, heartbeat_at
+            ) VALUES (
+                'existing-task', 'root', 'workspace', 'user', 'channel',
+                'Keep me', 'queued', 1.0, 1.0, 60.0, 1.0
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def _add_note_column(conn) -> None:
     await conn.execute("ALTER TABLE migration_test_data ADD COLUMN note TEXT")
 
 
 def _register_synthetic_migration(monkeypatch, migrate, *, name: str = "add_note") -> None:
-    # The real registry is empty until the first released schema change, so the
-    # framework needs an invented one to exercise.
-    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", 2)
-    monkeypatch.setattr(storage.db, "_MIGRATIONS", {2: (name, migrate)})
+    target = storage.db.SCHEMA_VERSION + 1
+    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", target)
+    monkeypatch.setattr(
+        storage.db, "_MIGRATIONS", {**storage.db._MIGRATIONS, target: (name, migrate)}
+    )
 
 
 @pytest.mark.asyncio
@@ -98,7 +165,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
 
     assert [(row["version"], row["name"]) for row in versions] == [
         (1, "initial_schema"),
-        (2, "add_note"),
+        (2, "coding_task_context_inputs"),
+        (3, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -110,7 +178,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == 3
     finally:
         await reopened.close()
 
@@ -137,7 +205,61 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
 
     upgraded_history = await history(upgraded_path)
     assert await history(tmp_path / "fresh.db") == upgraded_history
-    assert upgraded_history == [(1, "initial_schema"), (2, "add_note")]
+    assert upgraded_history == [
+        (1, "initial_schema"),
+        (2, "coding_task_context_inputs"),
+        (3, "add_note"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(tmp_path) -> None:
+    upgraded_path = tmp_path / "upgraded.db"
+    fresh_path = tmp_path / "fresh.db"
+    await _v1_database_with_coding_task(upgraded_path)
+
+    upgraded = Database(upgraded_path)
+    await upgraded.connect()
+    try:
+        async with upgraded.conn.execute("PRAGMA table_info(coding_tasks)") as cur:
+            upgraded_columns = [tuple(row) for row in await cur.fetchall()]
+        async with upgraded.conn.execute(
+            """SELECT objective, display_summary, context_messages_json, input_files_json
+               FROM coding_tasks WHERE id = 'existing-task'"""
+        ) as cur:
+            task = await cur.fetchone()
+        async with upgraded.conn.execute(
+            "SELECT version, name, applied_at FROM schema_version ORDER BY version"
+        ) as cur:
+            history = list(await cur.fetchall())
+    finally:
+        await upgraded.close()
+
+    assert task is not None
+    assert tuple(task) == ("Keep me", "", "[]", "[]")
+    assert [(row["version"], row["name"]) for row in history] == [
+        (1, "initial_schema"),
+        (2, "coding_task_context_inputs"),
+    ]
+    assert all(row["applied_at"] for row in history)
+
+    reopened = Database(upgraded_path)
+    await reopened.connect()
+    await reopened.close()
+    conn = sqlite3.connect(upgraded_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (2,)
+    finally:
+        conn.close()
+
+    fresh = Database(fresh_path)
+    await fresh.connect()
+    try:
+        async with fresh.conn.execute("PRAGMA table_info(coding_tasks)") as cur:
+            fresh_columns = [tuple(row) for row in await cur.fetchall()]
+    finally:
+        await fresh.close()
+    assert upgraded_columns == fresh_columns
 
 
 @pytest.mark.asyncio
@@ -184,7 +306,7 @@ async def test_failed_schema_migration_rolls_back(tmp_path, monkeypatch) -> None
         conn.close()
 
     assert columns == {"id", "value"}
-    assert version == (1,)
+    assert version == (2,)
     assert preserved == ("keep me",)
 
 

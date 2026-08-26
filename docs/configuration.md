@@ -111,7 +111,9 @@ requires a restart.
 ### Common patterns
 - **Model roles.** `roles.chat` and `roles.compaction` in
   `config/models.yaml` choose the defaults; `roles.chat_images` and
-  `roles.persona` are optional. `selectable_chat_models` supplies the candidates
+  `roles.persona` are optional. `roles.coding` and its optional
+  `coding_fallbacks` independently route the durable coding worker and never
+  inherit from `roles.chat`. `selectable_chat_models` supplies the candidates
   for the owner-only `/models` menu, and profiles with `models_endpoint` filter
   those candidates against the live `/v1/models` response at startup. Selection
   is live and global, but catalog edits still need a restart.

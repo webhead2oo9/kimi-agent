@@ -36,6 +36,7 @@ from config.fragments.guild_config import (
     load_guild_pinned_tools,
     load_guild_trust,
     load_proposal_channel_id,
+    proposal_channel_id_is_configured,
     server_setup_activation,
 )
 from agent.context import ContextManager
@@ -868,6 +869,9 @@ class KimiApplication:
                 post_review=proposal_actions.send_message,
                 on_applied=self.refresh_guild_activation,
                 verify_guild=self._proposal_guild_health,
+                review_channel_configured=lambda guild_id: proposal_channel_id_is_configured(
+                    guild_id, config_dir=Path(self.settings.config_dir)
+                ),
             ),
         )
         self.proposal_service.install(

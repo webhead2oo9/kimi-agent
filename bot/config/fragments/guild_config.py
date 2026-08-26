@@ -309,6 +309,21 @@ def load_proposal_channel_id(
     return token
 
 
+def proposal_channel_id_is_configured(
+    guild_id: str,
+    *,
+    config_dir: Path | None = None,
+) -> bool:
+    """Return whether the guild fragment declares ``proposal_channel_id``.
+
+    This deliberately distinguishes an absent key from a present but malformed
+    value so proposal routing can fail closed instead of silently falling back
+    to the invoking channel.
+    """
+    result = read_guild_frontmatter(guild_id, config_dir=config_dir)
+    return result is not None and "proposal_channel_id" in result[0]
+
+
 def load_guild_trust(
     guild_id: str,
     *,

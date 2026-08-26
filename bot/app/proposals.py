@@ -69,6 +69,7 @@ class ProposalTarget:
 class ProposalHost:
     config_dir: Callable[[], Path]
     review_channel_id: Callable[[str], str | None]
+    review_channel_configured: Callable[[str], bool]
     channel_guild_id: Callable[[int], Awaitable[int | None]]
     known_modules: Callable[[], Collection[str]]
     post_review: Callable[..., Awaitable[MessageRef]]
@@ -436,7 +437,11 @@ class ConfigProposalService:
         base = await asyncio.to_thread(_read_file, self._host.config_dir(), resolved)
         if expected_revision is not None and expected_revision != base.revision:
             raise ProposalError("configuration changed since it was inspected")
-        review_channel = self._host.review_channel_id(guild_id) or str(actor.channel_id or "")
+        review_channel = self._host.review_channel_id(guild_id)
+        if review_channel is None and self._host.review_channel_configured(guild_id):
+            raise ProposalError("configured proposal review channel is invalid")
+        if review_channel is None:
+            review_channel = str(actor.channel_id or "")
         review_channel = _positive_id(review_channel, label="proposal review channel")
         channel_guild = await self._host.channel_guild_id(int(review_channel))
         if channel_guild is None or str(channel_guild) != guild_id:
@@ -497,7 +502,10 @@ class ConfigProposalService:
                 await interaction.follow_up(f"Proposal is already {row.state}.", ephemeral=True)
                 await interaction.edit_original(embed=render(row), components=())
                 return
-            await self._approve_pending(interaction, row)
+            try:
+                await self._approve_pending(interaction, row)
+            except ProposalError as exc:
+                await interaction.follow_up(f"Not applied: {exc}", ephemeral=True)
 
     async def _approve_pending(self, interaction: ModuleInteraction, row: ProposalRow) -> None:
         target = resolve_target(row.target)
@@ -545,24 +553,13 @@ class ConfigProposalService:
                 await interaction.follow_up(f"Proposal is already {row.state}.", ephemeral=True)
                 await interaction.edit_original(embed=render(row), components=())
                 return
-            target = resolve_target(row.target)
-            live = await asyncio.to_thread(_read_file, self._host.config_dir(), target)
+            try:
+                target = resolve_target(row.target)
+                live = await asyncio.to_thread(_read_file, self._host.config_dir(), target)
+            except ProposalError as exc:
+                await interaction.follow_up(f"Could not reject safely: {exc}", ephemeral=True)
+                return
             if row.content_revision != row.base_revision and live.revision == row.content_revision:
-                failure = await self._refresh_and_verify(row)
-                if not failure:
-                    await self._store.decide(
-                        row.proposal_id,
-                        "applied",
-                        str(interaction.user_id),
-                        "recovered an interrupted approval",
-                    )
-                    decided = await self._required(row.proposal_id)
-                    await interaction.follow_up(
-                        "The fragment was already applied; its state was recovered.",
-                        ephemeral=True,
-                    )
-                    await interaction.edit_original(embed=render(decided), components=())
-                    return
                 rollback = await self._restore_baseline(row, target)
                 if rollback:
                     await interaction.follow_up(

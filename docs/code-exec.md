@@ -122,6 +122,13 @@ refuses to register or run code while the pattern begins with `|`. Configure a
 plain file pattern instead; the hard-zero limit then does its job and no dump
 gets written.
 
+On Ubuntu, Apport commonly installs such a piped handler. This can be surprising
+after a reboot: the sandbox may have worked before the restart, then disappear
+when Apport restores its handler during boot. Disable the crash collector and
+set a plain `kernel.core_pattern` persistently in `/etc/sysctl.d/`; changing it
+with a one-off `sysctl` command only lasts until something changes it again.
+The same host check protects both `run_code` and the persistent browser.
+
 ## Why netns uses a transient service
 
 Ordinary `none` and `host` runs use `systemd-run --user --scope`. That breaks

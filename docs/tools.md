@@ -228,7 +228,6 @@ retention, and deletion behavior.
 | `recall_user` | Core | Member | Search the current user's durable memories for relevant facts. |
 | `reflect_user` | Core | Member | Synthesize an answer across the current user's memories; intended for reasoning, not simple lookup. |
 | `remember_user_memory` | Core | Member | Store a durable first-party fact about the current user, anchored to the current Discord message. |
-| `lookup_memory_source` | Core | Member | Show the bounded Discord source window behind one of the current user's memories. |
 | `recall_community` | Core | Member | Search public knowledge taught in the current guild. |
 | `reflect_community` | Core | Member | Synthesize an answer across public knowledge in the current guild. |
 | `teach` | Core | Staff | Store public knowledge in the current guild's community bank. |

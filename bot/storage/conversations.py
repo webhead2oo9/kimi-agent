@@ -38,7 +38,7 @@ class ChannelMessageRecord:
 
     Persistence DTO, defined here (not in agent/) so the store types against it
     without importing agent. Carries its own author and Discord source timestamp
-    so memory source lookup can enforce per-user boundaries.
+    so source-anchored memory writes can enforce per-user boundaries.
     """
 
     discord_message_id: str

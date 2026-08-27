@@ -682,8 +682,7 @@ async def test_handle_turn_captions_input_images_before_persisting(
 ) -> None:
     """The caption has to reach the row, and only the row's parts.
 
-    It must not touch `content`, which is what auto-retain ships to memory and what
-    `lookup_memory_source` renders back to users.
+    It must not touch `content`, which is what auto-retain ships to memory.
     """
     image = ContentPart.from_image_url(url="data:image/png;base64,YWJj", media_type="image/png")
     prepared = _prepared(

@@ -28,16 +28,15 @@ The database-backed components come later, in `KimiApplication.on_ready`:
 - `init_user_memory_tools(registry, memory_client, recall_types=settings.user_memory_recall_types)`
   registers `recall_user` and `reflect_user`, again only after those shared
   banks are confirmed.
-- `init_user_memory_source_tools(registry, ...)` registers
-  `remember_user_memory` and `lookup_memory_source` once the SQLite
-  conversation store exists.
+- `init_user_memory_write_tools(registry, ...)` registers
+  `remember_user_memory` once the SQLite conversation store exists.
 - When `MEMORY_AUTO_RETAIN_ENABLED` is set, `on_ready` also starts the
   auto-retain sweeper task (see Automatic Retention below), and `close()`
   cancels it before tearing down memory and database resources.
 
 If `HINDSIGHT_URL` is empty, or if startup cannot initialize the shared
 Hindsight banks, the bot runs without Hindsight-backed tools, automatic recall,
-explicit retention, source lookup, or bank deletion. The `/privacy`
+explicit retention, or bank deletion. The `/privacy`
 memory-delete path can still disable future memory in SQLite when no Hindsight
 client exists. If the durable local bank-state flag says that the user's bank
 may already exist, however, the confirmed deletion stays pending until
@@ -147,7 +146,8 @@ the current user's own bank. It cannot accept another user ID and always uses
 `user:{ctx.user_id}`. It uses the same `MEMORY_RECALL_TYPES` list as automatic
 responding-turn recall and applies the same guild scope-tag filter (see
 Per-Guild Scoping), so it cannot pull another guild's memory. It honors
-`/memory opt-out` through `PreferenceStore`.
+`/memory opt-out` through `PreferenceStore`. Results expose only the saved
+memory text and type; Hindsight document metadata remains internal.
 
 `reflect_user` is a member-tier LLM tool for synthesis over the current user's
 own bank. Where `recall_user` returns raw facts, `reflect_user` asks Hindsight
@@ -181,11 +181,9 @@ other people. The tool:
 - caps writes per model turn with `MEMORY_MAX_WRITES_PER_TURN` (default `3`) to
   bound proactive-write volume.
 
-`lookup_memory_source` is a bounded, read-only source lookup. It accepts a
-`source_ref` returned by `recall_user` or `remember_user_memory`, validates
-that the source belongs to the current user, and returns a small window of
-persisted Discord messages. It reveals only the current user's own messages
-plus assistant context; other users' messages are counted as omitted.
+The tool returns only whether the write succeeded. Its stable document ID and
+source metadata are internal and are not exposed through the model-facing
+memory tools.
 
 ## Automatic retention (auto-retain)
 
@@ -257,8 +255,7 @@ The `/memory` slash command group exposes:
 
 - `/memory status`: show whether memory is enabled for the current user.
 - `/memory opt-out`: disable future automatic recall, `recall_user`,
-  `reflect_user`, `remember_user_memory`, and `lookup_memory_source` for the
-  current user.
+  `reflect_user`, and `remember_user_memory` for the current user.
 - `/memory opt-in`: re-enable future memory after opting out.
 
 Self-service memory deletion lives on `/privacy` (the **Delete memory** button,

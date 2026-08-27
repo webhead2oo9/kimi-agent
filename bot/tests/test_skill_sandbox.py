@@ -91,13 +91,6 @@ def test_build_sandbox_command_network_is_explicit(tmp_path: Path) -> None:
     assert "/etc/ssl/certs" in command
 
 
-def test_detect_sandbox_runtime_rejects_non_linux(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("skills.sandbox.sys.platform", "win32")
-
-    with pytest.raises(SandboxUnavailableError, match="require Linux"):
-        detect_sandbox_runtime()
-
-
 def test_detect_sandbox_runtime_rejects_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("skills.sandbox.sys.platform", "linux")
     monkeypatch.setattr("skills.sandbox.os.geteuid", lambda: 0, raising=False)

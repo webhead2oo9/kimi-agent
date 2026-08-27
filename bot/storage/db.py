@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 import logging
+import os
 from pathlib import Path
 
 import aiosqlite
@@ -836,7 +837,17 @@ class Database:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        parent_existed = self._path.parent.exists()
+        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not parent_existed:
+            self._path.parent.chmod(0o700)
+        try:
+            descriptor = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
+        self._restrict_sqlite_file_modes()
         if self._encryption_key:
             # Lazy import: sqlcipher3 is a Linux-only dependency only required
             # when encryption is on. aiosqlite runs the connector in its worker
@@ -856,8 +867,21 @@ class Database:
             self._conn = await aiosqlite.connect(str(self._path))
             self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
+        self._restrict_sqlite_file_modes()
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._initialize_schema()
+        self._restrict_sqlite_file_modes()
+
+    def _restrict_sqlite_file_modes(self) -> None:
+        for path in (
+            self._path,
+            self._path.with_name(f"{self._path.name}-wal"),
+            self._path.with_name(f"{self._path.name}-shm"),
+        ):
+            try:
+                path.chmod(0o600)
+            except FileNotFoundError:
+                continue
 
     async def _initialize_schema(self) -> None:
         conn = self.conn

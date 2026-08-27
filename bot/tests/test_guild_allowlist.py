@@ -160,6 +160,33 @@ def test_activation_snapshot_changes_only_after_refresh(tmp_path: Path) -> None:
     assert cache.refresh_guild(111).deactivated == frozenset({111})
 
 
+def test_refresh_preserves_deactivation_when_servers_directory_disappears(tmp_path: Path) -> None:
+    servers = tmp_path / "servers"
+    servers.mkdir()
+    (servers / "111.md").write_text("---\nbot_active: false\n---\n", encoding="utf-8")
+    cache = paths.GuildActivationCache(tmp_path, server_setup_activation)
+    assert cache.refresh().deactivated == frozenset({111})
+
+    servers.rename(tmp_path / "unavailable-servers")
+
+    assert cache.refresh().deactivated == frozenset({111})
+
+
+def test_refresh_preserves_deactivation_when_guild_file_becomes_invalid(tmp_path: Path) -> None:
+    servers = tmp_path / "servers"
+    servers.mkdir()
+    path = servers / "111.md"
+    path.write_text("---\nbot_active: false\n---\n", encoding="utf-8")
+    cache = paths.GuildActivationCache(tmp_path, server_setup_activation)
+    assert cache.refresh().deactivated == frozenset({111})
+
+    path.write_text("---\nbot_active: [invalid\n---\n", encoding="utf-8")
+
+    snapshot = cache.refresh()
+    assert snapshot.deactivated == frozenset({111})
+    assert snapshot.invalid == frozenset()
+
+
 def test_symlinked_server_setup_cannot_activate(tmp_path: Path) -> None:
     servers = tmp_path / "servers"
     servers.mkdir()

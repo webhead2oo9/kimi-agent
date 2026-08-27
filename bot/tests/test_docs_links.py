@@ -54,6 +54,10 @@ _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "MPLCONFIGDIR",
+        # Compose-only host bind controls for the separately deployed Hindsight
+        # service; they are not consumed by the bot's Settings model.
+        "HINDSIGHT_API_BIND_ADDRESS",
+        "HINDSIGHT_CONTROL_BIND_ADDRESS",
         # Module-level declaration a plugin exports; lives in plugin code.
         "PLUGIN_SETTINGS",
         # Documented in providers.md precisely as a value that is no longer

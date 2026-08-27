@@ -106,7 +106,9 @@ def parse_skill_document(raw: str, path: Path | None = None) -> tuple[object, st
     try:
         found = find_frontmatter(raw)
     except FrontmatterError:
-        # An unclosed block is not a header; the whole document is markdown.
+        if path:
+            log.warning("Unclosed YAML frontmatter in %s; ignoring skill", path)
+        frontmatter = None
         found = None
 
     if found is not None:
@@ -122,8 +124,8 @@ def parse_skill_document(raw: str, path: Path | None = None) -> tuple[object, st
                 frontmatter = {}
         except yaml.YAMLError:
             if path:
-                log.warning("Invalid YAML frontmatter in %s, treating as plain markdown", path)
-            frontmatter = {}
+                log.warning("Invalid YAML frontmatter in %s; ignoring skill", path)
+            frontmatter = None
 
     return frontmatter, body
 

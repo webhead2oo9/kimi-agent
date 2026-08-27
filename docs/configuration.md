@@ -301,11 +301,11 @@ the numeric ids directly in the guild fragment.
 
 Two caveats about `blocked_tools`. First, it is **curation, not a privilege gate**: it only
 ever subtracts visible tools, so `min_tier`/`owner_only`/`guild_ids` remain the real
-security boundary. It applies to every responding turn. Second, channel and deployment-wide
-denylists parse strictly: a malformed or unreadable policy at cold load fails closed, while
-a failed live reload keeps that exact path's last-known-good denylist. Deleting the fragment
-explicitly clears its cached policy. `pinned_tools` stays lenient because losing a pin can't
-widen access.
+security boundary. It applies to every responding turn. Second, deployment-wide, guild, and
+channel denylists parse strictly: a malformed or unreadable policy at cold load fails closed, while
+a missing, empty, body-only, or failed live reload keeps that exact path's last-known-good
+denylist. Set `blocked_tools: []` explicitly to clear it. `pinned_tools` stays lenient because
+losing a pin can't widen access.
 
 ---
 
@@ -935,8 +935,12 @@ Bubblewrap's PID namespace reaps descendants, including new-session children. `p
 supplies inherited per-process virtual-memory, CPU-time, file-size, open-file,
 process-count, and core-file limits. These are not aggregate cgroup accounting, and the
 process-count limit is per real UID, which is why executable-skill startup rejects root.
-Run the bot under a dedicated unprivileged service account and use service-level cgroup and
-egress controls as a second layer.
+Run the bot under a dedicated unprivileged service account. The tracked
+[`bot/deploy/kimi.service.example`](../bot/deploy/kimi.service.example) applies
+`TasksMax=128`, `MemoryMax=4G`, and `CPUQuota=200%` to the complete service cgroup,
+including executable-skill descendants. Tune those aggregate ceilings for the host, use
+equivalent container limits outside systemd, and retain service-level egress controls as a
+second layer.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|

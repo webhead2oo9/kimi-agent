@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 from pathlib import PurePosixPath
 
@@ -207,6 +208,26 @@ def test_repository_declares_lf_text_and_binary_asset_attributes() -> None:
     attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "* text=auto eol=lf" in attributes.splitlines()
     assert "*.png binary" in attributes.splitlines()
+
+
+def test_mypy_excludes_runtime_workspaces_without_excluding_workspace_code() -> None:
+    config = tomllib.loads((REPO_ROOT / "bot/pyproject.toml").read_text(encoding="utf-8"))
+    excluded = re.compile(config["tool"]["mypy"]["exclude"])
+
+    for path in (
+        "workspaces/user/files/generated.py",
+        "data/workspaces/user/files/generated.py",
+        "data/dev/workspaces/user/files/generated.py",
+        "skills/store/private/scripts/runtime.py",
+    ):
+        assert excluded.search(path), path
+
+    for path in (
+        "tools/workspace/files.py",
+        "workspace/manager.py",
+        "data/dev/workspace_helpers.py",
+    ):
+        assert excluded.search(path) is None, path
 
 
 def test_dependabot_updates_uv_and_github_actions_weekly() -> None:

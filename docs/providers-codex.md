@@ -69,10 +69,9 @@ the bearer token in logs.
 
 The WebSocket handshake sends `originator: codex_cli_rs`
 (`codex/transport.py:CODEX_ORIGINATOR`). This is not cosmetic. The backend
-resolves bare model ids against a per-client bucket, and without a recognized
-originator, newer models (`gpt-5.6-sol` or `gpt-5.6-terra`, for instance) fail
-with a misleading `Model not found <model>-free-1p-...` even though the account
-is perfectly entitled to serve them.
+resolves bare model ids against a per-client bucket. Without a recognized
+originator, an entitled model can fail with a misleading
+`Model not found <model>-free-1p-...` error.
 
 So if you see that error for a model you know you have, check the originator
 before you check anything else.
@@ -82,7 +81,7 @@ before you check anything else.
 When `reasoning_after_tools` changes the effort between Codex iterations, the
 WebSocket request signature changes with it. Continuation reuse is skipped for
 that call and the transport sends the full input instead, which keeps the tool
-result and the prior provider-native output intact under the new effort. The
+result and provider-native output intact under the selected effort. The
 alternative, reusing a continuation across an effort change, would be asking
 the backend to continue a response that was produced under different settings.
 
@@ -91,7 +90,6 @@ the backend to continue a response that was produced under different settings.
 Codex output items are preserved in stored assistant messages so that later
 turns can replay provider-native items, including `function_call` and
 `image_generation_call`. Explicit provider-native image output still normalizes
-to `GeneratedAsset` and uses the generated-asset attachment rail. The normal
-Discord conversation path no longer requests that capability by matching text;
-`generate_image` calls the independent Images API backend and saves reusable
-workspace output instead. See [Image generation](image-generation.md).
+to `GeneratedAsset` and uses the generated-asset attachment rail. Normal Discord
+turns use `generate_image`, which calls the independent Images API backend and
+saves reusable workspace output instead. See [Image generation](image-generation.md).

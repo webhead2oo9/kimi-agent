@@ -10,10 +10,9 @@ Matplotlib/Mermaid configuration.
 Visual rendering ships with the [persistent browser](browser.md) capability.
 There is no second feature flag: when `BROWSER_ENABLED=true`, the browser
 runtime, selected browser network sandbox, and Mermaid assets pass their startup
-checks, Kimi registers `browser` and both visual tools. An older runtime that
-predates the Mermaid bundle can still register `browser`; boot logs a specific
-warning and leaves the visual tools unavailable until the operator reruns
-the installer.
+checks, Kimi registers `browser` and both visual tools. If the Mermaid bundle is
+absent, `browser` can still register; boot logs a specific warning and leaves the
+visual tools unavailable until the operator reruns the installer.
 
 ## Tool contract
 
@@ -123,7 +122,7 @@ The model cannot select colors, fonts, dimensions, CSS, or arbitrary rendering
 options. This keeps output predictable and prevents visual configuration from
 becoming an executable surface.
 
-Mermaid initially accepts these diagram headers:
+Mermaid accepts these diagram headers:
 
 - `flowchart` / `graph` with `TB`, `TD`, `BT`, `RL`, or `LR` direction;
 - `sequenceDiagram`;
@@ -189,7 +188,7 @@ The installer consumes the committed npm lock with `npm ci`, installs exactly
 BetterWright 1.10.0 and Mermaid 11.17.2 into a staging tree, runs the explicit
 BetterChromium setup, verifies versions, files, imports, shared libraries, and
 permissions, then atomically renames the completed root-owned tree into place.
-A failed install leaves the previous runtime in place. npm and network access
+A failed install leaves the installed runtime in place. npm and network access
 are needed only during this operator-run install or upgrade; bot startup and
 visual rendering never install packages or contact a CDN.
 
@@ -241,6 +240,6 @@ document, run `npm audit --omit=dev`, and pass the production smoke test on a
 test instance.
 
 The installer stages before replacement, so an installation failure preserves
-the prior runtime. For an application rollback, check out the previous release
-and rerun that release's installer to reproduce its matching locked runtime.
+the installed runtime. For an application rollback, check out the target release
+and run its installer to reproduce the matching locked runtime.
 Never retain an application/runtime combination that fails the smoke test.

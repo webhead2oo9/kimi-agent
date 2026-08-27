@@ -104,9 +104,8 @@ that one community's conversations never surface in another:
   tools (guild from `ctx.guild_id`).
 - Because consolidated `observation`-layer memories inherit the tags of their
   source retain call, the filter works at the layer recall actually reads.
-  (We confirmed this against the live corpus: existing observations carry
-  their source retain tags, `source:auto_retain` on user banks and
-  `source:taught,topic:…` on community.) `tags_match="any"` would include
+  Observations carry their source retain tags: `source:auto_retain` on user
+  banks and `source:taught,topic:…` on community. `tags_match="any"` would include
   untagged facts, so it is safe only because every user-bank write path tags
   its scope; there are no untagged user facts to leak. A guild-less
   auto-retain slice gets no `guild:` tag and is therefore never recalled,
@@ -314,8 +313,8 @@ Memory-related SQLite state lives in the main bot database:
   runtime.
 - `message_contexts`: maps real Discord message ids to rooted conversations so
   replies can resume the right transcript after restarts.
-- `conversation_activated_tools`: per-root searchable-tool activation rows,
-  used to keep `browse_tools` loads available across turns in that root.
+- `conversation_activated_tools`: per-root searchable-tool activation rows that
+  keep `browse_tools` loads available across turns in that root.
 - `messages`: the canonical persisted Discord transcript rows for each root,
   including `discord_message_id` and `source_created_at` for source-backed
   memory lookup.
@@ -366,7 +365,7 @@ Here are the symptoms you will see first, with the exact startup lines:
 | What you see | What it means |
 |---|---|
 | `No Hindsight URL configured - running without memory` | `HINDSIGHT_URL` is empty. No client is constructed and no memory tool registers. This is a supported configuration, not an error. |
-| `Hindsight memory unavailable at <url> - running without memory tools` | The URL is set, but `ensure_global_banks` could not create or confirm the shared `bot-skills` bank. Readiness stays false, and any memory tools registered by an earlier successful pass are removed again. |
+| `Hindsight memory unavailable at <url> - running without memory tools` | The URL is set, but `ensure_global_banks` could not create or confirm the shared `bot-skills` bank. Readiness stays false, and registered memory tools are removed. |
 | `Hindsight memory connected at <url>` | Ready. Community and user memory tools are registered. |
 
 A per-guild community bank that cannot be created fails more quietly:

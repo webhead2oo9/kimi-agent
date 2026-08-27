@@ -102,7 +102,7 @@ verification is still required even when the proof image looks right.
 
 A retry can recover the task, but it does not erase the failed attempt. Mention
 a meaningful browser failure and recovery in the final answer. On a later turn,
-do not claim earlier calls were clean unless their results are visible.
+do not claim a call succeeded unless its result is visible.
 
 ## Handle challenges conservatively
 

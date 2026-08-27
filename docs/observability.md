@@ -10,9 +10,11 @@ The stream is **off by default**. While it is disabled, no writer is started
 and `emit_*` calls return without writing anything. The file is the whole
 output contract; the bot does not depend on anything consuming it.
 
-`module_health` events record every application-module health transition:
-`module`, `state` (`starting`/`healthy`/`degraded`/`failed`), a truncated
-`detail`, and bounded numeric `metrics`. They carry no message content.
+`module_health` events are best-effort reports of application-module health
+transitions: `module`, `state`
+(`starting`/`healthy`/`degraded`/`failed`), a length-bounded `detail`, and
+bounded numeric `metrics`. Detail text is supplied by trusted module code and is
+not redacted, so modules must keep user content and secrets out of it.
 
 ## Enabling it
 
@@ -80,10 +82,10 @@ file cannot be locked down that way the writer never starts.
 
 ## Event schema
 
-Every event is one JSON object on its own line. The current schema is `v: 2`,
-and every row names the `content_mode` it was written under. Nothing rewrites
-older `v: 1` rows, so a file that straddles the upgrade holds both shapes;
-branch on `v` when you read one.
+Every event is one JSON object on its own line. The current schema is `v: 2`.
+Tool, turn, compaction, and moderation rows name the `content_mode` they were
+written under; `module_health` rows do not. A file can contain both `v: 1` and
+`v: 2` shapes, so branch on `v` and event `type` when reading it.
 
 ### `tool_call`
 
@@ -146,8 +148,8 @@ ordinary messages. Keep in mind that `browse_tools` can widen the tool set on
 later iterations; this snapshot captures the iteration-0 set only.
 
 Where it is present, `response` holds the final user-facing assistant text for
-the turn. Narration from the earlier tool iterations shows up in provider
-history and in activity updates, not in this field.
+the turn. Tool-iteration narration appears in provider history and activity
+updates, not in this field.
 
 ### `compaction`
 

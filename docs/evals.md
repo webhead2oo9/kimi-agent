@@ -83,11 +83,10 @@ artifacts and headless-browser sessions in the same per-arm, per-repetition boun
 `<git-sha>` is HEAD's short sha. When tracked *source* differs from it, the
 identity is suffixed **`-dirty-<diff-hash>`**, where `<diff-hash>` is the first
 12 hexadecimal characters of SHA-256 over a configuration-independent binary
-diff from HEAD. A run against an edited working tree previously claimed a commit it never
-executed, and a later bare `-dirty` marker made every edited tree look
-identical. The hash makes equal labels mean equal tracked source bytes in the
-working tree. Untracked files and index-only changes are naturally absent from
-the worktree diff; if a staged edit has been restored to HEAD in the working
+diff from HEAD. This keeps an edited working tree distinct from clean HEAD and
+gives different edits different identities. Equal labels therefore mean equal
+tracked source bytes in the working tree. Untracked files and index-only
+changes are naturally absent from the worktree diff; if a staged edit has been restored to HEAD in the working
 tree, the eval executes the clean HEAD bytes and receives the clean sha. Also
 excluded is everything under the
 run's tape directory (`harness_run.run_data_paths`, excluded by pathspec). The
@@ -179,8 +178,8 @@ you pass `--no-shared-cassettes`. Two consequences follow:
   `model` while replaying identical bytes, and the LOW CONFIDENCE guard below
   would stop firing precisely once the correlation became permanent.
 - Each arm pays for its own misses instead of inheriting another arm's
-  recordings, so the first run of a new model pays full price. That
-  is the trade we chose: a correct measurement instead of a cheap wrong one.
+  recordings, so the first run of a new model pays full price. This favors a
+  correct measurement over a cheaper, misleading one.
 
 `--dry-run` prints per-scenario tape provenance (`model` / `shared` / `none`)
 before anything is spent. `summary.json` records `cassette_dir`,
@@ -199,7 +198,7 @@ recording order (then repeat the last result), so loops stay deterministic.
 `internet_search` recordings also carry the number of backend calls consumed
 by the live handler. Replay reapplies that count and enforces the current
 per-turn limit, so a cassette cannot give a model more searches than production.
-Legacy search entries without this metadata are treated as misses and refreshed
+Search entries without this metadata are treated as misses and refreshed
 live in `replay` mode rather than assigned a guessed cost.
 
 Only the read-only source tools `discord_text_search`, `internet_search`, and
@@ -282,9 +281,9 @@ the prompt version in code) to intentionally regenerate it.
 Choose the image path explicitly with `--vision-mode caption` or
 `--vision-mode native`. Caption mode requires `image_captioner` and measures
 reasoning over identical evidence. Native mode sends the fixture images directly
-and runs them only for an arm declaring `image_input`. The default `auto` keeps
-the historical behavior: use the captioner when configured, otherwise use native
-vision. Reports state the resolved mode. Ineligible image scenarios are skipped
+and runs them only for an arm declaring `image_input`. The default `auto` uses
+the captioner when configured and native vision otherwise. Reports state the
+resolved mode. Ineligible image scenarios are skipped
 loudly.
 
 ```bash
@@ -464,7 +463,7 @@ the isolation provenance used during execution.
   end-to-end.
 - `teach` and `remember_user_memory` are write-stubbed so a run never pollutes
   the community bank or accumulates per-user memories in the live Hindsight
-  backend (otherwise repeated harness runs would recall their own prior runs).
+  backend. Harness repetitions therefore cannot recall each other's writes.
   Plugins add their own production-writing tools to the same stub list by
   declaring the `eval_stub` surface.
 - `block_user` is registered against an in-memory stub store, so safety

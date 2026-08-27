@@ -4,14 +4,14 @@ The bot uses async SQLite through `storage/db.py`, with the database path set by
 `DATABASE_PATH` (default `data/bot.db`). Treat the database as production
 state: it holds rooted conversations, Discord reply routing, user preferences,
 privacy consent, moderation blocks, the operator's global chat-model selection,
-managed-thread state, LLM and paid-tool usage ledgers, durable authorization for
-confirmed privacy deletions, cached image distillations, stateful video-session
-handles and provider-deletion retries, memory auto-retain watermarks, and
-per-user Hindsight bank tracking.
+provider circuit cooldowns, managed-thread state, LLM and paid-tool usage
+ledgers, durable authorization for confirmed privacy deletions, cached image
+distillations, stateful video-session handles and provider-deletion retries,
+memory auto-retain watermarks, and per-user Hindsight bank tracking.
 
-The core database is schema v4. A newer core database is left alone and
-rejected, so an older bot cannot accidentally use it. Optional application
-modules own their own independent schemas and versions.
+The core database is schema v4. A process that supports only a lower version
+rejects the database without changing its schema. Optional application modules
+own independent schemas and versions.
 
 ## Encryption at rest
 
@@ -53,7 +53,8 @@ and reads.
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` creates the complete baseline for a new database.
+- `_SCHEMA_SQL` creates the complete core schema for an empty database. The
+  ordered `_MIGRATIONS` registry upgrades supported lower schema versions.
 - The `schema_version` table records which schema changes have been applied and
   when.
 - **`module_scheduler_jobs`** holds durable module jobs (`module_name`,
@@ -62,13 +63,12 @@ and reads.
   `ctx.scheduler`.
 - **`config_proposals`** holds guild-scoped fragment proposals, including the
   proposed content hash and exact pre-change baseline needed for conflict
-  detection and rollback. Old `control_proposals` and
-  `control_proposal_events` tables may remain in upgraded databases but are
-  orphaned and never read; fresh databases do not create them.
-- `module_schema_versions` records the latest applied version for each active
-  application module. Module migrations run transactionally before module
+  detection and rollback. The runtime never reads `control_proposals` or
+  `control_proposal_events`, and schema v4 does not create them.
+- `module_schema_versions` records the latest applied version for every module
+  that has run migrations. Module migrations run transactionally before module
   startup, and module tables are not part of the core baseline.
-- Stores under `storage/` can assume `Database.connect()` has already brought
+- Stores under `storage/` can assume `Database.connect()` has brought
   the database to the current supported schema.
 
 ## Tables
@@ -89,7 +89,7 @@ authoritative.
 - **`messages`** is the per-root transcript, one row per real Discord message.
   A unique `(conversation_id, discord_message_id)` index dedups it; since
   SQLite treats NULLs as distinct, rows without a Discord id never collide.
-  `user_id` is indexed because counting a member's prior messages for new-user
+  `user_id` is indexed because counting a member's stored messages for new-user
   onboarding would otherwise scan the whole table on every mention. A user row
   may also carry a machine-written description of its images as a text part in
   `message_data`. That description deliberately outlives the image parts
@@ -118,14 +118,15 @@ authoritative.
 
 ### Memory and privacy
 
-- **`auto_retain_watermarks`** records the highest `messages.id` already
-  flushed to Hindsight per (conversation, user). Advancing a watermark without
+- **`auto_retain_watermarks`** records the highest `messages.id` flushed to
+  Hindsight per (conversation, user). Advancing a watermark without
   retaining is how opt-out, trivial-content, and forget-me slices are
   permanently skipped.
 - **`privacy_deletion_requests`** is the durable authorization for a confirmed
   `/privacy` deletion: one coalesced row per user holding the widest requested
-  scope, a generation counter, and a unique token. The token is what stops an
-  older worker from completing a newer or wider request after a crash or race.
+  scope, a generation counter, and a unique token. The token stops a worker
+  holding stale authorization from completing a superseded request after a
+  crash or race.
   It contains no message content.
 - **`user_memory_bank_states`** is conservative local knowledge that a user's
   remote Hindsight bank may exist. The flag is written *before* any create or
@@ -137,7 +138,7 @@ authoritative.
   Gemini Interaction id, count, and expiry. It stores no video bytes, provider
   capability URLs, questions, or answers.
 - **`video_interactions`** records every Gemini Interaction id in each session,
-  so deleting only the latest turn cannot strand earlier provider state.
+  so deleting only the latest turn cannot strand provider state.
 - **`video_provider_files`** reserves each client-chosen Gemini Files API name
   before upload and later associates it with one session. Unattached rows let
   startup/hourly cleanup recover a crash between upload and session creation.
@@ -170,6 +171,11 @@ authoritative.
 - **`model_selection`** is a singleton holding the owner-selected global chat
   model, so a `/models` switch survives a restart. NULL means the normal
   `config/models.yaml` role and scope routing applies.
+- **`provider_circuits`** stores active model- or account-scoped provider
+  cooldowns, including the normalized reason, optional status/provider code,
+  and retry time. Persisting them prevents a restart from immediately retrying
+  a provider that is still unhealthy; successful recovery or an owner reset
+  removes the affected rows.
 - **`image_distillations`** caches visual descriptions for text-only chat
   models. The key covers the image set, the vision model, and the prompt
   version. The cache is scoped to a single conversation so descriptions never
@@ -178,15 +184,11 @@ authoritative.
   message row it describes.
 - **`schema_version`** records the version the database has reached.
 
-The coding tables began in schema v1. Schema v2 adds the task's display summary,
-bounded conversation context, and input-file metadata. Schema v3 adds the
-stateful video-session tables and provider deletion outbox.
-
 ## Model, paid-tool, and bounded-tool usage
 
 Each completed request to an AI model adds one row to `usage_ledger`. A single
 Discord interaction may make several model requests, such as generating the
-reply, summarizing older context, describing an image, or compiling a persona,
+reply, summarizing compacted context, describing an image, or compiling a persona,
 and those rows share a `turn_id` so they can be reported as one interaction.
 
 Each row records the user, channel, server, model, purpose, token counts,
@@ -214,9 +216,8 @@ out into its own column whenever a window has any. Members can view their own
 usage, while staff can also view another member's usage and server totals.
 
 `usage_markers` stays out of those totals on purpose: its rows count how often
-something was used, not what it cost. Old markers are pruned whenever a new one
-is written, so an active deployment never carries much more than the eight days
-the seven-day window needs.
+something was used, not what it cost. Writes prune markers outside the eight-day
+storage window, which covers the seven-day reporting window.
 
 ## Transcript retention
 
@@ -233,9 +234,9 @@ Files API resource name into independent provider-deletion outboxes.
 Each batch is removed in one database transaction, so a failure cannot leave a
 partially deleted transcript behind.
 
-Three things sit outside that schedule and keep their own retention rules: the
-usage and cost records in `usage_ledger` and `paid_usage_ledger`, the
-short-lived rows in `usage_markers`, and long-term Hindsight memory. See
+Usage and cost records, short-lived `usage_markers`, provider circuit cooldowns,
+and long-term Hindsight memory sit outside transcript retention and keep their
+own lifecycles. See
 [Privacy](privacy.md#retention-and-deletion) for the complete list of stored
 data and retention periods.
 
@@ -255,7 +256,7 @@ conversations require an exact owner match whenever they are reopened, and
 missing or mismatched ownership is rejected.
 
 The bot records a deletion request before it begins and prevents new activity
-for that user while the request is in progress. Already-running turns that
+for that user while the request is in progress. In-flight turns that
 could write to affected conversations are allowed to finish before deletion
 starts. If the bot stops or a dependency fails, the request remains pending and
 resumes after restart, and repeating a deletion is safe.
@@ -269,7 +270,7 @@ the privacy request or user activity barrier open after local deletion succeeds.
 Deleting SQLite transcript data leaves both usage ledgers alone, and it leaves
 active rate-limit markers alone too: a capacity limit anyone can reset by
 deleting their data is not a limit. Those markers age out on their own, pruned
-once they are more than eight days old. Long-term Hindsight memory is deleted
+after eight days. Long-term Hindsight memory is deleted
 separately as part of the wider privacy workflow. If the memory service is
 unavailable and local tracking says a user may have stored memory, the request
 remains pending rather than reporting a successful deletion that cannot be
@@ -277,46 +278,26 @@ confirmed.
 
 ## Schema upgrades
 
-`Database.connect()` creates the current schema for a new database and records
-one `schema_version` row per version, so a fresh database reports the same
-history as one that was upgraded step by step. When it opens an older database,
-it walks the registered migrations from the stored version up to
-`SCHEMA_VERSION`. Each migration and its version record are committed together,
-so a failed migration leaves the database at its previous version.
+`Database.connect()` creates the current schema for an empty database and
+records one `schema_version` row per version. A database on a supported lower
+version runs each registered migration through `SCHEMA_VERSION`.
 
-Schema v2, `coding_task_context_inputs`, adds durable context and input metadata
-to coding tasks. Schema v3, `video_understanding_sessions`, adds the video
-session and deletion-outbox tables. Future changes add
-an entry keyed by the version they produce, paired with a permanent name for
-the history row:
+The current registry upgrades schema v1 with three ordered migrations:
+`coding_task_context_inputs` moves the schema to v2, `video_understanding_sessions`
+to v3, and `provider_circuit_breakers` to v4. Each version has a
+permanent name in `schema_version`. An unregistered version raises at startup
+on both fresh and upgrade paths. A migration and its version record share one
+transaction, so a failure leaves the schema and version stamp unchanged.
 
-```python
-async def _migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
-    await conn.execute("ALTER TABLE conversations ADD COLUMN locale TEXT")
-
-
-_MIGRATIONS: dict[int, Migration] = {
-    2: ("coding_task_context_inputs", _migrate_v1_to_v2),
-    3: ("video_understanding_sessions", _migrate_v2_to_v3),
-    4: ("conversation_locale", _migrate_v3_to_v4),
-}
-```
-
-`SCHEMA_VERSION` moves to `4` in the same change. Leaving a version in the
-range unregistered raises at startup on both the fresh and the upgrade path,
-rather than creating a database that claims a version nothing built. A
-migration runs inside its own transaction, so it only has to do its own work;
-recording the version and committing are handled for it.
-
-Migrations only move forward and run automatically at startup. Before upgrading
-a real instance, take a WAL-consistent backup. If you need to return to an older
-release, restore its matching database backup too; the old release cannot open
-the newer schema safely. The bot rejects a non-empty database without a schema
-stamp, and any database stamped newer than it supports.
+Migrations only move forward and run automatically at startup. Take a
+WAL-consistent backup before upgrading a real instance. Rolling back to an older
+release also requires restoring that release's database backup; an older
+process cannot open a newer schema safely. The bot rejects a non-empty database
+without a schema stamp and any database stamped above its supported version.
 
 Before moving or restoring the database, stop the bot and copy the main file
 with its `-wal` and `-shm` sidecars, or use SQLite's backup API. Do not change
-`schema_version` by hand; the history and the actual schema must agree.
+`schema_version` by hand; the version ledger and actual schema must agree.
 
 A disposable local development database can simply be deleted when its
 contents are not needed.

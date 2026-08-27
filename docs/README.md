@@ -33,6 +33,9 @@ The rest is reference material.
 - [Video understanding](video-understanding.md): stateful Gemini analysis of
   public YouTube or streamed Discord/workspace videos, session scope, Files API
   lifecycle, caching, limits, and deletion.
+- [Image generation](image-generation.md): the REGULAR-tier OpenAI generation
+  and editing tool, OAuth/API-key modes, workspace references, limits, and the
+  provider extension seam.
 - [Code execution](code-exec.md): the Linux sandbox boundary, network modes,
   deployment, quotas, and operator verification.
 - [Durable coding agent](coding-agent.md): background planning, managed jobs,

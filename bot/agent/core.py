@@ -22,7 +22,6 @@ from agent.attachments import AttachmentRef, format_attachments_context
 from agent.compaction import NOTE_PREFIX, Compactor
 from agent.context import ConversationContext
 from utils.format import sanitize_author_name
-from agent.modalities import wants_image_output
 from config.fragments.prompt import build_system_prompt
 from agent.reply_context import ReplyContext, reply_context_message
 from observability.events import emit_compaction, emit_tool_call, emit_turn, new_turn_id
@@ -1249,9 +1248,7 @@ class _ConversationRunner:
             requested_capabilities=_requested_capabilities(
                 messages=request_messages,
                 current_user_parts=request_parts,
-                wants_output_image=wants_image_output(request.user_message),
                 tool_schemas=state.tool_schemas,
-                supported=request.provider.capabilities,
             ),
             reasoning_effort=state.reasoning_effort,
         )
@@ -1738,18 +1735,11 @@ def _requested_capabilities(
     *,
     messages: list[ConversationMessage],
     current_user_parts: list[ContentPart],
-    wants_output_image: bool,
     tool_schemas: list[dict],
-    supported: set[ProviderCapability],
 ) -> set[ProviderCapability]:
     requested = {ProviderCapability.TEXT}
     if _request_contains_image_parts(messages, current_user_parts):
         requested.add(ProviderCapability.IMAGE_INPUT)
-    # Image output is inferred from text and is therefore a soft hint: only
-    # request it when the provider can honor it, so a false-positive verb match
-    # ("let's call it a draw") never aborts a normal turn on a text-only provider.
-    if wants_output_image and ProviderCapability.IMAGE_OUTPUT in supported:
-        requested.add(ProviderCapability.IMAGE_OUTPUT)
     if tool_schemas:
         requested.add(ProviderCapability.TOOL_CALLING)
     return requested
@@ -1765,9 +1755,6 @@ def _validate_provider_capabilities(
     )
     if has_image_input and ProviderCapability.IMAGE_INPUT not in provider.capabilities:
         raise ProviderCapabilityError(f"{provider.provider_key} does not support image input")
-    # Image OUTPUT is intentionally not validated here: it is a soft hint gated on
-    # provider support in _requested_capabilities, so an unsupported provider
-    # simply answers as text rather than aborting the turn.
     if request.tools and ProviderCapability.TOOL_CALLING not in provider.capabilities:
         raise ProviderCapabilityError(f"{provider.provider_key} does not support tool calling")
 

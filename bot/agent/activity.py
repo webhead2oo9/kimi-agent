@@ -48,6 +48,7 @@ _TOOL_LABELS: dict[str, str] = {
     "internet_search": "Searching the web",
     "wolfram_alpha": "Computing with Wolfram|Alpha",
     "video": "Analyzing a video",
+    "generate_image": "Generating an image",
     "browser": "Using the browser",
     "render_chart": "Rendering a chart",
     "render_diagram": "Rendering a diagram",

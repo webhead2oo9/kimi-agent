@@ -10,7 +10,7 @@ from codex.auth import CodexAuthError, CodexAuthRevokedError
 from config.model_config import ModelConfig
 from config.settings import Settings
 from providers.codex import CodexProvider
-from providers.factory import ProviderConfig, create_provider
+from providers.factory import ProviderConfig, create_provider, get_codex_auth_manager
 
 
 def _settings(**kwargs: object) -> Settings:
@@ -118,6 +118,15 @@ def test_codex_credentials_detected_from_token_file_without_api_key(
     assert provider_runtime._has_active_llm_credentials(settings, _model_config("codex"))
 
 
+def test_codex_auth_manager_is_shared_by_resolved_token_path(tmp_path: Path) -> None:
+    token_file = tmp_path / "codex-auth.json"
+
+    first = get_codex_auth_manager(str(token_file))
+    second = get_codex_auth_manager(str(tmp_path / "." / "codex-auth.json"))
+
+    assert first is second
+
+
 def test_codex_factory_passes_read_timeout_to_transport(tmp_path: Path) -> None:
     token_file = tmp_path / "codex-auth.json"
     _write_token_file(token_file)
@@ -189,6 +198,26 @@ def test_codex_startup_check_tolerates_transient_refresh_io(
         manager=_FlakyManager(),
         model_config=_model_config("codex"),
     )
+
+
+@pytest.mark.parametrize("auth_mode", ["oauth", "auto", "api_key"])
+def test_codex_startup_check_skips_optional_image_tool_without_codex_chat(
+    auth_mode: str,
+) -> None:
+    calls = {"n": 0}
+
+    class _Manager:
+        async def get_access_token(self) -> str:
+            calls["n"] += 1
+            raise CodexAuthRevokedError("revoked")
+
+    provider_runtime.codex_startup_check(
+        _settings(image_gen_enabled=True, image_gen_auth_mode=auth_mode),
+        manager=_Manager(),
+        model_config=_model_config("openai_compat"),
+    )
+
+    assert calls["n"] == 0
 
 
 def test_codex_startup_check_noop_when_codex_inactive(monkeypatch) -> None:

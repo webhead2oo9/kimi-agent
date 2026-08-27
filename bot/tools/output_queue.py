@@ -29,6 +29,7 @@ def enqueue_workspace_file(
     path: Path,
     *,
     max_attachments: int | None = None,
+    description: str | None = None,
 ) -> QueuedOutput:
     resolved = path.resolve(strict=False)
     workspace_manager.relative_user_file_path(ctx.workspace_key, resolved)
@@ -37,6 +38,7 @@ def enqueue_workspace_file(
         resolved,
         workspace_manager.user_files_dir(ctx.workspace_key).resolve(),
         max_attachments=max_attachments,
+        description=description,
     )
 
 

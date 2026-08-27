@@ -51,6 +51,11 @@ from tools.threads import (
     init_thread_tools,
 )
 from tools.video import init_video_tool
+from tools.wolfram_alpha import (
+    WolframAlphaClient,
+    WolframAlphaConfig,
+    init_wolfram_alpha_tool,
+)
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from video_understanding.client import GeminiVideoClient
 from video_understanding.service import VideoUnderstandingService
@@ -149,6 +154,7 @@ def build_runtime_tools(
         init_block_user_tool(registry, get_blocked_user_store)
     _register_discord_text_search(settings, registry, gateway)
     _register_internet_search(settings, registry)
+    _register_wolfram_alpha(settings, registry)
     workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
         registry,
@@ -293,6 +299,7 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "DISCORD_TEXT_SEARCH_ENABLED + MESSAGE_CONTENT_INTENT",
     ),
     ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
+    ("Wolfram|Alpha", ("wolfram_alpha",), "WOLFRAM_ALPHA_APP_ID"),
     (
         "video understanding",
         ("video",),
@@ -403,6 +410,24 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
         ),
     )
     log.info("Internet search enabled with providers: %s", ", ".join(b.name for b in backends))
+
+
+def _register_wolfram_alpha(settings: Settings, registry: ToolRegistry) -> None:
+    app_id = settings.wolfram_alpha_app_id.get_secret_value().strip()
+    if not app_id:
+        log.info("Wolfram|Alpha disabled; WOLFRAM_ALPHA_APP_ID is not set")
+        return
+    init_wolfram_alpha_tool(
+        registry,
+        WolframAlphaConfig(
+            client=WolframAlphaClient(app_id),
+            max_calls_per_turn=settings.wolfram_alpha_max_calls_per_turn,
+            max_output_chars=settings.wolfram_alpha_max_output_chars,
+            timeout_seconds=settings.wolfram_alpha_timeout_seconds,
+            call_cost_usd=settings.wolfram_alpha_call_cost_usd,
+        ),
+    )
+    log.info("Wolfram|Alpha enabled with the LLM API")
 
 
 def _register_video(

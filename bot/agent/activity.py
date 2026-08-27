@@ -46,6 +46,7 @@ _TOOL_LABELS: dict[str, str] = {
     "coding_job_status": "Waiting on a coding job",
     "coding_job_cancel": "Stopping a coding job",
     "internet_search": "Searching the web",
+    "wolfram_alpha": "Computing with Wolfram|Alpha",
     "video": "Analyzing a video",
     "browser": "Using the browser",
     "render_chart": "Rendering a chart",

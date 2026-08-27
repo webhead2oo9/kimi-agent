@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-import httpx
-
 
 class ProviderError(Exception):
     safe_message = "The model provider failed."
+
+
+class ProviderAvailabilityError(ProviderError):
+    safe_message = "The model provider is temporarily unavailable. Please try again shortly."
 
 
 class ProviderCapabilityError(ProviderError):
@@ -23,6 +25,10 @@ class ProviderContextOverflowError(ProviderError):
         self.safe_message = message
 
 
+class ProviderPolicyError(ProviderError):
+    safe_message = "The model provider could not complete that request."
+
+
 class ProviderBackendAccessError(ProviderError):
     """A provider-confirmed access/model rejection that may use another backend."""
 
@@ -30,6 +36,10 @@ class ProviderBackendAccessError(ProviderError):
         "The selected model is unavailable to this bot right now. "
         "Please retry or contact the bot operator."
     )
+
+
+class ProviderCircuitOpenError(ProviderError):
+    safe_message = "The configured model providers are cooling down. Please try again later."
 
 
 # Lowercased substrings that reliably indicate a context-window overflow across the
@@ -60,33 +70,11 @@ def is_context_overflow_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _OVERFLOW_MARKERS)
 
 
-# HTTP status codes that mean "this endpoint is unavailable right now, retry it"
-# rather than "your request is wrong". 429 (rate limited) and every 5xx qualify,
-# including the Cloudflare-specific 520-530 tunnel/origin codes a Cloudflare-fronted
-# gateway emits.
-_AVAILABILITY_STATUS_CODES = frozenset({408, 425, 429})
-
 # Authentication, authorization, and model/endpoint lookup statuses receive a
 # dedicated user message. Only the unambiguous subset is safe to send to another
 # backend automatically; a generic 403 may instead be a policy/safety rejection.
 _BACKEND_ACCESS_STATUS_CODES = frozenset({401, 403, 404})
-_UNAMBIGUOUS_FAILOVER_STATUS_CODES = frozenset({401, 404})
-
 ProviderFailureDisposition = Literal["stop", "retry", "failover"]
-
-# SDK exception class names that signal transport-level unavailability but may not carry
-# a numeric status_code (connection drops, read timeouts). Matched by name so this stays
-# free of hard SDK imports, mirroring the heuristic style of is_context_overflow_error.
-_AVAILABILITY_EXCEPTION_NAMES = frozenset(
-    {
-        "APIConnectionError",
-        "APIConnectionTimeoutError",
-        "APITimeoutError",
-        "InternalServerError",
-        "ServiceUnavailableError",
-        "RateLimitError",
-    }
-)
 
 
 def _provider_status_code(exc: BaseException) -> int | None:
@@ -112,24 +100,10 @@ def provider_failure_disposition(exc: BaseException) -> ProviderFailureDispositi
     have dedicated handling. The remaining checks intentionally avoid SDK imports so
     OpenAI-compatible and other providers share one policy.
     """
-    if isinstance(exc, ProviderBackendAccessError):
-        return "failover"
-    if isinstance(exc, ProviderError):
-        return "stop"
-    status = _provider_status_code(exc)
-    if isinstance(status, int):
-        if status in _AVAILABILITY_STATUS_CODES or 500 <= status <= 599:
-            return "retry"
-        if status in _UNAMBIGUOUS_FAILOVER_STATUS_CODES:
-            return "failover"
-        return "stop"
-    if isinstance(exc, (ConnectionError, TimeoutError, httpx.HTTPError)):
-        return "retry"
-    if getattr(exc, "retryable", False) is True:
-        return "retry"
-    if type(exc).__name__ in _AVAILABILITY_EXCEPTION_NAMES:
-        return "retry"
-    return "stop"
+    # Import lazily: failure_policy builds on the public ProviderError hierarchy.
+    from providers.failure_policy import CooldownPolicy, generic_failure_policy
+
+    return generic_failure_policy(exc, CooldownPolicy(), 0).disposition
 
 
 def is_provider_availability_error(exc: BaseException) -> bool:

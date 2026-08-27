@@ -119,6 +119,15 @@ class StubProviderManager:
     async def refresh_selectable_chat_models(self) -> None:
         return None
 
+    async def initialize_circuits(self, store: Any) -> None:
+        return None
+
+    async def circuit_snapshots(self) -> tuple[Any, ...]:
+        return ()
+
+    async def reset_all_circuits(self) -> None:
+        return None
+
     def validate_active_chat_model(self, model_name: str | None) -> None:
         if model_name is not None and model_name not in self.selectable_chat_models:
             raise ValueError(model_name)

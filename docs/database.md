@@ -9,7 +9,7 @@ confirmed privacy deletions, cached image distillations, stateful video-session
 handles and provider-deletion retries, memory auto-retain watermarks, and
 per-user Hindsight bank tracking.
 
-The core database is schema v3. A newer core database is left alone and
+The core database is schema v4. A newer core database is left alone and
 rejected, so an older bot cannot accidentally use it. Optional application
 modules own their own independent schemas and versions.
 

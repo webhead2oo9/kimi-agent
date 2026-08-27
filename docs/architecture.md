@@ -66,7 +66,7 @@ sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
 commands/               staff/user app commands (/privacy, /memory, /usage,
                         /models, ...) and the "Teach Kimi" context menu
 memory/                 Hindsight client, bank scoping, auto-retain, opt-out
-storage/                SQLite WAL core schema v3, module schema ledger,
+storage/                SQLite WAL core schema v4, module schema ledger,
                         conversation + video session/deletion + coding task/event/job
                         state, LLM/paid-tool usage stores, global model selection
 trust/                  trust-tier resolution from Discord roles + allowlists

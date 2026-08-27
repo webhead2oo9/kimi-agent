@@ -17,6 +17,11 @@ providers:
     type: openai_compat
     base_url: https://llm-gateway.example.invalid/v1
     api_key_env: MODEL_API_KEY
+    # Optional resilience settings. Exact provider Retry-After values win.
+    # failure_adapter: generic
+    # circuit_breaker:
+    #   outage_cooldown_seconds: 1800
+    #   quota_cooldown_seconds: 1800
     # Optional. Omit this unless the provider exposes an OpenAI-compatible
     # catalog that should filter owner-visible /models choices at startup.
     # models_endpoint: https://llm-gateway.example.invalid/v1/models

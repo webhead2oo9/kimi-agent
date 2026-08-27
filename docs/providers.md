@@ -384,11 +384,10 @@ that routing depends on.
 
 ## Failover
 
-When a role's resolved chain has more than one entry, `ProviderManager.resolve`
-returns a `providers/failover.py:FailoverProvider` wrapping
-`[primary, *fallbacks]` instead of a bare provider. The chain is deduped first,
-and on image turns non-vision fallbacks are filtered out, so a role with
-declared fallbacks can still legitimately resolve to a single provider.
+Every resolved role uses the same provider-chain wrapper, including roles with
+only one model. This gives fallback and circuit-breaker behavior one consistent
+entry point. Chains are deduped first, and image turns filter out non-vision
+fallbacks.
 
 ```yaml
 roles:
@@ -396,25 +395,10 @@ roles:
   chat_fallbacks: [fallback-chat]
 ```
 
-`FailoverProvider.run_turn` calls the primary first and classifies failures with
-`providers/errors.py:provider_failure_disposition`. Transient availability
-errors are connection drops, timeouts, `408`, `425`, `429`, or any `5xx`
-(including Cloudflare's `520`-`530` tunnel and origin codes).
-
-On such an error the **same backend is retried once** after a two-second pause
-before the chain advances. The primary is the preferred model and a blip is
-usually just a blip, so spending one cheap retry there is better than demoting
-the whole turn; it also keeps any server-side prompt cache warm. Every backend
-in the chain gets the same two attempts, including the last.
-
-Unambiguous backend-specific access and lookup failures (`401`, `404`) advance
-to the next configured backend **without retrying the rejected backend**. A
-provider adapter may do the same for a structured rejection it recognizes by
-raising `ProviderBackendAccessError`. A generic `403` does not fail over because
-gateways also use that status for policy and safety rejections; replaying such a
-request to another provider would be unsafe. Every rejection remains visible in
-the server log so a successful fallback does not hide a broken primary
-configuration.
+Connection errors, timeouts, and server failures receive one retry before the
+chain advances. Rate limits and unambiguous account/model failures advance
+immediately. Once a fallback succeeds, later tool iterations in that logical
+turn remain on it rather than retrying earlier links.
 
 The `openai_compat` stall abort falls in this class. A stream silent for
 `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` raises `TimeoutError`, so a wedged
@@ -422,15 +406,10 @@ backend gets one fresh attempt and then hands off, instead of consuming the
 entire turn deadline. A stream still producing chunks is never aborted and may
 legitimately run all the way to the `REACT_TURN_TIMEOUT_SECONDS` ceiling.
 
-Deterministic request failures do **not** fail over. A bad payload (`400` or
-`422`), a capability mismatch, or a context overflow propagates immediately,
-because another backend should reject the same request. If every backend in the
-chain fails, the last error reaches a scrubbed user-facing path: access and
-model rejections, rate limits, and temporary outages each get their own retry
-guidance, but raw provider bodies are logged only on the server. When a provider
-fails after tool calls have already completed, the reply also warns that those
-actions may still have taken effect and should be checked before the user
-repeats them.
+Persistent circuits skip unhealthy links across turns and restarts, with one
+half-open recovery probe after cooldown. Deterministic request failures do not
+open a circuit or fail over. See [Provider resilience](provider-resilience.md)
+for scopes, cooldown precedence, configuration, and owner controls.
 
 The wrapper's `capabilities` are the **intersection** across the chain. The
 agent core shapes requests up front, so if it shaped one around an ability only

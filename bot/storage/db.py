@@ -9,7 +9,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -125,6 +125,21 @@ CREATE TABLE IF NOT EXISTS model_selection (
 
 INSERT OR IGNORE INTO model_selection (singleton, model_name, updated_at)
 VALUES (1, NULL, 0);
+
+CREATE TABLE IF NOT EXISTS provider_circuits (
+    scope_key     TEXT PRIMARY KEY,
+    scope_kind    TEXT NOT NULL CHECK (scope_kind IN ('model', 'account')),
+    display_label TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    status_code   INTEGER,
+    provider_code TEXT,
+    opened_at     REAL NOT NULL,
+    retry_at      REAL NOT NULL,
+    updated_at    REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_circuits_retry_at
+    ON provider_circuits(retry_at);
 
 CREATE TABLE IF NOT EXISTS blocked_users (
     user_id     TEXT PRIMARY KEY,
@@ -681,9 +696,27 @@ async def _migrate_v2_to_v3(conn: aiosqlite.Connection) -> None:
         await conn.execute(statement)
 
 
+async def _migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        """CREATE TABLE provider_circuits (
+            scope_key     TEXT PRIMARY KEY,
+            scope_kind    TEXT NOT NULL CHECK (scope_kind IN ('model', 'account')),
+            display_label TEXT NOT NULL,
+            reason        TEXT NOT NULL,
+            status_code   INTEGER,
+            provider_code TEXT,
+            opened_at     REAL NOT NULL,
+            retry_at      REAL NOT NULL,
+            updated_at    REAL NOT NULL
+        )"""
+    )
+    await conn.execute("CREATE INDEX idx_provider_circuits_retry_at ON provider_circuits(retry_at)")
+
+
 _MIGRATIONS: dict[int, Migration] = {
     2: ("coding_task_context_inputs", _migrate_v1_to_v2),
     3: ("video_understanding_sessions", _migrate_v2_to_v3),
+    4: ("provider_circuit_breakers", _migrate_v3_to_v4),
 }
 
 

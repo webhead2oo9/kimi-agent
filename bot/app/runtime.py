@@ -160,6 +160,7 @@ from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
 from storage.preferences import PreferenceStore
+from storage.provider_circuits import ProviderCircuitStore
 from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
@@ -762,6 +763,7 @@ class KimiApplication:
         self.blocked_user_store = BlockedUserStore(self.database)
         self.image_distillation_store = ImageDistillationStore(self.database)
         self.model_selection_store = ModelSelectionStore(self.database)
+        await self.provider_manager.initialize_circuits(ProviderCircuitStore(self.database))
         await self.provider_manager.refresh_selectable_chat_models()
         selected_model = await self.model_selection_store.get()
         try:

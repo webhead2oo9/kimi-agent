@@ -31,6 +31,10 @@ providers:
     type: openai_compat
     base_url: https://api.z.ai/api/coding/paas/v4
     api_key_env: ZAI_API_KEY
+    failure_adapter: zai
+    circuit_breaker:
+      outage_cooldown_seconds: 1800
+      quota_cooldown_seconds: 18000
 ```
 
 Add the models you want to use under `models:` as described in
@@ -40,6 +44,13 @@ transport. Verify each model before declaring `tool_calling` or `image_input`.
 
 Add a model entry's local name to `selectable_chat_models` if it should appear
 in the owner-only `/models` menu.
+
+The `zai` failure adapter reads structured API error codes and translates them
+into the same model/account circuits used by every provider. Coding Plan quota
+defaults to a five-hour cooldown when the API supplies no exact reset time;
+`Retry-After` and explicit longer plan-limit windows take precedence. Routing
+and persistence contain no Z.AI-specific branches. See
+[Provider resilience](provider-resilience.md).
 
 ## Use it for coding tasks
 

@@ -109,8 +109,8 @@ def conversation_message_to_anthropic(
 def anthropic_messages(request: ProviderRequest) -> list[dict[str, Any]]:
     """The request's history plus this turn's user parts, Anthropic-shaped.
 
-    Shared by the SDK and compat-gateway providers, which had byte-identical
-    copies of this while already both importing the two functions it calls.
+    Shared by the SDK and compatibility-gateway providers so both emit the same
+    Anthropic message shape.
     """
 
     messages = [

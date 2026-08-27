@@ -52,7 +52,7 @@ def test_render_comparison_marks_regressions_and_model_mismatch():
 
 
 def _rated(run_id, rates, *, model="gpt-5.6-sol", repeat=3, **extra):
-    """A summary carrying per-scenario pass rates (the post-change shape)."""
+    """A summary carrying per-scenario pass rates."""
     summary = {
         "kind": "harness-eval",
         "version": 1,
@@ -71,7 +71,7 @@ def _rated(run_id, rates, *, model="gpt-5.6-sol", repeat=3, **extra):
 
 
 def _tapes(run_id, rates, *, model, key, provenance="model", **extra):
-    """A run whose tape provenance is fully recorded (the post-change shape)."""
+    """A run whose tape provenance is fully recorded."""
     return _rated(
         run_id,
         rates,
@@ -164,10 +164,9 @@ def test_failed_in_both_marked_low_confidence_for_shared_cassette_tape():
 
 
 def test_promoted_baseline_tapes_are_still_one_observation():
-    # The steady state after the promotion mechanism: each arm has its own tape
-    # file with its own model key, and both replay the byte-identical baseline
-    # recordings that were copied into them. Separate files are not separate
-    # observations, so "harness-suspect across two models" needs the marker.
+    # Each arm has its own tape file and model key, but both replay byte-identical
+    # baseline recordings. Separate files are not separate observations, so
+    # "harness-suspect across two models" needs the marker.
     a = _rated(
         "runA",
         {"s1": 0.0},
@@ -254,8 +253,8 @@ def test_flipped_scenarios_listed_when_pass_flips():
 
 
 def test_minimal_summary_without_pass_rate_or_reps_is_not_a_failure():
-    # Pre-change run dirs carry only aggregate.score_mean; inventing 0.0 there
-    # would manufacture a harness-suspect list out of missing data.
+    # A summary with only aggregate.score_mean has no pass result. Inventing 0.0
+    # would manufacture a harness-suspect list from missing data.
     a = _summary("runA", {"s1": 10.0}, total=10.0)
     b = _summary("runB", {"s1": 10.0}, total=10.0, model="other-model")
     comparison = compare_summaries(a, b)

@@ -14,9 +14,9 @@ _FALSE_WORDS = {"0", "false", "no", "off"}
 def as_bool(value: object, *, name: str = "value", default: bool) -> bool:
     """Parse a boolean argument; an unrecognized string raises.
 
-    Silent coercion is the bug this exists to prevent: `attach: "flase"`
-    becoming False un-attaches a deliverable, and `replace_all: "flase"` edits
-    one occurrence where the caller meant all of them.
+    Silent coercion is the bug this prevents: `attach: "flase"` becoming False
+    un-attaches a deliverable, and `replace_all: "flase"` edits one occurrence
+    where the caller meant all of them.
     """
 
     if value is None:

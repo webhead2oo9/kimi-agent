@@ -63,7 +63,7 @@ class Scenario:
     expect: Expect = field(default_factory=Expect)
     # Injected failures (see evals/cassette.py:Fault) for error-recovery scenarios.
     faults: list[Fault] = field(default_factory=list)
-    # Tools whose ABSENCE means "this host cannot run this scenario", not "regression".
+    # Tools whose absence means "this host cannot run this scenario", not a model failure.
     # `browser` and `run_code` need a Linux sandbox the dev box does not have, so those
     # scenarios sit out a dev run and execute on the sandbox/prod box. Distinct from
     # expect.should_use_tools, whose absence is a hard error (see

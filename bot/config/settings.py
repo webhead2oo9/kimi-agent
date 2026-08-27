@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     turn_max_concurrency_per_user: int = 2
     # Sampling temperature for chat-based providers (openai_compat/openrouter).
     # None omits the param so the endpoint default applies. Other providers
-    # ignore this today.
+    # ignore this field.
     react_temperature: float | None = 1.0
     codex_token_file: str = "secrets/codex-auth.json"
     codex_model: str = "gpt-5.5"
@@ -147,9 +147,9 @@ class Settings(BaseSettings):
     moderation_output_refusal: str = "I wrote a reply, but it didn't pass my content filter, so I'm not posting it. Nothing's wrong on your end; try asking a different way."
     moderation_error_refusal: str = "I can't run my content check right now, so I'm holding this one back. Try again in a minute."
 
-    # Discord guild text search. The legacy allowlist field remains only as a
-    # migration sentinel so an old deployment cannot silently invert its
-    # access policy when upgrading.
+    # Discord guild text search. The compatibility allowlist field is a migration
+    # sentinel: any non-empty value fails validation rather than silently
+    # inverting the configured access policy.
     discord_text_search_enabled: bool = True
     discord_search_excluded_channels: str = ""
     discord_search_channels: str = ""
@@ -187,7 +187,7 @@ class Settings(BaseSettings):
     video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)
 
     # OpenAI image generation (optional REGULAR-tier core tool). OAuth reuses
-    # the Codex token manager; IMAGE_GEN_API_KEY is the future-facing fallback.
+    # the Codex token manager; IMAGE_GEN_API_KEY is the dedicated fallback.
     image_gen_enabled: bool = False
     image_gen_backend: str = "openai"
     image_gen_auth_mode: str = "auto"
@@ -195,8 +195,8 @@ class Settings(BaseSettings):
     image_gen_max_concurrency: int = Field(default=1, ge=1, le=8)
     image_gen_timeout_seconds: float = Field(default=300.0, ge=30.0, le=900.0)
 
-    # The bot owner's Discord user id. Gates any owner_only-registered tool at
-    # dispatch (none currently ship; the registry mechanism stays for future
+    # The bot owner's Discord user id. Gates tools registered with owner_only at
+    # dispatch (none ship today; the registry mechanism stays for future
     # owner-only surfaces); empty fails closed. Distinct from staff.
     owner_user_id: str = ""
     # --- Sandboxed code execution (MEMBER tier; docs/code-exec.md) ---

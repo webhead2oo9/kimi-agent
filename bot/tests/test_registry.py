@@ -303,9 +303,8 @@ async def test_owner_only_fails_closed_when_no_owner_configured() -> None:
 
 @pytest.mark.asyncio
 async def test_owner_set_after_construction_unmasks_for_owner() -> None:
-    # Reproduces the wiring bug: a registry built without an owner (as the
-    # runtime composition root does) must become owner-aware once
-    # set_owner_user_id is applied, or owner_only tools stay masked for everyone.
+    # The composition root constructs the registry before it knows the owner.
+    # set_owner_user_id must immediately unmask owner-only tools for that user.
     reg = ToolRegistry()  # no owner yet
     reg.register("run_python", "exec", {}, _noop_handler, owner_only=True)
     # Before the owner is set, even the eventual owner is masked.
@@ -425,9 +424,8 @@ def test_guild_scoped_tool_hidden_from_lists_outside_its_guild() -> None:
 
 
 def test_is_registered_ignores_guild_scope() -> None:
-    # Regression guard: the skill-tool collision pre-check and post-reload
-    # verification must use is_registered, not has_tool(guild_id=None). The
-    # latter reports a guild-scoped tool as missing and triggers a false rollback.
+    # Collision checks and post-reload verification must use is_registered.
+    # has_tool(guild_id=None) hides guild-scoped tools and causes a false rollback.
     reg = ToolRegistry()
     reg.register("scoped_tool", "s", {}, _noop_handler, guild_ids=frozenset({"guild_a"}))
     assert reg.is_registered("scoped_tool")

@@ -1,4 +1,4 @@
-"""Workspace isolation regressions at the activity and path boundaries.
+"""Adversarial workspace-isolation checks at activity and path boundaries.
 
 These tests exercise the production lease instead of forcing path swaps inside
 protected functions. Symlink cases are intentionally Linux/POSIX-only; every

@@ -25,10 +25,8 @@ _API_KEY_SETTINGS_FIELDS = {
     "KIMI_CODING_API_KEY": "kimi_coding_api_key",
     "COMPACTION_API_KEY": "compaction_api_key",
 }
-# Derived rather than a second hand-maintained list. These were two literals far
-# enough apart to drift, and drift is silent in one direction and fatal in the
-# other: a name only in the map is rejected at parse time as unsupported, and a
-# name only in the set KeyErrors inside _secret_from_settings at resolve time.
+# Derive parser support from the settings-field map so every accepted environment
+# name resolves to a Settings secret field.
 SUPPORTED_API_KEY_ENVS = frozenset(_API_KEY_SETTINGS_FIELDS)
 _REASONING_EFFORT_PROVIDER_TYPES = frozenset({"codex", "anthropic_compat", "openai_responses"})
 _PROFILE_REASONING_EFFORT_PROVIDER_TYPES = _REASONING_EFFORT_PROVIDER_TYPES | {"openai_compat"}
@@ -243,10 +241,10 @@ class RoleAssignments(BaseModel):
     coding_fallbacks: list[str] = Field(default_factory=list)
 
     # The fields above are the role schema: each is either `<role>` or
-    # `<role>_fallbacks`, and `extra="forbid"` is what turns an unknown role key
-    # into a startup failure rather than a silent ignore. The helpers below derive
-    # from those fields instead of restating the role list, which was previously
-    # repeated in five places that could drift apart.
+    # `<role>_fallbacks`, and `extra="forbid"` turns an unknown role key into a
+    # startup failure rather than a silent ignore. The helpers derive role names
+    # from these fields so validation, assignment, and fallback handling share
+    # one schema.
     # test_role_names_match_declared_fields guards the invariant.
     @classmethod
     def role_names(cls) -> tuple[str, ...]:

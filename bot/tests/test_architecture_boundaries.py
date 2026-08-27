@@ -124,11 +124,11 @@ def test_the_discord_sdk_is_confined_to_the_adapter_and_composition_root() -> No
     assert not offenders, f"discord.py imported outside the adapter layer: {offenders}"
 
 
-def test_bot_does_not_define_extracted_policy_helpers() -> None:
-    """These helpers were extracted out of the entry point and must stay out.
+def test_bot_entrypoint_does_not_define_policy_helpers() -> None:
+    """Keep policy helpers in the modules that own their policy.
 
     `bot.py` is only the entry point; `app/runtime.py:build_app` is the
-    composition root. Policy helpers belong in the modules that own the policy.
+    composition root.
     """
 
     helper_names = _top_level_function_names("bot.py")
@@ -138,12 +138,7 @@ def test_bot_does_not_define_extracted_policy_helpers() -> None:
 
 
 def test_bot_does_not_register_generic_knowledge_search_tool() -> None:
-    """A generic knowledge_search tool must not come back.
-
-    It was replaced by the staff-curated community path (`teach`,
-    `recall_community`, `reflect_community` in `tools/community.py`), so
-    reintroducing it would route around that curation.
-    """
+    """Generic knowledge search must not bypass the staff-curated community tools."""
 
     modules = _imported_modules("bot.py")
     bot_source = (PROJECT_ROOT / "bot.py").read_text(encoding="utf-8")
@@ -170,11 +165,9 @@ def test_app_modules_do_not_import_bot_entrypoint() -> None:
         assert _imports_any(modules, {"bot"}) == set()
 
 
-def test_generic_knowledge_search_tool_has_been_removed() -> None:
-    """Companion to the guard above: the files stay gone, not just unregistered.
-
-    Covers the tool module, its data directory, and its docs page.
-    """
+def test_generic_knowledge_search_surface_has_no_files() -> None:
+    """Companion to the registration guard above: the files stay gone, not just
+    unregistered."""
 
     assert not (PROJECT_ROOT / "tools/knowledge_search.py").exists()
     assert not (PROJECT_ROOT / "knowledge").exists()

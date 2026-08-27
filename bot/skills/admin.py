@@ -37,9 +37,8 @@ log = logging.getLogger(__name__)
 class SkillAdminError(Exception):
     """A safe, user-facing skill administration failure.
 
-    Carries only ``message``: the sole consumer is `tools/skills.py`, which
-    surfaces it to the model verbatim. The HTTP status and machine-readable
-    code this used to carry served the removed staff console.
+    Carries only ``message`` because `tools/skills.py` surfaces it to the model
+    verbatim; transport and status metadata do not belong at this boundary.
     """
 
     def __init__(self, message: str) -> None:

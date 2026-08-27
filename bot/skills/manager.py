@@ -190,8 +190,7 @@ def edit_skill(
     """Edit an existing skill. Returns error message on failure, None on success.
 
     Exactly one of three modes produces the new body: ``content`` (full
-    replacement, the original behavior), ``edits`` (old_string/new_string
-    surgical patches against the current body, atomic; see
+    replacement), ``edits`` (atomic old_string/new_string patches; see
     ``apply_skill_edits``), or ``append`` (text added to the end of the current
     body). Frontmatter (name/tags/guild_ids/tools/...) always round-trips
     unchanged except for ``description``/``tags`` when explicitly passed here.

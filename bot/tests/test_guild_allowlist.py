@@ -87,8 +87,8 @@ def test_dual_install_in_unapproved_guild_is_rejected():
 
 
 def test_interaction_without_integration_markers_falls_back_to_allowlist():
-    # Fail closed: a stub/older interaction without integration markers is
-    # treated as guild-gated, preserving the stricter pre-change behavior.
+    # Fail closed: an interaction without both integration markers remains
+    # guild-gated.
     interaction = SimpleNamespace(guild_id=999)
     assert is_allowed_guild_interaction(interaction, allowed_guilds=_ALLOW) is False
 

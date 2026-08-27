@@ -4,8 +4,8 @@ from config.settings import Settings
 from tests.helpers import env_example_active, env_example_declarations
 
 # Keys that legitimately appear in `.env.example` without being a `Settings`
-# field. Empty today; kept as the seam so a deliberate addition is a one-line
-# allowlist entry rather than a reason to delete the guard.
+# field. Add exceptions explicitly rather than weakening the synchronization
+# guard.
 _NON_SETTINGS_KEYS: frozenset[str] = frozenset()
 
 
@@ -13,8 +13,8 @@ def test_env_example_declares_no_unknown_keys() -> None:
     """Every key in the template maps to a real `Settings` field.
 
     `test_config_sync.py` guards the forward direction (no field missing from
-    the template); this is the reverse, which is what catches a typo or a key
-    left behind after its setting was renamed or removed.
+    the template); this reverse check catches typos and template keys that do
+    not map to live settings.
     """
 
     fields = {name.upper() for name in Settings.model_fields}

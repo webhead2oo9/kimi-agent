@@ -591,8 +591,7 @@ async def test_close_provider_resources_closes_main_compaction_and_persona(
 
     assert main_provider.close_count == 1
     assert compaction_provider.close_count == 1
-    # The persona compiler no longer owns its provider, so this close is the only
-    # thing releasing it at shutdown.
+    # ProviderManager is the persona provider's sole shutdown owner.
     assert persona_provider.close_count == 1
     assert manager.main is None
     assert manager.compaction is None

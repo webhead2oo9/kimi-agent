@@ -76,7 +76,7 @@ must remain outside both repositories.
 
 Everything else either degrades gracefully or simply stays off: Hindsight
 memory (an empty `HINDSIGHT_URL` means memory is disabled and the bot runs
-fine), OpenAI moderation, `DISCORD_SEARCH_CHANNELS`, application modules,
+fine), OpenAI moderation, Discord search exclusions, application modules,
 plugins, the persona compiler, and SQLCipher at-rest encryption. The defaults in
 `bot/.env.example` are production-reasonable, so only fill in what you use.
 

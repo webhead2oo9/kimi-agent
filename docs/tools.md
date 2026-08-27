@@ -70,13 +70,14 @@ boundary; prompt text is never an access control.
 |------|------------|------|--------------------------|
 | `get_channel_context` | Core | Member | Read bounded recent context before the triggering message. Returned messages and image references are untrusted context. |
 | `lookup_member` | Searchable | Member | Resolve a current-guild member by ID or name and return profile/role information. Staff callers also receive the bot's resolved trust tier. |
-| `discord_text_search` | Searchable | Member | Search message text only in explicitly configured channels. Registered when `DISCORD_SEARCH_CHANNELS` is non-empty; Message Content intent must also be enabled. |
+| `discord_text_search` | Searchable | Member | Search message text across channels the caller and bot can read, minus operator exclusions. Enabled by default; Message Content intent must also be enabled. |
 | `internet_search` | Core | Member | Search the live web, or read pages the model already has URLs for. Registered when `EXA_API_KEY` or `BRAVE_API_KEY` is set; a search blends the configured providers by default. |
 | `block_user` | Core | Member | Stop the current speaker from using the bot. It cannot target another user, and staff cannot be self-blocked through this tool. |
 
 `get_channel_context` reads the live Discord window without adding any of
-those messages to the rooted transcript. `discord_text_search` is an optional,
-allowlisted search surface, and it never quietly broadens to the whole guild.
+those messages to the rooted transcript. `discord_text_search` resolves a fresh,
+permission-checked positive channel scope for every call. Omitting its channel
+filter searches all eligible channels; an explicit CSV of channel IDs narrows it.
 See [configuration](configuration.md#discord-text-search-gated).
 
 `internet_search` returns compact, untrusted results and never tells the model

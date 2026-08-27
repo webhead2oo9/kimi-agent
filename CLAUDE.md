@@ -136,7 +136,7 @@ Optional searchable `video` (`tools/video.py`, `video_understanding/`) analyzes 
 
 ### Discord Retrieval and Reply Composition
 
-`get_channel_context` (backed by `discord_adapter/gateway.py`) returns untrusted live context outside the persisted conversation. `discord_text_search` (`tools/discord_text_search.py`, searchable, `MEMBER`) searches `DISCORD_SEARCH_CHANNELS` and is absent when that is empty. Deployment-specific retrieval belongs behind the plugin seam with its own gate, trust scope, and untrusted framing.
+`get_channel_context` (backed by `discord_adapter/gateway.py`) returns untrusted live context outside the persisted conversation. `discord_text_search` (`tools/discord_text_search.py`, searchable, `MEMBER`) searches a fresh positive scope of channels both the requester and bot can read, minus `DISCORD_SEARCH_EXCLUDED_CHANNELS`; it is enabled by default behind `DISCORD_TEXT_SEARCH_ENABLED` and Message Content intent. Deployment-specific retrieval belongs behind the plugin seam with its own gate, trust scope, and untrusted framing.
 
 `build_discord_embed` (`tools/embeds.py`) and the thread tools (`tools/threads.py`, gated on `THREAD_HANDOFF_ENABLED`) queue plain-data requests that ride the final reply through `MessageContext` → `ConversationContext` → `TurnResult` → the Discord boundary, which re-checks every gate before posting. Bot-created threads are enrolled in `thread_conversations`, share the rooted transcript and lock, and can auto-respond or pause. `@everyone`/`@here` and pings are hard-blocked at the send layer via `AllowedMentions`, not by prompt. See [`docs/embeds.md`](docs/embeds.md) and [`docs/thread-handoff.md`](docs/thread-handoff.md).
 

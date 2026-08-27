@@ -340,7 +340,7 @@ def test_apply_leaves_unmentioned_fields_alone(tmp_path: Path) -> None:
     ("field", "yaml_value"),
     (
         # Caught only by Settings itself: a format the spec cannot express.
-        ("discord_search_channels", "not-an-id-name-pair"),
+        ("discord_search_excluded_channels", "not-a-channel-id"),
     ),
 )
 def test_complete_candidate_is_validated_before_any_field_is_applied(

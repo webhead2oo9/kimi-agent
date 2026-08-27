@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 from typing import Any
 
 import pytest
+import discord
 
 from discord_adapter.gateway import DiscordGateway, DiscordGatewayError, TurnSourceSnapshot
 from tools.registry import MessageContext
@@ -146,6 +147,503 @@ def test_gateway_history_failure_raises_safe_error() -> None:
 
     with pytest.raises(DiscordGatewayError, match="Could not read recent channel context"):
         asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=15))
+
+
+class _SearchPermissions:
+    def __init__(
+        self,
+        *,
+        view: bool = True,
+        history: bool = True,
+        manage_threads: bool = False,
+    ) -> None:
+        self.view_channel = view
+        self.read_message_history = history
+        self.manage_threads = manage_threads
+
+
+class _SearchMember(_Author):
+    def __init__(self, id: int) -> None:
+        super().__init__(id, str(id))
+        self.guild: Any = None
+
+
+class _SearchChannel:
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        channel_type: discord.ChannelType,
+        *,
+        parent_id: int | None = None,
+        denied_ids: set[int] | None = None,
+        thread_member_ids: set[int] | None = None,
+        manager_ids: set[int] | None = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.type = channel_type
+        self.parent_id = parent_id
+        self.guild: Any = None
+        self.denied_ids = denied_ids or set()
+        self.thread_member_ids = thread_member_ids or set()
+        self.manager_ids = manager_ids or set()
+        self.public_archived: list[_SearchChannel] = []
+        self.private_archived: list[_SearchChannel] = []
+        self.joined_private_archived: list[_SearchChannel] | None = None
+        self.archive_calls: list[tuple[bool, bool]] = []
+        self.fetched_member_ids: list[int] = []
+
+    def permissions_for(self, member: _SearchMember) -> _SearchPermissions:
+        allowed = member.id not in self.denied_ids
+        return _SearchPermissions(
+            view=allowed,
+            history=allowed,
+            manage_threads=member.id in self.manager_ids,
+        )
+
+    async def fetch_members(self) -> list[_SearchMember]:
+        raise AssertionError("bulk thread membership must not be used")
+
+    async def fetch_member(self, member_id: int) -> _SearchMember:
+        self.fetched_member_ids.append(member_id)
+        if member_id not in self.thread_member_ids:
+            raise discord.NotFound(_FakeResponse(), "not a thread member")
+        return _SearchMember(member_id)
+
+    def archived_threads(
+        self,
+        *,
+        private: bool = False,
+        joined: bool = False,
+        limit: int | None = 100,
+    ):
+        self.archive_calls.append((private, joined))
+        del limit
+
+        async def iterate():
+            private_threads = (
+                self.joined_private_archived
+                if joined and self.joined_private_archived is not None
+                else self.private_archived
+            )
+            for thread in private_threads if private else self.public_archived:
+                yield thread
+
+        return iterate()
+
+
+class _SearchGuild:
+    def __init__(
+        self,
+        member: _SearchMember,
+        bot_member: _SearchMember,
+        channels: list[_SearchChannel],
+        threads: list[_SearchChannel],
+    ) -> None:
+        self.id = 999
+        self.me = bot_member
+        self.channels = channels
+        self.threads = threads
+        self._all = {channel.id: channel for channel in [*channels, *threads]}
+        member.guild = self
+        bot_member.guild = self
+        for channel in list(self._all.values()):
+            channel.guild = self
+            joined_private = channel.joined_private_archived or []
+            for archived in [
+                *channel.public_archived,
+                *channel.private_archived,
+                *joined_private,
+            ]:
+                archived.guild = self
+                self._all[archived.id] = archived
+
+    def get_channel_or_thread(self, channel_id: int) -> _SearchChannel | None:
+        return self._all.get(channel_id)
+
+    async def fetch_channel(self, channel_id: int) -> _SearchChannel:
+        channel = self._all.get(channel_id)
+        if channel is None:
+            raise discord.NotFound(_FakeResponse(), "missing")
+        return channel
+
+
+class _FailingArchiveChannel(_SearchChannel):
+    def archived_threads(
+        self,
+        *,
+        private: bool = False,
+        joined: bool = False,
+        limit: int | None = 100,
+    ):
+        del private, joined, limit
+
+        async def iterate():
+            raise RuntimeError("archive lookup failed")
+            yield
+
+        return iterate()
+
+
+class _SlowArchiveChannel(_SearchChannel):
+    def archived_threads(
+        self,
+        *,
+        private: bool = False,
+        joined: bool = False,
+        limit: int | None = 100,
+    ):
+        source = super().archived_threads(private=private, joined=joined, limit=limit)
+
+        async def iterate():
+            await asyncio.sleep(0.01)
+            async for thread in source:
+                yield thread
+
+        return iterate()
+
+
+class _InvalidDataGuild(_SearchGuild):
+    async def fetch_channel(self, channel_id: int) -> _SearchChannel:
+        del channel_id
+        raise discord.InvalidData("channel belongs to another guild")
+
+
+class _FakeResponse:
+    status = 404
+    reason = "missing"
+
+
+def _search_gateway(
+    guild: _SearchGuild,
+    member: _SearchMember,
+    bot_member: _SearchMember,
+) -> DiscordGateway:
+    source = _Message(555, member, "search")
+    source.guild = guild
+    gateway = DiscordGateway(bot_user_provider=lambda: bot_member)
+    gateway.bind_turn_source("guild:100:main", "555", source)
+    return gateway
+
+
+def test_discord_search_scope_includes_accessible_channels_and_archived_threads() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _SearchChannel(100, "general", discord.ChannelType.text)
+    parent.public_archived = [
+        _SearchChannel(102, "old-topic", discord.ChannelType.public_thread, parent_id=100)
+    ]
+    parent.private_archived = [
+        _SearchChannel(
+            103,
+            "private-topic",
+            discord.ChannelType.private_thread,
+            parent_id=100,
+            thread_member_ids={123, 999},
+        )
+    ]
+    active = _SearchChannel(101, "live-topic", discord.ChannelType.public_thread, parent_id=100)
+    excluded_parent = _SearchChannel(200, "staff", discord.ChannelType.text)
+    excluded_parent.public_archived = [
+        _SearchChannel(201, "staff-thread", discord.ChannelType.public_thread, parent_id=200)
+    ]
+    member_hidden = _SearchChannel(
+        300,
+        "member-hidden",
+        discord.ChannelType.text,
+        denied_ids={123},
+    )
+    bot_hidden = _SearchChannel(
+        400,
+        "bot-hidden",
+        discord.ChannelType.text,
+        denied_ids={999},
+    )
+    guild = _SearchGuild(
+        member,
+        bot_member,
+        [parent, excluded_parent, member_hidden, bot_hidden],
+        [active],
+    )
+    gateway = _search_gateway(guild, member, bot_member)
+
+    resolved = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(),
+            requested_channel_ids=None,
+            excluded_channel_ids=frozenset({"200"}),
+        )
+    )
+
+    assert resolved == {
+        "100": "general",
+        "101": "live-topic",
+        "102": "old-topic",
+        "103": "private-topic",
+    }
+    assert parent.private_archived[0].fetched_member_ids == [123, 999]
+
+
+def test_discord_search_explicit_scope_rejects_excluded_or_inaccessible_channel() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    excluded = _SearchChannel(200, "staff", discord.ChannelType.text)
+    hidden = _SearchChannel(300, "hidden", discord.ChannelType.text, denied_ids={123})
+    guild = _SearchGuild(member, bot_member, [excluded, hidden], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    for channel_id, exclusions in (("200", frozenset({"200"})), ("300", frozenset())):
+        with pytest.raises(ValueError, match="unavailable"):
+            asyncio.run(
+                gateway.resolve_discord_search_channels(
+                    _ctx(),
+                    requested_channel_ids=(channel_id,),
+                    excluded_channel_ids=exclusions,
+                )
+            )
+
+
+def test_discord_search_scope_fails_closed_when_thread_enumeration_fails() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _FailingArchiveChannel(100, "general", discord.ChannelType.text)
+    guild = _SearchGuild(member, bot_member, [parent], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    with pytest.raises(ValueError, match="scope is unavailable"):
+        asyncio.run(
+            gateway.resolve_discord_search_channels(
+                _ctx(),
+                requested_channel_ids=None,
+                excluded_channel_ids=frozenset(),
+            )
+        )
+
+
+def test_discord_search_private_thread_uses_individual_membership_or_manager_access() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    joined = _SearchChannel(
+        101,
+        "joined",
+        discord.ChannelType.private_thread,
+        parent_id=100,
+        thread_member_ids={123, 999},
+    )
+    not_joined = _SearchChannel(
+        102,
+        "not-joined",
+        discord.ChannelType.private_thread,
+        parent_id=100,
+        thread_member_ids={999},
+    )
+    managed = _SearchChannel(
+        103,
+        "managed",
+        discord.ChannelType.private_thread,
+        parent_id=100,
+        thread_member_ids={999},
+        manager_ids={123},
+    )
+    guild = _SearchGuild(member, bot_member, [], [joined, not_joined, managed])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    resolved = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(),
+            requested_channel_ids=None,
+            excluded_channel_ids=frozenset(),
+        )
+    )
+
+    assert resolved == {"101": "joined", "103": "managed"}
+    assert joined.fetched_member_ids == [123, 999]
+    assert not_joined.fetched_member_ids == [123]
+    assert managed.fetched_member_ids == [999]
+
+
+def test_discord_search_archive_inventory_is_cached_but_permissions_are_rechecked() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _SearchChannel(100, "general", discord.ChannelType.text)
+    archived = _SearchChannel(
+        101,
+        "old-topic",
+        discord.ChannelType.public_thread,
+        parent_id=100,
+    )
+    parent.public_archived = [archived]
+    guild = _SearchGuild(member, bot_member, [parent], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    first = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+    )
+    archived.denied_ids.add(123)
+    second = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+    )
+
+    assert first == {"100": "general", "101": "old-topic"}
+    assert second == {"100": "general"}
+    assert parent.archive_calls == [(False, False), (True, True)]
+
+
+def test_discord_search_archive_cache_single_flights_concurrent_cold_lookups() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _SlowArchiveChannel(100, "general", discord.ChannelType.text)
+    parent.public_archived = [
+        _SearchChannel(101, "old-topic", discord.ChannelType.public_thread, parent_id=100)
+    ]
+    guild = _SearchGuild(member, bot_member, [parent], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    async def resolve_twice() -> tuple[dict[str, str], dict[str, str]]:
+        first, second = await asyncio.gather(
+            gateway.resolve_discord_search_channels(
+                _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+            ),
+            gateway.resolve_discord_search_channels(
+                _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+            ),
+        )
+        return first, second
+
+    first, second = asyncio.run(resolve_twice())
+
+    assert first == second == {"100": "general", "101": "old-topic"}
+    assert parent.archive_calls == [(False, False), (True, True)]
+
+
+def test_discord_search_archive_cache_prunes_unrelated_expired_entries() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _SearchChannel(100, "general", discord.ChannelType.text)
+    guild = _SearchGuild(member, bot_member, [parent], [])
+    gateway = _search_gateway(guild, member, bot_member)
+    expired_key = ("deleted-parent", "public")
+    gateway._discord_search_archive_cache[expired_key] = (0.0, (object(),))
+
+    asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+    )
+
+    assert expired_key not in gateway._discord_search_archive_cache
+
+
+def test_discord_search_archive_cache_key_tracks_bot_private_discovery_mode() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parent = _SearchChannel(100, "general", discord.ChannelType.text)
+    joined = _SearchChannel(
+        101,
+        "joined",
+        discord.ChannelType.private_thread,
+        parent_id=100,
+        thread_member_ids={123, 999},
+    )
+    managed_only = _SearchChannel(
+        102,
+        "managed-only",
+        discord.ChannelType.private_thread,
+        parent_id=100,
+        thread_member_ids={123},
+    )
+    parent.private_archived = [joined, managed_only]
+    parent.joined_private_archived = [joined]
+    guild = _SearchGuild(member, bot_member, [parent], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    before = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+    )
+    parent.manager_ids.add(999)
+    joined.manager_ids.add(999)
+    managed_only.manager_ids.add(999)
+    after = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+    )
+
+    assert before == {"100": "general", "101": "joined"}
+    assert after == {
+        "100": "general",
+        "101": "joined",
+        "102": "managed-only",
+    }
+    assert parent.archive_calls == [
+        (False, False),
+        (True, True),
+        (False, False),
+        (True, False),
+    ]
+
+
+def test_discord_search_scope_stops_archive_walk_at_501_eligible_channels() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    parents = [
+        _SearchChannel(index, f"channel-{index}", discord.ChannelType.text)
+        for index in range(1, 501)
+    ]
+    parents[0].public_archived = [
+        _SearchChannel(1001, "overflow", discord.ChannelType.public_thread, parent_id=1)
+    ]
+    guild = _SearchGuild(member, bot_member, parents, [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    with pytest.raises(ValueError, match="at most 500"):
+        asyncio.run(
+            gateway.resolve_discord_search_channels(
+                _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset()
+            )
+        )
+
+    assert parents[0].archive_calls == [(False, False)]
+    assert parents[1].archive_calls == []
+
+
+def test_discord_search_category_exclusion_does_not_leak_or_hide_child_threads() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    category = _SearchChannel(50, "category", discord.ChannelType.category)
+    child = _SearchChannel(100, "general", discord.ChannelType.text, parent_id=50)
+    active = _SearchChannel(101, "topic", discord.ChannelType.public_thread, parent_id=100)
+    guild = _SearchGuild(member, bot_member, [category, child], [active])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    resolved = asyncio.run(
+        gateway.resolve_discord_search_channels(
+            _ctx(), requested_channel_ids=None, excluded_channel_ids=frozenset({"50"})
+        )
+    )
+
+    assert resolved == {"100": "general", "101": "topic"}
+
+
+def test_discord_search_explicit_cross_guild_invalid_data_uses_generic_error() -> None:
+    member = _SearchMember(123)
+    bot_member = _SearchMember(999)
+    guild = _InvalidDataGuild(member, bot_member, [], [])
+    gateway = _search_gateway(guild, member, bot_member)
+
+    with pytest.raises(ValueError, match="One or more channels are unavailable"):
+        asyncio.run(
+            gateway.resolve_discord_search_channels(
+                _ctx(), requested_channel_ids=("777",), excluded_channel_ids=frozenset()
+            )
+        )
 
 
 class _Role:

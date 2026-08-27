@@ -16,9 +16,11 @@ from config.model_config import (
     Scope,
     _secret_from_settings,
     load_model_config,
+    parse_model_config_text,
     resolve_provider_config,
 )
 from config.settings import Settings
+from providers.failure_policy import generic_failure_policy, register_failure_adapter
 from providers.types import ProviderRequest, ProviderResponse
 
 
@@ -956,8 +958,68 @@ def test_provider_manager_wraps_chain_in_failover(
     assert [p.model for p in chat._providers] == ["Kimi-K2.6", "backup-model"]
     # The wrapper is cached and stable across turns.
     assert manager.resolve("chat", None) is chat
-    # A role without fallbacks resolves to a bare provider, not a wrapper.
-    assert not isinstance(manager.resolve("compaction", None), FailoverProvider)
+    # Single-provider roles use the same wrapper so circuit checks are universal.
+    assert isinstance(manager.resolve("compaction", None), FailoverProvider)
+
+
+def test_provider_circuit_policy_defaults_and_adapter_override() -> None:
+    config = parse_model_config_text(
+        """
+providers:
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+    failure_adapter: zai
+    circuit_breaker:
+      outage_cooldown_seconds: 60
+      quota_cooldown_seconds: 18000
+models:
+  chat: { provider: main, model: chat, capabilities: [text, tool_calling] }
+roles: { chat: chat, compaction: chat }
+"""
+    )
+
+    profile = config.providers["main"]
+    assert profile.failure_adapter == "zai"
+    assert profile.circuit_breaker.outage_cooldown_seconds == 60
+    assert profile.circuit_breaker.quota_cooldown_seconds == 18000
+
+
+def test_provider_rejects_unknown_failure_adapter() -> None:
+    with pytest.raises(ValueError, match="unknown failure_adapter"):
+        parse_model_config_text(
+            """
+providers:
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+    failure_adapter: mystery
+models:
+  chat: { provider: main, model: chat, capabilities: [text, tool_calling] }
+roles: { chat: chat, compaction: chat }
+"""
+        )
+
+
+def test_registered_failure_adapter_is_accepted_by_config() -> None:
+    register_failure_adapter("test_provider", generic_failure_policy)
+    config = parse_model_config_text(
+        """
+providers:
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+    failure_adapter: test_provider
+models:
+  chat: { provider: main, model: chat, capabilities: [text, tool_calling] }
+roles: { chat: chat, compaction: chat }
+"""
+    )
+
+    assert config.providers["main"].failure_adapter == "test_provider"
 
 
 def test_provider_profile_max_output_tokens_clamps_runtime_request(

@@ -27,6 +27,8 @@ The rest is reference material.
   [xAI Grok](providers-grok.md), [Claude via ccflare](providers-ccflare.md),
   [Codex](providers-codex.md), and
   [OpenAI and OpenRouter](providers-openai.md).
+- [Provider resilience](provider-resilience.md): sticky fallback, persistent
+  circuit breakers, cooldown policy, and owner recovery controls.
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and
   guild.

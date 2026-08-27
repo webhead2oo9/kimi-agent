@@ -9,7 +9,9 @@ import pytest
 from discord.ext import commands
 
 from app.providers import ProviderManager
-from commands.models_cmd import ModelSelect, ModelsView, register_models_command
+from commands.models_cmd import ModelSelect, ModelsView, _status_text, register_models_command
+from providers.circuit_breaker import CircuitTarget
+from providers.failure_policy import CircuitScopeKind, FailureCategory, ProviderFailure
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 
@@ -73,7 +75,7 @@ async def test_models_command_is_owner_only_and_ephemeral() -> None:
     ]
 
 
-def test_models_view_pages_more_than_one_discord_select() -> None:
+def test_models_view_pages_choices_across_discord_selects() -> None:
     manager = _manager()
     model_config = manager.model_config
     assert model_config is not None
@@ -84,8 +86,14 @@ def test_models_view_pages_more_than_one_discord_select() -> None:
         model_config.selectable_chat_models.append(name)
     store = SimpleNamespace(set=AsyncMock())
 
-    view = ModelsView(manager, store, "42")  # type: ignore[arg-type]
-    menus = [cast(ModelSelect, child) for child in view.children]
+    first_view = ModelsView(manager, store, "42")  # type: ignore[arg-type]
+    second_view = ModelsView(manager, store, "42", page_index=1)  # type: ignore[arg-type]
+    menus = [
+        cast(ModelSelect, child)
+        for view in (first_view, second_view)
+        for child in view.children
+        if isinstance(child, ModelSelect)
+    ]
 
     assert len(menus) == 2
     assert all(len(menu.options) <= 25 for menu in menus)
@@ -132,3 +140,31 @@ async def test_model_select_rejects_non_owner_without_writing() -> None:
     store.set.assert_not_awaited()
     assert manager.active_chat_model is None
     interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_models_status_shows_and_resets_provider_cooldown() -> None:
+    manager = _manager()
+    target = CircuitTarget.create(
+        model_identity="main/default", account_identity="main/account", label="main/default-id"
+    )
+    permit = await manager.circuit_breaker.allow(target)
+    assert permit is not None
+    await manager.circuit_breaker.record_failure(
+        target,
+        ProviderFailure(
+            "retry",
+            FailureCategory.OUTAGE,
+            CircuitScopeKind.MODEL,
+            retry_at=2_000_000_000,
+        ),
+        permit,
+    )
+
+    status, count = await _status_text(manager)
+    assert count == 1
+    assert "main/default-id" in status
+    assert "outage" in status
+
+    await manager.reset_all_circuits()
+    assert await manager.circuit_snapshots() == ()

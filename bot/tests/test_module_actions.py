@@ -22,6 +22,7 @@ from kimi_agent_module_api.contracts import (
     UndeclaredDiscordAction,
 )
 from modules.actions import DeclaredDiscordActions
+from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
 
 
@@ -202,6 +203,44 @@ async def test_bot_actor_may_act_below_staff_only() -> None:
     assert guild.kicks == [(20, "[mod] automated")]
     with pytest.raises(TargetProtected):
         await impl.kick(1, 10, actor_id=None, reason="staff")
+
+
+@pytest.mark.asyncio
+async def test_uncached_role_staff_target_uses_the_member_already_fetched() -> None:
+    target = _Member(20)
+    target.roles = [SimpleNamespace(id=900)]
+
+    class UncachedGuild(_Guild):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.fetch_count = 0
+
+        async def fetch_member(self, user_id: int) -> _Member:
+            assert user_id == target.id
+            self.fetch_count += 1
+            if self.fetch_count == 1:
+                return target
+            raise discord.HTTPException(
+                SimpleNamespace(status=503, reason="unavailable"), "temporarily unavailable"
+            )
+
+    guild = UncachedGuild()
+    channel = _Channel(guild)
+    bot = _Bot(guild, channel)
+    resolver = TrustResolver(staff_role_ids={"900"}, regular_role_ids=set(), staff_ids=set())
+    trust = TrustLookupImpl(bot, resolver)  # type: ignore[arg-type]
+    impl = DiscordActionsImpl(
+        bot=bot,  # type: ignore[arg-type]
+        trust=trust,
+        module_name="mod",
+        is_guild_active=lambda _guild_id: True,
+    )
+
+    with pytest.raises(TargetProtected):
+        await impl.kick(1, target.id, actor_id=None, reason="role-based staff")
+
+    assert guild.fetch_count == 1
+    assert guild.kicks == []
 
 
 @pytest.mark.asyncio

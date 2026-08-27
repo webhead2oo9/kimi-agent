@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 
 GUILD_MODULES_DIR = "guild-modules"
 type ChangeCallback = Callable[[int], None]
+type _RefreshKey = tuple[int, str]
+type _RefreshBatch = tuple[tuple[int, str, int, GuildSettingsSnapshot], ...]
 
 
 def coerce_value(field_spec: GuildSettingField, raw: Any) -> tuple[Any, str | None]:
@@ -91,6 +93,7 @@ class GuildSettingsService:
     _callbacks: dict[str, list[ChangeCallback]] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
     _reported: dict[str, str] = field(default_factory=dict)
+    _refresh_versions: dict[_RefreshKey, int] = field(default_factory=dict)
 
     # ---- reading --------------------------------------------------------------
 
@@ -119,8 +122,12 @@ class GuildSettingsService:
             legacy_path = base / "servers" / f"{guild_id}.md"
             try:
                 legacy_text = legacy_path.read_text(encoding="utf-8")
-            except FileNotFoundError, OSError:
+            except FileNotFoundError:
                 legacy_text = ""
+            except OSError as exc:
+                return GuildSettingsSnapshot(
+                    {}, False, (f"unreadable legacy document: {exc}",), "", False
+                )
             try:
                 legacy_meta, _ = split_frontmatter_strict(legacy_text) if legacy_text else ({}, "")
             except FrontmatterError as exc:
@@ -137,32 +144,65 @@ class GuildSettingsService:
             legacy=legacy and bool(metadata),
         )
 
-    def refresh(self, guild_ids: Iterable[int]) -> None:
-        """Re-read every (guild, module) pair; notify modules whose values changed."""
+    def build_refresh(self, guild_ids: Iterable[int]) -> _RefreshBatch:
+        """Read and validate snapshots without holding the cache lock."""
+        keys = tuple(
+            (guild_id, module_name)
+            for guild_id in dict.fromkeys(guild_ids)
+            for module_name in self.schemas
+        )
+        versioned_keys: list[tuple[int, str, int]] = []
+        with self._lock:
+            for guild_id, module_name in keys:
+                key = (guild_id, module_name)
+                version = self._refresh_versions.get(key, 0) + 1
+                self._refresh_versions[key] = version
+                versioned_keys.append((guild_id, module_name, version))
+        return tuple(
+            (guild_id, module_name, version, self._read(guild_id, module_name))
+            for guild_id, module_name, version in versioned_keys
+        )
+
+    def apply_refresh(self, batch: _RefreshBatch) -> None:
+        """Atomically apply snapshots, then notify observers on the calling thread."""
         changed: list[tuple[str, int]] = []
+        callbacks: list[tuple[str, int, tuple[ChangeCallback, ...]]] = []
         now = self.clock()
         with self._lock:
-            for guild_id in guild_ids:
-                for module_name in self.schemas:
-                    snapshot = self._read(guild_id, module_name)
-                    previous = self._entries.get((guild_id, module_name))
-                    if previous is None or previous.snapshot != snapshot:
-                        self._entries[(guild_id, module_name)] = _Entry(snapshot, now)
-                        changed.append((module_name, guild_id))
-        for module_name, guild_id in changed:
-            for callback in list(self._callbacks.get(module_name, ())):
+            for guild_id, module_name, version, snapshot in batch:
+                key = (guild_id, module_name)
+                if self._refresh_versions.get(key) != version:
+                    continue
+                previous = self._entries.get(key)
+                if previous is None or previous.snapshot != snapshot:
+                    self._entries[key] = _Entry(snapshot, now)
+                    changed.append((module_name, guild_id))
+            callbacks = [
+                (module_name, guild_id, tuple(self._callbacks.get(module_name, ())))
+                for module_name, guild_id in changed
+            ]
+            health = self._health_notifications_locked()
+        for module_name, guild_id, observers in callbacks:
+            for callback in observers:
                 try:
                     callback(guild_id)
                 except Exception:
                     log.exception("Guild settings observer failed for %s", module_name)
-        self._report_health()
+        if self.on_health is not None:
+            for module_name, state, detail in health:
+                self.on_health(module_name, state, detail)
+
+    def refresh(self, guild_ids: Iterable[int]) -> None:
+        """Re-read every (guild, module) pair; notify modules whose values changed."""
+        self.apply_refresh(self.build_refresh(guild_ids))
 
     def refresh_guild(self, guild_id: int) -> None:
         self.refresh((guild_id,))
 
-    def _report_health(self) -> None:
+    def _health_notifications_locked(self) -> list[tuple[str, HealthState, str]]:
         if self.on_health is None:
-            return
+            return []
+        notifications: list[tuple[str, HealthState, str]] = []
         for module_name in self.schemas:
             entries = [
                 (guild_id, entry.snapshot)
@@ -182,9 +222,10 @@ class GuildSettingsService:
                 continue
             self._reported[module_name] = detail
             if detail:
-                self.on_health(module_name, "degraded", detail)
+                notifications.append((module_name, "degraded", detail))
             elif previous:
-                self.on_health(module_name, "healthy", "")
+                notifications.append((module_name, "healthy", ""))
+        return notifications
 
     # ---- queries ----------------------------------------------------------------
 
@@ -212,12 +253,14 @@ class GuildSettingsService:
             )
 
     def subscribe(self, module_name: str, callback: ChangeCallback) -> Callable[[], None]:
-        self._callbacks.setdefault(module_name, []).append(callback)
+        with self._lock:
+            self._callbacks.setdefault(module_name, []).append(callback)
 
         def unsubscribe() -> None:
-            callbacks = self._callbacks.get(module_name, [])
-            if callback in callbacks:
-                callbacks.remove(callback)
+            with self._lock:
+                callbacks = self._callbacks.get(module_name, [])
+                if callback in callbacks:
+                    callbacks.remove(callback)
 
         return unsubscribe
 

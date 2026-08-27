@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event, Lock, Thread
 
-from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
+from kimi_agent_module_api.contracts import (
+    GuildSettingField,
+    GuildSettingsSchema,
+    GuildSettingsSnapshot,
+)
 from modules.guild_settings import (
     GUILD_MODULES_DIR,
     GuildSettingsService,
@@ -178,3 +183,94 @@ def test_malformed_optional_only_documents_fail_closed(tmp_path: Path) -> None:
 
     assert all(not service.get(GUILD + offset, "enforcer").valid for offset in range(3))
     assert service.blocked_guilds() == frozenset(GUILD + offset for offset in range(3))
+
+
+def test_unreadable_legacy_document_blocks_optional_enforcement_settings(tmp_path: Path) -> None:
+    legacy_path = tmp_path / "servers" / f"{GUILD}.md"
+    legacy_path.mkdir(parents=True)
+    service, _ = _service(tmp_path, enforcer=OPTIONAL_ENFORCEMENT)
+
+    service.refresh([GUILD])
+
+    snapshot = service.get(GUILD, "enforcer")
+    assert not snapshot.valid
+    assert snapshot.errors and snapshot.errors[0].startswith("unreadable legacy document:")
+    assert service.blocked_guilds() == frozenset({GUILD})
+
+
+def test_refresh_does_not_hold_cache_lock_while_reading(tmp_path: Path) -> None:
+    read_started = Event()
+    allow_read = Event()
+
+    class BlockingReadService(GuildSettingsService):
+        def _read(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
+            read_started.set()
+            allow_read.wait()
+            return super()._read(guild_id, module_name)
+
+    service = BlockingReadService(config_dir=lambda: tmp_path, schemas={"mod": OPTIONAL})
+    worker = Thread(target=service.refresh, args=([GUILD],))
+    worker.start()
+    assert read_started.wait(timeout=1)
+
+    lock_was_free = service._lock.acquire(blocking=False)
+    if lock_was_free:
+        service._lock.release()
+    allow_read.set()
+    worker.join(timeout=1)
+
+    assert lock_was_free is True
+    assert worker.is_alive() is False
+
+
+def test_stale_refresh_cannot_override_newer_enforcement_snapshot(tmp_path: Path) -> None:
+    first_read_started = Event()
+    allow_first_read = Event()
+    call_lock = Lock()
+    guild_calls = 0
+    other_guild = GUILD + 1
+
+    class OutOfOrderReadService(GuildSettingsService):
+        def _read(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
+            nonlocal guild_calls
+            assert module_name == "mod"
+            if guild_id == other_guild:
+                return GuildSettingsSnapshot({"channels": ()}, True, (), "other-current", False)
+            with call_lock:
+                guild_calls += 1
+                call_number = guild_calls
+            if call_number == 1:
+                first_read_started.set()
+                allow_first_read.wait()
+                return GuildSettingsSnapshot({"channels": ()}, True, (), "older-valid", False)
+            return GuildSettingsSnapshot(
+                {}, False, ("newer invalid settings",), "newer-invalid", False
+            )
+
+    health: list[tuple[str, str, str]] = []
+    service = OutOfOrderReadService(
+        config_dir=lambda: tmp_path,
+        schemas={"mod": OPTIONAL_ENFORCEMENT},
+        on_health=lambda module, state, detail: health.append((module, state, detail)),
+    )
+    changed: list[int] = []
+    service.subscribe("mod", changed.append)
+
+    older = Thread(target=service.refresh, args=([GUILD, other_guild],))
+    older.start()
+    assert first_read_started.wait(timeout=1)
+
+    # This later request finishes first and must remain authoritative for the
+    # overlapping guild even after the older batch eventually applies.
+    service.refresh([GUILD])
+    assert service.blocked_guilds() == frozenset({GUILD})
+
+    allow_first_read.set()
+    older.join(timeout=1)
+
+    assert older.is_alive() is False
+    assert service.get(GUILD, "mod").revision == "newer-invalid"
+    assert service.get(other_guild, "mod").revision == "other-current"
+    assert service.blocked_guilds() == frozenset({GUILD})
+    assert changed == [GUILD, other_guild]
+    assert health == [("mod", "degraded", f"invalid guild settings in {GUILD}")]

@@ -118,6 +118,42 @@ async def test_failures_back_off_and_a_lease_prevents_overlap(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_failure_backoff_caps_before_extreme_multiplier_overflows(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+    attempts: list[int] = []
+
+    async def fails(run: JobRun) -> None:
+        attempts.append(run.attempt)
+        raise RuntimeError("still down")
+
+    view = scheduler.view_for("mod")
+    view.register("sync", fails)
+    await view.run_every(
+        "extreme",
+        300,
+        "sync",
+        backoff=Backoff(base_seconds=1, max_seconds=5, multiplier=1e308),
+    )
+    try:
+        await scheduler.run_due()
+        clock.now += 1
+        await scheduler.run_due()
+        clock.now += 5
+        await scheduler.run_due()
+
+        (job,) = await view.list()
+        assert attempts == [1, 2, 3]
+        assert job.attempt == 3
+        assert job.next_run_at == clock.now + 5
+        assert job.last_error is not None and "still down" in job.last_error
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_jobs_survive_restart_and_pause_without_a_handler(tmp_path: Path) -> None:
     db = await _db(tmp_path)
     clock = _Clock()

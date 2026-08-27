@@ -269,28 +269,20 @@ class ModuleEventPublisher:
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
         if payload.guild_id is None:
             return
-        cached = payload.cached_message
+        # discord.py dispatches on_message_delete as well when the raw payload
+        # carries a cached message. Let that path publish the richer snapshot;
+        # this raw listener remains the fallback for uncached deletions.
+        if payload.cached_message is not None:
+            return
         self._safe(
             ev.TOPIC_MESSAGE_DELETE,
             ev.MessageDeleteEvent(
-                ref=(
-                    message_ref(cached)
-                    if cached is not None
-                    else MessageRef(
-                        int(payload.guild_id), int(payload.channel_id), int(payload.message_id)
-                    )
+                ref=MessageRef(
+                    int(payload.guild_id), int(payload.channel_id), int(payload.message_id)
                 ),
-                author_id=(
-                    int(cached.author.id)
-                    if cached is not None and cached.author is not None
-                    else None
-                ),
-                cached_content=(cached.content or None) if cached is not None else None,
-                cached_attachments=(
-                    tuple(attachment_snapshot(item) for item in cached.attachments)
-                    if cached is not None
-                    else ()
-                ),
+                author_id=None,
+                cached_content=None,
+                cached_attachments=(),
             ),
         )
 

@@ -42,6 +42,13 @@ from kimi_agent_module_api.contracts import (
 log = logging.getLogger(__name__)
 
 _TIER_ORDER: dict[TrustTierName, int] = {"member": 0, "regular": 1, "staff": 2}
+type InteractionAvailability = Callable[[], bool]
+
+
+def _always_available() -> bool:
+    return True
+
+
 _OPTION_TYPES: dict[str, Any] = {
     "string": str,
     "integer": int,
@@ -245,8 +252,14 @@ class _Registration:
 class ComponentDispatcher:
     """One process-wide table of (module, kind, key) -> handler."""
 
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.time,
+        *,
+        is_available: InteractionAvailability = _always_available,
+    ) -> None:
         self._clock = clock
+        self._is_available = is_available
         self._handlers: dict[tuple[str, str, str], _ComponentRegistration] = {}
         self._routers: dict[str, InteractionRouterImpl] = {}
 
@@ -284,6 +297,14 @@ class ComponentDispatcher:
         registration = self._handlers.get((module_name, kind, key))
         if registration is None:
             await _quiet_reply(interaction, "This control is no longer active.")
+            return True
+        try:
+            available = self._is_available()
+        except Exception:
+            log.exception("Dynamic component availability check failed")
+            available = False
+        if not available:
+            await _quiet_reply(interaction, "This control is temporarily unavailable.")
             return True
         if registration.expires_at is not None and self._clock() > registration.expires_at:
             self._handlers.pop((module_name, kind, key), None)
@@ -580,8 +601,12 @@ class InteractionRuntime:
     """Process-wide interaction state: the dispatcher and its dynamic items."""
 
     bot: commands.Bot
-    dispatcher: ComponentDispatcher = field(default_factory=ComponentDispatcher)
+    is_available: InteractionAvailability = _always_available
+    dispatcher: ComponentDispatcher = field(init=False)
     installed: bool = False
+
+    def __post_init__(self) -> None:
+        self.dispatcher = ComponentDispatcher(is_available=self.is_available)
 
     def install(self) -> None:
         if self.installed:

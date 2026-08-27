@@ -57,6 +57,10 @@ class BrowserDataStore(Protocol):
     async def delete_user_data(self, user_id: str) -> int: ...
 
 
+class VideoDataStore(Protocol):
+    async def delete_user_data(self, user_id: str) -> tuple[int, bool]: ...
+
+
 @dataclass(frozen=True)
 class PrivacyDeletionOutcome:
     """Result of an on-demand deletion.
@@ -183,6 +187,7 @@ async def run_privacy_deletion(
     conversation_turn_lock: ConversationTurnLock | None = None,
     memory_backend_required: bool | None = None,
     browser_data_store: BrowserDataStore | None = None,
+    video_data_store: VideoDataStore | None = None,
 ) -> PrivacyDeletionOutcome:
     """Run the on-demand deletion for one user, returning summary lines.
 
@@ -272,6 +277,7 @@ async def run_privacy_deletion(
                     conversation_turn_lock=conversation_turn_lock,
                     memory_backend_required=required_memory_backend,
                     browser_data_store=browser_data_store,
+                    video_data_store=video_data_store,
                 )
                 if deletion_request_store is None or durable_request is None:
                     return outcome
@@ -389,6 +395,23 @@ async def run_privacy_deletion(
                 )
             else:
                 lines.append(f"Wiped **{removed}** persistent browser profile(s).")
+        if video_data_store is not None:
+            try:
+                removed, provider_cleanup_pending = await video_data_store.delete_user_data(user_id)
+            except Exception:
+                log.exception("Privacy deletion: video session wipe failed for %s", user_id)
+                ok = False
+                lines.append(
+                    "⚠️ Stored video sessions could not be deleted locally. "
+                    "Please retry `/privacy` or ask staff to check the bot logs."
+                )
+            else:
+                lines.append(f"Deleted **{removed}** stored video session(s).")
+                if provider_cleanup_pending:
+                    lines.append(
+                        "Gemini interaction deletion remains durably queued and will "
+                        "retry when provider access is available."
+                    )
 
     memory_ok, memory_line = await _forget_memory_line(
         user_id=user_id,
@@ -445,12 +468,14 @@ def _build_tldr_embed(
             "**Who it's shared with**\n"
             "Your message and recent conversation go to the AI provider that powers "
             "my replies. Memory, moderation, search providers such as Exa or Brave, "
-            "websites, and operator-added tools receive only what their task needs. "
+            "the optional Gemini public-video service, websites, and operator-added "
+            "tools receive only what their task needs. "
             "Staff can also teach public messages into shared community knowledge. "
             "I **never sell your data or use it for ads**.\n\n"
             "**How long I keep it**\n"
             f"Conversation history auto-deletes {retention} of going quiet. "
-            "Workspace files and browser profiles clear after 7 days idle. "
+            "Workspace files and browser profiles clear after 7 days idle; public-video "
+            "sessions clear locally after at most 24 hours idle and queue provider deletion. "
             "Long-term memory is enabled by default; you can opt out or wipe it "
             "at any time. Usage, moderation, diagnostic logs, skills, and shared "
             "community knowledge have separate lifecycles.\n\n"
@@ -460,9 +485,10 @@ def _build_tldr_embed(
             "- **Delete memory** (button below): wipe your long-term memory now and "
             "disable future memory.\n"
             "- **Delete my data** (button below): immediately delete your "
-            "local conversation history, workspace files, browser profile, *and* personal memory, "
-            "without waiting for automatic expiry.\n"
-            "- This cannot erase Discord messages, provider copies or logs, backups, "
+            "local conversation history, workspace files, browser profile, public-video "
+            "sessions, *and* personal memory, without waiting for automatic expiry. "
+            "Known stored Gemini video Interactions are also submitted for deletion.\n"
+            "- This cannot erase Discord messages, provider safety logs or backups, "
             "community knowledge, skills, usage or moderation records, blocks, or "
             "your saved consent choice.\n"
             "- Ask me to block you, or Decline the privacy prompt if it appears.\n\n"
@@ -507,6 +533,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
         workspace_manager: WorkspaceManager,
         workspace_locks: UserLocks,
         browser_data_store: BrowserDataStore | None = None,
+        video_data_store: VideoDataStore | None = None,
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 120.0,
@@ -523,6 +550,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
         self._workspace_manager = workspace_manager
         self._workspace_locks = workspace_locks
         self._browser_data_store = browser_data_store
+        self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
 
@@ -551,6 +579,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
                 memory_bank_state_store=self._memory_bank_state_store,
                 conversation_turn_lock=self._conversation_turn_lock,
                 browser_data_store=self._browser_data_store,
+                video_data_store=self._video_data_store,
             )
 
         authorization_ready = asyncio.Event()
@@ -632,8 +661,10 @@ _CONFIRM_PROMPTS: dict[DeleteScope, str] = {
         "other people added there\n"
         "- your messages in conversations someone else started\n"
         "- your workspace files\n"
+        "- your persistent browser profile and public-video sessions\n"
         "- your personal memory and persona (and disables future memory)\n\n"
-        "It does **not** delete Discord messages, provider or diagnostic logs, "
+        "Known stored Gemini video Interactions are submitted for provider deletion. "
+        "It does **not** delete Discord messages, provider safety or diagnostic logs, "
         "backups, community knowledge, skills, usage or moderation records, blocks, "
         "or your saved consent choice.\n\n"
         "This **cannot be undone**. Continue?"
@@ -665,6 +696,7 @@ class _PrivacyView(_AuthorGuardedView):
         workspace_manager: WorkspaceManager,
         workspace_locks: UserLocks,
         browser_data_store: BrowserDataStore | None = None,
+        video_data_store: VideoDataStore | None = None,
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 180.0,
@@ -680,6 +712,7 @@ class _PrivacyView(_AuthorGuardedView):
         self._workspace_manager = workspace_manager
         self._workspace_locks = workspace_locks
         self._browser_data_store = browser_data_store
+        self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
 
@@ -698,6 +731,7 @@ class _PrivacyView(_AuthorGuardedView):
             workspace_manager=self._workspace_manager,
             workspace_locks=self._workspace_locks,
             browser_data_store=self._browser_data_store,
+            video_data_store=self._video_data_store,
             privacy_barrier=self._privacy_barrier,
             cancel_user_work=self._cancel_user_work,
         )
@@ -730,6 +764,7 @@ def register_privacy_command(
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
     browser_data_store: BrowserDataStore | None = None,
+    video_data_store: VideoDataStore | None = None,
     privacy_barrier: UserPrivacyBarrier | None = None,
     cancel_user_work: CancelUserWork | None = None,
     retention_days: int = 30,
@@ -755,6 +790,7 @@ def register_privacy_command(
             workspace_manager=workspace_manager,
             workspace_locks=workspace_locks,
             browser_data_store=browser_data_store,
+            video_data_store=video_data_store,
             privacy_barrier=privacy_barrier,
             cancel_user_work=cancel_user_work,
         )

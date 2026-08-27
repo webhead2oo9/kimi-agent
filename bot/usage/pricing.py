@@ -30,15 +30,18 @@ def price_usage_call(
     model_config: Any | None,
 ) -> LLMUsageCall:
     pricing_model = call.pricing_model or call.model
+    estimated = call.est_cost_usd
+    if estimated is None:
+        estimated = estimate_cost(
+            pricing_for_model(model_config, pricing_model),
+            call.usage,
+        )
     return LLMUsageCall(
         model=call.model,
         role=call.role,
         usage=call.usage,
         pricing_model=pricing_model,
-        est_cost_usd=estimate_cost(
-            pricing_for_model(model_config, pricing_model),
-            call.usage,
-        ),
+        est_cost_usd=estimated,
     )
 
 

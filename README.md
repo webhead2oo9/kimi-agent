@@ -28,6 +28,7 @@ several communities without forking the application.
 | **Long-term memory** | Optional per-user memory banks via [Hindsight](https://github.com/vectorize-io/hindsight), with recall, reflection, opt-out, and staff-taught community knowledge. |
 | **Per-user workspaces** | File read/write/edit, archive extraction, document-to-text, and URL fetch, with path, size, quota, and TTL caps enforced by the application. |
 | **Durable coding agent** | Optionally hand repository-scale work to a separately routed background worker with persisted progress, managed sandbox jobs, recovery, steering, and cancellation. |
+| **Public-video understanding** | Optionally ask a stateful Gemini 3.7 Flash specialist about public YouTube videos, with rooted follow-ups and timestamped evidence. |
 | **Persistent browser** | Optional per-user BetterWright profiles for interactive web tasks, isolated with Bubblewrap/systemd/seccomp and routed over the host network or a fixed VPN namespace. |
 | **Visual rendering** | One searchable call creates accessible fixed-style charts or constrained Mermaid diagrams as PNG attachments through an ephemeral offline browser worker. |
 | **Skills** | Staff-managed Markdown instruction docs plus operator-authored script tools that run under mandatory Linux isolation with networking denied by default. |
@@ -36,9 +37,10 @@ several communities without forking the application.
 | **Safety rails** | Privacy consent, LLM content moderation, user blocks, moderation cases and staff logs, and known-bad image fingerprint matching. |
 | **Operator plugins** | Add community-specific tools from your own packages through an explicit allowlist. |
 
-Turns are stateless, and each conversation is keyed to the message that
-started it and persisted in SQLite, so a reply continues its own thread even
-across restarts. Everything is gated by config:
+Foreground chat turns are stateless, and each conversation is keyed to the
+message that started it and persisted in SQLite, so a reply continues its own
+thread even across restarts. The optional public-video specialist is a deliberate
+actor-scoped stateful tool behind the rooted conversation. Everything is gated by config:
 what you don't configure stays off.
 
 ## Repository layout

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import SecretStr, ValidationInfo, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 from branding import DEFAULT_BOT_NAME
@@ -163,6 +163,13 @@ class Settings(BaseSettings):
     internet_search_max_backend_calls_per_turn: int = 10
     internet_search_max_output_chars: int = 24_000
     internet_search_safesearch: str = "moderate"
+
+    # Stateful public-YouTube understanding (optional searchable tool). The
+    # Gemini key is dedicated to this tool and never participates in chat model
+    # routing. Registration requires both the flag and a non-empty key.
+    video_understanding_enabled: bool = False
+    gemini_api_key: SecretStr = SecretStr("")
+    video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)
 
     # The bot owner's Discord user id. Gates any owner_only-registered tool at
     # dispatch (none currently ship; the registry mechanism stays for future

@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -19,7 +20,15 @@ from config.model_config import (
     resolve_provider_config,
 )
 from config.settings import Settings
-from providers import FailoverProvider, LLMProvider, ProviderConfig, create_provider
+from providers import LLMProvider, ProviderConfig, create_provider
+from providers.circuit_breaker import (
+    CircuitRecord,
+    CircuitStore,
+    CircuitTarget,
+    ProviderCircuitBreaker,
+)
+from providers.failover import FailoverBackend, FailoverProvider
+from providers.failure_policy import CooldownPolicy, get_failure_classifier
 from providers.types import (
     ProviderCapability,
     ProviderRequest,
@@ -35,6 +44,13 @@ _MODEL_DECLARED_CAPABILITIES = {
     ProviderCapability.IMAGE_OUTPUT,
     ProviderCapability.TOOL_CALLING,
 }
+
+
+def _normalized_origin(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return "default"
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
 
 
 class CodexTokenSource(Protocol):
@@ -68,6 +84,7 @@ class ProviderManager:
     # FailoverProvider wrappers, keyed by their ordered model-name chain. These
     # only reference _providers entries, so they are not closed independently.
     _chains: dict[tuple[str, ...], LLMProvider] = field(default_factory=dict)
+    circuit_breaker: ProviderCircuitBreaker = field(default_factory=ProviderCircuitBreaker)
 
     def resolve(
         self, role: str, scope: Scope | None = None, *, images: bool = False
@@ -85,18 +102,53 @@ class ProviderManager:
         else:
             model_names = model_config.model_names_for_role(role, scope, images=images)
         links = [self._resolve_single(model_config, name) for name in model_names]
-        if len(links) == 1:
-            provider: LLMProvider = links[0]
-        else:
-            key = tuple(model_names)
-            cached = self._chains.get(key)
-            if cached is None:
-                cached = FailoverProvider(links)
-                self._chains[key] = cached
-            provider = cached
+        key = tuple(model_names)
+        provider = self._chains.get(key)
+        if provider is None:
+            provider = FailoverProvider(
+                links,
+                circuit_breaker=self.circuit_breaker,
+                backends=[self._failover_backend(model_config, name) for name in model_names],
+            )
+            self._chains[key] = provider
         if role == "chat" and scope is None and not images:
             self.main = provider
         return provider
+
+    def _failover_backend(self, model_config: ModelConfig, model_name: str) -> FailoverBackend:
+        entry = model_config.models[model_name]
+        profile = model_config.providers[entry.provider]
+        origin = _normalized_origin(profile.base_url)
+        credential_source = profile.api_key_env or ("keyless" if profile.keyless else profile.type)
+        target = CircuitTarget.create(
+            model_identity=f"{entry.provider}|{profile.type}|{origin}|{entry.model}",
+            account_identity=f"{profile.type}|{origin}|{credential_source}",
+            label=f"{entry.provider}/{entry.model}",
+        )
+        return FailoverBackend(
+            target=target,
+            classifier=get_failure_classifier(profile.failure_adapter),
+            cooldown=CooldownPolicy(
+                outage_seconds=profile.circuit_breaker.outage_cooldown_seconds,
+                quota_seconds=profile.circuit_breaker.quota_cooldown_seconds,
+                rate_limit_seconds=profile.circuit_breaker.rate_limit_cooldown_seconds,
+            ),
+        )
+
+    async def initialize_circuits(self, store: CircuitStore) -> None:
+        model_config = self.model_config
+        keys: set[str] = set()
+        if model_config is not None:
+            for model_name in model_config.models:
+                target = self._failover_backend(model_config, model_name).target
+                keys.update((target.model_scope_key, target.account_scope_key))
+        await self.circuit_breaker.initialize(store, keys)
+
+    async def circuit_snapshots(self) -> tuple[CircuitRecord, ...]:
+        return await self.circuit_breaker.snapshots()
+
+    async def reset_all_circuits(self) -> None:
+        await self.circuit_breaker.reset_all()
 
     @property
     def selectable_chat_models(self) -> tuple[str, ...]:

@@ -114,6 +114,8 @@ async def test_exa_contents_uses_top_level_content_option_and_statuses() -> None
         "http://127.1/admin",
         "http://0x7f000001/admin",
         "http://017700000001/admin",
+        r"http://127.0.0.1\admin",
+        "http://example.com/\x00hidden",
     ),
 )
 async def test_exa_contents_rejects_unsafe_urls_before_request(url: str) -> None:
@@ -126,7 +128,10 @@ async def test_exa_contents_rejects_unsafe_urls_before_request(url: str) -> None
     assert post.calls == []
 
 
-@pytest.mark.parametrize("url", ("https://example.com/page", "https://8.8.8.8/page"))
+@pytest.mark.parametrize(
+    "url",
+    ("http://example.com/page", "https://example.com/page", "https://8.8.8.8/page"),
+)
 def test_exa_contents_url_validation_preserves_public_hosts(url: str) -> None:
     assert _is_safe_contents_url(url) is True
 

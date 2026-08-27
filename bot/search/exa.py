@@ -113,6 +113,8 @@ class ExaSearchBackend:
 
 
 def _is_safe_contents_url(url: str) -> bool:
+    if "\\" in url or any(ord(char) < 0x20 or ord(char) == 0x7F for char in url):
+        return False
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").casefold().rstrip(".")
@@ -132,28 +134,15 @@ def _is_safe_contents_url(url: str) -> bool:
         return True
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
-    return not (
-        address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-        or not address.is_global
-    )
+    return address.is_global
 
 
-def _parse_ip_literal(
-    host: str,
-) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
         return ipaddress.ip_address(host)
     except ValueError:
         pass
-    # Legacy IPv4 number forms are not accepted by ipaddress, but URL/network
-    # parsers commonly interpret them as addresses (for example 2130706433 and
-    # 127.1 both mean 127.0.0.1). Parse them locally without DNS so the same
-    # public-address checks apply before handing the URL to Exa.
+    # inet_aton recognizes legacy forms such as 2130706433 and 127.1.
     try:
         packed = socket.inet_aton(host)
     except OSError:

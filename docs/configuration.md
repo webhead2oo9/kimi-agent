@@ -172,6 +172,13 @@ The tool-owned behavior that exists today:
 |---|---|---|---|---|
 | `discord_text_search` | `max_results` | `25` | 1–25 | `config/tools/discord_text_search.md` |
 | `internet_search` | `strategy` | `blend` | `blend` or `failover` | `config/tools/internet_search.md` |
+| `generate_image` | `model` | `gpt-image-2` | closed choice | `config/tools/generate_image.md` |
+| `generate_image` | `size` | `auto` | `auto`, `1024x1024`, `1024x1536`, `1536x1024` | `config/tools/generate_image.md` |
+| `generate_image` | `quality` | `auto` | `auto`, `low`, `medium`, `high` | `config/tools/generate_image.md` |
+| `generate_image` | `background` | `auto` | `auto`, `opaque`, `transparent` | `config/tools/generate_image.md` |
+| `generate_image` | `max_calls_per_turn` | `2` | 1–8 | `config/tools/generate_image.md` |
+| `generate_image` | `max_reference_images` | `5` | 1–5 | `config/tools/generate_image.md` |
+| `generate_image` | `max_attachments` | `5` | 1–10 | `config/tools/generate_image.md` |
 | `video` | `model` | `gemini-3.7-flash` | closed choice | `config/tools/video.md` |
 | `video` | `thinking_level` | `low` | `low`, `medium`, `high` | `config/tools/video.md` |
 | `video` | `max_output_tokens` | `8192` | 1,024–32,768 | `config/tools/video.md` |
@@ -618,6 +625,28 @@ turn, twenty total interactions per session, and a 24-hour idle lifetime.
 See [Video understanding](video-understanding.md) for source streaming, formats,
 hard file/duration limits, root/user/guild scope, SQLite v3 crash recovery,
 provider retention/deletion, caching, and prompt-injection posture.
+
+---
+
+## Image generation (gated)
+
+The REGULAR-tier core `generate_image` tool is operator opt-in. ChatGPT OAuth
+through the shared Codex token manager is primary; a dedicated OpenAI platform
+key is the fallback. Missing credentials fail closed by leaving the tool
+unregistered. Safe per-call behavior lives in
+`config/tools/generate_image.md`.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `IMAGE_GEN_ENABLED` | bool | `false` | Requests registration of the image generation and editing tool. |
+| `IMAGE_GEN_BACKEND` | str | `openai` | Image backend name. Only `openai` ships initially. |
+| `IMAGE_GEN_AUTH_MODE` | str | `auto` | `auto` prefers Codex OAuth and falls back to `IMAGE_GEN_API_KEY`; `oauth` and `api_key` select one path explicitly. |
+| `IMAGE_GEN_API_KEY` | secret | `""` | Dedicated OpenAI platform key for API-key mode. Environment-only and never written to a tool fragment. |
+| `IMAGE_GEN_MAX_CONCURRENCY` | int | `1` | Process-wide image request cap, 1–8. |
+| `IMAGE_GEN_TIMEOUT_SECONDS` | float | `300` | Whole HTTP request timeout, 30–900 seconds. |
+
+See [Image generation](image-generation.md) for request contracts, workspace
+persistence, local file limits, quota errors, and the moderation boundary.
 
 ---
 

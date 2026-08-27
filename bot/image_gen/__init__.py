@@ -13,6 +13,7 @@ from image_gen.types import (
     ImageGenError,
     ImageGenRequest,
     ImageQuotaError,
+    ImageReference,
     ImageResult,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "ImageGenError",
     "ImageGenRequest",
     "ImageQuotaError",
+    "ImageReference",
     "ImageResult",
 ]

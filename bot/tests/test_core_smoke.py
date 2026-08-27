@@ -2187,7 +2187,7 @@ def _message_from_data(data: dict) -> ConversationMessage:
     )
 
 
-def test_run_conversation_requests_image_capabilities() -> None:
+def test_run_conversation_requests_image_input_but_not_inferred_output() -> None:
     context = ConversationContext(key="test")
     provider = TypedScriptedProvider([ProviderResponse(content="making one")])
 
@@ -2213,7 +2213,7 @@ def test_run_conversation_requests_image_capabilities() -> None:
 
     assert result == "making one"
     assert ProviderCapability.IMAGE_INPUT in provider.requests[0].requested_capabilities
-    assert ProviderCapability.IMAGE_OUTPUT in provider.requests[0].requested_capabilities
+    assert ProviderCapability.IMAGE_OUTPUT not in provider.requests[0].requested_capabilities
     assert provider.requests[0].current_user_parts[0] == ContentPart.from_text(
         "webhead: generate an image of this scene"
     )

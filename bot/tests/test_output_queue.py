@@ -42,12 +42,14 @@ def test_enqueue_workspace_file_adds_file_and_allowed_root(tmp_path: Path) -> No
         manager,
         saved,
         max_attachments=3,
+        description="A rendered report preview",
     )
 
     assert result.added is True
     assert result.path == saved.resolve()
     assert result.root == manager.user_files_dir(ctx.workspace_key).resolve()
     assert ctx.output_files == [str(saved.resolve())]
+    assert ctx.output_file_descriptions == {str(saved.resolve()): "A rendered report preview"}
     assert ctx.allowed_file_roots == [str(manager.user_files_dir(ctx.workspace_key).resolve())]
     assert queued_file_paths(ctx, manager, ctx.workspace_key) == ["notes/result.txt"]
 

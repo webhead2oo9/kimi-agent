@@ -17,12 +17,24 @@ class ImageGenRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageReference:
+    """One bounded source image, encoded once for either HTTP contract."""
+
+    media_type: str
+    data_base64: str
+
+    @property
+    def data_url(self) -> str:
+        return f"data:{self.media_type};base64,{self.data_base64}"
+
+
+@dataclass(frozen=True, slots=True)
 class ImageEditRequest:
-    """One image edit request. ``images`` are data URLs, newest target last."""
+    """One image edit request, with bounded provider-neutral references."""
 
     prompt: str
     model: str
-    images: tuple[str, ...]
+    images: tuple[ImageReference, ...]
     size: str | None = None
     quality: str | None = None
     background: str | None = None

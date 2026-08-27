@@ -121,7 +121,7 @@ def create_provider(config: ProviderConfig) -> LLMProvider:
             from codex.transport import CodexTransport
             from providers.codex import CodexProvider
 
-            auth_manager = _get_codex_auth_manager(config.codex_token_file)
+            auth_manager = get_codex_auth_manager(config.codex_token_file)
             transport = CodexTransport(
                 auth_manager,
                 idle_timeout=config.codex_ws_idle_timeout,
@@ -165,7 +165,8 @@ def _parse_openrouter_provider_json(value: str) -> dict[str, Any]:
     return parsed
 
 
-def _get_codex_auth_manager(token_file: str) -> CodexAuthManager:
+def get_codex_auth_manager(token_file: str) -> CodexAuthManager:
+    """Return the process-wide manager for one resolved Codex token file."""
     from codex.auth import CodexAuthManager
 
     key = str(Path(token_file).expanduser().resolve(strict=False))

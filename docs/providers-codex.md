@@ -2,7 +2,9 @@
 
 The `codex` provider talks to the ChatGPT Codex backend over WebSocket
 Responses. It supports text, image input, function tools, guarded
-`previous_response_id` continuation, and provider-native image generation.
+`previous_response_id` continuation, and provider-native image output for
+explicit `ProviderRequest` callers. Normal Discord image creation uses the
+separate [`generate_image` tool](image-generation.md), not text inference.
 
 Like the [ccflare route](providers-ccflare.md), this is a [subscription-backed
 route](providers.md#subscription-backed-routes): the bot runs on a personal
@@ -48,12 +50,14 @@ uv run python scripts/codex_auth.py --token-file secrets/codex-auth.json
 The helper runs the Codex OAuth device flow and writes the token file
 atomically with owner-only permissions.
 
-Startup validates Codex auth whenever a reachable enabled role needs Codex. A
-revoked token fails fast, and the message includes a
+Startup validates Codex auth whenever a reachable enabled model role needs
+Codex. A revoked token then fails fast, and the message includes a
 `uv run python scripts/codex_auth.py` hint so you know what to run. Transient
 network errors during that check are tolerated and retried on first use,
 because a flaky network at boot should not be indistinguishable from a dead
-credential.
+credential. The optional image tool validates OAuth on first use instead: a
+stale image-only token leaves chat available and produces a concise
+re-authentication error from the tool.
 
 Refresh is careful about concurrency. Before refreshing, the runtime reloads a
 same-account token that another process may have written, so two Kimi
@@ -86,6 +90,8 @@ the backend to continue a response that was produced under different settings.
 
 Codex output items are preserved in stored assistant messages so that later
 turns can replay provider-native items, including `function_call` and
-`image_generation_call`. Image generation results normalize to `GeneratedAsset`
-and are attached through the same generated-file path every other
-provider-native image output uses.
+`image_generation_call`. Explicit provider-native image output still normalizes
+to `GeneratedAsset` and uses the generated-asset attachment rail. The normal
+Discord conversation path no longer requests that capability by matching text;
+`generate_image` calls the independent Images API backend and saves reusable
+workspace output instead. See [Image generation](image-generation.md).

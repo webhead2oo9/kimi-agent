@@ -53,6 +53,10 @@ guild installations, and permissions stay intact.
   about a public YouTube video or a streamed Discord/workspace clip up to 500 MiB,
   then continue with rooted follow-ups and timestamped evidence. See
   [docs/video-understanding.md](../docs/video-understanding.md).
+- **Image generation (optional).** Let REGULAR-tier users explicitly generate
+  or edit `gpt-image-2` images through shared Codex OAuth or a platform API key,
+  with bounded workspace references and reusable queued PNG output. See
+  [docs/image-generation.md](../docs/image-generation.md).
 - **Browser and visual rendering (optional).** Keep per-user BetterWright
   profiles for interactive web work and expose a searchable call that renders
   accessible fixed-style charts or constrained Mermaid PNGs. Visual jobs use a
@@ -121,6 +125,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | Workspaces & file tools | `workspace/manager.py`, `tools/workspace/` | [workspace.md](../docs/workspace.md) |
 | Durable coding agent | `app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py` | [coding-agent.md](../docs/coding-agent.md) |
 | Video understanding | `video_understanding/`, `tools/video.py`, `storage/video_sessions.py` | [video-understanding.md](../docs/video-understanding.md) |
+| Image generation | `image_gen/`, `tools/image_gen.py` | [image-generation.md](../docs/image-generation.md) |
 | Persistent browser and visual rendering | `web_browser/`, `tools/browser.py`, `tools/visuals.py` | [browser.md](../docs/browser.md), [visual-rendering.md](../docs/visual-rendering.md) |
 | Storage (async SQLite) | `storage/` | [database.md](../docs/database.md) |
 | Privacy & content moderation | `app/consent.py`, `moderation/` | [privacy.md](../docs/privacy.md) |

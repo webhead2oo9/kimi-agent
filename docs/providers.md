@@ -635,10 +635,14 @@ parts, so the kill switch stays complete.
 ### Capability gates
 
 Image input stays capability-gated in `agent/core.py`: a provider without
-`ProviderCapability.IMAGE_INPUT` returns a Discord-safe capability error. Image
-output requires `ProviderCapability.IMAGE_OUTPUT` and an actual request for
-image generation. Generated assets are written under `WORKSPACE_DIR/generated/`
-and attached through `discord_adapter.io.send_response`.
+`ProviderCapability.IMAGE_INPUT` returns a Discord-safe capability error.
+Provider-native image output remains available to direct `ProviderRequest`
+callers that explicitly request `ProviderCapability.IMAGE_OUTPUT`; normal
+Discord turns never infer it from message text. Their image-creation surface is
+the provider-independent [`generate_image` tool](image-generation.md). Native
+provider assets are written under `WORKSPACE_DIR/generated/` and attached
+through `discord_adapter.io.send_response`; tool-generated images instead live
+under the caller's reusable workspace `generated_images/` path.
 
 ## When routing is misconfigured
 

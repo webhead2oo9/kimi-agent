@@ -108,6 +108,19 @@ provider state after expiry, transcript retention, or full `/privacy`. See
 [Video understanding](video-understanding.md) for configuration, caching,
 limits, provider retention, and the threat model.
 
+## Image generation
+
+| Tool | Visibility | Tier | Purpose and availability |
+|---|---|---|---|
+| `generate_image` | Core | Regular | Generate a new OpenAI image or edit up to five safe workspace references, save the PNG under `generated_images/`, and queue it with Discord accessibility text. Registered only when `IMAGE_GEN_ENABLED` is true and OAuth or API-key credentials are usable. |
+
+OAuth is primary and reuses the Codex token manager; API-key mode is the
+platform fallback. The tool is independent of the active chat provider, has a
+per-turn billable-call cap, takes bounded PNG/JPEG/WebP workspace references,
+and returns only output metadata to the transcript. See
+[Image generation](image-generation.md) for setup, config, limits, persistence,
+and the moderation boundary.
+
 ## Workspace and files
 
 All of the workspace tools are member-tier and operate only inside the current

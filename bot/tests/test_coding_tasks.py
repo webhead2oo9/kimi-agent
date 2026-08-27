@@ -1937,9 +1937,7 @@ def test_coding_checkpoint_serialization_omits_image_payloads() -> None:
 
     serialized = CodingTaskService._serialize_message(message)
 
-    assert serialized["content"] == [
-        {"type": "text", "text": "Transient browser screenshot."}
-    ]
+    assert serialized["content"] == [{"type": "text", "text": "Transient browser screenshot."}]
     assert "base64" not in json.dumps(serialized)
 
 

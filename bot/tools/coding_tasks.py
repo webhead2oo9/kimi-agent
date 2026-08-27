@@ -52,9 +52,7 @@ CODING_WORKER_TOOLS = frozenset(
 
 # Coding workers do not receive browse_tools, so allowlisted workspace helpers
 # that are searchable in the foreground must be promoted in the cloned view.
-CODING_WORKER_ALWAYS_VISIBLE_TOOLS = frozenset(
-    {"extract_archive", "extract_document_text"}
-)
+CODING_WORKER_ALWAYS_VISIBLE_TOOLS = frozenset({"extract_archive", "extract_document_text"})
 
 # Job statuses after which the worker's job no longer occupies the sandbox.
 _ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})

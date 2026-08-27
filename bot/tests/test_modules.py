@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import aiosqlite
@@ -19,15 +20,17 @@ from app.modules import (
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api import ModuleCapabilities
+from kimi_agent_module_api import ModuleCapabilities, events as ev
 from kimi_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
+    ModulePermissions,
     ServiceDeclaration,
     ServiceRequirement,
 )
 from kimi_agent_module_api.testing import FakeTrust
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
+from modules.events import EventBusImpl
 from modules.testing import fake_ports
 from config.settings import Settings
 from storage.db import Database
@@ -295,9 +298,11 @@ async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path
         name="optional",
         version="1",
         guild_settings=schema,
+        permissions=ModulePermissions(event_topics=(ev.TOPIC_MESSAGE,)),
         create=lambda _ctx: module,
     )
     manager = _manager(tmp_path, ("optional",), {"optional": spec})
+    manager.events = EventBusImpl()
     settings_path = tmp_path / GUILD_MODULES_DIR / str(guild_id) / "optional.md"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("---\nchannels: [invalid]\n---\n", encoding="utf-8")
@@ -311,9 +316,23 @@ async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path
     try:
         await manager.start(_base(database, manager), customize=fake_ports)
         assert seen[0].is_guild_active(guild_id) is False
+        delivered: list[str] = []
+
+        async def on_message(event: Any) -> None:
+            delivered.append(event.topic)
+
+        seen[0].events.subscribe(ev.TOPIC_MESSAGE, on_message)
+        assert manager.events is not None
+        payload = SimpleNamespace(message=SimpleNamespace(ref=SimpleNamespace(guild_id=guild_id)))
+        manager.events.publish_core(ev.TOPIC_MESSAGE, payload)
+        await manager.events.drain()
+        assert delivered == []
         settings_path.write_text("---\nchannels: []\n---\n", encoding="utf-8")
         manager.guild_settings.refresh((guild_id,))
         assert seen[0].is_guild_active(guild_id) is True
+        manager.events.publish_core(ev.TOPIC_MESSAGE, payload)
+        await manager.events.drain()
+        assert delivered == [ev.TOPIC_MESSAGE]
     finally:
         await manager.close()
         await database.close()

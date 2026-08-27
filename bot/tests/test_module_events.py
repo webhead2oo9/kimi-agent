@@ -84,6 +84,122 @@ async def test_failures_and_timeouts_are_isolated_and_counted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discord_events_only_reach_modules_enabled_for_their_guild() -> None:
+    bus = EventBusImpl()
+    enabled = ModuleEventView(
+        bus,
+        "enabled",
+        ModulePermissions(event_topics=("discord.*",)),
+        is_guild_active=lambda guild_id: guild_id == 1,
+    )
+    disabled = ModuleEventView(
+        bus,
+        "disabled",
+        ModulePermissions(event_topics=("discord.*",)),
+        is_guild_active=lambda _guild_id: False,
+    )
+    enabled_topics: list[str] = []
+    disabled_topics: list[str] = []
+
+    async def enabled_handler(event: Event) -> None:
+        enabled_topics.append(event.topic)
+
+    async def disabled_handler(event: Event) -> None:
+        disabled_topics.append(event.topic)
+
+    enabled.subscribe("discord.*", enabled_handler)
+    disabled.subscribe("discord.*", disabled_handler)
+    bus.publish_core(
+        ev.TOPIC_MESSAGE,
+        SimpleNamespace(message=SimpleNamespace(ref=SimpleNamespace(guild_id=1))),
+    )
+    bus.publish_core(
+        ev.TOPIC_MEMBER_JOIN,
+        SimpleNamespace(member=SimpleNamespace(guild_id=1)),
+    )
+    bus.publish_core(ev.TOPIC_AUDIT_LOG_ENTRY, SimpleNamespace(guild_id=1))
+    await bus.drain()
+
+    assert enabled_topics == [
+        ev.TOPIC_MESSAGE,
+        ev.TOPIC_MEMBER_JOIN,
+        ev.TOPIC_AUDIT_LOG_ENTRY,
+    ]
+    assert disabled_topics == []
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_module_owned_events_ignore_discord_guild_predicate() -> None:
+    bus = EventBusImpl()
+    view = ModuleEventView(
+        bus,
+        "mod",
+        ModulePermissions(),
+        is_guild_active=lambda _guild_id: False,
+    )
+    seen: list[Event] = []
+
+    async def handler(event: Event) -> None:
+        seen.append(event)
+
+    view.subscribe("mod.changed", handler)
+    view.publish("mod.changed", SimpleNamespace(guild_id=1))
+    await bus.drain()
+
+    assert [event.topic for event in seen] == ["mod.changed"]
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_discord_event_rechecks_module_guild_activation() -> None:
+    bus = EventBusImpl(workers=1)
+    active = True
+    gated = ModuleEventView(
+        bus,
+        "gated",
+        ModulePermissions(event_topics=("discord.*",)),
+        is_guild_active=lambda _guild_id: active,
+    )
+    unaffected = ModuleEventView(
+        bus,
+        "unaffected",
+        ModulePermissions(event_topics=("discord.*",)),
+        is_guild_active=lambda _guild_id: True,
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    gated_seen: list[int] = []
+    unaffected_seen: list[int] = []
+
+    async def gated_handler(event: Event) -> None:
+        sequence = cast(int, event.payload.sequence)
+        if sequence == 1:
+            first_started.set()
+            await release_first.wait()
+        gated_seen.append(sequence)
+
+    async def unaffected_handler(event: Event) -> None:
+        unaffected_seen.append(cast(int, event.payload.sequence))
+
+    gated.subscribe("discord.*", gated_handler)
+    unaffected.subscribe("discord.*", unaffected_handler)
+    bus.publish_core(ev.TOPIC_MESSAGE, SimpleNamespace(guild_id=1, sequence=1))
+    await first_started.wait()
+
+    # This event passes the enqueue-time predicate, then waits behind the first
+    # handler while the module/guild becomes inactive.
+    bus.publish_core(ev.TOPIC_MESSAGE, SimpleNamespace(guild_id=1, sequence=2))
+    active = False
+    release_first.set()
+    await bus.drain()
+
+    assert gated_seen == [1]
+    assert unaffected_seen == [1, 2]
+    await bus.close()
+
+
+@pytest.mark.asyncio
 async def test_full_lane_drops_oldest_and_close_module_cancels() -> None:
     bus = EventBusImpl(queue_size=2, workers=1)
     view = _view(bus, "m", "discord.message")
@@ -232,6 +348,36 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
 
     publisher.uninstall()
     assert bot.listeners == []
+
+
+@pytest.mark.asyncio
+async def test_publisher_deduplicates_cached_and_raw_single_delete() -> None:
+    published: list[tuple[str, Any]] = []
+    bot = _Bot()
+    publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
+    cached = _message(content="gone")
+
+    # discord.py emits the raw event first, then the cached event when the
+    # message was present in its cache.
+    await publisher.on_raw_message_delete(
+        cast(
+            RawMessageDeleteEvent,
+            SimpleNamespace(
+                guild_id=1,
+                channel_id=2,
+                message_id=3,
+                cached_message=cached,
+            ),
+        )
+    )
+    await publisher.on_message_delete(cached)
+
+    assert len(published) == 1
+    topic, payload = published[0]
+    assert topic == ev.TOPIC_MESSAGE_DELETE
+    assert isinstance(payload, ev.MessageDeleteEvent)
+    assert payload.ref.message_id == 3
+    assert payload.cached_content == "gone"
 
 
 @pytest.mark.asyncio

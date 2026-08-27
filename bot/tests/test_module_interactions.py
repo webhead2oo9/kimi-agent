@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -340,6 +341,76 @@ async def test_components_enforce_the_registered_minimum_tier() -> None:
 
     assert regular.response.sent[0]["content"] == "Staff only."
     assert hits == [10]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_components_reject_unavailable_runtime_before_trust_or_handler() -> None:
+    bot = _Bot()
+    available = False
+    trust_calls: list[tuple[int, int]] = []
+
+    class _Trust:
+        async def tier(self, guild_id: int, user_id: int) -> TrustTierName:
+            trust_calls.append((guild_id, user_id))
+            return "staff"
+
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        is_available=lambda: available,
+    )
+    runtime.install()
+    router = runtime.router_for("mod", trust=_Trust(), is_guild_active=lambda _g: True)
+    hits: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        hits.append("ran")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    custom_id = router.custom_id("confirm")
+    interaction = _Interaction(data={"custom_id": custom_id})
+    dynamic_button = bot.dynamic_items[0](custom_id)
+
+    await dynamic_button.callback(interaction)  # type: ignore[arg-type]
+
+    assert hits == []
+    assert trust_calls == []
+    assert interaction.response.sent == [
+        {"content": "This control is temporarily unavailable.", "ephemeral": True}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_component_admitted_before_shutdown_is_allowed_to_finish() -> None:
+    available = True
+    dispatcher = ComponentDispatcher(is_available=lambda: available)
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        await release.wait()
+        finished.append("done")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    custom_id = router.custom_id("confirm")
+    interaction = _Interaction(data={"custom_id": custom_id})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    available = False
+    release.set()
+    await running
+
+    assert finished == ["done"]
 
 
 def test_build_view_renders_buttons_and_selects_with_module_ids() -> None:

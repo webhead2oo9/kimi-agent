@@ -55,6 +55,12 @@ class TrustLookupImpl:
 
     async def tier(self, guild_id: int, user_id: int) -> TrustTierName:
         member = await _member_or_none(self._bot, guild_id, user_id)
+        return self.tier_for_member(guild_id, user_id, member)
+
+    def tier_for_member(
+        self, guild_id: int, user_id: int, member: discord.Member | None
+    ) -> TrustTierName:
+        """Resolve trust from a member that the caller has already fetched."""
         tier = self._resolver.resolve(member, str(user_id), str(guild_id))
         return _tier_name(tier)
 
@@ -167,7 +173,10 @@ class DiscordActionsImpl:
         if member.bot:
             raise TargetProtected("bots cannot be moderated by modules")
         if not self._override:
-            target = _TIER_ORDER[await self._trust.tier(guild_id, user_id)]
+            # Reuse the live member obtained above. Fetching again can fail
+            # transiently and would discard role-based trust, incorrectly
+            # downgrading a protected target to the member tier.
+            target = _TIER_ORDER[self._trust.tier_for_member(guild_id, user_id, member)]
             # An automated module acts with staff authority: it may touch
             # anyone below staff, never staff.
             actor = (

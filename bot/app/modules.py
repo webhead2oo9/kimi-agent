@@ -24,6 +24,7 @@ from kimi_agent_module_api.contracts import (
     DiscordActions,
     ModuleHealth,
     TrustLookup,
+    table_prefix,
     validate_guild_settings_schema,
     validate_module_name,
     validate_permissions,
@@ -146,6 +147,14 @@ def validate_module_selection(
         names,
         installed if installed is not None else _installed_specs(names),
     )
+    by_prefix: dict[str, str] = {}
+    for spec in specs:
+        prefix = table_prefix(spec.name)
+        if previous := by_prefix.get(prefix):
+            raise RuntimeError(
+                f"Kimi modules {previous!r} and {spec.name!r} share normalized prefix {prefix!r}"
+            )
+        by_prefix[prefix] = spec.name
     capabilities = module_capabilities(core_settings)
     for spec in specs:
         if spec.api_version != MODULE_API_VERSION:
@@ -422,7 +431,12 @@ class ModuleManager:
             "current_config_dir": base.current_config_dir,
             "capabilities": base.capabilities,
             "events": (
-                ModuleEventView(self.events, spec.name, spec.permissions)
+                ModuleEventView(
+                    self.events,
+                    spec.name,
+                    spec.permissions,
+                    is_guild_active=is_module_guild_active,
+                )
                 if self.events is not None
                 else None
             ),

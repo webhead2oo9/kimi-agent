@@ -28,6 +28,7 @@ from kimi_agent_module_api import (
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     CUSTOM_ID_MAX_LENGTH,
+    Backoff,
     EventTopicError,
     GuildSettingField,
     HttpHostRule,
@@ -93,6 +94,29 @@ def test_runtime_context_requires_every_service_port() -> None:
 
 def test_table_prefix_normalizes_hyphens() -> None:
     assert table_prefix("image-fingerprints") == "image_fingerprints"
+
+
+def test_selection_preflight_rejects_colliding_normalized_prefixes() -> None:
+    installed = {
+        "image-fingerprints": _spec("image-fingerprints"),
+        "image_fingerprints": _spec("image_fingerprints"),
+    }
+    with pytest.raises(RuntimeError, match="share normalized prefix 'image_fingerprints'"):
+        validate_module_selection(
+            tuple(installed),
+            core_settings=_settings(),
+            installed=installed,
+        )
+
+
+def test_selection_preflight_accepts_one_hyphenated_name() -> None:
+    spec = _spec("image-fingerprints")
+    selected = validate_module_selection(
+        (spec.name,),
+        core_settings=_settings(),
+        installed={spec.name: spec},
+    )
+    assert selected == (spec,)
 
 
 def test_proposals_is_a_reserved_core_module_name() -> None:
@@ -231,6 +255,43 @@ def test_provided_services_are_unique_and_versioned_from_one() -> None:
             (ServiceDeclaration("a.b", 1), ServiceDeclaration("a.b", 1)),
             (),
         )
+
+
+def test_one_consumed_service_cannot_name_multiple_providers() -> None:
+    with pytest.raises(ModuleContractError, match="from multiple providers"):
+        validate_services(
+            "consumer",
+            ("intended", "rogue"),
+            (),
+            (
+                ServiceRequirement("cases", 1, provider="intended"),
+                ServiceRequirement("cases", 1, provider="rogue"),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "backoff",
+    (
+        {"base_seconds": 0},
+        {"base_seconds": -1},
+        {"base_seconds": float("nan")},
+        {"max_seconds": 0},
+        {"max_seconds": -1},
+        {"max_seconds": float("inf")},
+        {"multiplier": 0},
+        {"multiplier": 0.5},
+        {"multiplier": float("nan")},
+        {"multiplier": True},
+    ),
+)
+def test_scheduler_backoff_rejects_unsafe_values(backoff: dict[str, object]) -> None:
+    with pytest.raises(ModuleContractError, match="backoff"):
+        Backoff(**backoff)  # type: ignore[arg-type]
+
+
+def test_scheduler_backoff_accepts_positive_finite_values_and_multiplier() -> None:
+    assert Backoff(base_seconds=2, max_seconds=1, multiplier=1) == Backoff(2, 1, 1)
 
 
 # --- guild settings -------------------------------------------------------

@@ -44,8 +44,8 @@ class ToolCost:
     # of summaries that omit per-source call counts.
     live_calls: int = 0
     # Calls served from a cassette. Per tool rather than run-wide, because "did a
-    # replay hide spend" is a question about *which* tool replayed. Defaulted
-    # for the same compatibility reason as `live_calls`.
+    # replay hide spend" is a question about *which* tool replayed. Defaulted so
+    # summaries without per-source call counts still deserialize.
     replay_calls: int = 0
 
     def as_dict(self) -> dict[str, Any]:

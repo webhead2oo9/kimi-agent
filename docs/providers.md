@@ -246,7 +246,7 @@ era cannot sit in the file looking effective while doing nothing.
 | `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses` | SDK transport timeout. Ignored by `openrouter`. |
 | `max_output_tokens` | unset | all | Hard output-token ceiling for every model on this gateway. |
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
-| `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. Accepted but ignored on `openai_compat` unless the target is DeepSeek. |
+| `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. OpenAI-compatible profiles send it as `reasoning_effort`; DeepSeek targets additionally receive `thinking.type=enabled`. |
 
 `max_output_tokens` lives on the profile rather than the model entry on
 purpose. It expresses a limit the *gateway* imposes, so it applies to
@@ -539,28 +539,27 @@ onto whatever its API calls that concept:
 | `codex` | `reasoning.effort` |
 | `openai_responses` | `reasoning.effort` |
 | `anthropic_compat` | `output_config.effort` |
-| `openai_compat` | `reasoning_effort`, DeepSeek targets only (see below) |
+| `openai_compat` | `reasoning_effort`; DeepSeek targets also receive `thinking.type=enabled` |
 
-A profile with no `reasoning_effort` sends no effort field at all, unless a
-`reasoning_after_tools` escalation fires mid-turn, in which case the escalated
-effort is sent even on a profile with no baseline.
+A profile with no `reasoning_effort` sends no effort field at all unless the
+provider supports and receives a request-level effort override.
 
-### The `openai_compat` exception
+### The `openai_compat` mapping
 
-`reasoning_effort` is a real OpenAI Chat Completions parameter, but
-`openai_compat` does not send it generally. It is gated on a DeepSeek target,
-detected in `providers/openai_chat.py:_is_deepseek_target` as `deepseek`
-appearing in the `base_url`, or a model id starting with `deepseek-`. On a
-match, and only on a reasoning-enabled turn, the request carries
-`reasoning_effort` (taking the turn's value, else the profile's, else `high`)
-together with `extra_body: {"thinking": {"type": "enabled"}}`, which is a
-DeepSeek-style knob rather than a standard OpenAI one.
+`reasoning_effort` is an OpenAI Chat Completions parameter. On a
+reasoning-enabled turn, `openai_compat` sends the turn's value when present,
+otherwise the profile's configured default. A profile with no default and no
+request-level override sends no effort field.
 
-**Setting `reasoning_effort` on a non-DeepSeek `openai_compat` profile does
-nothing.** The config validator accepts the field on any `openai_compat`
-profile, so an o-series gateway will take it without complaint and then never
-see it in a request. If you need effort honored on an OpenAI reasoning model,
-route that model through `openai_responses` instead.
+DeepSeek targets need one additional compatibility knob. They are detected in
+`providers/openai_chat.py:_is_deepseek_target` by `deepseek` appearing in the
+`base_url`, or a model id starting with `deepseek-`. Those requests also carry
+`extra_body: {"thinking": {"type": "enabled"}}`; when neither the turn nor the
+profile supplies an effort, DeepSeek defaults to `high` as before.
+
+The separate `openrouter` provider does not inherit this request field. It uses
+OpenRouter's own request extensions rather than the generic OpenAI-compatible
+effort mapping.
 
 The Anthropic transports have a narrower ladder to keep in mind.
 

@@ -24,20 +24,33 @@ class ModelRouter(Protocol):
 
     def set_active_chat_model(self, model_name: str | None) -> None: ...
 
+    async def circuit_snapshots(self) -> tuple[Any, ...]: ...
+
+    async def reset_all_circuits(self) -> None: ...
+
 
 _DEFAULT_VALUE = "__config_default__"
 _MODELS_PER_SELECT = 24
 
 
-def _status_text(manager: ModelRouter) -> str:
+async def _status_text(manager: ModelRouter) -> tuple[str, int]:
     model_config = manager.model_config
     if model_config is None:
-        return "Model routing is unavailable."
+        return "Model routing is unavailable.", 0
     selected = manager.active_chat_model
     configured_name = selected or model_config.roles.chat
     model_id = model_config.models[configured_name].model
     source = "global override" if selected is not None else "config default"
-    return f"Active chat model: `{model_id}` ({source})."
+    lines = [f"Active chat model: `{model_id}` ({source})."]
+    circuits = await manager.circuit_snapshots()
+    if circuits:
+        lines.append("\nProvider cooldowns:")
+        for record in circuits[:10]:
+            label = record.display_label[:80]
+            lines.append(f"- `{label}` · {record.reason} · <t:{int(record.retry_at)}:R>")
+        if len(circuits) > 10:
+            lines.append(f"- …and {len(circuits) - 10} more")
+    return "\n".join(lines), len(circuits)
 
 
 class ModelSelect(discord.ui.Select):
@@ -50,10 +63,12 @@ class ModelSelect(discord.ui.Select):
         model_names: tuple[str, ...] | None = None,
         include_default: bool = True,
         page_label: str = "",
+        page_index: int = 0,
     ) -> None:
         self._manager = manager
         self._store = store
         self._owner_user_id = owner_user_id
+        self._page_index = page_index
         model_config = manager.model_config
         names = manager.selectable_chat_models if model_names is None else model_names
         options: list[discord.SelectOption] = []
@@ -107,9 +122,89 @@ class ModelSelect(discord.ui.Select):
             await send_message(interaction, "Could not save the model selection.")
             return
         self._manager.set_active_chat_model(selected)
+        status, circuit_count = await _status_text(self._manager)
         await interaction.response.edit_message(
-            content=_status_text(self._manager),
-            view=ModelsView(self._manager, self._store, self._owner_user_id),
+            content=status,
+            view=ModelsView(
+                self._manager,
+                self._store,
+                self._owner_user_id,
+                circuit_count=circuit_count,
+                page_index=self._page_index,
+            ),
+        )
+
+
+class ResetCircuitsButton(discord.ui.Button):
+    def __init__(
+        self,
+        manager: ModelRouter,
+        store: ModelSelectionStore,
+        owner_user_id: str,
+        *,
+        disabled: bool,
+    ) -> None:
+        super().__init__(
+            label="Reset all provider cooldowns",
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self._manager = manager
+        self._store = store
+        self._owner_user_id = owner_user_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self._owner_user_id:
+            await send_message(interaction, "Bot owner only.")
+            return
+        try:
+            await self._manager.reset_all_circuits()
+        except Exception:
+            log.exception("Could not reset provider cooldowns")
+            await send_message(interaction, "Could not reset provider cooldowns.")
+            return
+        status, circuit_count = await _status_text(self._manager)
+        await interaction.response.edit_message(
+            content=status,
+            view=ModelsView(
+                self._manager,
+                self._store,
+                self._owner_user_id,
+                circuit_count=circuit_count,
+            ),
+        )
+
+
+class ModelPageButton(discord.ui.Button):
+    def __init__(
+        self,
+        manager: ModelRouter,
+        store: ModelSelectionStore,
+        owner_user_id: str,
+        *,
+        target_page: int,
+        label: str,
+    ) -> None:
+        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+        self._manager = manager
+        self._store = store
+        self._owner_user_id = owner_user_id
+        self._target_page = target_page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self._owner_user_id:
+            await send_message(interaction, "Bot owner only.")
+            return
+        status, circuit_count = await _status_text(self._manager)
+        await interaction.response.edit_message(
+            content=status,
+            view=ModelsView(
+                self._manager,
+                self._store,
+                self._owner_user_id,
+                circuit_count=circuit_count,
+                page_index=self._target_page,
+            ),
         )
 
 
@@ -119,6 +214,9 @@ class ModelsView(discord.ui.View):
         manager: ModelRouter,
         store: ModelSelectionStore,
         owner_user_id: str,
+        *,
+        circuit_count: int = 0,
+        page_index: int = 0,
     ) -> None:
         super().__init__(timeout=300)
         names = manager.selectable_chat_models
@@ -126,17 +224,47 @@ class ModelsView(discord.ui.View):
             names[offset : offset + _MODELS_PER_SELECT]
             for offset in range(0, len(names), _MODELS_PER_SELECT)
         ]
-        for index, page in enumerate(pages):
+        page_index = min(max(page_index, 0), max(len(pages) - 1, 0))
+        if pages:
             self.add_item(
                 ModelSelect(
                     manager,
                     store,
                     owner_user_id,
-                    model_names=page,
-                    include_default=index == 0,
-                    page_label=f"{index + 1}/{len(pages)}" if len(pages) > 1 else "",
+                    model_names=pages[page_index],
+                    include_default=page_index == 0,
+                    page_label=(f"{page_index + 1}/{len(pages)}" if len(pages) > 1 else ""),
+                    page_index=page_index,
                 )
             )
+        if page_index > 0:
+            self.add_item(
+                ModelPageButton(
+                    manager,
+                    store,
+                    owner_user_id,
+                    target_page=page_index - 1,
+                    label="Previous models",
+                )
+            )
+        if page_index + 1 < len(pages):
+            self.add_item(
+                ModelPageButton(
+                    manager,
+                    store,
+                    owner_user_id,
+                    target_page=page_index + 1,
+                    label="More models",
+                )
+            )
+        self.add_item(
+            ResetCircuitsButton(
+                manager,
+                store,
+                owner_user_id,
+                disabled=circuit_count == 0,
+            )
+        )
 
 
 def register_models_command(
@@ -154,15 +282,15 @@ def register_models_command(
         if str(interaction.user.id) != owner_user_id:
             await send_message(interaction, "Bot owner only.")
             return
-        if not manager.selectable_chat_models:
-            await send_message(
-                interaction,
-                "No selectable chat models are configured in `config/models.yaml`.",
-            )
-            return
+        status, circuit_count = await _status_text(manager)
         await interaction.response.send_message(
-            _status_text(manager),
-            view=ModelsView(manager, store, owner_user_id),
+            status,
+            view=ModelsView(
+                manager,
+                store,
+                owner_user_id,
+                circuit_count=circuit_count,
+            ),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )

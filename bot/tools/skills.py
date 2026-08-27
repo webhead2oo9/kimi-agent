@@ -177,11 +177,12 @@ def init_skill_tools(
         name="skill_edit",
         description=(
             "Edit an existing private skill. Built-in skills are read-only. Only "
-            "Staff can edit skills. Provide exactly "
+            "Staff can edit skills. Provide at most "
             "one of: content (replace the whole body; risks dropping unrelated "
             "content on long skills), edits (surgical old_string/new_string "
             "patches, like multi_edit, so prefer this for small changes), or "
-            "append (add text to the end, e.g. a new section)."
+            "append (add text to the end, e.g. a new section). Description can "
+            "be updated by itself."
         ),
         parameters={
             "type": "object",
@@ -604,6 +605,18 @@ async def _skill_edit(args: dict, ctx: MessageContext) -> str:
     edits = args.get("edits")
     append = args.get("append")
     description = args.get("description")
+
+    # Some tool-schema consumers materialize optional fields with empty values.
+    # Treat those placeholders as omitted while preserving malformed, non-empty
+    # values for the admin service to validate normally.
+    if isinstance(content, str) and not content.strip():
+        content = None
+    if edits == []:
+        edits = None
+    if isinstance(append, str) and not append.strip():
+        append = None
+    if isinstance(description, str) and not description.strip():
+        description = None
 
     try:
         service = _active_skill_admin()

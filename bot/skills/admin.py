@@ -189,7 +189,7 @@ class SkillAdminService:
 
             body_modes = sum(value is not None for value in (body, edits, append))
             if body_modes > 1:
-                raise SkillAdminError("Provide at most one of body, edits, or append")
+                raise SkillAdminError("Provide at most one of content, edits, or append")
             if body is not None:
                 updated_body = self._validate_body(body)
             elif edits is not None:

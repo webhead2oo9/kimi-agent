@@ -528,6 +528,147 @@ async def test_skill_edit_handler_supports_edits_and_append(
 
 
 @pytest.mark.asyncio
+async def test_skill_edit_ignores_empty_schema_placeholders(tmp_path: Path) -> None:
+    store = tmp_path / "skills"
+    skill_dir = store / "edit-target"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: edit-target\ndescription: desc\nguild_ids: [111]\n---\n\nOriginal body.",
+        encoding="utf-8",
+    )
+    _use_skill_store(store)
+
+    patch_result = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "",
+            "edits": [{"old_string": "Original body.", "new_string": "Patched body."}],
+            "append": "  ",
+            "description": "",
+        },
+        _staff_ctx("111"),
+    )
+    assert "result" in json.loads(patch_result)
+
+    replace_result = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "Replacement body.",
+            "edits": [],
+            "append": "",
+            "description": " ",
+        },
+        _staff_ctx("111"),
+    )
+    assert "result" in json.loads(replace_result)
+
+    append_result = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "\t",
+            "edits": [],
+            "append": "Appended body.",
+            "description": "",
+        },
+        _staff_ctx("111"),
+    )
+    assert "result" in json.loads(append_result)
+
+    from skills.loader import load_skill
+
+    skill = load_skill("edit-target", skills_dir=store)
+    assert skill is not None
+    assert skill.content == "Replacement body.\n\nAppended body."
+    assert skill.meta.description == "desc"
+
+
+@pytest.mark.asyncio
+async def test_skill_edit_placeholder_modes_allow_description_only_update(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "skills"
+    skill_dir = store / "edit-target"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: edit-target\ndescription: old\nguild_ids: [111]\n---\n\nOriginal body.",
+        encoding="utf-8",
+    )
+    _use_skill_store(store)
+
+    result = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "",
+            "edits": [],
+            "append": "",
+            "description": "new description",
+        },
+        _staff_ctx("111"),
+    )
+
+    assert "result" in json.loads(result)
+    from skills.loader import load_skill
+
+    skill = load_skill("edit-target", skills_dir=store)
+    assert skill is not None
+    assert skill.content == "Original body."
+    assert skill.meta.description == "new description"
+
+
+@pytest.mark.asyncio
+async def test_skill_edit_rejects_meaningful_mode_conflicts_and_empty_noop(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "skills"
+    skill_dir = store / "edit-target"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    original = "---\nname: edit-target\ndescription: desc\nguild_ids: [111]\n---\n\nOriginal body."
+    skill_path.write_text(original, encoding="utf-8")
+    _use_skill_store(store)
+
+    conflict = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "Replacement.",
+            "edits": [],
+            "append": "Appendix.",
+        },
+        _staff_ctx("111"),
+    )
+    assert json.loads(conflict) == {
+        "error": "Provide at most one of content, edits, or append"
+    }
+    assert skill_path.read_text(encoding="utf-8") == original
+
+    noop = await skill_tools._skill_edit(
+        {
+            "name": "edit-target",
+            "content": "",
+            "edits": [],
+            "append": " ",
+            "description": "",
+        },
+        _staff_ctx("111"),
+    )
+    assert json.loads(noop) == {"error": "No skill changes were provided"}
+    assert skill_path.read_text(encoding="utf-8") == original
+
+
+def test_skill_edit_schema_keeps_only_name_required() -> None:
+    registry = _init_skill_registry()
+    schema = next(
+        schema
+        for schema in registry.get_tool_schemas(TrustTier.STAFF)
+        if schema["name"] == "skill_edit"
+    )
+
+    assert schema["parameters"]["required"] == ["name"]
+    assert "Provide at most one" in schema["description"]
+
+
+@pytest.mark.asyncio
 async def test_skill_edit_masks_cross_guild_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

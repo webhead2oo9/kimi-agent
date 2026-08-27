@@ -553,7 +553,7 @@ async def test_privacy_scope_selection_is_single_use() -> None:
 
     view = _privacy_view(is_available=lambda: True)
     buttons = {
-        child.label: cast(Any, child)
+        cast(Any, child).label: cast(Any, child)
         for child in view.children
         if getattr(child, "label", None) in {"Delete memory", "Delete my data"}
     }

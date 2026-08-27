@@ -32,8 +32,14 @@ absolute binaries explicitly instead of replacing the system Node installation:
 ```sh
 sudo env NODE_BIN=/absolute/path/to/node NPM_BIN=/absolute/path/to/npm \
   PATH=/absolute/path/to/node-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  sh ./deploy/betterwright/install.sh /opt/kimi/betterwright
+  sh ./deploy/betterwright/install.sh
 ```
+
+The privileged installer only writes `/opt/kimi/betterwright`. An optional
+path argument is accepted for compatibility only when `realpath -m` resolves it
+to that exact location; other paths, including symlinks to another tree, are
+rejected before staging or removal begins. Keep `BROWSER_RUNTIME_DIR` pointed at
+the same reviewed location.
 
 Re-run the installer to repair or reproduce the pinned runtime. It runs `npm
 ci` in a sibling staging tree, verifies exact package versions, the Mermaid

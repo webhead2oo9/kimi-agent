@@ -133,17 +133,17 @@ def _classify_guild_file(
 def _scan_guild_activations(
     config_dir: Path,
     parser: ActivationParser,
-) -> GuildActivationSnapshot:
+) -> GuildActivationSnapshot | None:
     directory = config_dir / "servers"
     try:
         directory_stat = directory.lstat()
         if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(directory_stat.st_mode):
-            return GuildActivationSnapshot()
+            return None
         paths = list(directory.iterdir())
     except FileNotFoundError:
-        return GuildActivationSnapshot()
+        return None
     except OSError:
-        return GuildActivationSnapshot()
+        return None
 
     buckets: dict[str, set[int]] = {
         "active": set(),
@@ -186,8 +186,20 @@ class GuildActivationCache:
 
     def refresh(self) -> GuildActivationSnapshot:
         with self._refresh_lock:
-            updated = _scan_guild_activations(self._config_dir, self._parser)
+            scanned = _scan_guild_activations(self._config_dir, self._parser)
             with self._state_lock:
+                current = self._snapshot
+                if scanned is None:
+                    # Losing access to the directory must not erase an explicit
+                    # deactivation and fall back to the environment allowlist.
+                    updated = GuildActivationSnapshot(deactivated=current.deactivated)
+                else:
+                    preserved = current.deactivated.intersection(scanned.invalid)
+                    updated = GuildActivationSnapshot(
+                        active=scanned.active,
+                        deactivated=scanned.deactivated.union(preserved),
+                        invalid=scanned.invalid.difference(preserved),
+                    )
                 self._snapshot = updated
             return updated
 
@@ -197,8 +209,8 @@ class GuildActivationCache:
         path = directory / f"{guild_id}.md"
         with self._refresh_lock:
             if not _is_real_directory(directory):
-                updated = GuildActivationSnapshot()
                 with self._state_lock:
+                    updated = GuildActivationSnapshot(deactivated=self._snapshot.deactivated)
                     self._snapshot = updated
                 return updated
             classified = _classify_guild_file(path, self._parser)
@@ -212,6 +224,8 @@ class GuildActivationCache:
                 invalid.discard(guild_id)
                 if classified is not None:
                     _found_id, state = classified
+                    if state == "invalid" and guild_id in current.deactivated:
+                        state = "deactivated"
                     {"active": active, "deactivated": deactivated, "invalid": invalid}[state].add(
                         guild_id
                     )

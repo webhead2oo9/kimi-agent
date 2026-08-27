@@ -60,10 +60,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from config.fragments.channel_pins import (
-    parse_blocked_tools,
     parse_pinned_tools,
     parse_tristate,
 )
+from config.fragments._fragment_cache import LastKnownGoodCache
 from utils.frontmatter import FrontmatterError, split_frontmatter, split_frontmatter_strict
 from config import paths
 from trust.resolver import EMPTY_GUILD_TRUST, GuildTrust
@@ -71,6 +71,13 @@ from trust.resolver import EMPTY_GUILD_TRUST, GuildTrust
 log = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[0-9]+$")  # Discord snowflakes
+_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_MAX_BLOCKED_TOOLS = 64
+_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
+
+
+class GuildBlockedToolsLoadError(RuntimeError):
+    """A present guild denylist could not be loaded safely."""
 
 
 GuildConfigValidator = Callable[[Mapping[str, object]], bool]
@@ -186,15 +193,62 @@ def load_guild_blocked_tools(
 
     The denylist counterpart of :func:`load_guild_pinned_tools`. These names are
     the base denylist that channel ``blocked_tools`` union onto during turn
-    preparation; the registry hides and rejects them this turn. Returns an empty
-    set for a missing/invalid guild id, an unreadable file, or absent/malformed
-    frontmatter.
+    preparation; the registry hides and rejects them this turn. A missing file
+    with no cached value is an empty optional policy. Once loaded, missing,
+    empty, omitted, malformed, or unreadable input retains the last valid value;
+    a valid ``blocked_tools: []`` explicitly clears it. A failed present file
+    without a cached value raises rather than silently granting tools.
     """
-    result = read_guild_frontmatter(guild_id, config_dir=config_dir)
-    if result is None:
+    if not guild_id or not _ID_RE.match(guild_id):
         return frozenset()
-    meta, source = result
-    return parse_blocked_tools(meta.get("blocked_tools"), source=source)
+    fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
+    key = _blocked_cache.key(fragment)
+    try:
+        text = fragment.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        if _blocked_cache.last_good(key) is None:
+            return frozenset()
+        return _retain_guild_blocked_tools(fragment, key, exc)
+    except (OSError, UnicodeError) as exc:
+        return _retain_guild_blocked_tools(fragment, key, exc)
+
+    try:
+        meta, _body = split_frontmatter_strict(text)
+        if "blocked_tools" not in meta:
+            if _blocked_cache.last_good(key) is None:
+                return frozenset()
+            return _retain_guild_blocked_tools(fragment, key, ValueError("blocked_tools is absent"))
+        raw = meta["blocked_tools"]
+        if not isinstance(raw, list):
+            raise ValueError("blocked_tools must be a list")
+        if len(raw) > _MAX_BLOCKED_TOOLS:
+            raise ValueError(f"blocked_tools is capped at {_MAX_BLOCKED_TOOLS} entries")
+        for entry in raw:
+            if not isinstance(entry, str) or not _TOOL_NAME_RE.fullmatch(entry):
+                raise ValueError(f"invalid blocked_tools entry: {entry!r}")
+        blocked = frozenset(raw)
+    except ValueError as exc:
+        return _retain_guild_blocked_tools(fragment, key, exc)
+    _blocked_cache.remember(key, blocked)
+    return blocked
+
+
+def _retain_guild_blocked_tools(
+    fragment: Path,
+    key: Path,
+    error: BaseException,
+) -> frozenset[str]:
+    last_good = _blocked_cache.last_good(key)
+    if last_good is not None:
+        log.error(
+            "Could not reload guild tool policy %s (%s); retaining last-known-good denylist",
+            fragment,
+            error,
+        )
+        return last_good
+    raise GuildBlockedToolsLoadError(
+        f"Could not load guild tool policy {fragment}: {error}"
+    ) from error
 
 
 def load_guild_thread_handoff(

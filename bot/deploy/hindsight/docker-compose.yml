@@ -17,8 +17,10 @@ services:
     container_name: kimi-hindsight
     restart: unless-stopped
     ports:
-      - "8890:8888"   # API  (bot -> HINDSIGHT_URL=http://<host>:8890)
-      - "9990:9999"   # Control Plane (web UI)
+      # Hindsight has no authentication in this template. Keep both endpoints
+      # local unless .env explicitly names a trusted LAN/VPN interface.
+      - "${HINDSIGHT_API_BIND_ADDRESS:-127.0.0.1}:8890:8888"
+      - "${HINDSIGHT_CONTROL_BIND_ADDRESS:-127.0.0.1}:9990:9999"
     volumes:
       - ./data:/home/hindsight/.pg0
     # Provider identity, endpoints, credentials, and model IDs are private

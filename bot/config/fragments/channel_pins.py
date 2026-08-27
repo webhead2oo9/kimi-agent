@@ -47,7 +47,7 @@ _ID_RE = re.compile(r"^[0-9]+$")  # Discord snowflakes
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _MAX_PINS = 16
 _MAX_BLOCKED = 64
-_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache()
+_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
 
 
 class ChannelBlockedToolsLoadError(RuntimeError):
@@ -143,10 +143,11 @@ def load_channel_blocked_tools(
     """Read ``blocked_tools`` from a channel fragment's frontmatter.
 
     The denylist counterpart of :func:`load_channel_pinned_tools`. Names listed
-    here are masked in this channel. A missing file explicitly clears the
-    policy. A present but malformed or unreadable file retains the last valid
-    value for that path; without one it raises instead of silently granting
-    tools.
+    here are masked in this channel. A missing file with no cached value is an
+    empty optional policy. Once loaded, missing, empty, omitted, malformed, or
+    unreadable input retains the last valid value for that path; a valid
+    ``blocked_tools: []`` explicitly clears it. A failed present file without a
+    cached value raises instead of silently granting tools.
     """
     if not channel_id or not _ID_RE.match(channel_id):
         return frozenset()
@@ -154,26 +155,30 @@ def load_channel_blocked_tools(
     key = _blocked_cache.key(fragment)
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        _blocked_cache.forget(key)
-        return frozenset()
+    except FileNotFoundError as exc:
+        if _blocked_cache.last_good(key) is None:
+            return frozenset()
+        return _retain_channel_blocked_tools(fragment, key, exc)
     except (OSError, UnicodeError) as exc:
         return _retain_channel_blocked_tools(fragment, key, exc)
 
     try:
         meta, _body = split_frontmatter_strict(text)
-        raw = meta.get("blocked_tools")
-        if raw is None:
-            blocked: frozenset[str] = frozenset()
-        else:
-            if not isinstance(raw, list):
-                raise ValueError("blocked_tools must be a list")
-            if len(raw) > _MAX_BLOCKED:
-                raise ValueError(f"blocked_tools is capped at {_MAX_BLOCKED} entries")
-            for entry in raw:
-                if not isinstance(entry, str) or not _TOOL_NAME_RE.fullmatch(entry):
-                    raise ValueError(f"invalid blocked_tools entry: {entry!r}")
-            blocked = frozenset(raw)
+        if "blocked_tools" not in meta:
+            if _blocked_cache.last_good(key) is None:
+                return frozenset()
+            return _retain_channel_blocked_tools(
+                fragment, key, ValueError("blocked_tools is absent")
+            )
+        raw = meta["blocked_tools"]
+        if not isinstance(raw, list):
+            raise ValueError("blocked_tools must be a list")
+        if len(raw) > _MAX_BLOCKED:
+            raise ValueError(f"blocked_tools is capped at {_MAX_BLOCKED} entries")
+        for entry in raw:
+            if not isinstance(entry, str) or not _TOOL_NAME_RE.fullmatch(entry):
+                raise ValueError(f"invalid blocked_tools entry: {entry!r}")
+        blocked = frozenset(raw)
     except ValueError as exc:
         return _retain_channel_blocked_tools(fragment, key, exc)
     _blocked_cache.remember(key, blocked)

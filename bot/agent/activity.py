@@ -47,6 +47,7 @@ _TOOL_LABELS: dict[str, str] = {
     "coding_job_cancel": "Stopping a coding job",
     "internet_search": "Searching the web",
     "browser": "Using the browser",
+    "render_visual": "Rendering a visual",
     "run_code": "Running code",
     # Workspace / files
     "read_file": "Reading a file",

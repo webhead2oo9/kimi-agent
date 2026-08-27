@@ -1283,9 +1283,7 @@ class KimiApplication:
         limit = raw.get("effective_limit_bytes")
         notice = raw.get("notice_text")
         valid_limit = (
-            limit
-            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
-            else None
+            limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
         )
         return valid_limit, notice if isinstance(notice, str) else None
 
@@ -2316,6 +2314,7 @@ class KimiApplication:
                 turn_result.response_text,
                 reference=reply_reference,
                 output_files=list(turn_result.output_files),
+                output_file_descriptions=dict(turn_result.output_file_descriptions),
                 allowed_file_roots=list(turn_result.allowed_file_roots),
                 embed=turn_result.embed,
                 mention_author=True,
@@ -2371,6 +2370,7 @@ class KimiApplication:
                         turn_result.response_text,
                         reference=reply_reference,
                         output_files=list(turn_result.output_files),
+                        output_file_descriptions=dict(turn_result.output_file_descriptions),
                         allowed_file_roots=list(turn_result.allowed_file_roots),
                         embed=turn_result.embed,
                         mention_author=True,
@@ -2496,6 +2496,7 @@ class KimiApplication:
         content: str,
         reference: discord.Message | None = None,
         output_files: list[str] | None = None,
+        output_file_descriptions: dict[str, str] | None = None,
         allowed_file_roots: list[str | Path] | None = None,
         embed: EmbedSpec | None = None,
         mention_author: bool = False,
@@ -2507,6 +2508,7 @@ class KimiApplication:
                 content,
                 reference=reference,
                 output_files=output_files,
+                output_file_descriptions=output_file_descriptions,
                 allowed_file_roots=allowed_file_roots,
                 embed=embed,
                 mention_author=mention_author,

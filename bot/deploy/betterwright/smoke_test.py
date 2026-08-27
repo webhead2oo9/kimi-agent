@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from config.settings import Settings
 from sandbox.runner import SandboxConfig, SandboxNetworkMode, sandbox_available
+from tools.visuals import verify_rendered_png
 from web_browser.service import (
     BrowserNetworkMode,
     BrowserService,
     BrowserServiceConfig,
 )
+from web_browser.visual_service import VisualRenderRequest, VisualSeries, VisualService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -126,7 +130,48 @@ async def main() -> None:
         if not persisted.get("ok") or persisted.get("result") != "persisted":
             raise RuntimeError(f"browser profile did not persist: {persisted}")
         await service.release_turn(owner_a, "smoke-a-read")
-        print("browser smoke passed: public navigation, persistence, and user isolation")
+        await service.close()
+
+        visual_service = VisualService(
+            replace(
+                service.config,
+                bridge_script=PROJECT_ROOT / "web_browser/visual_bridge.mjs",
+            )
+        )
+        with tempfile.TemporaryDirectory(prefix="kimi-visual-smoke-") as temporary:
+            root = Path(temporary)
+            chart_dir = root / "chart"
+            chart_dir.mkdir()
+            chart = await visual_service.render(
+                VisualRenderRequest(
+                    kind="chart",
+                    chart_type="line",
+                    title="Deployment smoke chart",
+                    alt_text="Two values rise from one to two.",
+                    categories=("One", "Two"),
+                    series=(VisualSeries(name="Values", values=(1.0, 2.0)),),
+                ),
+                chart_dir,
+            )
+            verify_rendered_png(chart.output_path, settings.browser_max_screenshot_bytes)
+
+            mermaid_dir = root / "mermaid"
+            mermaid_dir.mkdir()
+            mermaid = await visual_service.render(
+                VisualRenderRequest(
+                    kind="mermaid",
+                    title="Deployment smoke diagram",
+                    alt_text="Start leads to done.",
+                    source="flowchart LR\n  A[Start] --> B[Done]",
+                ),
+                mermaid_dir,
+            )
+            verify_rendered_png(mermaid.output_path, settings.browser_max_screenshot_bytes)
+
+        print(
+            "browser smoke passed: public navigation, persistence, user isolation, "
+            "chart rendering, and Mermaid rendering"
+        )
     finally:
         for owner, turn in (
             (owner_a, "smoke-a-write"),

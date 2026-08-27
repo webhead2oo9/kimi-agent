@@ -15,6 +15,9 @@ from app.plugins import PluginLoadState, build_plugin_context, load_plugins_with
 from app.providers import ProviderManager
 from config.plugin_settings import PluginSettingsRegistry
 from config.settings import Settings
+from image_gen.factory import ImageBackendConfig, build_image_backend
+from image_gen.service import ImageGenService
+from providers.factory import get_codex_auth_manager
 from skills.admin import SkillAdminService
 from skills.loader import SharedSkillCatalog, scan_skills
 from skills.personal import PersonalSkillManager
@@ -37,6 +40,7 @@ from tools.discord_text_search import (
     init_discord_text_search_tool,
 )
 from tools.embeds import init_embed_tool
+from tools.image_gen import init_image_gen_tool
 from tools.internet_search import InternetSearchConfig, init_internet_search_tool
 from tools.member import init_member_lookup_tool
 from tools.persona import LLMPersonaCompiler, PersonaToolConfig, init_persona_tools
@@ -160,6 +164,13 @@ def build_runtime_tools(
         registry,
         workspace_manager,
         config=workspace_config,
+    )
+    _register_image_gen(
+        settings,
+        registry,
+        workspace_manager,
+        workspace_locks=workspace_locks,
+        workspace_config=workspace_config,
     )
     video_service = _register_video(
         settings,
@@ -301,6 +312,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
     ("Wolfram|Alpha", ("wolfram_alpha",), "WOLFRAM_ALPHA_APP_ID"),
     (
+        "image generation",
+        ("generate_image",),
+        "IMAGE_GEN_ENABLED + Codex OAuth or IMAGE_GEN_API_KEY",
+    ),
+    (
         "video understanding",
         ("video",),
         "VIDEO_UNDERSTANDING_ENABLED + GEMINI_API_KEY",
@@ -428,6 +444,51 @@ def _register_wolfram_alpha(settings: Settings, registry: ToolRegistry) -> None:
         ),
     )
     log.info("Wolfram|Alpha enabled with the LLM API")
+
+
+def _register_image_gen(
+    settings: Settings,
+    registry: ToolRegistry,
+    workspace_manager: WorkspaceManager,
+    *,
+    workspace_locks: UserLocks,
+    workspace_config: WorkspaceToolConfig,
+) -> None:
+    if not settings.image_gen_enabled:
+        log.info("Image generation disabled; IMAGE_GEN_ENABLED is false")
+        return
+    auth_manager = (
+        get_codex_auth_manager(settings.codex_token_file)
+        if settings.image_gen_auth_mode in {"auto", "oauth"}
+        else None
+    )
+    backend = build_image_backend(
+        ImageBackendConfig(
+            backend=settings.image_gen_backend,
+            auth_mode=settings.image_gen_auth_mode,
+            api_key=settings.image_gen_api_key.get_secret_value().strip(),
+            timeout_seconds=settings.image_gen_timeout_seconds,
+        ),
+        auth_manager,
+    )
+    if backend is None:
+        log.warning(
+            "Image generation requested but no usable OAuth or API-key credentials "
+            "are available; tool not registered"
+        )
+        return
+    service = ImageGenService(
+        backend,
+        max_concurrency=settings.image_gen_max_concurrency,
+    )
+    init_image_gen_tool(
+        registry,
+        service,
+        workspace_manager,
+        workspace_locks,
+        workspace_config,
+    )
+    log.info("Image generation enabled with %s (%s auth)", backend.name, backend.auth_mode)
 
 
 def _register_video(

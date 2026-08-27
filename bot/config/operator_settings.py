@@ -150,6 +150,8 @@ _MINIMUMS: dict[str, int | float] = {
     "internet_search_max_backend_calls_per_turn": 1,
     "internet_search_max_output_chars": 1,
     "video_understanding_max_concurrency": 1,
+    "image_gen_max_concurrency": 1,
+    "image_gen_timeout_seconds": 30.0,
     "exa_search_cost_usd": 0,
     "exa_contents_cost_usd": 0,
     "brave_search_cost_usd": 0,

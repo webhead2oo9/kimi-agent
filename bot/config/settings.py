@@ -186,6 +186,15 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)
 
+    # OpenAI image generation (optional REGULAR-tier core tool). OAuth reuses
+    # the Codex token manager; IMAGE_GEN_API_KEY is the future-facing fallback.
+    image_gen_enabled: bool = False
+    image_gen_backend: str = "openai"
+    image_gen_auth_mode: str = "auto"
+    image_gen_api_key: SecretStr = SecretStr("")
+    image_gen_max_concurrency: int = Field(default=1, ge=1, le=8)
+    image_gen_timeout_seconds: float = Field(default=300.0, ge=30.0, le=900.0)
+
     # The bot owner's Discord user id. Gates any owner_only-registered tool at
     # dispatch (none currently ship; the registry mechanism stays for future
     # owner-only surfaces); empty fails closed. Distinct from staff.
@@ -704,6 +713,22 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(f"CODE_EXEC_NETWORK_WEEKLY_LIMIT must be >= 0, got {value}")
         return value
+
+    @field_validator("image_gen_backend")
+    @classmethod
+    def _validate_image_gen_backend(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized != "openai":
+            raise ValueError("IMAGE_GEN_BACKEND must be openai")
+        return normalized
+
+    @field_validator("image_gen_auth_mode")
+    @classmethod
+    def _validate_image_gen_auth_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"auto", "oauth", "api_key"}:
+            raise ValueError("IMAGE_GEN_AUTH_MODE must be one of: auto, oauth, api_key")
+        return normalized
 
     @field_validator("code_exec_network_mode")
     @classmethod

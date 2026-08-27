@@ -47,6 +47,7 @@ agent/                  ReAct engine, turn prep, compaction, attachments
 discord_adapter/        the Discord boundary: io (send/receive gates, chunking),
                         gateway (live channel/member reads), lifecycle (sweepers)
 providers/              neutral LLM interface, provider profiles, failover
+image_gen/              provider-neutral image backend seam + OpenAI HTTP client
 search/                 provider-neutral internet search chain + Exa/Brave clients
 video_understanding/    Gemini Interactions client + rooted session coordinator
 config/                 pydantic-settings, models.yaml routing, operator overlay
@@ -54,8 +55,8 @@ config/fragments/       operator markdown read fresh each turn: guild/channel
                         pins and denylists, per-tool config, prompt templates
 tools/                  registry, browse-tools activation, workspace + memory +
                         community-knowledge + internet/Discord search + persona
-                        tools + optional video/code-execution/browser/visual/
-                        coding-task surfaces
+                        tools + optional image-generation/video/code-execution/
+                        browser/visual/coding-task surfaces
 web_browser/            BetterWright persistent-browser bridge and isolated
                         per-user worker lifecycle, plus the fixed-code ephemeral
                         offline chart/Mermaid renderer
@@ -124,3 +125,4 @@ Once you have the map, these are the places to go next:
 - `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
 - `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.
 - `video-understanding.md`: YouTube/uploaded-video sessions, Files + Interactions state, streaming, caching, limits, and deletion.
+- `image-generation.md`: explicit OpenAI image generation/editing, auth modes, workspace references, limits, and provider seam.

@@ -30,9 +30,9 @@ class ImageCapableProvider(LLMProvider):
         return ProviderResponse(content="done")
 
 
-def test_core_downgrades_image_output_intent_for_text_only_provider() -> None:
-    # A bare visual verb ("draw") in ordinary chat must not abort the turn on a
-    # text-only provider; image output is a soft hint, not a hard precondition.
+def test_core_does_not_infer_image_output_from_text_for_text_only_provider() -> None:
+    # Image generation is an explicit tool call now; ordinary text never adds a
+    # provider capability requirement, even when it contains a visual verb.
     provider = TextOnlyProvider()
     ctx = ConversationContext(key="k", db_conversation_id=1)
 
@@ -54,7 +54,7 @@ def test_core_downgrades_image_output_intent_for_text_only_provider() -> None:
     assert result.text == "done"
 
 
-def test_core_requests_image_output_when_provider_supports_it() -> None:
+def test_core_does_not_infer_image_output_when_provider_supports_it() -> None:
     provider = ImageCapableProvider()
     ctx = ConversationContext(key="k", db_conversation_id=1)
 
@@ -72,7 +72,7 @@ def test_core_requests_image_output_when_provider_supports_it() -> None:
         )
     )
 
-    assert ProviderCapability.IMAGE_OUTPUT in provider.requests[0].requested_capabilities
+    assert ProviderCapability.IMAGE_OUTPUT not in provider.requests[0].requested_capabilities
 
 
 def test_core_rejects_image_when_provider_lacks_image_input() -> None:

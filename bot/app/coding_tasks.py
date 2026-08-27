@@ -98,7 +98,9 @@ class CodingTaskService:
     def __init__(self, runtime: CodingTaskRuntime) -> None:
         self._runtime = runtime
         self._store = runtime.store
-        self._coding_registry = build_coding_registry(runtime.source_registry, self)
+        self._coding_registry = build_coding_registry(
+            runtime.source_registry, self, netns_jobs=runtime.jobs.uses_netns
+        )
         self._wake = asyncio.Event()
         self._scheduler: asyncio.Task[None] | None = None
         self._workers: dict[str, asyncio.Task[None]] = {}
@@ -1382,6 +1384,7 @@ class CodingTaskService:
             channel_name="coding task",
             blocked_tools=blocked_tools,
             tool_configs=tool_configs or {},
+            background_task=True,
         )
         delivery = task.checkpoint.get("delivery")
         if isinstance(delivery, dict):
@@ -1414,11 +1417,11 @@ class CodingTaskService:
                 {
                     "type": part.type.value,
                     "text": part.text,
-                    "image_url": part.image_url,
-                    "media_type": part.media_type,
-                    "detail": part.detail,
                 }
                 for part in message.content
+                # Browser/view-image data URLs are an in-turn visual rail. They
+                # can be several MB each and must never enter durable checkpoints.
+                if part.type.value == "text"
             ],
             "tool_call_id": message.tool_call_id,
             "tool_name": message.tool_name,

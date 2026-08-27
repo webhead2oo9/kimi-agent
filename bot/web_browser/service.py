@@ -784,23 +784,7 @@ class BrowserService:
     async def _close_after_idle(self, owner_id: str) -> None:
         try:
             await asyncio.sleep(self.config.idle_ttl_seconds)
-            async with self._condition:
-                if (
-                    self._closed
-                    or self._active_owner != owner_id
-                    or self._active_turns
-                    or self._inflight
-                ):
-                    return
-                self._switching = True
-                worker = self._worker
-            if worker is not None:
-                await self._close_worker(worker)
-            async with self._condition:
-                self._active_owner = None
-                self._switching = False
-                await self._release_physical_lease()
-                self._condition.notify_all()
+            await self._close_idle_worker(owner_id)
         except asyncio.CancelledError:
             return
         except Exception:
@@ -808,6 +792,50 @@ class BrowserService:
             async with self._condition:
                 self._switching = False
                 self._condition.notify_all()
+
+    async def _close_idle_worker(self, owner_id: str) -> bool:
+        """Close ``owner_id``'s idle worker and drop the physical lease now."""
+
+        async with self._condition:
+            if (
+                self._closed
+                or self._switching
+                or self._active_owner != owner_id
+                or self._active_turns
+                or self._inflight
+            ):
+                return False
+            self._switching = True
+            worker = self._worker
+        if worker is not None:
+            await self._close_worker(worker)
+        async with self._condition:
+            self._active_owner = None
+            self._switching = False
+            await self._release_physical_lease()
+            self._condition.notify_all()
+        return True
+
+    async def close_idle_owner(self, owner_id: str) -> bool:
+        """Yield the namespace early for a networked coding job of the same user.
+
+        Only an idle worker owned by ``owner_id`` is closed; an active turn or
+        another user's worker is left alone and ``False`` is returned.
+        """
+
+        try:
+            closed = await self._close_idle_worker(owner_id)
+            if closed:
+                # The pending idle timer would find no owner and return; drop it
+                # rather than let it fire for nothing.
+                self._cancel_idle()
+            return closed
+        except Exception:
+            log.exception("Failed to yield idle browser worker for %s", owner_id)
+            async with self._condition:
+                self._switching = False
+                self._condition.notify_all()
+            return False
 
     async def delete_user_data(self, user_id: str) -> int:
         async with self._condition:

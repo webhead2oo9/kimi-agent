@@ -64,7 +64,11 @@ can't select it:
 The browser and networked code execution share one process-wide namespace
 lease, so the two surfaces can never use the single physical VPN namespace at
 the same time. `CODE_EXEC_NETWORK_MODE=none` never claims that lease, and is
-the expected pairing when only browser traffic needs the VPN.
+the expected pairing when only browser traffic needs the VPN. Managed coding
+jobs draw on the same lease: a netns job first asks the service to close the
+requesting user's *idle* browser worker (an active turn or another user's
+worker is never evicted), then waits a bounded 30 seconds before failing with a
+retryable error. See [Durable coding agent](coding-agent.md).
 
 The generic helper and sudoers boundary documented in
 [code-exec netns deployment](../bot/deploy/code-exec-netns/README.md) serves the

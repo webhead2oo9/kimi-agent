@@ -114,15 +114,27 @@ def _effective_config(ctx: MessageContext, startup: BrowserToolConfig) -> _Effec
 
 
 def _browser_session(ctx: MessageContext) -> str:
-    if ctx.conversation_id is not None:
+    # A zero conversation id is the "no persisted conversation" placeholder used
+    # by background workers; those must not all share one page session.
+    if ctx.conversation_id:
         return f"conversation-{ctx.conversation_id}"
     seed = ctx.context_key or f"{ctx.guild_id}:{ctx.channel_id}:{ctx.thread_id}"
     return "context-" + hashlib.sha256(seed.encode()).hexdigest()[:20]
 
 
 def _turn_id(ctx: MessageContext) -> tuple[str, bool]:
-    if ctx.tool_event_turn_id:
+    """The service turn id and whether the lease is released after this call.
+
+    Rooted Discord turns hold the lease until the turn finalizer runs so a turn
+    keeps its worker. A background task runs for minutes on one context, so it
+    releases per call; otherwise its own managed jobs could never take the
+    shared namespace for the rest of the task.
+    """
+
+    if ctx.tool_event_turn_id and not ctx.background_task:
         return ctx.tool_event_turn_id, False
+    if ctx.tool_event_turn_id:
+        return f"{ctx.tool_event_turn_id}:{uuid4().hex}", True
     return f"direct-{uuid4().hex}", True
 
 
@@ -322,14 +334,13 @@ def init_browser_tool(
         acquired = False
         rooted_active = False
         new_claim = False
-        if service.uses_netns() and not release_after_call:
-            if ctx.networked_exec_inflight:
-                return tool_error(
-                    "browser cannot run alongside networked code in the same turn; retry later"
-                )
-            if not ctx.browser_netns_claimed:
-                ctx.browser_netns_claimed = True
-                new_claim = True
+        if service.uses_netns() and ctx.networked_exec_inflight:
+            return tool_error(
+                "browser cannot run alongside networked code in the same turn; retry later"
+            )
+        if service.uses_netns() and not release_after_call and not ctx.browser_netns_claimed:
+            ctx.browser_netns_claimed = True
+            new_claim = True
         try:
             if release_after_call:
                 acquired = await service.acquire_turn(ctx.user_id, turn_id)

@@ -483,38 +483,35 @@ making crash recovery idempotent without retrying a known-oversized upload.
 
 ## Discord text search (gated)
 
-The hidden, searchable `discord_text_search` tool registers only when
-`DISCORD_SEARCH_CHANNELS` is set. `member` tier users can use it once `browse_tools` has
-activated it, but it can only ever search the configured target channels. If a tool call
-leaves out `channels`, the tool searches just the current channel, provided that channel is
-configured; otherwise it returns an error rather than falling back to every guild channel.
+The hidden, searchable `discord_text_search` tool is enabled by default when Message Content
+intent is enabled. `member` tier users can use it once `browse_tools` has activated it. Every
+call builds a positive scope containing only channels both the requesting member and bot can
+view and whose history they can read. Operator exclusions are removed before the Discord
+search request is made, so excluded content is never fetched and filtered afterward.
 
-Think of `DISCORD_SEARCH_CHANNELS` as a content-access allow-list, not a catalog of channels
-the bot knows about. A channel is searchable only when its `id:name` entry appears in this
-setting and the bot holds the necessary Discord permissions there. Naming an unconfigured
-channel in a tool call is rejected. Activating or pinning the tool changes only whether the
-model may call it; neither action adds a channel to the allow-list.
+If a tool call leaves out `channels`, it searches every eligible channel in the current
+guild, including accessible active and archived threads. Passing one numeric channel ID or
+a comma-separated string of IDs narrows the search to exactly those channels. Any excluded,
+inaccessible, nonexistent, or cross-guild ID rejects the complete call without revealing
+which check failed. A parent-channel exclusion also excludes all of its threads.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `DISCORD_SEARCH_CHANNELS` | csv(id:name) | "" | Target channels the tool may search, for example `800000000000000001:general,800000000000000002:help`. Names are kept for readable config/results; Discord receives IDs. Empty disables the tool. |
-| `DISCORD_SEARCH_TIMEOUT_SECONDS` | float | `30.0` | Per-request timeout for Discord's guild message search endpoint. |
+| `DISCORD_TEXT_SEARCH_ENABLED` | bool | `true` | Whether to register the searchable tool. Message Content intent must also be enabled. |
+| `DISCORD_SEARCH_EXCLUDED_CHANNELS` | csv(id) | "" | Channel IDs the tool must never search. Empty excludes nothing. Parent exclusions include child threads. |
+| `DISCORD_SEARCH_TIMEOUT_SECONDS` | float | `30.0` | Timeout applied separately to channel-scope resolution and the Discord search request. |
 
 The result limit is live tool behavior: edit `max_results` (default and
 maximum `25`, minimum `1`) in `config/tools/discord_text_search.md`.
 
 Channel instruction fragments are a separate configuration surface. The files under
 `config/channels/`, `config/channel_threads/`, and `config/threads/` tell the model how to
-behave in those scopes, but their presence does **not** grant access to historical messages.
-Don't build `DISCORD_SEARCH_CHANNELS` automatically by enumerating those files, because an
-instruction catalog may well include private, moderation, or administrative channels whose
-history should stay outside the search surface.
+behave in those scopes, but their presence neither grants nor denies historical-message
+access. Use Discord permissions for member visibility and
+`DISCORD_SEARCH_EXCLUDED_CHANNELS` for channels that must stay outside the search surface.
 
-For example, you might keep instruction fragments for `#general`, `#moderator-notes`, and
-`#bot-config` while setting `DISCORD_SEARCH_CHANNELS` to `#general` only. The model still
-receives the applicable instructions when it operates in the other channels, but
-`discord_text_search` can't query their message history. Add each searchable channel
-deliberately and review the list as the access-control boundary it is.
+`DISCORD_SEARCH_CHANNELS` is a removed allowlist setting. A non-empty legacy value aborts
+startup with migration guidance instead of silently reversing the deployment's policy.
 
 ---
 
@@ -1034,7 +1031,7 @@ limit in the Linux service or container. The tool doesn't OCR scanned pages.
 
 - `ALLOWED_CHANNEL_IDS`, `ALLOWED_GUILD_IDS`, `STAFF_ROLE_IDS`, `REGULAR_ROLE_IDS`: each entry
   must be a numeric Discord ID; a bad entry raises at startup with a clear message.
-- `DISCORD_SEARCH_CHANNELS`: every entry must be `id:name`, and both ids and names must be unique.
+- `DISCORD_SEARCH_EXCLUDED_CHANNELS`: every non-empty entry must be a unique numeric channel ID.
 - `MODERATION_OUTPUT_EXEMPT_TIER`: must name a real trust tier.
 - `REACT_TEMPERATURE`: a blank string is coerced to `None` (omit the param) instead of failing.
 - **Model config**: `config/models.yaml` is parsed at startup. Unknown fields,

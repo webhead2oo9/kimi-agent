@@ -40,10 +40,11 @@ it, replying to it (with ping on), saying "hey kimi", or chatting inside a
 thread it started. It does **not** store ordinary channel conversation as chat
 history.
 
-While it works on something you asked for, Kimi may read recent public messages
-from the current channel or search other public channels the operator has
-selected. That gives the AI useful context, but it does not turn those messages
-into Kimi conversation history just because they were retrieved.
+While it works on something you asked for, Kimi may read recent messages from
+the current channel or search other channels that you and the bot can both read,
+except channels the operator excluded. That gives the AI useful context, but it
+does not turn those messages into Kimi conversation history just because they
+were retrieved.
 
 **Kimi ignores direct messages.** If you DM the bot, your message is dropped
 without being read, stored, or logged.

@@ -144,7 +144,11 @@ class Settings(BaseSettings):
     moderation_output_refusal: str = "I wrote a reply, but it didn't pass my content filter, so I'm not posting it. Nothing's wrong on your end; try asking a different way."
     moderation_error_refusal: str = "I can't run my content check right now, so I'm holding this one back. Try again in a minute."
 
-    # Discord guild text search (optional searchable tool; disabled when no channels are set)
+    # Discord guild text search. The legacy allowlist field remains only as a
+    # migration sentinel so an old deployment cannot silently invert its
+    # access policy when upgrading.
+    discord_text_search_enabled: bool = True
+    discord_search_excluded_channels: str = ""
     discord_search_channels: str = ""
     discord_search_timeout_seconds: float = 30.0
 
@@ -889,34 +893,34 @@ class Settings(BaseSettings):
                 ) from exc
         return value
 
-    @field_validator("discord_search_channels")
+    @field_validator("discord_search_excluded_channels")
     @classmethod
-    def _validate_discord_search_channels(cls, value: str) -> str:
+    def _validate_discord_search_excluded_channels(cls, value: str) -> str:
         seen_ids: set[str] = set()
-        seen_names: set[str] = set()
-        for entry in value.split(","):
-            entry = entry.strip()
-            if not entry:
+        for raw_channel_id in value.split(","):
+            channel_id = raw_channel_id.strip()
+            if not channel_id:
                 continue
-            if ":" not in entry:
-                raise ValueError("DISCORD_SEARCH_CHANNELS entries must use id:name format")
-            channel_id, name = entry.split(":", 1)
-            channel_id = channel_id.strip()
-            name = name.strip()
             if not channel_id.isdigit():
                 raise ValueError(
-                    f"DISCORD_SEARCH_CHANNELS channel id {channel_id!r} is not numeric"
+                    f"DISCORD_SEARCH_EXCLUDED_CHANNELS channel id {channel_id!r} is not numeric"
                 )
-            if not name:
-                raise ValueError(f"DISCORD_SEARCH_CHANNELS entry {channel_id!r} is missing a name")
-            normalized_name = name.casefold()
             if channel_id in seen_ids:
-                raise ValueError(f"DISCORD_SEARCH_CHANNELS channel id {channel_id!r} is duplicated")
-            if normalized_name in seen_names:
-                raise ValueError(f"DISCORD_SEARCH_CHANNELS channel name {name!r} is duplicated")
+                raise ValueError(
+                    f"DISCORD_SEARCH_EXCLUDED_CHANNELS channel id {channel_id!r} is duplicated"
+                )
             seen_ids.add(channel_id)
-            seen_names.add(normalized_name)
         return value
+
+    @model_validator(mode="after")
+    def _reject_legacy_discord_search_allowlist(self) -> Settings:
+        if self.discord_search_channels.strip():
+            raise ValueError(
+                "DISCORD_SEARCH_CHANNELS has been replaced by "
+                "DISCORD_SEARCH_EXCLUDED_CHANNELS; migrate the old allowlist "
+                "before starting the bot"
+            )
+        return self
 
     @field_validator("moderation_output_exempt_tier")
     @classmethod
@@ -939,8 +943,12 @@ class Settings(BaseSettings):
         return {int(gid.strip()) for gid in self.allowed_guild_ids.split(",") if gid.strip()}
 
     @property
-    def discord_search_channel_map(self) -> dict[str, str]:
-        return _parse_channel_entries(self.discord_search_channels)
+    def discord_search_excluded_channel_ids(self) -> frozenset[str]:
+        return frozenset(
+            channel_id.strip()
+            for channel_id in self.discord_search_excluded_channels.split(",")
+            if channel_id.strip()
+        )
 
     @property
     def user_memory_recall_types(self) -> list[str]:
@@ -956,14 +964,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-def _parse_channel_entries(value: str) -> dict[str, str]:
-    channels: dict[str, str] = {}
-    for entry in value.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        channel_id, name = entry.split(":", 1)
-        channels[channel_id.strip()] = name.strip()
-    return channels

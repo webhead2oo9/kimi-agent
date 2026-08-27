@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+import time
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +30,29 @@ log = logging.getLogger(__name__)
 MEMBER_QUERY_LIMIT = 10
 MAX_MEMBER_CANDIDATES = 3
 MAX_MEMBER_ROLES = 10
+_DISCORD_SEARCH_CHANNEL_LIMIT = 500
+_DISCORD_SEARCH_ARCHIVE_CACHE_TTL_SECONDS = 30.0
+_DISCORD_SEARCH_ARCHIVE_CACHE_MAX_ENTRIES = 1024
+_SEARCH_THREAD_CHANNEL_TYPES = frozenset(
+    {
+        discord.ChannelType.news_thread,
+        discord.ChannelType.public_thread,
+        discord.ChannelType.private_thread,
+    }
+)
+_SEARCH_MESSAGE_CHANNEL_TYPES = frozenset(
+    {
+        discord.ChannelType.text,
+        discord.ChannelType.voice,
+        discord.ChannelType.news,
+        discord.ChannelType.news_thread,
+        discord.ChannelType.public_thread,
+        discord.ChannelType.private_thread,
+        discord.ChannelType.stage_voice,
+        discord.ChannelType.forum,
+        discord.ChannelType.media,
+    }
+)
 
 
 class DiscordGatewayError(RuntimeError):
@@ -100,6 +126,10 @@ class DiscordGateway:
         self._trust_resolver = trust_resolver
         self._turn_sources: dict[tuple[str, str], dict[int, Any]] = {}
         self._next_turn_source_binding_id = 0
+        self._discord_search_archive_cache: OrderedDict[
+            tuple[str, str], tuple[float, tuple[Any, ...]]
+        ] = OrderedDict()
+        self._discord_search_archive_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def bind_turn_source(
         self,
@@ -155,6 +185,212 @@ class DiscordGateway:
             author_id=str(getattr(author, "id", "") or ""),
             is_bot=bool(getattr(author, "bot", False)),
         )
+
+    async def resolve_discord_search_channels(
+        self,
+        ctx: MessageContext,
+        *,
+        requested_channel_ids: tuple[str, ...] | None,
+        excluded_channel_ids: frozenset[str],
+    ) -> dict[str, str]:
+        """Resolve a positive, caller-readable channel filter for guild search."""
+        guild, member, bot_member = self._discord_search_actors(ctx)
+        try:
+            if requested_channel_ids is not None:
+                return await self._resolve_requested_search_channels(
+                    guild,
+                    member,
+                    bot_member,
+                    requested_channel_ids,
+                    excluded_channel_ids,
+                )
+            return await self._resolve_all_search_channels(
+                guild,
+                member,
+                bot_member,
+                excluded_channel_ids,
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            log.warning("Could not resolve Discord search channel scope", exc_info=True)
+            raise ValueError("Discord search channel scope is unavailable.") from exc
+
+    def _discord_search_actors(self, ctx: MessageContext) -> tuple[Any, Any, Any]:
+        source = self._turn_source(ctx)
+        guild = getattr(source, "guild", None)
+        member = getattr(source, "author", None)
+        if (
+            source is None
+            or guild is None
+            or str(getattr(guild, "id", "")) != str(ctx.guild_id or "")
+            or str(getattr(member, "id", "")) != ctx.user_id
+        ):
+            raise ValueError("Discord search channel scope is unavailable.")
+        member_guild = getattr(member, "guild", guild)
+        if str(getattr(member_guild, "id", "")) != str(ctx.guild_id):
+            raise ValueError("Discord search channel scope is unavailable.")
+        bot_member = getattr(guild, "me", None)
+        if bot_member is None:
+            raise ValueError("Discord search channel scope is unavailable.")
+        return guild, member, bot_member
+
+    async def _resolve_requested_search_channels(
+        self,
+        guild: Any,
+        member: Any,
+        bot_member: Any,
+        requested_channel_ids: tuple[str, ...],
+        excluded_channel_ids: frozenset[str],
+    ) -> dict[str, str]:
+        channels: dict[str, str] = {}
+        unavailable = "One or more channels are unavailable for Discord text search."
+        for requested_id in requested_channel_ids:
+            channel = guild.get_channel_or_thread(int(requested_id))
+            if channel is None:
+                try:
+                    channel = await guild.fetch_channel(int(requested_id))
+                except (
+                    discord.Forbidden,
+                    discord.NotFound,
+                    discord.InvalidData,
+                    discord.HTTPException,
+                ) as exc:
+                    raise ValueError(unavailable) from exc
+            if (
+                str(getattr(channel, "id", "")) != requested_id
+                or str(getattr(getattr(channel, "guild", None), "id", "")) != str(guild.id)
+                or not _is_search_message_channel(channel)
+                or _search_channel_is_excluded(channel, excluded_channel_ids)
+                or not await _search_channel_accessible(channel, member, bot_member)
+            ):
+                raise ValueError(unavailable)
+            channels[requested_id] = _search_channel_name(channel)
+        return channels
+
+    async def _resolve_all_search_channels(
+        self,
+        guild: Any,
+        member: Any,
+        bot_member: Any,
+        excluded_channel_ids: frozenset[str],
+    ) -> dict[str, str]:
+        channels: dict[str, str] = {}
+        archive_parents: list[Any] = []
+        for channel in guild.channels:
+            if _search_channel_is_excluded(channel, excluded_channel_ids):
+                continue
+            if _is_search_message_channel(channel) and await _search_channel_accessible(
+                channel, member, bot_member
+            ):
+                channels[str(channel.id)] = _search_channel_name(channel)
+                _check_discord_search_scope_size(channels)
+            if hasattr(channel, "archived_threads") and await _search_channel_accessible(
+                channel, member, bot_member
+            ):
+                archive_parents.append(channel)
+
+        for thread in guild.threads:
+            await _add_search_thread(
+                channels,
+                thread,
+                member,
+                bot_member,
+                excluded_channel_ids,
+            )
+            _check_discord_search_scope_size(channels)
+
+        for parent in archive_parents:
+            async for thread in self._iter_archived_search_threads(parent, bot_member):
+                await _add_search_thread(
+                    channels,
+                    thread,
+                    member,
+                    bot_member,
+                    excluded_channel_ids,
+                )
+                _check_discord_search_scope_size(channels)
+        return channels
+
+    async def _iter_archived_search_threads(
+        self,
+        parent: Any,
+        bot_member: Any,
+    ) -> AsyncIterator[Any]:
+        discovery_mode = _archive_discovery_mode(parent, bot_member)
+        cache_key = (str(getattr(parent, "id", "")), discovery_mode)
+        cached_threads = self._cached_discord_search_archives(cache_key)
+        if cached_threads is not None:
+            for thread in cached_threads:
+                yield thread
+            return
+
+        lock = self._discord_search_archive_locks.setdefault(cache_key, asyncio.Lock())
+        cached_after_lock: tuple[Any, ...] | None = None
+        async with lock:
+            cached_threads = self._cached_discord_search_archives(cache_key)
+            if cached_threads is not None:
+                cached_after_lock = cached_threads
+            else:
+                discovered: list[Any] = []
+                completed = False
+                try:
+                    async for thread in parent.archived_threads(limit=None):
+                        discovered.append(thread)
+                        yield thread
+                    if discovery_mode != "public":
+                        async for thread in parent.archived_threads(
+                            private=True,
+                            joined=discovery_mode == "joined_private",
+                            limit=None,
+                        ):
+                            discovered.append(thread)
+                            yield thread
+                    completed = True
+                finally:
+                    if completed:
+                        self._store_discord_search_archives(cache_key, tuple(discovered))
+        if cached_after_lock is not None:
+            for thread in cached_after_lock:
+                yield thread
+
+    def _cached_discord_search_archives(
+        self,
+        cache_key: tuple[str, str],
+    ) -> tuple[Any, ...] | None:
+        self._prune_discord_search_archive_cache()
+        cached = self._discord_search_archive_cache.get(cache_key)
+        if cached is None:
+            return None
+        self._discord_search_archive_cache.move_to_end(cache_key)
+        return cached[1]
+
+    def _store_discord_search_archives(
+        self,
+        cache_key: tuple[str, str],
+        threads: tuple[Any, ...],
+    ) -> None:
+        self._prune_discord_search_archive_cache()
+        self._discord_search_archive_cache[cache_key] = (
+            time.monotonic() + _DISCORD_SEARCH_ARCHIVE_CACHE_TTL_SECONDS,
+            threads,
+        )
+        self._discord_search_archive_cache.move_to_end(cache_key)
+        while len(self._discord_search_archive_cache) > _DISCORD_SEARCH_ARCHIVE_CACHE_MAX_ENTRIES:
+            self._discord_search_archive_cache.popitem(last=False)
+        self._prune_discord_search_archive_locks()
+
+    def _prune_discord_search_archive_cache(self) -> None:
+        now = time.monotonic()
+        for key, (expires_at, _) in list(self._discord_search_archive_cache.items()):
+            if expires_at <= now:
+                self._discord_search_archive_cache.pop(key, None)
+        self._prune_discord_search_archive_locks()
+
+    def _prune_discord_search_archive_locks(self) -> None:
+        for key, lock in list(self._discord_search_archive_locks.items()):
+            if key not in self._discord_search_archive_cache and not lock.locked():
+                self._discord_search_archive_locks.pop(key, None)
 
     async def collect_recent_channel_context(
         self,
@@ -376,6 +612,97 @@ def _is_default_role(role: Any) -> bool:
         except Exception:
             return False
     return False
+
+
+def _is_search_message_channel(channel: Any) -> bool:
+    return getattr(channel, "type", None) in _SEARCH_MESSAGE_CHANNEL_TYPES
+
+
+def _search_channel_is_excluded(channel: Any, excluded_channel_ids: frozenset[str]) -> bool:
+    channel_id = str(getattr(channel, "id", ""))
+    parent_id = str(getattr(channel, "parent_id", "") or "")
+    return channel_id in excluded_channel_ids or (
+        getattr(channel, "type", None) in _SEARCH_THREAD_CHANNEL_TYPES
+        and parent_id in excluded_channel_ids
+    )
+
+
+def _search_channel_name(channel: Any) -> str:
+    return str(getattr(channel, "name", "") or "")
+
+
+def _archive_discovery_mode(parent: Any, bot_member: Any) -> str:
+    if getattr(parent, "type", None) is not discord.ChannelType.text:
+        return "public"
+    bot_permissions = parent.permissions_for(bot_member)
+    if bool(getattr(bot_permissions, "manage_threads", False)):
+        return "all_private"
+    return "joined_private"
+
+
+async def _search_channel_accessible(channel: Any, member: Any, bot_member: Any) -> bool:
+    permissions_for = getattr(channel, "permissions_for", None)
+    if not callable(permissions_for):
+        return False
+    try:
+        member_permissions = permissions_for(member)
+        bot_permissions = permissions_for(bot_member)
+    except AttributeError, TypeError:
+        return False
+    if not all(
+        bool(getattr(permissions, "view_channel", False))
+        and bool(getattr(permissions, "read_message_history", False))
+        for permissions in (member_permissions, bot_permissions)
+    ):
+        return False
+    if getattr(channel, "type", None) is not discord.ChannelType.private_thread:
+        return True
+
+    need_member = not bool(getattr(member_permissions, "manage_threads", False))
+    need_bot = not bool(getattr(bot_permissions, "manage_threads", False))
+    if not need_member and not need_bot:
+        return True
+    if need_member and not await _private_thread_has_member(channel, member):
+        return False
+    return not need_bot or await _private_thread_has_member(channel, bot_member)
+
+
+async def _private_thread_has_member(channel: Any, member: Any) -> bool:
+    fetch_member = getattr(channel, "fetch_member", None)
+    member_id = getattr(member, "id", None)
+    if not callable(fetch_member) or member_id is None:
+        return False
+    try:
+        await fetch_member(int(member_id))
+        return True
+    except discord.Forbidden, discord.NotFound, discord.HTTPException:
+        return False
+
+
+async def _add_search_thread(
+    channels: dict[str, str],
+    thread: Any,
+    member: Any,
+    bot_member: Any,
+    excluded_channel_ids: frozenset[str],
+) -> None:
+    channel_id = str(getattr(thread, "id", ""))
+    if (
+        not channel_id
+        or channel_id in channels
+        or _search_channel_is_excluded(thread, excluded_channel_ids)
+        or not await _search_channel_accessible(thread, member, bot_member)
+    ):
+        return
+    channels[channel_id] = _search_channel_name(thread)
+
+
+def _check_discord_search_scope_size(channels: dict[str, str]) -> None:
+    if len(channels) > _DISCORD_SEARCH_CHANNEL_LIMIT:
+        raise ValueError(
+            "Discord text search can search at most 500 channels at once. "
+            "Pass a narrower comma-separated channels filter."
+        )
 
 
 def _iso(value: Any) -> str | None:

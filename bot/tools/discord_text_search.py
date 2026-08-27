@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ MAX_DISCORD_OFFSET = 9975
 MAX_CONTENT_CHARS = 1024
 SORT_BY = {"timestamp", "relevance"}
 SORT_ORDER = {"asc", "desc"}
-ALL_CHANNEL_TOKENS = {"all", "*", "all_configured", "all configured"}
+MAX_CHANNEL_FILTERS = 500
 
 _CONFIG_SPEC = (
     ToolConfigField(
@@ -52,9 +53,19 @@ class DiscordTextSearchClient(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class DiscordTextSearchScopeResolver(Protocol):
+    async def resolve_discord_search_channels(
+        self,
+        ctx: MessageContext,
+        *,
+        requested_channel_ids: tuple[str, ...] | None,
+        excluded_channel_ids: frozenset[str],
+    ) -> dict[str, str]: ...
+
+
 @dataclass(frozen=True)
 class DiscordTextSearchConfig:
-    channels: dict[str, str]
+    excluded_channel_ids: frozenset[str] = frozenset()
     timeout_seconds: float = 30.0
     max_content_chars: int = 500
 
@@ -97,20 +108,31 @@ class DiscordSearchApiClient:
 def init_discord_text_search_tool(
     registry: ToolRegistry,
     client: DiscordTextSearchClient,
+    scope_resolver: DiscordTextSearchScopeResolver,
     config: DiscordTextSearchConfig,
 ) -> bool:
-    if not config.channels:
-        return False
-
-    channels = dict(config.channels)
-    name_to_id = {name.casefold(): channel_id for channel_id, name in channels.items()}
-
     async def handler(args: dict, ctx: MessageContext) -> str:
         try:
             if not ctx.guild_id:
                 return tool_error("Discord text search is only available in servers.")
             query = _required_query(args)
-            selected_channels = _selected_channels(args, ctx, channels, name_to_id)
+            requested_channel_ids = _requested_channel_ids(args)
+            channels = await asyncio.wait_for(
+                scope_resolver.resolve_discord_search_channels(
+                    ctx,
+                    requested_channel_ids=requested_channel_ids,
+                    excluded_channel_ids=config.excluded_channel_ids,
+                ),
+                timeout=config.timeout_seconds,
+            )
+            if not channels:
+                raise ValueError("No channels are available for Discord text search.")
+            if len(channels) > MAX_CHANNEL_FILTERS:
+                raise ValueError(
+                    "Discord text search can search at most 500 channels at once. "
+                    "Pass a narrower comma-separated channels filter."
+                )
+            selected_channels = list(channels)
             params = _search_params(
                 args,
                 query,
@@ -118,9 +140,19 @@ def init_discord_text_search_tool(
                 max_results=_configured_max_results(ctx),
             )
             response = await client.search_guild_messages(ctx.guild_id, params=params)
-            return json.dumps(_normalize_response(response, selected_channels, channels, config))
+            return json.dumps(
+                _normalize_response(
+                    response,
+                    selected_channels,
+                    channels,
+                    config,
+                    explicit_scope=requested_channel_ids is not None,
+                )
+            )
         except (DiscordTextSearchError, ValueError) as exc:
             return tool_error(str(exc))
+        except TimeoutError:
+            return tool_error("Discord text search channel scope timed out.")
         except Exception:
             log.exception("Discord text search failed")
             return tool_error("Discord text search failed.")
@@ -128,9 +160,8 @@ def init_discord_text_search_tool(
     registry.register(
         name=TOOL_NAME,
         description=(
-            "Search Discord guild message text in explicitly configured channels. "
-            "This tool never searches every channel by default; omit channels only "
-            "to search the current channel when it is configured."
+            "Search Discord guild message text in channels the requesting member can read. "
+            "Omit channels to search all accessible, non-excluded channels."
         ),
         parameters={
             "type": "object",
@@ -140,11 +171,10 @@ def init_discord_text_search_tool(
                     "description": "Text to search for in message content.",
                 },
                 "channels": {
-                    "type": "array",
-                    "items": {"type": "string"},
+                    "type": "string",
                     "description": (
-                        "Configured channel names or IDs to search. Omit to search "
-                        "only the current channel if it is configured."
+                        "One Discord channel ID or comma-separated channel IDs. "
+                        "Omit to search all accessible, non-excluded channels."
                     ),
                 },
                 "limit": {
@@ -203,49 +233,31 @@ def _required_query(args: dict) -> str:
     return query
 
 
-def _selected_channels(
-    args: dict,
-    ctx: MessageContext,
-    channels: dict[str, str],
-    name_to_id: dict[str, str],
-) -> list[str]:
+def _requested_channel_ids(args: dict) -> tuple[str, ...] | None:
     requested = args.get("channels")
-    if requested is None or requested == []:
-        if ctx.channel_id in channels:
-            return [ctx.channel_id]
-        raise ValueError(
-            "Current channel is not configured for Discord text search. "
-            "Pass one or more configured channel names or IDs."
-        )
+    if requested is None:
+        return None
+    if not isinstance(requested, str):
+        raise ValueError("channels must be a comma-separated string of Discord channel IDs.")
+    if not requested.strip():
+        raise ValueError("channels must include at least one Discord channel ID.")
 
-    values = _string_list(requested, name="channels")
-    if not values:
-        raise ValueError("channels must include at least one configured channel.")
+    values = requested.split(",")
+    if any(not value.strip() for value in values):
+        raise ValueError("channels contains an empty Discord channel ID.")
 
     selected: list[str] = []
     seen: set[str] = set()
     for value in values:
-        if value.strip().casefold() in ALL_CHANNEL_TOKENS:
-            raise ValueError("All-channel Discord text search is not supported.")
-        channel_id = _resolve_channel(value, channels, name_to_id)
+        channel_id = value.strip()
+        if not channel_id.isdigit():
+            raise ValueError("channels must contain only numeric Discord channel IDs.")
         if channel_id not in seen:
             selected.append(channel_id)
             seen.add(channel_id)
-    return selected
-
-
-def _resolve_channel(
-    value: str,
-    channels: dict[str, str],
-    name_to_id: dict[str, str],
-) -> str:
-    token = value.strip()
-    if token in channels:
-        return token
-    named = name_to_id.get(token.casefold())
-    if named is not None:
-        return named
-    raise ValueError(f"Channel {token!r} is not configured for Discord text search.")
+    if len(selected) > MAX_CHANNEL_FILTERS:
+        raise ValueError("channels may contain at most 500 Discord channel IDs.")
+    return tuple(selected)
 
 
 def _search_params(
@@ -301,6 +313,8 @@ def _normalize_response(
     selected_channels: list[str],
     channels: dict[str, str],
     config: DiscordTextSearchConfig,
+    *,
+    explicit_scope: bool,
 ) -> dict[str, Any]:
     if response.get("code") == 110000:
         return untrusted_payload(
@@ -314,18 +328,29 @@ def _normalize_response(
             _UNTRUSTED_NOTE,
         )
 
+    messages = _flatten_messages(response.get("messages"))
+    allowed_channel_ids = set(selected_channels)
+    if any(str(message.get("channel_id", "")) not in allowed_channel_ids for message in messages):
+        raise DiscordTextSearchError(
+            "Discord text search returned a result outside the authorized channel scope."
+        )
+
     return untrusted_payload(
         {
             "source": "discord",
             "status": "ok",
             "total_results": response.get("total_results", 0),
             "doing_deep_historical_index": bool(response.get("doing_deep_historical_index", False)),
-            "searched_channels": _channel_cards(selected_channels, channels),
-            "configured_channels": _channel_cards(list(channels), channels),
-            "results": [
-                _normalize_message(message, channels, config)
-                for message in _flatten_messages(response.get("messages"))
-            ],
+            "search_scope": {
+                "mode": "explicit" if explicit_scope else "all_accessible",
+                "channel_count": len(selected_channels),
+                **(
+                    {"channels": _channel_cards(selected_channels, channels)}
+                    if explicit_scope
+                    else {}
+                ),
+            },
+            "results": [_normalize_message(message, channels, config) for message in messages],
         },
         _UNTRUSTED_NOTE,
     )

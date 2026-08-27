@@ -172,72 +172,41 @@ def test_non_numeric_role_id_fails_fast_at_construction() -> None:
         Settings(_env_file=None, staff_role_ids="700000000000000102,Admin")  # type: ignore[call-arg]
 
 
-FIRST_GUILD_CHANNELS = (
-    "800000000000000001:general,"
-    "800000000000000002:xr-talk,"
-    "800000000000000003:rumormill,"
-    "800000000000000004:offtopic,"
-    "800000000000000005:community-support,"
-    "800000000000000006:ai-discussion,"
-    "800000000000000007:games,"
-    "800000000000000008:vehicles-and-racing,"
-    "800000000000000009:development"
-)
-SECOND_GUILD_CHANNELS = (
-    "700000000000000001:general-support,"
-    "700000000000000002:general-support-forum,"
-    "700000000000000003:headset-support,"
-    "700000000000000004:pc-support,"
-    "700000000000000005:standalone-support,"
-    "700000000000000006:mobile-support,"
-    "700000000000000007:handheld-support,"
-    "700000000000000008:streaming-support,"
-    "700000000000000009:cloud-support,"
-    "700000000000000010:network,"
-    "700000000000000011:mac-os,"
-    "700000000000000012:video-player,"
-    "700000000000000013:feature-requests,"
-    "700000000000000014:random"
-)
-
-
-def test_discord_search_channels_parse_ids_and_names() -> None:
+def test_discord_search_exclusions_parse_numeric_ids() -> None:
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
-        discord_search_channels=(
-            "800000000000000101:dev-testing,"
-            "800000000000000102:bot-testing,"
-            "800000000000000103:random"
-        ),
+        discord_search_excluded_channels="800000000000000101, 800000000000000102",
     )
 
-    assert settings.discord_search_channel_map == {
-        "800000000000000101": "dev-testing",
-        "800000000000000102": "bot-testing",
-        "800000000000000103": "random",
+    assert settings.discord_text_search_enabled is True
+    assert settings.discord_search_excluded_channel_ids == {
+        "800000000000000101",
+        "800000000000000102",
     }
 
 
-def test_discord_search_channels_allows_large_allowlist() -> None:
-    # Two full communities' channel catalogs at once, the realistic worst case.
-    configured = f"{FIRST_GUILD_CHANNELS},{SECOND_GUILD_CHANNELS}"
-
-    settings = Settings(_env_file=None, discord_search_channels=configured)  # type: ignore[call-arg]
-
-    assert len(settings.discord_search_channel_map) == 23
-    assert settings.discord_search_channel_map["800000000000000001"] == "general"
-    assert settings.discord_search_channel_map["700000000000000002"] == ("general-support-forum")
-    assert settings.discord_search_channel_map["700000000000000014"] == "random"
-
-
-def test_discord_search_channels_rejects_missing_name() -> None:
+def test_discord_search_exclusions_reject_non_numeric_id() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, discord_search_channels="123")  # type: ignore[call-arg]
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            discord_search_excluded_channels="123,general",
+        )
 
 
-def test_discord_search_channels_rejects_non_numeric_id() -> None:
+def test_discord_search_exclusions_reject_duplicate_id() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, discord_search_channels="abc:general")  # type: ignore[call-arg]
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            discord_search_excluded_channels="123,123",
+        )
+
+
+def test_legacy_discord_search_allowlist_fails_with_migration_message() -> None:
+    with pytest.raises(ValidationError, match="DISCORD_SEARCH_EXCLUDED_CHANNELS"):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            discord_search_channels="123:general",
+        )
 
 
 def test_blank_react_temperature_uses_endpoint_default(

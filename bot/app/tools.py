@@ -147,7 +147,7 @@ def build_runtime_tools(
     init_member_lookup_tool(registry, gateway)
     if get_blocked_user_store is not None:
         init_block_user_tool(registry, get_blocked_user_store)
-    _register_discord_text_search(settings, registry)
+    _register_discord_text_search(settings, registry, gateway)
     _register_internet_search(settings, registry)
     workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
@@ -287,7 +287,11 @@ def build_runtime_tools(
 # never strands an already-managed conversation.
 CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("thread handoff creation", ("move_to_thread",), "THREAD_HANDOFF_ENABLED"),
-    ("discord search", ("discord_text_search",), "DISCORD_SEARCH_CHANNELS"),
+    (
+        "discord search",
+        ("discord_text_search",),
+        "DISCORD_TEXT_SEARCH_ENABLED + MESSAGE_CONTENT_INTENT",
+    ),
     ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
     (
         "video understanding",
@@ -325,10 +329,16 @@ def _log_capability_summary(registry: ToolRegistry) -> None:
         )
 
 
-def _register_discord_text_search(settings: Settings, registry: ToolRegistry) -> None:
-    channels = settings.discord_search_channel_map
-    if not channels:
-        log.info("Discord text search disabled; DISCORD_SEARCH_CHANNELS is not set")
+def _register_discord_text_search(
+    settings: Settings,
+    registry: ToolRegistry,
+    scope_resolver: Any,
+) -> None:
+    if not settings.discord_text_search_enabled:
+        log.info("Discord text search disabled; DISCORD_TEXT_SEARCH_ENABLED is false")
+        return
+    if not settings.message_content_intent:
+        log.info("Discord text search disabled; MESSAGE_CONTENT_INTENT is false")
         return
     init_discord_text_search_tool(
         registry,
@@ -336,12 +346,16 @@ def _register_discord_text_search(settings: Settings, registry: ToolRegistry) ->
             settings.discord_bot_token.get_secret_value(),
             timeout_seconds=settings.discord_search_timeout_seconds,
         ),
+        scope_resolver,
         DiscordTextSearchConfig(
-            channels=channels,
+            excluded_channel_ids=settings.discord_search_excluded_channel_ids,
             timeout_seconds=settings.discord_search_timeout_seconds,
         ),
     )
-    log.info("Discord text search enabled for %d channels", len(channels))
+    log.info(
+        "Discord text search enabled with %d excluded channels",
+        len(settings.discord_search_excluded_channel_ids),
+    )
 
 
 def _register_internet_search(settings: Settings, registry: ToolRegistry) -> None:

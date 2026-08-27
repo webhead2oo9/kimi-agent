@@ -169,6 +169,11 @@ async def test_success_is_bounded_untrusted_and_records_configured_cost() -> Non
 
     assert payload["query"] == "distance Los Angeles to New York"
     assert payload["result"] == "Result: 2464 miles"
+    assert payload["formatting"] == (
+        "Discord does not render LaTeX. Present math using readable Unicode or plain text, "
+        "for example `∫₀^π x² sin(x) dx = π² − 4`. Do not use `\\(...\\)`, "
+        "`\\[...\\]`, or `$...$` delimiters."
+    )
     assert payload["context_is_untrusted"] is True
     assert "secret-app-id" not in raw
     assert request.calls == [

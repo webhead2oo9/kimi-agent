@@ -16,6 +16,11 @@ from tools.registry import MessageContext
 from .config import WorkspaceToolConfig
 
 
+ATTACHMENT_HINT = (
+    "Saved to the workspace but not attached; use queue_file to attach it to the reply."
+)
+
+
 class EnvDirWriteError(ValueError):
     """Write refused because the target lives under a reserved environment dir.
 

@@ -9,7 +9,7 @@ turns:
     2606, then download that URL into my workspace as rfc2606.txt and attach
     it. Do not use the browser.
 expect:
-  should_use_tools: [internet_search, fetch_url]
+  should_use_tools: [internet_search, fetch_url, queue_file]
   should_not_use_tools: [browser]
   attaches_file: true
   max_tool_calls: 5

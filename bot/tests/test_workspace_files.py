@@ -34,7 +34,7 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
 
     write_result = await reg.dispatch(
         "write_file",
-        {"path": "notes/hello.txt", "content": "Hello\nWorld"},
+        {"path": "notes/hello.txt", "content": "Hello\nWorld", "attach": True},
         ctx,
     )
     parsed_write = json.loads(write_result)
@@ -64,7 +64,7 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
     ]
 
     delete_result = await reg.dispatch("delete_file", {"path": "notes/hello.txt"}, ctx)
-    # The write auto-queued the file; deleting it must also drop the stale rail
+    # The write explicitly queued the file; deleting it must also drop the stale rail
     # entry (a dangling queued path fails the whole reply's file staging).
     assert json.loads(delete_result) == {
         "path": "notes/hello.txt",
@@ -336,7 +336,8 @@ async def test_edit_file_unique_replace(tmp_path: Path) -> None:
 
     body = json.loads(result)
     assert body["replacements"] == 1
-    assert body["attached"] is True
+    assert body["attached"] is False
+    assert "queue_file" in body["attachment_hint"]
     assert f.read_text(encoding="utf-8") == "print('world')\n"
 
 
@@ -727,7 +728,7 @@ async def test_multi_edit_growth_guard_counts_utf8_bytes(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_write_file_attach_false_skips_queue_and_queue_file_recovers(
+async def test_write_file_defaults_to_unattached_and_queue_file_recovers(
     tmp_path: Path,
 ) -> None:
     reg, mgr = _register(tmp_path)
@@ -736,24 +737,25 @@ async def test_write_file_attach_false_skips_queue_and_queue_file_recovers(
     result = json.loads(
         await reg.dispatch(
             "write_file",
-            {"path": "scratch.py", "content": "print('x')", "attach": False},
+            {"path": "scratch.py", "content": "print('x')"},
             ctx,
         )
     )
 
     assert result["attached"] is False
+    assert "queue_file" in result["attachment_hint"]
     assert ctx.output_files == []
     saved = mgr.user_files_dir(WS) / "scratch.py"
     assert saved.read_text(encoding="utf-8") == "print('x')"
 
-    # The opt-out is reversible: queue_file attaches the same file explicitly.
+    # queue_file can attach the saved file later.
     queued = json.loads(await reg.dispatch("queue_file", {"path": "scratch.py"}, ctx))
     assert queued["queued"] is True
     assert ctx.output_files == [str(saved.resolve())]
 
 
 @pytest.mark.asyncio
-async def test_edit_and_multi_edit_attach_false_skip_queue(tmp_path: Path) -> None:
+async def test_edit_and_multi_edit_default_to_unattached(tmp_path: Path) -> None:
     reg, _mgr = _register(tmp_path)
     ctx = _make_ctx()
     await reg.dispatch(
@@ -765,11 +767,12 @@ async def test_edit_and_multi_edit_attach_false_skip_queue(tmp_path: Path) -> No
     edited = json.loads(
         await reg.dispatch(
             "edit_file",
-            {"path": "s.txt", "old_string": "a", "new_string": "x", "attach": False},
+            {"path": "s.txt", "old_string": "a", "new_string": "x"},
             ctx,
         )
     )
     assert edited["attached"] is False
+    assert "queue_file" in edited["attachment_hint"]
 
     multi = json.loads(
         await reg.dispatch(
@@ -777,13 +780,47 @@ async def test_edit_and_multi_edit_attach_false_skip_queue(tmp_path: Path) -> No
             {
                 "path": "s.txt",
                 "edits": [{"old_string": "b", "new_string": "y"}],
-                "attach": False,
             },
             ctx,
         )
     )
     assert multi["attached"] is False
+    assert "queue_file" in multi["attachment_hint"]
     assert ctx.output_files == []
+
+
+@pytest.mark.asyncio
+async def test_edit_and_multi_edit_attach_true_queue_file(tmp_path: Path) -> None:
+    reg, mgr = _register(tmp_path)
+    ctx = _make_ctx()
+    path = mgr.user_files_dir(WS) / "s.txt"
+    path.write_text("a b c", encoding="utf-8")
+
+    edited = json.loads(
+        await reg.dispatch(
+            "edit_file",
+            {"path": "s.txt", "old_string": "a", "new_string": "x", "attach": True},
+            ctx,
+        )
+    )
+    assert edited["attached"] is True
+    assert "attachment_hint" not in edited
+
+    await reg.dispatch("queue_file", {"path": "s.txt", "action": "remove"}, ctx)
+    multi = json.loads(
+        await reg.dispatch(
+            "multi_edit",
+            {
+                "path": "s.txt",
+                "edits": [{"old_string": "b", "new_string": "y"}],
+                "attach": True,
+            },
+            ctx,
+        )
+    )
+    assert multi["attached"] is True
+    assert "attachment_hint" not in multi
+    assert ctx.output_files == [str(path.resolve())]
 
 
 @pytest.mark.asyncio
@@ -875,7 +912,9 @@ async def test_attached_field_reports_rail_state_not_this_call(tmp_path: Path) -
     reg, _mgr = _register(tmp_path)
     ctx = _make_ctx()
 
-    first = json.loads(await reg.dispatch("write_file", {"path": "a.txt", "content": "one"}, ctx))
+    first = json.loads(
+        await reg.dispatch("write_file", {"path": "a.txt", "content": "one", "attach": True}, ctx)
+    )
     assert first["attached"] is True
 
     # Re-writing an already-queued path adds nothing new to the queue, but the

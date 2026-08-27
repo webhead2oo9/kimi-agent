@@ -27,6 +27,7 @@ from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
 from .common import (
+    ATTACHMENT_HINT,
     UserLocks,
     as_bool,
     available_destination,
@@ -153,7 +154,7 @@ async def _write_file(deps: FileToolDeps, args: dict, ctx: MessageContext) -> st
     path_arg = str(args.get("path", "")).strip()
     content_arg = args.get("content")
     try:
-        attach = as_bool(args.get("attach"), name="attach", default=True)
+        attach = as_bool(args.get("attach"), name="attach", default=False)
     except ValueError as e:
         return tool_error(str(e))
     if not path_arg:
@@ -174,13 +175,15 @@ async def _write_file(deps: FileToolDeps, args: dict, ctx: MessageContext) -> st
             path, rel, size_bytes = outcome
             if attach:
                 try_enqueue_workspace_file(ctx, deps.workspace_manager, path, deps.config)
-            return json.dumps(
-                {
-                    "path": rel,
-                    "size_bytes": size_bytes,
-                    "attached": _is_on_attachment_rail(ctx, deps.workspace_manager, rel),
-                }
-            )
+            attached = _is_on_attachment_rail(ctx, deps.workspace_manager, rel)
+            result: dict[str, object] = {
+                "path": rel,
+                "size_bytes": size_bytes,
+                "attached": attached,
+            }
+            if not attached:
+                result["attachment_hint"] = ATTACHMENT_HINT
+            return json.dumps(result)
     except Exception as e:
         return deps.scrubbed_error(e, ctx.workspace_key)
 
@@ -484,7 +487,7 @@ async def _edit_file(deps: FileToolDeps, args: dict, ctx: MessageContext) -> str
     new_string = args.get("new_string")
     try:
         replace_all = as_bool(args.get("replace_all"), name="replace_all", default=False)
-        attach = as_bool(args.get("attach"), name="attach", default=True)
+        attach = as_bool(args.get("attach"), name="attach", default=False)
     except ValueError as e:
         return tool_error(str(e))
     if not path_arg:
@@ -510,12 +513,11 @@ async def _edit_file(deps: FileToolDeps, args: dict, ctx: MessageContext) -> str
                 return tool_error(str(outcome["error"]))
             if attach:
                 try_enqueue_workspace_file(ctx, deps.workspace_manager, path, deps.config)
-            return json.dumps(
-                {
-                    **outcome,
-                    "attached": _is_on_attachment_rail(ctx, deps.workspace_manager, rel),
-                }
-            )
+            attached = _is_on_attachment_rail(ctx, deps.workspace_manager, rel)
+            result: dict[str, object] = {**outcome, "attached": attached}
+            if not attached:
+                result["attachment_hint"] = ATTACHMENT_HINT
+            return json.dumps(result)
     except Exception as e:
         return deps.scrubbed_error(e, ctx.workspace_key)
 
@@ -653,7 +655,7 @@ async def _multi_edit(deps: FileToolDeps, args: dict, ctx: MessageContext) -> st
     path_arg = str(args.get("path", "")).strip()
     edits = args.get("edits")
     try:
-        attach = as_bool(args.get("attach"), name="attach", default=True)
+        attach = as_bool(args.get("attach"), name="attach", default=False)
     except ValueError as e:
         return tool_error(str(e))
     if not path_arg:
@@ -715,12 +717,11 @@ async def _multi_edit(deps: FileToolDeps, args: dict, ctx: MessageContext) -> st
                 return tool_error(str(outcome["error"]))
             if attach:
                 try_enqueue_workspace_file(ctx, deps.workspace_manager, path, deps.config)
-            return json.dumps(
-                {
-                    **outcome,
-                    "attached": _is_on_attachment_rail(ctx, deps.workspace_manager, rel),
-                }
-            )
+            attached = _is_on_attachment_rail(ctx, deps.workspace_manager, rel)
+            result: dict[str, object] = {**outcome, "attached": attached}
+            if not attached:
+                result["attachment_hint"] = ATTACHMENT_HINT
+            return json.dumps(result)
     except Exception as e:
         return deps.scrubbed_error(e, ctx.workspace_key)
 
@@ -812,7 +813,8 @@ def register_file_tools(
         name="edit_file",
         description=(
             "Replace text in an existing workspace text file by exact string match. "
-            "old_string must match exactly once unless replace_all is true."
+            "old_string must match exactly once unless replace_all is true. The changed "
+            "file is not attached by default; pass attach: true or call queue_file later."
         ),
         parameters={
             "type": "object",
@@ -840,7 +842,8 @@ def register_file_tools(
             "single call. Edits apply in order, each to the result of the "
             "previous; if any edit's old_string is missing or ambiguous the "
             "whole call fails and the file is left unchanged. Each old_string "
-            "must match exactly once unless that edit sets replace_all."
+            "must match exactly once unless that edit sets replace_all. The changed file "
+            "is not attached by default; pass attach: true or call queue_file later."
         ),
         parameters={
             "type": "object",
@@ -910,9 +913,9 @@ def register_file_tools(
     registry.register(
         name="write_file",
         description=(
-            "Create or overwrite a text file in your workspace and queue it for "
-            "attachment when limits allow. Pass attach: false for scratch or "
-            "intermediate files that should not ride the reply."
+            "Create or overwrite a text file in your workspace. Files are not attached "
+            "by default; pass attach: true to include a deliverable with the final reply, "
+            "or call queue_file later."
         ),
         parameters={
             "type": "object",
@@ -955,12 +958,13 @@ def register_file_tools(
     registry.register(
         name="queue_file",
         description=(
-            "Manage which files ride the final Discord response. action=add (the "
+            "Manage which files are included with the final Discord response. action=add (the "
             "default) attaches an existing workspace file or generated artifact; "
             "action=remove takes a previously attached file back off the reply, "
             "freeing its slot. At most "
             f"{config.max_attachments} files can be attached to one reply "
-            "(write tools and script-backed skills auto-attach too, sharing this limit); at "
+            "(explicit write-tool attachments and files attached automatically by "
+            "generation and rendering tools share this limit); at "
             "the limit, remove a file you attached by mistake to make room for "
             "the one the user actually needs."
         ),
@@ -1033,8 +1037,8 @@ def _attach_property() -> dict[str, object]:
     return {
         "type": "boolean",
         "description": (
-            "Attach the file to the final reply (default true). Set false for "
-            "scratch/intermediate files; queue_file can attach it later."
+            "Attach the file to the final reply (default false). Set true only for "
+            "a deliverable; queue_file can attach it later."
         ),
     }
 

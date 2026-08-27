@@ -117,7 +117,7 @@ async def test_edit_file_env_dir_refusal_is_not_reported_as_quota(tmp_path: Path
 async def test_move_file_requeues_attached_files(tmp_path: Path) -> None:
     reg, mgr = _register(tmp_path)
     ctx = _make_ctx()
-    await reg.dispatch("write_file", {"path": "report.md", "content": "done"}, ctx)
+    await reg.dispatch("write_file", {"path": "report.md", "content": "done", "attach": True}, ctx)
     assert len(ctx.output_files) == 1
 
     result = json.loads(

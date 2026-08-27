@@ -39,9 +39,10 @@ from sandbox.workspace_quota import (
     cleanup_quota_created_entries as _cleanup_quota_created_entries,
     snapshot_workspace as _snapshot_workspace,
 )
-from tools.output_queue import AttachmentLimitError, enqueue_workspace_file
+from tools.output_queue import unqueue_output_file
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import (
+    ATTACHMENT_HINT,
     UserLocks,
     quota_ok,
     scrub_user_paths,
@@ -50,17 +51,13 @@ from tools.workspace.common import (
 )
 from tools.workspace.config import DEFAULT_MAX_USER_BYTES
 from trust.tiers import TrustTier
-from workspace.manager import ENV_DIR_NAMES, WorkspaceKey, WorkspaceManager, remove_owned_tree
+from workspace.manager import WorkspaceKey, WorkspaceManager, remove_owned_tree
 
 MAX_STDIN_BYTES = 100_000
 MAX_INLINE_CODE_BYTES = 100_000
 MAX_ARG_COUNT = 32
 MAX_ARG_BYTES = 4096
-DEFAULT_MAX_AUTO_ATTACHMENTS = 5
 MAX_CHANGED_FILES_REPORTED = 50
-# A run that touches this many files is a build/extract, not artifact production;
-# auto-attaching the alphabetically-first few would fill the reply rail with junk.
-MAX_AUTO_ATTACH_CHANGED_FILES = 6
 RUN_FILE_MODES = {"auto", "python", "shell", "direct"}
 
 
@@ -169,8 +166,6 @@ def init_code_exec_tool(
     *,
     locks: UserLocks,
     max_concurrency: int = 1,
-    max_auto_attachments: int = DEFAULT_MAX_AUTO_ATTACHMENTS,
-    max_auto_attachment_bytes: int = 8 * 1024 * 1024,
     max_user_bytes: int = DEFAULT_MAX_USER_BYTES,
     network_weekly_limit: int = DEFAULT_NETWORK_WEEKLY_LIMIT,
     netns_lease: NetnsLease | None = None,
@@ -393,8 +388,8 @@ def init_code_exec_tool(
                                 argv=argv,
                             )
                 finally:
-                    # Unlink before the diff below so the temp script is neither
-                    # reported as a changed file nor auto-attached.
+                    # Unlink before the diff below so the temp script is not
+                    # reported as a changed workspace file.
                     if temp_script is not None:
                         temp_script.unlink(missing_ok=True)
                 assert result is not None
@@ -419,17 +414,16 @@ def init_code_exec_tool(
                         max_env_roots=active_config.max_env_files,
                     )
                 )
-            reported_changed_files = changed_files[:MAX_CHANGED_FILES_REPORTED]
-            bulk_change = len(changed_files) > MAX_AUTO_ATTACH_CHANGED_FILES
-            attachments: list[dict[str, object]] = []
-            if not bulk_change:
-                attachments = _queue_artifacts(
-                    ctx,
-                    workspace_manager,
-                    reported_changed_files,
-                    max_auto_attachments=max_auto_attachments,
-                    max_auto_attachment_bytes=max_auto_attachment_bytes,
+                workspace_root = workspace_manager.user_files_dir(ctx.workspace_key).resolve()
+                stale_outputs = await asyncio.to_thread(
+                    _unavailable_queued_workspace_files,
+                    ctx.output_files,
+                    workspace_root,
                 )
+                for output in stale_outputs:
+                    unqueue_output_file(ctx, output)
+            reported_changed_files = changed_files[:MAX_CHANGED_FILES_REPORTED]
+            changed_files_payload = _changed_files_payload(reported_changed_files, ctx)
             run_report: dict[str, object] = {
                 "path": rel,
                 "mode": mode,
@@ -442,12 +436,15 @@ def init_code_exec_tool(
                 "stderr": result.stderr,
                 "changed_file_count": len(changed_files),
                 "changed_files_truncated": len(changed_files) > MAX_CHANGED_FILES_REPORTED,
-                "changed_files": _changed_files_payload(
-                    reported_changed_files,
-                    attachments,
-                ),
-                "attached_files": [item["path"] for item in attachments if item["queued"]],
+                "changed_files": changed_files_payload,
+                "attached_files": [
+                    item["path"] for item in changed_files_payload if item["queued"]
+                ],
             }
+            if len(changed_files) > MAX_CHANGED_FILES_REPORTED or any(
+                not item["queued"] for item in changed_files_payload
+            ):
+                run_report["attachment_hint"] = ATTACHMENT_HINT
             if quota_cleanup is not None:
                 retained_changes = sum(item["status"] == "modified" for item in changed_files)
                 run_report["quota_exceeded"] = True
@@ -471,12 +468,6 @@ def init_code_exec_tool(
                         "to avoid destructive rollback."
                     ),
                 }
-            if bulk_change:
-                run_report["auto_attach"] = (
-                    f"skipped: {len(changed_files)} files changed in this run; "
-                    "nothing was auto-attached. Attach deliverables explicitly "
-                    "with queue_file."
-                )
             return json.dumps(run_report)
         except NetnsLeaseSafetyError:
             raise
@@ -554,7 +545,8 @@ def init_code_exec_tool(
             "runs an inline shell script. Workspace files support auto, python, shell, "
             "and direct modes. In networked modes, pip_install creates or updates a "
             "persistent workspace .venv. Files created or modified by the run remain "
-            "in the workspace, and a small number of artifacts are attached automatically."
+            "in the workspace but are not attached automatically; call queue_file with a "
+            "reported changed-file path to include it with the final reply."
         ),
         parameters={
             "type": "object",
@@ -790,94 +782,41 @@ def _changed_workspace_files(
     return changed
 
 
-def _queue_artifacts(
-    ctx: MessageContext,
-    workspace_manager: WorkspaceManager,
-    changed_files: list[dict[str, object]],
-    *,
-    max_auto_attachments: int,
-    max_auto_attachment_bytes: int,
-) -> list[dict[str, object]]:
-    attachments: list[dict[str, object]] = []
-    queued_count = 0
-    for item in changed_files:
-        path = item["abs_path"]
-        if not isinstance(path, Path):
-            continue
-        rel = str(item["path"])
-        size_value = item["size_bytes"]
-        if not isinstance(size_value, int):
-            continue
-        size = size_value
-        reason = _artifact_skip_reason(rel, path, size, max_auto_attachment_bytes)
-        if reason is not None:
-            attachments.append({"path": rel, "queued": False, "reason": reason})
-            continue
-        if queued_count >= max_auto_attachments:
-            attachments.append({"path": rel, "queued": False, "reason": "attachment_limit_reached"})
-            continue
-        try:
-            queued = enqueue_workspace_file(
-                ctx,
-                workspace_manager,
-                path,
-                max_attachments=max_auto_attachments,
-            )
-        except AttachmentLimitError:
-            attachments.append({"path": rel, "queued": False, "reason": "attachment_limit_reached"})
-            break
-        except Exception:
-            attachments.append({"path": rel, "queued": False, "reason": "not_attachable"})
-            continue
-        attachments.append(
-            {
-                "path": rel,
-                "queued": True,
-                "already_queued": not queued.added,
-            }
-        )
-        queued_count += 1
-    return attachments
-
-
-def _artifact_skip_reason(
-    rel: str,
-    path: Path,
-    size: int,
-    max_auto_attachment_bytes: int,
-) -> str | None:
-    parts = set(Path(rel).parts)
-    # Env-dir churn (.venv/.pio) never auto-attaches; the model queue_files a
-    # deliberate artifact (e.g. built firmware) by its explicit path.
-    if parts & ENV_DIR_NAMES:
-        return "env_dir"
-    if "__pycache__" in parts or path.suffix in {".pyc", ".pyo"}:
-        return "python_cache"
-    if size > max_auto_attachment_bytes:
-        return "too_large"
-    if size <= 0:
-        return "empty"
-    return None
-
-
 def _changed_files_payload(
     changed_files: list[dict[str, object]],
-    attachments: list[dict[str, object]],
+    ctx: MessageContext,
 ) -> list[dict[str, object]]:
-    attachment_by_path = {str(item["path"]): item for item in attachments}
+    attached_paths = set(ctx.output_files)
     payload: list[dict[str, object]] = []
     for item in changed_files:
         rel = str(item["path"])
-        attachment = attachment_by_path.get(rel)
+        abs_path = item["abs_path"]
+        queued = (
+            isinstance(abs_path, Path) and str(abs_path.resolve(strict=False)) in attached_paths
+        )
         entry: dict[str, object] = {
             "path": rel,
             "status": item["status"],
             "size_bytes": item["size_bytes"],
-            "queued": bool(attachment and attachment["queued"]),
+            "queued": queued,
         }
-        if attachment and not attachment["queued"]:
-            entry["queue_skip_reason"] = attachment["reason"]
-        if attachment and attachment.get("already_queued"):
+        if queued:
             entry["already_queued"] = True
         payload.append(entry)
     return payload
+
+
+def _unavailable_queued_workspace_files(output_files: list[str], workspace_root: Path) -> list[str]:
+    stale: list[str] = []
+    for output in output_files:
+        path = Path(output)
+        if not path.is_relative_to(workspace_root):
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            stale.append(output)
+            continue
+        if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(workspace_root):
+            stale.append(output)
+    return stale

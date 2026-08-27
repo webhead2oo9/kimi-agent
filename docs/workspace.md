@@ -86,7 +86,7 @@ Every tool inherits the same recipe:
   alone leave the file count unbounded, and every quota walk, grep, and sweep
   is O(entries). New-entry writes, imports, and extracts past the cap are
   refused; existing files can still be edited and deleted.
-- **The attachment rail tracks mutations.** Write tools auto-queue their file;
+- **The attachment rail tracks mutations.** Write tools can explicitly queue their file;
   `move_file` rewrites queued entries (including everything under a moved
   directory) and `delete_file` un-queues them (reported as
   `"unattached": true`), so the rail can never dangle and fail the reply's
@@ -147,7 +147,7 @@ ordinary workspace placement tools still refuse the names.
 | Tool | Purpose |
 |------|---------|
 | `read_file` | Read a text file with line numbers (offset/limit, negative offset = from end). Returns plain text, not JSON: a `path: lines A-B of N` header plus numbered lines. |
-| `write_file` | Create or overwrite a text file and queue it for attachment (`attach: false` opts out, see below). |
+| `write_file` | Create or overwrite a text file without attaching it by default (`attach: true` opts in, see below). |
 | `edit_file` | Replace one exact-match string (`replace_all` for all occurrences). |
 | `multi_edit` | Apply several exact-match edits to one file in a single call (see below). |
 | `move_file` | Move or rename a file or directory (dest must not exist; parents created; same per-user lock and symlink/containment checks as the write tools; env dirs refused on both ends; queued attachments follow the move). |
@@ -160,8 +160,8 @@ ordinary workspace placement tools still refuse the names.
 | `queue_file` | Manage the reply's attachments: `action: add` (default) attaches an existing workspace file or generated artifact; `action: remove` takes a queued file back off the reply, freeing its slot (see below). |
 | `extract_document_text` | Extract text from a bounded-page PDF or office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, CSV) into the workspace. PDF text accumulation stops at the configured read-output ceiling. |
 | `extract_archive` | Safely extract an archive (registered in `tools/workspace/archive_tools.py`; extractor in `tools/archive.py`). |
-| `zip` | Package workspace files into a zip (`paths: ["."]` archives everything; env dirs and in-flight `.part` temps are skipped). |
-| `fetch_url` | Fetch a web page into the workspace via the SSRF-safe download path. An explicit `filename` never overwrites an existing file. The download runs outside the maintenance barrier (per-user lock only, temp in the system tempdir), so a slow origin cannot stall other users' workspace tools. |
+| `zip` | Package workspace files into a zip without attaching it (`paths: ["."]` archives everything; env dirs and in-flight `.part` temps are skipped). |
+| `fetch_url` | Fetch a web page into the workspace without attaching it via the SSRF-safe download path. An explicit `filename` never overwrites an existing file. The download runs outside the maintenance barrier (per-user lock only, temp in the system tempdir), so a slow origin cannot stall other users' workspace tools. |
 
 Native document parsing is serialized across the runtime, and cancellation
 keeps the parser slot occupied until the underlying worker actually finishes.
@@ -209,26 +209,24 @@ call, modeled on `edit_file`. The semantics are:
 - Calls are capped at `multi_edit_max_ops` edits (default 50,
   `WORKSPACE_TOOL_MULTI_EDIT_MAX_OPS`).
 
-### Attachment opt-out (`attach: false`)
+### Attachment opt-in (`attach: true`)
 
-`write_file`, `edit_file`, and `multi_edit` auto-queue the touched file onto
-the reply's attachment rail by default, which is the right behavior for "write
-me a script". For iterative work (write a scratch script, run it, fix it, then
-write the real answer), each of those three tools accepts `attach: false` so
-intermediate files never ride the final reply or consume the attachment budget.
-`zip` and `fetch_url` also auto-queue but have no opt-out; remove theirs with
-`queue_file` `action: remove`. The opt-out is reversible, since `queue_file`
-can attach any workspace file explicitly. Each tool's `attached` response
+`write_file`, `edit_file`, and `multi_edit` save the touched file without
+queueing it by default. Each accepts `attach: true` when the file is already the
+finished deliverable; `queue_file` can attach any workspace file explicitly
+later. `zip`, `fetch_url`, and `run_code` never auto-queue their outputs, so a
+separate `queue_file` call is required. Each write tool's `attached` response
 field reports whether the file is **queued on the reply after the call**. A file
-already queued stays queued (`attach: false` skips adding, it does not
-remove), and re-writing an already-queued path reports `attached: true`.
+already queued stays queued (`attach: false` or an omitted `attach` skips
+adding, but does not remove), and changing an already-queued path reports
+`attached: true`. When a file is saved but not queued, the result includes an
+`attachment_hint` reminding the model how to deliver it.
 
 ### Removing a queued attachment (`queue_file` `action: remove`)
 
 The attachment rail is capped (`workspace_tool_max_attachments`, default 5),
-and auto-queueing from write tools and generated artifacts shares that cap with
-explicit `queue_file` calls, so incidental files can occupy every slot before
-the real deliverable exists. `queue_file` with `action: "remove"` un-attaches a
+and explicit write attachments plus automatically attached generated outputs
+share that cap with `queue_file` calls. `queue_file` with `action: "remove"` un-attaches a
 queued file and frees its slot, which beats forcing an overwrite of an
 already-queued path (that would ship the deliverable under a stale filename).
 

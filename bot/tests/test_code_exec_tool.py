@@ -32,7 +32,7 @@ from sandbox.runner import (
     sandbox_available,
 )
 from storage.usage import UsageMarker
-from tools.code_exec import MAX_AUTO_ATTACH_CHANGED_FILES, init_code_exec_tool
+from tools.code_exec import init_code_exec_tool
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -67,12 +67,7 @@ OWNER = "owner1"
 WS = workspace_owner_key(OWNER, "g1")
 
 
-def _register(
-    tmp_path: Path,
-    *,
-    max_auto_attachments: int = 5,
-    max_auto_attachment_bytes: int = 8 * 1024 * 1024,
-) -> tuple[ToolRegistry, WorkspaceManager]:
+def _register(tmp_path: Path) -> tuple[ToolRegistry, WorkspaceManager]:
     reg = ToolRegistry(owner_user_id=OWNER)
     mgr = WorkspaceManager(base_dir=tmp_path)
     init_code_exec_tool(
@@ -80,8 +75,6 @@ def _register(
         mgr,
         SandboxConfig(),
         locks=UserLocks(),
-        max_auto_attachments=max_auto_attachments,
-        max_auto_attachment_bytes=max_auto_attachment_bytes,
     )
     return reg, mgr
 
@@ -235,7 +228,7 @@ async def test_run_code_rejects_bad_argv(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_code_reports_and_queues_created_artifacts(
+async def test_run_code_reports_created_artifacts_without_queueing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,11 +270,12 @@ async def test_run_code_reports_and_queues_created_artifacts(
             "path": "plot.png",
             "status": "created",
             "size_bytes": 3,
-            "queued": True,
+            "queued": False,
         }
     ]
-    assert body["attached_files"] == ["plot.png"]
-    assert ctx.output_files == [str((root / "plot.png").resolve())]
+    assert body["attached_files"] == []
+    assert "queue_file" in body["attachment_hint"]
+    assert ctx.output_files == []
 
 
 def test_workspace_snapshot_prunes_environment_descendants(
@@ -908,14 +902,14 @@ async def test_queued_run_snapshots_workspace_only_after_semaphore_acquisition(
 
 
 @pytest.mark.asyncio
-async def test_run_code_bulk_change_skips_auto_attach(
+async def test_run_code_large_change_set_never_auto_attaches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reg, mgr = _register(tmp_path)
     root = mgr.user_files_dir(WS)
     (root / "extract.py").write_text("print('extract')", encoding="utf-8")
-    count = MAX_AUTO_ATTACH_CHANGED_FILES + 1
+    count = 7
 
     async def fake_run(
         config: SandboxConfig,
@@ -939,19 +933,20 @@ async def test_run_code_bulk_change_skips_auto_attach(
     assert body["changed_file_count"] == count
     assert body["attached_files"] == []
     assert ctx.output_files == []
-    assert f"{count} files changed" in body["auto_attach"]
-    assert "queue_file" in body["auto_attach"]
+    assert "queue_file" in body["attachment_hint"]
     assert all(item["queued"] is False for item in body["changed_files"])
 
 
 @pytest.mark.asyncio
-async def test_run_code_at_bulk_threshold_still_auto_attaches(
+async def test_run_code_preserves_previously_queued_changed_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reg, mgr = _register(tmp_path)
     root = mgr.user_files_dir(WS)
     (root / "make.py").write_text("print('make')", encoding="utf-8")
+    existing = root / "existing.txt"
+    existing.write_text("before", encoding="utf-8")
 
     async def fake_run(
         config: SandboxConfig,
@@ -962,32 +957,124 @@ async def test_run_code_at_bulk_threshold_still_auto_attaches(
         argv: tuple[str, ...] = (),
     ) -> SandboxResult:
         del config, script_path, stdin, argv
-        for i in range(MAX_AUTO_ATTACH_CHANGED_FILES):
-            (workspace_dir / f"file{i:02d}.txt").write_text("x", encoding="utf-8")
+        (workspace_dir / "existing.txt").write_text("after", encoding="utf-8")
+        (workspace_dir / "new.txt").write_text("new", encoding="utf-8")
         return SandboxResult(0, "done\n", "", False, 7)
 
     monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
     ctx = _ctx()
+    ctx.output_files.append(str(existing.resolve()))
+    ctx.allowed_file_roots.append(str(root.resolve()))
 
     result = await reg.dispatch("run_code", {"path": "make.py"}, ctx)
 
     body = json.loads(result)
-    assert body["changed_file_count"] == MAX_AUTO_ATTACH_CHANGED_FILES
-    assert "auto_attach" not in body
-    assert len(body["attached_files"]) == 5
-    assert len(ctx.output_files) == 5
+    assert body["changed_file_count"] == 2
+    by_path = {item["path"]: item for item in body["changed_files"]}
+    assert by_path["existing.txt"]["queued"] is True
+    assert by_path["existing.txt"]["already_queued"] is True
+    assert by_path["new.txt"]["queued"] is False
+    assert body["attached_files"] == ["existing.txt"]
+    assert "queue_file" in body["attachment_hint"]
+    assert ctx.output_files == [str(existing.resolve())]
+
+
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+@pytest.mark.asyncio
+async def test_run_code_unqueues_workspace_file_made_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    reg, mgr = _register(tmp_path)
+    root = mgr.user_files_dir(WS)
+    (root / "make.py").write_text("print('make')", encoding="utf-8")
+    queued = root / "queued.txt"
+    queued.write_text("before", encoding="utf-8")
+
+    async def fake_run(
+        config: SandboxConfig,
+        workspace_dir: Path,
+        script_path: Path,
+        *,
+        stdin: str | None = None,
+        argv: tuple[str, ...] = (),
+    ) -> SandboxResult:
+        del config, script_path, stdin, argv
+        target = workspace_dir / "queued.txt"
+        if operation == "rename":
+            target.rename(workspace_dir / "renamed.txt")
+        else:
+            target.unlink()
+        return SandboxResult(0, "done\n", "", False, 7)
+
+    monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
+    ctx = _ctx()
+    ctx.output_files.append(str(queued.resolve()))
+    ctx.allowed_file_roots.append(str(root.resolve()))
+
+    body = json.loads(await reg.dispatch("run_code", {"path": "make.py"}, ctx))
+
+    assert ctx.output_files == []
+    if operation == "rename":
+        assert body["changed_files"] == [
+            {
+                "path": "renamed.txt",
+                "status": "created",
+                "size_bytes": 6,
+                "queued": False,
+            }
+        ]
+        assert "queue_file" in body["attachment_hint"]
+    else:
+        assert body["changed_files"] == []
 
 
 @pytest.mark.asyncio
-async def test_run_code_skips_unreasonable_artifacts_without_consuming_attach_cap(
+async def test_run_code_truncated_changes_still_include_attachment_hint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    reg, mgr = _register(
-        tmp_path,
-        max_auto_attachments=1,
-        max_auto_attachment_bytes=4,
-    )
+    reg, mgr = _register(tmp_path)
+    root = mgr.user_files_dir(WS)
+    (root / "make.py").write_text("print('make')", encoding="utf-8")
+    existing = [root / f"file{i:02d}.txt" for i in range(50)]
+    for path in existing:
+        path.write_text("before", encoding="utf-8")
+
+    async def fake_run(
+        config: SandboxConfig,
+        workspace_dir: Path,
+        script_path: Path,
+        *,
+        stdin: str | None = None,
+        argv: tuple[str, ...] = (),
+    ) -> SandboxResult:
+        del config, script_path, stdin, argv
+        for path in existing:
+            path.write_text("after", encoding="utf-8")
+        (workspace_dir / "zz-unreported.txt").write_text("new", encoding="utf-8")
+        return SandboxResult(0, "done\n", "", False, 7)
+
+    monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
+    ctx = _ctx()
+    ctx.output_files.extend(str(path.resolve()) for path in existing)
+    ctx.allowed_file_roots.append(str(root.resolve()))
+
+    body = json.loads(await reg.dispatch("run_code", {"path": "make.py"}, ctx))
+
+    assert body["changed_file_count"] == 51
+    assert body["changed_files_truncated"] is True
+    assert all(item["queued"] is True for item in body["changed_files"])
+    assert "queue_file" in body["attachment_hint"]
+
+
+@pytest.mark.asyncio
+async def test_run_code_reports_all_file_kinds_without_auto_attaching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reg, mgr = _register(tmp_path)
     root = mgr.user_files_dir(WS)
     (root / "make_files.py").write_text("print('make files')", encoding="utf-8")
 
@@ -1021,13 +1108,11 @@ async def test_run_code_skips_unreasonable_artifacts_without_consuming_attach_ca
     assert body["changed_file_count"] == 3
     assert body["changed_files_truncated"] is False
     by_path = {item["path"]: item for item in body["changed_files"]}
-    assert by_path["__pycache__/make_files.cpython-311.pyc"]["queue_skip_reason"] == (
-        "python_cache"
-    )
-    assert by_path["big.bin"]["queue_skip_reason"] == "too_large"
-    assert by_path["small.txt"]["queued"] is True
-    assert body["attached_files"] == ["small.txt"]
-    assert ctx.output_files == [str((root / "small.txt").resolve())]
+    assert all(item["queued"] is False for item in by_path.values())
+    assert all("queue_skip_reason" not in item for item in by_path.values())
+    assert body["attached_files"] == []
+    assert "queue_file" in body["attachment_hint"]
+    assert ctx.output_files == []
 
 
 @_requires_sandbox
@@ -1556,13 +1641,6 @@ def test_changed_files_excludes_env_dirs(tmp_path: Path) -> None:
     paths = {c["path"] for c in changed}
     assert "out.txt" in paths
     assert not any(".venv" in str(p) for p in paths)
-
-
-def test_artifact_skip_reason_env_dir(tmp_path: Path) -> None:
-    reason = code_exec_mod._artifact_skip_reason(
-        ".venv/bin/pip", tmp_path / "x", 10, 8 * 1024 * 1024
-    )
-    assert reason == "env_dir"
 
 
 @pytest.mark.asyncio

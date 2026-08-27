@@ -20,6 +20,7 @@ from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
 from .common import (
+    ATTACHMENT_HINT,
     UserLocks,
     as_bool,
     count_entries_up_to,
@@ -29,7 +30,6 @@ from .common import (
     quota_ok,
     scrub_user_paths,
     tool_error,
-    try_enqueue_workspace_file,
     workspace_activity,
 )
 from .config import WorkspaceToolConfig
@@ -81,12 +81,6 @@ def register_archive_tools(
                 if isinstance(outcome, str):
                     return outcome
                 entry_count, size = outcome
-                attached = try_enqueue_workspace_file(
-                    ctx,
-                    workspace_manager,
-                    output_path,
-                    config,
-                )
                 return json.dumps(
                     {
                         "path": workspace_manager.relative_user_file_path(
@@ -95,7 +89,8 @@ def register_archive_tools(
                         ),
                         "size_bytes": size,
                         "entry_count": entry_count,
-                        "attached": attached,
+                        "attached": False,
+                        "attachment_hint": ATTACHMENT_HINT,
                     }
                 )
         except Exception as e:
@@ -192,7 +187,8 @@ def register_archive_tools(
         name="zip",
         description=(
             "Create a .zip archive from workspace files and/or directories (directories "
-            "recurse) and queue it for attachment when limits allow."
+            "recurse). The archive is saved but not attached; call queue_file with the "
+            "returned path to include it with the final reply."
         ),
         parameters={
             "type": "object",

@@ -175,8 +175,7 @@ including `none`-mode runs that use installed packages. `.pio` and
 `.pio-core` do the same for regenerable build caches. All three directories:
 
 - have their own byte and entry quotas, separate from the document quota;
-- stay hidden from normal listings, archives, artifact diffs, and
-  auto-attachment;
+- stay hidden from normal listings, archives, and artifact diffs;
 - are removed as whole units by quota and TTL cleanup; and
 - cannot be written by ordinary workspace tools.
 
@@ -268,13 +267,11 @@ independent of the repository, database, logs, and host root filesystem. Until
 that host-level boundary exists, treat code execution as unsafe to expose to a
 hostile public population.
 
-After the run, changed files are reported by name, up to fifty of them. If more
-than six files changed, Kimi takes that as a sign of a build rather than
-artifact production and attaches nothing; the model has to pick the deliverable
-with `queue_file`. Below that threshold, files are queued automatically up to the same
-`WORKSPACE_TOOL_MAX_ATTACHMENTS` limit every other tool shares, and anything too
-large or of an unsupported type comes back marked as skipped rather than quietly
-disappearing.
+After the run, changed files are reported by name, up to fifty of them. They
+remain in the workspace and are never attached automatically; the model must
+pick each deliverable explicitly with `queue_file`. The result reports whether
+a changed path was already queued earlier in the turn and includes an
+attachment reminder whenever an unqueued changed file is present.
 
 ## Weekly network budget
 

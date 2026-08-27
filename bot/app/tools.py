@@ -611,8 +611,6 @@ def _register_code_exec(
         sandbox_config,
         locks=locks,
         max_concurrency=settings.code_exec_max_concurrency,
-        max_auto_attachments=settings.workspace_tool_max_attachments,
-        max_auto_attachment_bytes=settings.attachment_max_bytes,
         max_user_bytes=settings.workspace_tool_max_user_bytes,
         network_weekly_limit=settings.code_exec_network_weekly_limit,
         netns_lease=netns_lease,

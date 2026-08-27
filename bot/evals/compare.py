@@ -178,6 +178,26 @@ def compare_summaries(a: dict, b: dict) -> Comparison:
     )
 
 
+def model_arm_identity(summary: dict) -> tuple[str, str, str, str]:
+    """Provider-aware identity, with old summaries falling back to model id."""
+    model = str(summary.get("model") or "?")
+    return (
+        str(summary.get("model_label") or model),
+        str(summary.get("provider_name") or ""),
+        str(summary.get("provider_base_url") or ""),
+        model,
+    )
+
+
+def model_arm_display(summary: dict) -> str:
+    label, provider, endpoint, model = model_arm_identity(summary)
+    details = "/".join(part for part in (provider, model) if part)
+    endpoint_text = f" @ {endpoint}" if endpoint else ""
+    if label == model and not provider:
+        return model
+    return f"{label} ({details or model}{endpoint_text})"
+
+
 def _failed_both_line(a: dict, b: dict, comparison: Comparison) -> str:
     """Name what a both-arms failure is evidence *of*, not just that it happened.
 
@@ -188,9 +208,11 @@ def _failed_both_line(a: dict, b: dict, comparison: Comparison) -> str:
     inference it exists to prevent.
     """
     ids = ", ".join(comparison.failed_both)
-    if a.get("model") == b.get("model"):
+    arm_a = model_arm_display(a)
+    arm_b = model_arm_display(b)
+    if model_arm_identity(a) == model_arm_identity(b):
         return (
-            f"Failed in both runs: {ids}; same model ({a.get('model')}) in both arms, "
+            f"Failed in both runs: {ids}; same model arm ({arm_a}) in both runs, "
             "so this is that model's result, not a harness signal."
         )
     caveats = []
@@ -210,20 +232,19 @@ def _failed_both_line(a: dict, b: dict, comparison: Comparison) -> str:
             "(independent recordings cannot be verified)"
         )
     suffix = f" (LOW CONFIDENCE: {'; '.join(caveats)})" if caveats else ""
-    return (
-        f"Failed in both runs (harness-suspect across {a.get('model')} + {b.get('model')}): "
-        f"{ids}{suffix}"
-    )
+    return f"Failed in both runs (harness-suspect across {arm_a} + {arm_b}): {ids}{suffix}"
 
 
 def render_comparison(a: dict, b: dict, comparison: Comparison, epsilon: float) -> str:
+    arm_a = model_arm_display(a)
+    arm_b = model_arm_display(b)
     lines = [
         (
-            f"A (reference): {a['run_id']} | {a['model']} @ {a.get('git_sha', '?')} "
+            f"A (reference): {a['run_id']} | {arm_a} @ {a.get('git_sha', '?')} "
             f"(score {comparison.total_a})"
         ),
         (
-            f"B (variant):   {b['run_id']} | {b['model']} @ {b.get('git_sha', '?')} "
+            f"B (variant):   {b['run_id']} | {arm_b} @ {b.get('git_sha', '?')} "
             f"(score {comparison.total_b})"
         ),
         "",
@@ -258,9 +279,9 @@ def render_comparison(a: dict, b: dict, comparison: Comparison, epsilon: float) 
         lines.append(f"Only in A (not compared): {', '.join(comparison.only_in_a)}")
     if comparison.only_in_b:
         lines.append(f"Only in B (not compared): {', '.join(comparison.only_in_b)}")
-    if a.get("model") != b.get("model"):
+    if model_arm_identity(a) != model_arm_identity(b):
         lines.append(
-            f"WARNING: different models ({a.get('model')} vs {b.get('model')}). "
+            f"WARNING: different model arms ({arm_a} vs {arm_b}). "
             "This diff mixes model and harness effects."
         )
     return "\n".join(lines)

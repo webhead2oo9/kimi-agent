@@ -18,6 +18,9 @@ candidates:
     model: provider/candidate-model
     base_url: https://eval-gateway.example.invalid/v1
     api_key_env: EVAL_CANDIDATE_API_KEY
+    # Optional guardrails for slow or rate-limited experimental gateways.
+    timeout_seconds: 300
+    min_request_interval_seconds: 0
     capabilities: [text, tool_calling]
 
   vision-example:

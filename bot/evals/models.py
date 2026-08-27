@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,13 @@ class ModelSpec:
     # run on deterministic HTTP 400s while retaining the requested value in the
     # run summary for comparison transparency.
     max_output_tokens: int | None = None
+    # Optional total request timeout for network providers. This is deliberately
+    # model-local: experimental gateways should not inherit a production-sized
+    # timeout and hold an entire gauntlet open for one stalled request.
+    timeout_seconds: float | None = None
+    # Minimum start-to-start spacing between calls made through this eval arm.
+    # Waiting contributes to scenario wall time but not provider latency.
+    min_request_interval_seconds: float = 0.0
     # Per-model capabilities, mirroring config/models.yaml. A provider class
     # advertises what its *transport* can carry, so openai_compat claims image
     # input for every model behind it: true of MiniMax, a 400 from DeepSeek
@@ -92,6 +100,10 @@ def _spec_from(label: str, data: dict[str, Any]) -> ModelSpec:
         max_output_tokens=(
             int(raw_max_output_tokens) if raw_max_output_tokens is not None else None
         ),
+        timeout_seconds=(
+            float(data["timeout_seconds"]) if data.get("timeout_seconds") is not None else None
+        ),
+        min_request_interval_seconds=float(data.get("min_request_interval_seconds", 0.0)),
         capabilities=tuple(str(c) for c in (data.get("capabilities") or [])),
         pricing=ModelPricing.model_validate(data["pricing"]) if data.get("pricing") else None,
     )
@@ -106,6 +118,15 @@ def _spec_from(label: str, data: dict[str, Any]) -> ModelSpec:
         )
     if spec.max_output_tokens is not None and spec.max_output_tokens < 1:
         raise ValueError(f"Model spec {spec.label!r} max_output_tokens must be >= 1 when set.")
+    if spec.timeout_seconds is not None and (
+        not math.isfinite(spec.timeout_seconds) or spec.timeout_seconds <= 0
+    ):
+        raise ValueError(f"Model spec {spec.label!r} timeout_seconds must be > 0 when set.")
+    if (
+        not math.isfinite(spec.min_request_interval_seconds)
+        or spec.min_request_interval_seconds < 0
+    ):
+        raise ValueError(f"Model spec {spec.label!r} min_request_interval_seconds must be >= 0.")
     return spec
 
 
@@ -150,6 +171,7 @@ def eval_provider_config(spec: ModelSpec, *, api_key: str) -> ProviderConfig:
             base_url=spec.base_url,
             model=spec.model,
             codex_model=spec.model,
+            openai_timeout_seconds=spec.timeout_seconds or 900.0,
             **kwargs,
         )
     effort_kwargs: dict[str, Any] = {}
@@ -165,6 +187,7 @@ def eval_provider_config(spec: ModelSpec, *, api_key: str) -> ProviderConfig:
         api_key=api_key,
         base_url=spec.base_url,
         model=spec.model,
+        openai_timeout_seconds=spec.timeout_seconds or 900.0,
         **effort_kwargs,
     )
 

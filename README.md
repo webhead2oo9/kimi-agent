@@ -10,10 +10,11 @@ You run Kimi on your own host, against your own LLM provider: OpenAI-compatible,
 Anthropic, OpenRouter, or Codex, swapped in `config/models.yaml` without touching
 the agent core.
 
-It responds to an @mention, a pinged reply, a "hey Kimi" in chat, or a message in
-a thread it opened, and to nothing else. Each invocation runs a
-[ReAct](https://arxiv.org/abs/2210.03629) tool loop, replying with Discord-safe
-chunking, embeds, and attachments.
+It responds to an @mention, a pinged reply, an explicit `hey/hi Kimi` or
+`Kimi help`, or an unmentioned message in an auto-responding managed thread.
+Paused managed threads use the ordinary invocation rules, and DMs are ignored.
+Each invocation runs a [ReAct](https://arxiv.org/abs/2210.03629) tool loop,
+replying with Discord-safe chunking, embeds, and attachments.
 
 Persona, rules, and subject matter come from per-server and per-channel
 instruction fragments rather than from the code, so one deployment can serve
@@ -56,7 +57,8 @@ dependencies and runs lint, types, and the test suite from there too.
 ## Quick start
 
 You'll need Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot
-token, and an API key for at least one LLM provider.
+token, and access to at least one LLM provider. Most providers use an API key;
+Codex uses a token file, and some gateways inject credentials upstream.
 
 ```bash
 cd bot
@@ -67,8 +69,8 @@ cp config/models.example.yaml config/models.yaml
 
 Then fill in two files:
 
-- **`.env`**: set `DISCORD_BOT_TOKEN`, `ALLOWED_GUILD_IDS`, and whichever
-  API-key variable(s) your `models.yaml` references (e.g. `MODEL_API_KEY`).
+- **`.env`**: set `DISCORD_BOT_TOKEN`, `ALLOWED_GUILD_IDS`, and any credential
+  variables your `models.yaml` references (for example `MODEL_API_KEY`).
 - **`config/models.yaml`**: replace every placeholder endpoint and model ID,
   and set accurate context windows, capabilities, roles, and fallbacks.
 

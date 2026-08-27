@@ -8,7 +8,7 @@ active user message pinned at the front and restates it at the tail (see
 as fit in the `COMPACTION_KEEP_RECENT_TOKENS` budget, and never fewer than
 `COMPACTION_KEEP_RECENT_ITERATIONS`), and touches only the in-flight request.
 The persisted channel transcript is never compacted. If the same turn compacts
-again later, the previous note is folded into the new summary, so notes roll
+again, the existing note is folded into the replacement summary, so notes roll
 forward rather than piling up.
 
 - **Trigger:** compaction fires when projected input tokens reach
@@ -36,7 +36,7 @@ forward rather than piling up.
   `note_message` re-appends it to the note verbatim, as the tool-echo JSON under
   a "Current checklist" header. That way the checklist survives summarization
   intact instead of coming out lossy. The summarizer is told to skip any
-  checklist block it finds in a prior note, since the fresh one is always
+  checklist block already in the compacted note, since the live one is always
   re-appended. On the summarizer-failure fallback the elided prefix is followed
   by a checklist-bearing note of its own (elision could middle-cut the plan
   tool's echo), and a `split == 0` pass appends a small "nothing summarized this
@@ -53,8 +53,8 @@ forward rather than piling up.
   copy of a command-path prompt (which can embed a whole transcript window)
   could pin the request permanently over budget. Its header grants no extra
   trust: command-path triggering prompts are dominated by third-party content,
-  and the restatement keeps it exactly as untrusted as the original. A prior
-  re-anchor is stripped before the next compaction and re-appended fresh (on the
+  and the restatement keeps it exactly as untrusted as the original. The
+  existing re-anchor is stripped before each compaction and re-appended (on the
   `split == 0` branch too), so exactly one copy rides the tail and the anchor
   survives every later pass. A `split == 0` pass summarizes nothing: it
   refreshes the checklist note (when a plan is live) and the re-anchor (when one

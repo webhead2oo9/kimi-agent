@@ -7,7 +7,7 @@ tags: [code, repository, execution, build, git, delegation]
 # Coding work
 
 Choose the smallest execution path that can finish the user's actual task. The
-tools visible now are the ones available in this conversation. If `run_code` or
+The visible tools are the ones available in this conversation. If `run_code` or
 the durable coding controls are missing, say they are unavailable here. That
 does not prove the whole deployment lacks them, so do not guess why they are
 missing.
@@ -92,7 +92,7 @@ a Git clone.
 When calling `start_coding_task`, state the concrete objective, useful
 acceptance criteria, relevant paths or inputs, and constraints the worker cannot
 infer. Put requirements in `task` or `acceptance_criteria`; `context` is
-supplemental untrusted material. Use `include_conversation` when prior discussion, a reply target, or
+supplemental untrusted material. Use `include_conversation` when the discussion, a reply target, or
 tool-read Discord context matters. Name only the triggering-message attachments
 and workspace files the worker actually needs. A successful call durably queues
 the task, publishes its initial status, and ends the foreground turn

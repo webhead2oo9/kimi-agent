@@ -79,7 +79,7 @@ Every tool inherits the same recipe:
   silently coercing (`offset: "abc"` errors instead of reading from line 1;
   `attach: "flase"` errors instead of quietly un-attaching a deliverable).
   Quota failures report used/limit bytes plus the remediation ("delete files
-  you no longer need"); a literal grep that matches nothing but looks like a
+  you don't need"); a literal grep that matches nothing but looks like a
   regex gets a `hint` to pass `regex: true`; and `read_file` past EOF says so
   instead of returning the last line.
 - **Entry count is capped** (`max_workspace_entries`, default 20k). Byte quotas
@@ -197,7 +197,7 @@ searches contents) and `list_workspace` (one level only). It mirrors
 This applies an ordered list of exact-string `edits` to one file in a single
 call, modeled on `edit_file`. The semantics are:
 
-- Edits apply **in order, each to the result of the previous** edit.
+- Edits apply **in order, each to the accumulated result**.
 - It is **all-or-nothing**. Every edit is applied in memory first, and if any
   edit's `old_string` is missing or ambiguous (matches more than once without
   `replace_all`), the whole call fails with `edit N: …` and the file is left
@@ -219,8 +219,8 @@ intermediate files never ride the final reply or consume the attachment budget.
 `zip` and `fetch_url` also auto-queue but have no opt-out; remove theirs with
 `queue_file` `action: remove`. The opt-out is reversible, since `queue_file`
 can attach any workspace file explicitly. Each tool's `attached` response
-field reports whether the file is **now queued on the reply**. A file queued by
-an earlier call stays queued (`attach: false` skips adding, it does not
+field reports whether the file is **queued on the reply after the call**. A file
+already queued stays queued (`attach: false` skips adding, it does not
 remove), and re-writing an already-queued path reports `attached: true`.
 
 ### Removing a queued attachment (`queue_file` `action: remove`)

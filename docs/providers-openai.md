@@ -1,17 +1,18 @@
 # OpenAI and OpenRouter
 
-Both of these are reached through the generic transports described in
-[providers.md](providers.md). Neither needs a dedicated provider class; what
-they need is a few profile fields that only make sense on their endpoints, and
-this page covers those.
+OpenAI uses the generic transports described in [providers.md](providers.md).
+OpenRouter has a small wrapper around the generic Chat Completions transport for
+its routing, attribution, and image-output fields. This page covers the profile
+settings that matter on those endpoints.
 
 ## OpenAI
 
 OpenAI models can be routed through either `openai_compat` (Chat Completions) or
 `openai_responses` (the Responses API). Pick the one the model actually
-supports. If you need reasoning with encrypted replay, image output, or
-`store=false` local history, the Responses transport is the one that carries
-them.
+supports. If you need reasoning with encrypted replay or `store=false` local
+history, the Responses transport carries them. Kimi's Responses wrapper does
+not expose provider-native image output; normal Discord image creation uses the
+[`generate_image` tool](image-generation.md).
 
 Three profile fields matter on OpenAI-family transports:
 
@@ -51,7 +52,6 @@ image output models, and it adds three profile fields of its own:
 providers:
   openrouter:
     type: openrouter
-    base_url: https://openrouter.ai/api/v1
     api_key_env: MODEL_API_KEY
     # Optional: defaults to BOT_NAME.
     app_name: Community Assistant
@@ -59,6 +59,9 @@ providers:
       order: [primary-upstream, secondary-upstream]
       allow_fallbacks: true
 ```
+
+The OpenRouter endpoint is fixed in the provider implementation; `base_url`
+does not override it.
 
 One thing to keep straight: OpenRouter's own upstream fallback and Kimi's
 `<role>_fallbacks` chain are independent layers. OpenRouter can silently move

@@ -124,6 +124,19 @@ class _FakeVideoService:
         return self._removed, self._provider_cleanup_pending
 
 
+def _privacy_view(*, is_available: Any) -> privacy_cmd_module._PrivacyView:
+    return privacy_cmd_module._PrivacyView(
+        author_id=42,
+        conversation_store=cast(Any, _FakeConversationStore()),
+        preference_store=cast(Any, _FakePreferenceStore()),
+        memory_client=None,
+        auto_retain_watermarks=None,
+        workspace_manager=_UNUSED_WORKSPACE.manager,
+        workspace_locks=_UNUSED_WORKSPACE.locks,
+        is_available=is_available,
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_privacy_deletion_all_deletes_transcripts_and_memory() -> None:
     store = _FakeConversationStore()
@@ -492,6 +505,72 @@ async def test_confirmation_rechecks_readiness_when_click_waits_to_claim(
     assert view._resolved is False
     assert response.edited == []
     assert response.sent == [("This deletion prompt is no longer available.", {"ephemeral": True})]
+
+
+@pytest.mark.asyncio
+async def test_privacy_scope_selection_rechecks_readiness() -> None:
+    class _InteractionResponse:
+        def __init__(self) -> None:
+            self.sent: list[tuple[object, dict[str, object]]] = []
+            self.edited: list[dict[str, object]] = []
+
+        async def send_message(self, content: object = None, **kwargs: object) -> None:
+            self.sent.append((content, kwargs))
+
+        async def edit_message(self, **kwargs: object) -> None:
+            self.edited.append(kwargs)
+
+    response = _InteractionResponse()
+    interaction = cast(
+        Any,
+        SimpleNamespace(user=SimpleNamespace(id=42), response=response),
+    )
+    view = _privacy_view(is_available=lambda: False)
+    button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Delete memory"),
+    )
+
+    await button.callback(interaction)
+
+    assert view._resolved is False
+    assert response.edited == []
+    assert response.sent == [("This privacy prompt is no longer available.", {"ephemeral": True})]
+
+
+@pytest.mark.asyncio
+async def test_privacy_scope_selection_is_single_use() -> None:
+    class _InteractionResponse:
+        def __init__(self) -> None:
+            self.sent: list[tuple[object, dict[str, object]]] = []
+            self.edited: list[dict[str, object]] = []
+
+        async def send_message(self, content: object = None, **kwargs: object) -> None:
+            self.sent.append((content, kwargs))
+
+        async def edit_message(self, **kwargs: object) -> None:
+            self.edited.append(kwargs)
+
+    view = _privacy_view(is_available=lambda: True)
+    buttons = {
+        child.label: cast(Any, child)
+        for child in view.children
+        if getattr(child, "label", None) in {"Delete memory", "Delete my data"}
+    }
+    responses = [_InteractionResponse(), _InteractionResponse()]
+    interactions = [
+        cast(Any, SimpleNamespace(user=SimpleNamespace(id=42), response=response))
+        for response in responses
+    ]
+
+    await buttons["Delete memory"].callback(interactions[0])
+    await buttons["Delete my data"].callback(interactions[1])
+
+    assert len(responses[0].edited) == 1
+    assert responses[1].edited == []
+    assert responses[1].sent == [
+        ("This privacy choice has already been handled.", {"ephemeral": True})
+    ]
 
 
 @pytest.mark.asyncio

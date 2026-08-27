@@ -509,17 +509,49 @@ def _result_embed(description: str, *, color: discord.Color) -> discord.Embed:
 
 
 class _AuthorGuardedView(discord.ui.View):
-    """A view only the invoking user may interact with."""
+    """A single-use view only the invoking user may interact with."""
 
-    def __init__(self, *, author_id: int, timeout: float) -> None:
+    def __init__(
+        self,
+        *,
+        author_id: int,
+        timeout: float,
+        prompt_name: str,
+        choice_name: str,
+        is_available: InteractionAvailability,
+    ) -> None:
         super().__init__(timeout=timeout)
         self._author_id = author_id
+        self._prompt_name = prompt_name
+        self._choice_name = choice_name
+        self._is_available = is_available
+        self._decision_lock = asyncio.Lock()
+        self._resolved = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user is not None and interaction.user.id == self._author_id:
             return True
         await interaction.response.send_message("This prompt isn't for you.", ephemeral=True)
         return False
+
+    async def _claim_decision(self, interaction: discord.Interaction) -> bool:
+        # Discord normally calls interaction_check before dispatch. Keep the
+        # author check here too because tests and other callers can invoke a
+        # button callback directly.
+        if not await self.interaction_check(interaction):
+            return False
+        rejection: str | None = None
+        async with self._decision_lock:
+            if not self._is_available():
+                rejection = f"This {self._prompt_name} is no longer available."
+            elif self._resolved:
+                rejection = f"This {self._choice_name} has already been handled."
+            else:
+                self._resolved = True
+                self.stop()
+        if rejection is not None:
+            await interaction.response.send_message(rejection, ephemeral=True)
+        return rejection is None
 
 
 class _DeleteConfirmView(_AuthorGuardedView):
@@ -546,7 +578,13 @@ class _DeleteConfirmView(_AuthorGuardedView):
         timeout: float = 120.0,
         is_available: InteractionAvailability = _always_available,
     ) -> None:
-        super().__init__(author_id=author_id, timeout=timeout)
+        super().__init__(
+            author_id=author_id,
+            timeout=timeout,
+            prompt_name="deletion prompt",
+            choice_name="deletion choice",
+            is_available=is_available,
+        )
         self._scope = scope
         self._conversation_store = conversation_store
         self._preference_store = preference_store
@@ -561,28 +599,6 @@ class _DeleteConfirmView(_AuthorGuardedView):
         self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
-        self._is_available = is_available
-        self._decision_lock = asyncio.Lock()
-        self._resolved = False
-
-    async def _claim_decision(self, interaction: discord.Interaction) -> bool:
-        # Discord calls interaction_check before dispatching a button callback.
-        # Keep this defensive check at the claim boundary as well so direct
-        # callback invocation cannot let an unauthorized user consume the view.
-        if not await self.interaction_check(interaction):
-            return False
-        rejection: str | None = None
-        async with self._decision_lock:
-            if not self._is_available():
-                rejection = "This deletion prompt is no longer available."
-            elif self._resolved:
-                rejection = "This deletion choice has already been handled."
-            else:
-                self._resolved = True
-                self.stop()
-        if rejection is not None:
-            await interaction.response.send_message(rejection, ephemeral=True)
-        return rejection is None
 
     @discord.ui.button(label="Yes, delete", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -734,7 +750,13 @@ class _PrivacyView(_AuthorGuardedView):
         timeout: float = 180.0,
         is_available: InteractionAvailability = _always_available,
     ) -> None:
-        super().__init__(author_id=author_id, timeout=timeout)
+        super().__init__(
+            author_id=author_id,
+            timeout=timeout,
+            prompt_name="privacy prompt",
+            choice_name="privacy choice",
+            is_available=is_available,
+        )
         self._conversation_store = conversation_store
         self._preference_store = preference_store
         self._memory_client = memory_client
@@ -748,10 +770,10 @@ class _PrivacyView(_AuthorGuardedView):
         self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
-        self._is_available = is_available
 
     async def _open_confirm(self, interaction: discord.Interaction, scope: DeleteScope) -> None:
-        self.stop()
+        if not await self._claim_decision(interaction):
+            return
         confirm = _DeleteConfirmView(
             author_id=self._author_id,
             scope=scope,

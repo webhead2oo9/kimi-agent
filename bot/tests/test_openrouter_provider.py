@@ -61,6 +61,35 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
     assert response.model == "openai/gpt-4.1"
 
 
+def test_openrouter_provider_does_not_send_openai_reasoning_effort() -> None:
+    message = SimpleNamespace(content="done", tool_calls=None, images=None)
+    native = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        model="x/y",
+        openrouter_metadata={},
+    )
+    provider = OpenRouterProvider(api_key="test", model="x/y")
+    completions = FakeCompletions(native)
+    provider._client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+
+    asyncio.run(
+        provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("hi")],
+                tools=[],
+                max_tokens=128,
+                reasoning_effort="high",
+            )
+        )
+    )
+
+    assert "reasoning_effort" not in completions.calls[0]
+
+
 def test_openrouter_provider_captures_reasoning_field() -> None:
     # OpenRouter returns chain-of-thought in `message.reasoning`, not the
     # `reasoning_content` field the base OpenAI-chat provider looks for.

@@ -6,10 +6,10 @@
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 
-Kimi is a bot for communities that want an AI helper without handing the whole
-thing to a hosted service. You point it at whatever LLM you like (OpenAI-compatible,
-Anthropic, OpenRouter, or Codex) in one YAML file, give each server or channel its
-own persona and house rules in plain Markdown, and it takes it from there.
+Kimi is a bot for communities that want an AI helper without reinventing the wheel.
+You point it at whatever LLM you like (OpenAI-compatible,
+Anthropic, OpenRouter, Codex, and more providers to come) in one YAML file, give each server or channel its
+own persona and rules in plain Markdown, and it takes it from there.
 
 It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
 `Kimi help`, or a message inside a thread it's running. DMs are ignored. Under the
@@ -19,15 +19,13 @@ included.
 
 Roughly what that looks like:
 
-> **@you:** hey Kimi, what did we decide about the raid schedule last week?
+> **@you:** hey Kimi, what was that Rust book you recommended me a while back?
 >
-> **Kimi:** Searching `#planning`… you settled on Thursdays at 8pm UTC, and
-> Sam volunteered to post reminders. Want me to pin that in a thread?
+> **Kimi:** Rust for Rustaceans, back in March. You said you were going to start it after finishing the async chapter of the Book. Did you?  
 
 ## What it can do
 
-Plain chat works out of the box. Everything below is opt-in and stays off until
-you configure it.
+Plain chat works out of the box. There's lots of options to look through and setup, so make sure you read through the documentation, or have your agent read through it.
 
 | | |
 |---|---|

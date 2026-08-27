@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from branding import provider_identity
 from providers.factory import ProviderConfig, SUPPORTED_PROVIDER_NAMES
+from providers.failure_policy import failure_adapter_names
 from providers.types import REASONING_EFFORT_ORDER
 
 _API_KEY_SETTINGS_FIELDS = {
@@ -42,6 +43,14 @@ class Scope:
     channel_id: str | None = None
     user_id: str | None = None
     command: str | None = None
+
+
+class CircuitBreakerPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outage_cooldown_seconds: float = Field(default=300.0, gt=0)
+    quota_cooldown_seconds: float = Field(default=1800.0, gt=0)
+    rate_limit_cooldown_seconds: float = Field(default=60.0, gt=0)
 
 
 class ProviderProfile(BaseModel):
@@ -80,6 +89,8 @@ class ProviderProfile(BaseModel):
     # turns. This lets models share one credential-bearing endpoint at different
     # depths.
     reasoning_effort: str = ""
+    failure_adapter: str = "generic"
+    circuit_breaker: CircuitBreakerPolicy = Field(default_factory=lambda: CircuitBreakerPolicy())
 
     @field_validator("type")
     @classmethod
@@ -95,6 +106,14 @@ class ProviderProfile(BaseModel):
         if value and value not in SUPPORTED_API_KEY_ENVS:
             supported = ", ".join(sorted(SUPPORTED_API_KEY_ENVS))
             raise ValueError(f"unsupported api_key_env {value!r}; expected one of: {supported}")
+        return value
+
+    @field_validator("failure_adapter")
+    @classmethod
+    def _known_failure_adapter(cls, value: str) -> str:
+        if value not in failure_adapter_names():
+            supported = ", ".join(sorted(failure_adapter_names()))
+            raise ValueError(f"unknown failure_adapter {value!r}; expected one of: {supported}")
         return value
 
     @field_validator("reasoning_effort")

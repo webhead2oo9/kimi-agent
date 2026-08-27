@@ -41,7 +41,11 @@ def _record(
 
 
 def _turn(
-    records: list[ToolCallRecord], *, provider_calls: int, usage: UsageBreakdown
+    records: list[ToolCallRecord],
+    *,
+    provider_calls: int,
+    usage: UsageBreakdown,
+    usage_complete: bool = True,
 ) -> TurnRecord:
     return TurnRecord(
         user_message="q",
@@ -50,6 +54,7 @@ def _turn(
         tokens=usage.input_tokens + usage.output_tokens,
         latency_ms=10,
         usage=usage,
+        usage_complete=usage_complete,
         provider_calls=provider_calls,
     )
 
@@ -147,6 +152,23 @@ def test_run_cost_prices_each_bucket_and_stays_none_when_unpriced() -> None:
     # A subscription-covered arm has no per-token price; reporting 0 would read
     # as "free" in a cost comparison rather than "not measured here".
     assert run_cost(run, None) is None
+
+
+def test_run_cost_is_unknown_when_any_provider_call_omits_usage() -> None:
+    run = ScenarioRun(
+        scenario_id="s",
+        model_label="m",
+        turns=[
+            _turn(
+                [],
+                provider_calls=1,
+                usage=UsageBreakdown(),
+                usage_complete=False,
+            )
+        ],
+    )
+
+    assert run_cost(run, ModelPricing(input=2.0, output=6.0)) is None
 
 
 def test_usage_dict_exposes_every_priced_bucket() -> None:

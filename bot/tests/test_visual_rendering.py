@@ -83,6 +83,9 @@ def test_visual_schema_is_provider_neutral_and_searchable(tmp_path: Path) -> Non
     assert chart.category == diagram.category == "Visuals"
     assert chart.searchable is diagram.searchable is True
     assert "source" not in chart.parameters["properties"]
+    assert chart.parameters["properties"]["x_scale"]["enum"] == ["linear", "symlog"]
+    assert chart.parameters["properties"]["y_scale"]["enum"] == ["linear", "symlog"]
+    assert chart.parameters["properties"]["overlap_mode"]["enum"] == ["none", "count"]
     assert not {"chart_type", "categories", "series"} & diagram.parameters["properties"].keys()
 
     def assert_neutral(value: object) -> None:
@@ -124,6 +127,59 @@ def test_chart_validation_rejects_conditional_fields_and_nonfinite_values() -> N
         }
     )
     assert default_bar.chart_type == "bar"
+
+    scatter_controls = validate_visual_request(
+        {
+            "kind": "chart",
+            "chart_type": "scatter",
+            "x_scale": "symlog",
+            "y_scale": "symlog",
+            "overlap_mode": "count",
+            "alt_text": "Near-zero and outlier points use symmetric logarithmic axes.",
+            "series": [
+                {
+                    "name": "Observations",
+                    "points": [
+                        {"x": 0, "y": 0},
+                        {"x": 0, "y": 0},
+                        {"x": -0.001, "y": 0.002},
+                        {"x": 1_000_000, "y": -1_000_000},
+                    ],
+                }
+            ],
+        }
+    )
+    assert scatter_controls.x_scale == "symlog"
+    assert scatter_controls.y_scale == "symlog"
+    assert scatter_controls.overlap_mode == "count"
+
+    for field, value, message in (
+        ("x_scale", "log", "x_scale must be linear or symlog"),
+        ("y_scale", "log", "y_scale must be linear or symlog"),
+        ("overlap_mode", "jitter", "overlap_mode must be none or count"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            validate_visual_request(
+                {
+                    "kind": "chart",
+                    "chart_type": "scatter",
+                    field: value,
+                    "alt_text": "Points.",
+                    "series": [{"name": "S", "points": [{"x": 1, "y": 2}]}],
+                }
+            )
+
+    with pytest.raises(ValueError, match="non-default values only for scatter"):
+        validate_visual_request(
+            {
+                "kind": "chart",
+                "chart_type": "line",
+                "y_scale": "symlog",
+                "alt_text": "Line.",
+                "categories": ["A"],
+                "series": [{"name": "S", "values": [1]}],
+            }
+        )
 
     with pytest.raises(ValueError, match="categories is not allowed"):
         validate_visual_request(
@@ -305,6 +361,7 @@ def test_visual_worker_command_is_ephemeral_and_offline(tmp_path: Path) -> None:
         runtime_dir=tmp_path / "runtime",
         profiles_dir=tmp_path / "profiles",
         bridge_script=tmp_path / "visual_bridge.mjs",
+        call_timeout_seconds=47.5,
         require_root_owned_runtime=False,
     )
     job = tmp_path / "job"
@@ -313,6 +370,7 @@ def test_visual_worker_command_is_ephemeral_and_offline(tmp_path: Path) -> None:
         job,
         unit_name="visual-test",
         seccomp_fd=9,
+        max_output_bytes=1_234_567,
     )
 
     assert "--unshare-all" in command
@@ -322,6 +380,17 @@ def test_visual_worker_command_is_ephemeral_and_offline(tmp_path: Path) -> None:
     assert str(config.profiles_dir) not in command
     assert command[command.index("--seccomp") + 1] == "9"
     assert command[-2:] == ["/runtime/node", "/visual_bridge.mjs"]
+    timeout_index = command.index("VISUAL_CALL_TIMEOUT_SECONDS")
+    assert command[timeout_index + 1] == "47.5"
+    output_limit_index = command.index("VISUAL_MAX_OUTPUT_BYTES")
+    assert command[output_limit_index + 1] == "1234567"
+    visual_math = str((config.bridge_script.parent / "visual_math.mjs").resolve())
+    math_index = command.index(visual_math)
+    assert command[math_index - 1 : math_index + 2] == [
+        "--ro-bind",
+        visual_math,
+        "/visual_math.mjs",
+    ]
     job_index = command.index(str(job.resolve()))
     assert command[job_index - 1 : job_index + 2] == ["--bind", str(job.resolve()), "/output"]
     assert any(command[index : index + 2] == ["--tmpfs", "/work"] for index in range(len(command)))
@@ -435,6 +504,9 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
                 "title": "Relationship",
                 "x_label": "X",
                 "y_label": "Y",
+                "x_scale": "symlog",
+                "y_scale": "symlog",
+                "overlap_mode": "count",
                 "alt_text": "Three points trend upward.",
                 "series": [
                     {
@@ -452,9 +524,15 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
     )
 
     assert result.get("ok") is True, result
+    assert result["x_scale"] == "symlog"
+    assert result["y_scale"] == "symlog"
+    assert result["overlap_mode"] == "count"
     assert result["filename"] == "visual-1.png"
     assert "workspace" not in json.dumps(result)
     assert len(service.requests) == 1
+    assert service.requests[0].x_scale == "symlog"
+    assert service.requests[0].y_scale == "symlog"
+    assert service.requests[0].overlap_mode == "count"
     assert ctx.visual_renders_this_turn == 1
     assert len(ctx.output_files) == 1
     assert Path(ctx.output_files[0]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

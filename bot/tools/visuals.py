@@ -22,7 +22,9 @@ from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks, workspace_activity
 from trust.tiers import TrustTier
 from web_browser.visual_service import (
+    AxisScale,
     ChartType,
+    OverlapMode,
     ScatterPoint,
     VisualRenderRequest,
     VisualSeries,
@@ -48,10 +50,24 @@ EXPECTED_WIDTH = 1200
 EXPECTED_HEIGHT = 675
 
 _CHART_FIELDS = frozenset(
-    {"kind", "chart_type", "title", "x_label", "y_label", "alt_text", "categories", "series"}
+    {
+        "kind",
+        "chart_type",
+        "title",
+        "x_label",
+        "y_label",
+        "x_scale",
+        "y_scale",
+        "overlap_mode",
+        "alt_text",
+        "categories",
+        "series",
+    }
 )
 _MERMAID_FIELDS = frozenset({"kind", "title", "alt_text", "source"})
 _ALLOWED_CHART_TYPES = frozenset({"bar", "line", "scatter"})
+_ALLOWED_AXIS_SCALES = frozenset({"linear", "symlog"})
+_ALLOWED_OVERLAP_MODES = frozenset({"none", "count"})
 _MERMAID_HEADER_RE = re.compile(
     r"^(?:(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)|sequenceDiagram|stateDiagram-v2|"
     r"classDiagram|erDiagram)\s*$",
@@ -279,12 +295,28 @@ def validate_visual_request(args: dict[str, Any]) -> VisualRenderRequest:
     chart_type = cast(ChartType, chart_type_raw)
     x_label = _text(args.get("x_label"), "x_label", maximum=MAX_AXIS_LABEL_CHARS)
     y_label = _text(args.get("y_label"), "y_label", maximum=MAX_AXIS_LABEL_CHARS)
+    x_scale_raw = args.get("x_scale", "linear")
+    y_scale_raw = args.get("y_scale", "linear")
+    overlap_mode_raw = args.get("overlap_mode", "none")
+    if x_scale_raw not in _ALLOWED_AXIS_SCALES:
+        raise ValueError("x_scale must be linear or symlog")
+    if y_scale_raw not in _ALLOWED_AXIS_SCALES:
+        raise ValueError("y_scale must be linear or symlog")
+    if overlap_mode_raw not in _ALLOWED_OVERLAP_MODES:
+        raise ValueError("overlap_mode must be none or count")
+    x_scale = cast(AxisScale, x_scale_raw)
+    y_scale = cast(AxisScale, y_scale_raw)
+    overlap_mode = cast(OverlapMode, overlap_mode_raw)
     if chart_type == "scatter":
         args = _without_neutral_fields(args, {"categories": []})
         if "categories" in args:
             raise ValueError("categories is not allowed for scatter charts")
         categories: tuple[str, ...] = ()
     else:
+        if x_scale != "linear" or y_scale != "linear" or overlap_mode != "none":
+            raise ValueError(
+                "x_scale, y_scale, and overlap_mode support non-default values only for scatter charts"
+            )
         categories = _validate_categories(args.get("categories"), chart_type)
     series = _validate_chart_series(args.get("series"), chart_type, len(categories))
     return VisualRenderRequest(
@@ -296,6 +328,9 @@ def validate_visual_request(args: dict[str, Any]) -> VisualRenderRequest:
         alt_text=alt_text,
         categories=categories,
         series=series,
+        x_scale=x_scale,
+        y_scale=y_scale,
+        overlap_mode=overlap_mode,
     )
 
 
@@ -477,6 +512,10 @@ def init_visual_tool(
         }
         if request.chart_type is not None:
             payload["chart_type"] = request.chart_type
+            if request.chart_type == "scatter":
+                payload["x_scale"] = request.x_scale
+                payload["y_scale"] = request.y_scale
+                payload["overlap_mode"] = request.overlap_mode
         return json.dumps(payload, ensure_ascii=False)
 
     async def render_chart(args: dict, ctx: MessageContext) -> str:
@@ -490,9 +529,10 @@ def init_visual_tool(
         description=(
             "Render and attach one accessible fixed-style bar, line, or scatter chart as a "
             "1200x675 PNG. Bar and line charts use categories plus series values; scatter "
-            "charts use series points and no categories. Colors, patterns, typography, "
-            "dimensions, and safety settings are fixed. Every successful call queues the PNG "
-            "for the final Discord reply."
+            "charts use series points and no categories. Scatter charts may use symmetric-log "
+            "axes for extreme signed ranges and count badges for exact overlaps. Colors, "
+            "patterns, typography, dimensions, and safety settings are fixed. Every successful "
+            "call queues the PNG for the final Discord reply."
         ),
         parameters={
             "type": "object",
@@ -512,6 +552,30 @@ def init_visual_tool(
                     "type": "string",
                     "maxLength": MAX_AXIS_LABEL_CHARS,
                     "description": "Optional chart y-axis label.",
+                },
+                "x_scale": {
+                    "type": "string",
+                    "enum": ["linear", "symlog"],
+                    "description": (
+                        "Scatter-only x-axis scale; symlog preserves zero and negative values "
+                        "while separating values across large magnitude ranges. Defaults to linear."
+                    ),
+                },
+                "y_scale": {
+                    "type": "string",
+                    "enum": ["linear", "symlog"],
+                    "description": (
+                        "Scatter-only y-axis scale; symlog preserves zero and negative values "
+                        "while separating values across large magnitude ranges. Defaults to linear."
+                    ),
+                },
+                "overlap_mode": {
+                    "type": "string",
+                    "enum": ["none", "count"],
+                    "description": (
+                        "Scatter-only duplicate handling. count marks exact shared coordinates "
+                        "with their observation count; defaults to none."
+                    ),
                 },
                 "alt_text": {
                     "type": "string",

@@ -22,7 +22,7 @@ from video_understanding.client import (
     VideoInteractionResult,
     VideoUsage,
 )
-from video_understanding.service import VideoAnalysis, VideoSessionError
+from video_understanding.service import VideoAnalysis, VideoResultCancelled, VideoSessionError
 from workspace import WorkspaceManager
 
 
@@ -79,12 +79,65 @@ class ErrorVideoService(FakeVideoService):
         )
 
 
+class CancelledVideoService(FakeVideoService):
+    async def start(self, **kwargs: Any) -> VideoAnalysis:
+        raise VideoResultCancelled(
+            result=VideoInteractionResult(
+                interaction_id="remote",
+                model="gemini-3.7-flash",
+                answer="answer",
+                evidence=(),
+                limitations=(),
+                usage=VideoUsage(input_tokens=50, cached_tokens=40, output_tokens=10),
+            )
+        )
+
+
+@dataclass
+class ZeroUsageVideoService(FakeVideoService):
+    usage_present: bool = True
+
+    async def start(self, **kwargs: Any) -> VideoAnalysis:
+        return _analysis(
+            "video_zero",
+            usage=VideoUsage(),
+            usage_present=self.usage_present,
+        )
+
+
+class MissingUsageErrorVideoService(FakeVideoService):
+    async def start(self, **kwargs: Any) -> VideoAnalysis:
+        raise VideoSessionError(
+            "session persistence failed",
+            result=_missing_usage_result(),
+        )
+
+
+class MissingUsageCancelledVideoService(FakeVideoService):
+    async def start(self, **kwargs: Any) -> VideoAnalysis:
+        raise VideoResultCancelled(result=_missing_usage_result())
+
+
+def _missing_usage_result() -> VideoInteractionResult:
+    return VideoInteractionResult(
+        interaction_id="remote",
+        model="gemini-3.7-flash",
+        answer="answer",
+        evidence=(),
+        limitations=(),
+        usage=VideoUsage(),
+        usage_present=False,
+    )
+
+
 def _analysis(
     session: str,
     *,
     source_kind: str = "youtube",
     source_display_name: str = "YouTube video",
     youtube_url: str = "https://www.youtube.com/watch?v=abcdefghijk",
+    usage: VideoUsage | None = None,
+    usage_present: bool = True,
 ) -> VideoAnalysis:
     return VideoAnalysis(
         session=session,
@@ -103,7 +156,8 @@ def _analysis(
         ),
         limitations=("Fast cuts may be missed.",),
         model="gemini-3.7-flash",
-        usage=VideoUsage(input_tokens=100, cached_tokens=80, output_tokens=20),
+        usage=(usage or VideoUsage(input_tokens=100, cached_tokens=80, output_tokens=20)),
+        usage_present=usage_present,
     )
 
 
@@ -234,6 +288,33 @@ async def test_start_returns_untrusted_timestamped_result_and_records_usage() ->
     assert ctx.usage_sink[0].pricing_model == "gemini-3.7-flash"
     assert ctx.usage_sink[0].est_cost_usd is not None
     assert ctx.usage_sink[0].est_cost_usd > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage_present", "expected_cost"),
+    ((False, None), (True, 0.0)),
+)
+async def test_zero_video_usage_is_unpriced_only_when_provider_usage_is_missing(
+    usage_present: bool,
+    expected_cost: float | None,
+) -> None:
+    ctx = _context()
+
+    await _registry(ZeroUsageVideoService(usage_present=usage_present)).dispatch(
+        TOOL_NAME,
+        {
+            "action": "start",
+            "url": "https://youtu.be/abcdefghijk",
+            "question": "Question",
+        },
+        ctx,
+    )
+
+    assert ctx.usage_sink is not None
+    [call] = ctx.usage_sink
+    assert call.usage_present is usage_present
+    assert call.est_cost_usd == expected_cost
 
 
 @pytest.mark.asyncio
@@ -404,6 +485,67 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_fails()
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.input_tokens == 50
     assert ctx.usage_sink[0].usage.cached_read_tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_completed_call_usage_is_recorded_when_session_persistence_is_cancelled() -> None:
+    ctx = _context()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _registry(CancelledVideoService()).dispatch(
+            TOOL_NAME,
+            {
+                "action": "start",
+                "url": "https://youtu.be/abcdefghijk",
+                "question": "Question",
+            },
+            ctx,
+        )
+
+    assert ctx.usage_sink is not None
+    assert ctx.usage_sink[0].usage.input_tokens == 50
+    assert ctx.usage_sink[0].usage.cached_read_tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_missing_usage_stays_unpriced_when_session_persistence_fails() -> None:
+    ctx = _context()
+
+    await _registry(MissingUsageErrorVideoService()).dispatch(
+        TOOL_NAME,
+        {
+            "action": "start",
+            "url": "https://youtu.be/abcdefghijk",
+            "question": "Question",
+        },
+        ctx,
+    )
+
+    assert ctx.usage_sink is not None
+    [call] = ctx.usage_sink
+    assert call.usage_present is False
+    assert call.est_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_missing_usage_stays_unpriced_when_session_persistence_is_cancelled() -> None:
+    ctx = _context()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _registry(MissingUsageCancelledVideoService()).dispatch(
+            TOOL_NAME,
+            {
+                "action": "start",
+                "url": "https://youtu.be/abcdefghijk",
+                "question": "Question",
+            },
+            ctx,
+        )
+
+    assert ctx.usage_sink is not None
+    [call] = ctx.usage_sink
+    assert call.usage_present is False
+    assert call.est_cost_usd is None
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,34 @@ from web_browser.service import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
+BETTERWRIGHT_INSTALLER = PROJECT_ROOT / "deploy/betterwright/install.sh"
+
+
+def _run_installer_preflight(tmp_path: Path, target: str) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    commands = {
+        "id": "#!/bin/sh\necho 0\n",
+        "node": "#!/bin/sh\nexit 1\n",
+        "npm": "#!/bin/sh\nexit 0\n",
+    }
+    for name, source in commands.items():
+        path = fake_bin / name
+        path.write_text(source, encoding="utf-8")
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "NODE_BIN": str(fake_bin / "node"),
+        "NPM_BIN": str(fake_bin / "npm"),
+    }
+    return subprocess.run(
+        ["sh", str(BETTERWRIGHT_INSTALLER), target],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 def _config(
@@ -133,6 +161,37 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "Do not call `browser.newPage()`,\n  `context.newPage()`" in skill
     assert "CloakBrowser" not in installer
     assert "FONTCONFIG_FILE" not in installer
+
+
+def test_betterwright_installer_shell_syntax() -> None:
+    subprocess.run(["sh", "-n", str(BETTERWRIGHT_INSTALLER)], check=True)
+
+
+def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path: Path) -> None:
+    lexical = _run_installer_preflight(tmp_path, "/opt/kimi/../kimi/betterwright")
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to("/opt/kimi/betterwright", target_is_directory=True)
+    symlinked = _run_installer_preflight(tmp_path, str(alias))
+
+    for result in (lexical, symlinked):
+        assert result.returncode == 2
+        assert "BetterWright requires Node >=22.18.0" in result.stderr
+        assert "refusing runtime directory" not in result.stderr
+
+
+def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    marker = victim / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(victim, target_is_directory=True)
+
+    result = _run_installer_preflight(tmp_path, str(alias))
+
+    assert result.returncode == 2
+    assert "refusing runtime directory outside /opt/kimi/betterwright" in result.stderr
+    assert marker.read_text(encoding="utf-8") == "keep"
 
 
 def test_visual_math_node_suite() -> None:

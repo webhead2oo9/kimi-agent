@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class ImageResult:
     image_base64: str
     size: str | None = None
     background: str | None = None
+    usage: dict[str, Any] | None = None
 
 
 class ImageGenError(RuntimeError):

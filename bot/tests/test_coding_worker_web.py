@@ -12,7 +12,7 @@ import pytest
 from app.coding_jobs import CodingJobManager
 from sandbox.netns_lease import NetnsLease
 from sandbox.runner import SandboxConfig
-from tools.browser import _browser_session, _turn_id
+from tools.browser import _acquire_rooted_turn, _browser_session, _turn_id
 from tools.code_exec import CodeExecRuntimeGuards
 from tools.coding_tasks import CodingTaskControls, build_coding_registry
 from tools.registry import MessageContext, ToolRegistry
@@ -154,6 +154,42 @@ def test_rooted_discord_turn_keeps_browser_lease_for_the_turn() -> None:
 def test_browser_session_ignores_placeholder_conversation_id() -> None:
     assert _browser_session(_worker_context(conversation_id=0)).startswith("context-")
     assert _browser_session(_worker_context(conversation_id=7)) == "conversation-7"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_rooted_browser_waiter_does_not_strand_turn(
+    tmp_path: Path,
+) -> None:
+    lease = NetnsLease()
+    service = BrowserService(
+        _service_config(tmp_path, "netns"),
+        netns_lease=lease,
+    )
+    await service.acquire_turn("current-owner", "current-turn")
+    assert lease.locked() is True
+    ctx = _worker_context(background=False)
+
+    waiter = asyncio.create_task(_acquire_rooted_turn(service, ctx, "waiting-turn"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert waiter.done() is False
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    await service.release_turn("current-owner", "current-turn")
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    turn_stranded = service.has_active_turn(ctx.user_id, "waiting-turn")
+    lease_stranded = lease.locked()
+    if turn_stranded:
+        await service.release_turn(ctx.user_id, "waiting-turn")
+    await service.close()
+
+    assert turn_stranded is False
+    assert lease_stranded is False
 
 
 # --- coding jobs wait for, and evict, the same user's idle browser ----------

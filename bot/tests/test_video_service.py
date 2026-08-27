@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -325,6 +326,143 @@ async def test_uploaded_video_failure_releases_reserved_provider_file() -> None:
     assert not store.pending_files
     assert len(client.file_deletes) == 1
     assert client.file_deletes[0].startswith("files/kv-")
+
+
+@pytest.mark.asyncio
+async def test_uploaded_session_persistence_cancellation_cleans_remote_resources() -> None:
+    persisting = asyncio.Event()
+
+    class BlockingStore(FakeStore):
+        async def create_uploaded_session(self, **kwargs: Any) -> None:
+            persisting.set()
+            await asyncio.Future()
+
+    async def source() -> Any:
+        yield b"video"
+
+    store = BlockingStore()
+    client = FakeClient(fail_delete=True)
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start_uploaded(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            source=UploadedVideoSource(
+                kind="attachment",
+                display_name="clip.mp4",
+                locator="clip.mp4",
+                mime_type="video/mp4",
+                byte_size=5,
+                bytes=source(),
+            ),
+            question="What happens?",
+            config=_config(),
+        )
+    )
+    await persisting.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [item.interaction_id for item in store.pending] == ["remote-file-start"]
+    assert client.deletes == ["remote-file-start"]
+    assert not store.reserved_files
+    assert len(client.file_deletes) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_upload_releases_only_unclaimed_provider_file() -> None:
+    analyzing = asyncio.Event()
+
+    class BlockingClient(FakeClient):
+        async def start_from_file(self, **kwargs: Any) -> VideoInteractionResult:
+            analyzing.set()
+            return await asyncio.Future()
+
+    async def source() -> Any:
+        yield b"video"
+
+    store = FakeStore()
+    client = BlockingClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start_uploaded(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            source=UploadedVideoSource(
+                kind="attachment",
+                display_name="clip.mp4",
+                locator="clip.mp4",
+                mime_type="video/mp4",
+                byte_size=5,
+                bytes=source(),
+            ),
+            question="What happens?",
+            config=_config(),
+        )
+    )
+    await analyzing.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not store.reserved_files
+    assert not store.pending_files
+    assert len(client.file_deletes) == 1
+    assert client.file_deletes[0].startswith("files/kv-")
+    assert not client.deletes
+    assert not store.sessions
+
+
+@pytest.mark.asyncio
+async def test_cancelled_upload_does_not_delete_file_when_reservation_is_already_claimed() -> None:
+    analyzing = asyncio.Event()
+
+    class ClaimedStore(FakeStore):
+        async def release_provider_file(self, file_name: str, actor_user_id: str) -> bool:
+            return False
+
+    class BlockingClient(FakeClient):
+        async def start_from_file(self, **kwargs: Any) -> VideoInteractionResult:
+            analyzing.set()
+            return await asyncio.Future()
+
+    async def source() -> Any:
+        yield b"video"
+
+    store = ClaimedStore()
+    client = BlockingClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start_uploaded(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            source=UploadedVideoSource(
+                kind="workspace",
+                display_name="clip.mp4",
+                locator="imports/clip.mp4",
+                mime_type="video/mp4",
+                byte_size=5,
+                bytes=source(),
+            ),
+            question="What happens?",
+            config=_config(),
+        )
+    )
+    await analyzing.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.reserved_files
+    assert not store.pending_files
+    assert not client.file_deletes
 
 
 @pytest.mark.asyncio

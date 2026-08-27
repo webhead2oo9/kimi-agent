@@ -5,7 +5,7 @@ import concurrent.futures
 import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from agent.activity import ActivityReporter
@@ -70,6 +70,14 @@ class MessageContext:
     # instead.
     browser_netns_claimed: bool = False
     networked_exec_inflight: bool = False
+    # Exact managed jobs that may still own or be waiting for the shared netns.
+    # The Boolean above remains the browser-facing fast path, while this set
+    # prevents one completed job from clearing the conflict raised by another.
+    networked_exec_job_ids: set[str] = field(default_factory=set)
+    # Mirrors ConversationContext.background_task: a long-lived worker context
+    # where the browser releases its turn lease after every call so managed
+    # jobs can take the namespace between calls.
+    background_task: bool = False
     # In-turn checklist set by the `plan` tool. Per-turn scratch that lives on
     # MessageContext (like the embed/thread/output_files rails), dies when the
     # turn returns, and is structurally outside the SQLite-persisted transcript.
@@ -431,6 +439,16 @@ class ToolRegistry:
             name: entry for name, entry in self._search_tools.items() if name in names
         }
         return clone
+
+    def promote_searchable(self, names: set[str]) -> None:
+        """Make selected searchable entries always visible in this registry view."""
+
+        for name in names:
+            entry = self._search_tools.pop(name, None)
+            if entry is not None:
+                # Entries are otherwise shared between registry views; copy so
+                # the source catalog retains its searchable classification.
+                self._core_tools[name] = replace(entry, searchable=False)
 
     def get_tools_for_tier(
         self,

@@ -46,6 +46,10 @@ class ConversationContext:
     # MessageContext for handlers, and never persisted: the fragments stay the
     # source of truth and an edit takes effect next turn (config/fragments/tool_config.py).
     tool_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # True for durable background runs (coding tasks) whose single MessageContext
+    # spans many ReAct iterations and minutes of wall time. Tools that hold
+    # turn-scoped resources (the browser's netns lease) release per call instead.
+    background_task: bool = False
     pending_output_files: list[str] = field(default_factory=list)
     pending_output_file_descriptions: dict[str, str] = field(default_factory=dict)
     pending_allowed_file_roots: list[str] = field(default_factory=list)

@@ -31,6 +31,11 @@ from workspace import WorkspaceKey, WorkspaceManager
 logger = logging.getLogger(__name__)
 UserActivityGuard = Callable[[str], AbstractAsyncContextManager[None]]
 
+# How long a netns job waits for the shared namespace after asking the browser
+# service to yield. Long enough for a worker teardown, short enough that a
+# foreground browser turn owned by someone else fails the job promptly.
+CODING_JOB_LEASE_WAIT_SECONDS = 30.0
+
 
 @asynccontextmanager
 async def _noop_user_activity(_user_id: str) -> AsyncIterator[None]:
@@ -151,6 +156,54 @@ class CodingJobManager:
         suffix = "service" if self._config.network_mode == "netns" else "scope"
         return f"coding-job-{job_id}.{suffix}"
 
+    @property
+    def uses_netns(self) -> bool:
+        return self._config.network_mode == "netns"
+
+    @asynccontextmanager
+    async def _run_lease(self, user_id: str) -> AsyncIterator[None]:
+        """Hold the sandbox's process-wide lease for one job.
+
+        Host/none modes keep the fail-fast semaphore check. In netns mode the
+        physical namespace is shared with the same user's browser, which keeps
+        it until its idle TTL, so a job first asks the browser service to yield
+        and then waits a bounded time; ``async with`` on the lease preserves its
+        poison-on-safety-error contract.
+        """
+
+        if not self.uses_netns:
+            semaphore = self._runtime_guards.semaphore
+            if semaphore.locked():
+                raise RuntimeError(
+                    "The shared execution sandbox is busy; retry this coding job later."
+                )
+            async with semaphore:
+                yield
+            return
+        lease = self._runtime_guards.netns_lease
+        # Do not inspect locked() first: the same user's browser can acquire
+        # between that observation and our separately scheduled acquire().
+        if self._runtime_guards.netns_yield is not None:
+            await self._runtime_guards.netns_yield(user_id)
+        try:
+            await asyncio.wait_for(lease.acquire(), CODING_JOB_LEASE_WAIT_SECONDS)
+        except TimeoutError:
+            raise RuntimeError(
+                "The shared VPN sandbox is busy with the browser or other networked "
+                "code; retry this coding job later."
+            ) from None
+        # Already acquired: re-enter so __aexit__ handles release and poisoning.
+        lease_released = False
+        try:
+            yield
+        except BaseException as exc:
+            lease_released = True
+            await lease.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        finally:
+            if not lease_released:
+                await lease.__aexit__(None, None, None)
+
     def workspace_activity(self, workspace_key: str) -> AbstractAsyncContextManager[None]:
         return self._workspace_locks.writer(WorkspaceKey(workspace_key))
 
@@ -264,116 +317,109 @@ class CodingJobManager:
     ) -> None:
         try:
             await self._store.update_job(job_id, CodingJobStatus.RUNNING, unit_name=unit_name)
-            run_lease = (
-                self._runtime_guards.netns_lease
-                if self._config.network_mode == "netns"
-                else self._runtime_guards.semaphore
-            )
             job = await self._store.get_job(job_id)
             if job is None:
                 raise RuntimeError("coding job no longer exists")
             task = await self._store.get_task(job.task_id)
             if task is None:
                 raise RuntimeError("parent coding task no longer exists")
-            async with self._workspace_locks.owned_operation(workspace_key):
-                if run_lease.locked():
-                    raise RuntimeError(
-                        "The shared execution sandbox is busy; retry this coding job later."
+            async with (
+                self._workspace_locks.owned_operation(workspace_key),
+                self._run_lease(task.user_id),
+            ):
+                if self._config.network_mode != "none":
+                    quota_error = await self._runtime_guards.reserve_network_run(
+                        usage_store=self._usage_store,
+                        user_id=task.user_id,
+                        user_name=task.user_name,
+                        channel_id=task.channel_id,
+                        guild_id=task.guild_id,
+                        trust_tier=TrustTier.REGULAR,
+                        operation="coding_job",
                     )
-                async with run_lease:
-                    if self._config.network_mode != "none":
-                        quota_error = await self._runtime_guards.reserve_network_run(
-                            usage_store=self._usage_store,
-                            user_id=task.user_id,
-                            user_name=task.user_name,
-                            channel_id=task.channel_id,
-                            guild_id=task.guild_id,
-                            trust_tier=TrustTier.REGULAR,
-                            operation="coding_job",
-                        )
-                        if quota_error is not None:
-                            raise RuntimeError(quota_error)
-                    path_text = str(request.get("path", "")).strip()
-                    if not path_text:
-                        raise ValueError("path is required")
-                    raw_mode = str(request.get("mode", "")).strip().lower() or "direct"
-                    if raw_mode not in {"python", "shell", "direct"}:
-                        raise ValueError("mode must be python, shell, or direct")
-                    mode = cast(SandboxRunMode, raw_mode)
-                    argv_raw = request.get("argv") or []
-                    if not isinstance(argv_raw, list) or not all(
-                        isinstance(value, str) for value in argv_raw
-                    ):
-                        raise ValueError("argv must be a list of strings")
-                    stdin = request.get("stdin")
-                    if stdin is not None and not isinstance(stdin, str):
-                        raise ValueError("stdin must be a string")
-                    path = self._workspace_manager.resolve_user_file_path(
-                        workspace_key, path_text, must_exist=True
+                    if quota_error is not None:
+                        raise RuntimeError(quota_error)
+                path_text = str(request.get("path", "")).strip()
+                if not path_text:
+                    raise ValueError("path is required")
+                raw_mode = str(request.get("mode", "")).strip().lower() or "direct"
+                if raw_mode not in {"python", "shell", "direct"}:
+                    raise ValueError("mode must be python, shell, or direct")
+                mode = cast(SandboxRunMode, raw_mode)
+                argv_raw = request.get("argv") or []
+                if not isinstance(argv_raw, list) or not all(
+                    isinstance(value, str) for value in argv_raw
+                ):
+                    raise ValueError("argv must be a list of strings")
+                stdin = request.get("stdin")
+                if stdin is not None and not isinstance(stdin, str):
+                    raise ValueError("stdin must be a string")
+                path = self._workspace_manager.resolve_user_file_path(
+                    workspace_key, path_text, must_exist=True
+                )
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError("path is not a regular file")
+                before, snapshot_complete = await _run_locked_thread(
+                    partial(
+                        snapshot_workspace,
+                        self._workspace_manager,
+                        workspace_key,
+                        max_workspace_files=self._config.max_workspace_files,
+                        max_env_roots=self._config.max_env_files,
                     )
-                    if path.is_symlink() or not path.is_file():
-                        raise ValueError("path is not a regular file")
-                    before, snapshot_complete = await _run_locked_thread(
-                        partial(
-                            snapshot_workspace,
-                            self._workspace_manager,
-                            workspace_key,
-                            max_workspace_files=self._config.max_workspace_files,
-                            max_env_roots=self._config.max_env_files,
-                        )
-                    )
-                    result = await run_workspace_file_in_sandbox(
-                        self._config,
-                        self._workspace_manager.user_files_dir(workspace_key),
-                        path,
-                        stdin=stdin,
-                        mode=mode,
-                        argv=tuple(argv_raw),
-                        unit_name=unit_name,
-                    )
-                    if result.quota_exceeded:
-                        try:
-                            cleanup = await _run_locked_thread(
-                                partial(
-                                    cleanup_quota_created_entries,
-                                    self._workspace_manager,
-                                    workspace_key,
-                                    before,
-                                    remove_preexisting_envs=(result.environment_quota_exceeded),
-                                    remove_new_ordinary=snapshot_complete,
-                                )
+                )
+                result = await run_workspace_file_in_sandbox(
+                    self._config,
+                    self._workspace_manager.user_files_dir(workspace_key),
+                    path,
+                    stdin=stdin,
+                    mode=mode,
+                    argv=tuple(argv_raw),
+                    unit_name=unit_name,
+                )
+                if result.quota_exceeded:
+                    try:
+                        cleanup = await _run_locked_thread(
+                            partial(
+                                cleanup_quota_created_entries,
+                                self._workspace_manager,
+                                workspace_key,
+                                before,
+                                remove_preexisting_envs=(result.environment_quota_exceeded),
+                                remove_new_ordinary=snapshot_complete,
                             )
-                        except Exception:
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Coding job %s quota cleanup failed",
+                            job_id,
+                            exc_info=True,
+                        )
+                        result = replace(
+                            result,
+                            stderr=_append_job_stderr(
+                                result.stderr,
+                                "Automatic quota cleanup could not be completed.",
+                            ),
+                        )
+                    else:
+                        cleanup_note = _quota_cleanup_summary(
+                            cleanup,
+                            snapshot_complete=snapshot_complete,
+                        )
+                        if not cleanup.complete:
                             logger.warning(
-                                "Coding job %s quota cleanup failed",
+                                "Coding job %s quota cleanup was incomplete",
                                 job_id,
-                                exc_info=True,
                             )
-                            result = replace(
-                                result,
-                                stderr=_append_job_stderr(
-                                    result.stderr,
-                                    "Automatic quota cleanup could not be completed.",
-                                ),
-                            )
-                        else:
-                            cleanup_note = _quota_cleanup_summary(
-                                cleanup,
-                                snapshot_complete=snapshot_complete,
-                            )
-                            if not cleanup.complete:
-                                logger.warning(
-                                    "Coding job %s quota cleanup was incomplete",
-                                    job_id,
-                                )
-                                cleanup_note += " Automatic quota cleanup could not be completed."
-                            result = replace(
-                                result,
-                                stderr=_append_job_stderr(
-                                    result.stderr,
-                                    cleanup_note,
-                                ),
-                            )
+                            cleanup_note += " Automatic quota cleanup could not be completed."
+                        result = replace(
+                            result,
+                            stderr=_append_job_stderr(
+                                result.stderr,
+                                cleanup_note,
+                            ),
+                        )
             status = (
                 CodingJobStatus.TIMED_OUT
                 if result.timed_out

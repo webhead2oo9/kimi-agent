@@ -781,6 +781,7 @@ class _ConversationRunner:
             attachments=list(request.attachments or []),
             activity_reporter=request.activity_reporter,
             workspace_lock_held=request.workspace_lock_held,
+            background_task=request.context.background_task,
             output_files=list(request.context.pending_output_files),
             allowed_file_roots=list(request.context.pending_allowed_file_roots),
             usage_store=request.usage_store,

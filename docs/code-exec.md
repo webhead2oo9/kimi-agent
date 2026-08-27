@@ -171,7 +171,7 @@ treat it as untrusted code like anything else that runs there.
 
 The tool creates `/work/.venv` with copied files rather than symlinks. A healthy
 workspace venv supplies Python and puts `.venv/bin` on `PATH` for later runs,
-including `none`-mode runs that use packages installed earlier. `.pio` and
+including `none`-mode runs that use installed packages. `.pio` and
 `.pio-core` do the same for regenerable build caches. All three directories:
 
 - have their own byte and entry quotas, separate from the document quota;

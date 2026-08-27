@@ -14,8 +14,8 @@ directory named `user-` plus a truncated SHA-256 digest of their Discord id, so
 no plaintext id sits on disk. A rooted conversation maps to a stable
 BetterWright session, so cookies and tabs carry across tool calls within that
 conversation while profiles never cross users. Only one profile worker runs at
-a time, so when a different user takes a turn, the previous worker is closed
-before the next profile opens.
+a time. Switching users closes the active worker before opening the requested
+profile.
 
 Per call, the model sends one bounded async Playwright snippet to
 `web_browser/bridge.mjs`, which returns BetterWright's structured JSON.
@@ -120,8 +120,8 @@ nothing answers on would pass the check for the wrong reason and prove nothing
 about the namespace. Restart the bot after changing startup settings. At boot,
 `browser` registers only if the runtime and the complete sandbox and network
 probe pass. `render_chart` and `render_diagram` then register automatically when the exact Mermaid
-asset also passes its availability and ownership checks. An older browser-only
-runtime leaves `browser` available and logs how to repair visual rendering.
+asset also passes its availability and ownership checks. If that asset is absent,
+`browser` remains available and boot logs how to repair visual rendering.
 
 ## Limits and lifecycle
 

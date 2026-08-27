@@ -37,8 +37,8 @@ Follow [Persistent browser](browser.md) for host or VPN-namespace deployment and
 [Visual rendering](visual-rendering.md) for charts and Mermaid. One
 `BROWSER_ENABLED` gate requests both; visual rendering adds no second setting.
 Without a valid runtime and sandbox probe, boot still continues, but neither
-tool registers. An older browser-only runtime may leave `browser` available
-while logging that its exact Mermaid asset is missing.
+tool registers. When only the exact Mermaid asset is missing, `browser` remains
+available and the visual tools stay unregistered.
 
 ## 2. Minimal configuration
 
@@ -50,7 +50,7 @@ things:
 | Discord bot token | `DISCORD_BOT_TOKEN` in `bot/.env` | Copy `bot/.env.example` → `bot/.env` first; the token comes from the Developer Portal application. |
 | A guild the bot is in | Developer Portal invite URL | `applications.commands` + `bot` scopes, with least-privilege permissions for the features you enable. |
 | That guild activated | `ALLOWED_GUILD_IDS=<guild id>` in `.env`, **or** `config/servers/<guild_id>.md` with `bot_active: true` | Guild activation fails closed: an invited but unactivated guild gets no responses at all. Empty `ALLOWED_GUILD_IDS` does **not** mean "all guilds". |
-| One chat provider | `bot/config/models.yaml` + its `api_key_env` in `.env` | Copy `config/models.example.yaml` → `config/models.yaml`; replace its non-routable host/model placeholders; set accurate context windows, capabilities, roles, and fallbacks; then fill the selected key. The template stays text-only until vision is explicitly verified. |
+| One chat provider | `bot/config/models.yaml` + any required local credential | Copy `config/models.example.yaml` → `config/models.yaml`; replace its non-routable host/model placeholders; set accurate context windows, capabilities, roles, and fallbacks. Key-backed profiles use the `.env` variable named by `api_key_env`; Codex uses its token file, and gateways that inject credentials upstream set `keyless: true`. The template stays text-only until vision is explicitly verified. |
 
 Keep in mind that `config/models.yaml`, the deployment's guild/channel/thread
 fragments, `.env`, and the entire live `SKILLS_DIR` are gitignored instance
@@ -67,8 +67,8 @@ must remain outside both repositories.
 
 - `BOT_NAME`: substituted into the persona (`config/persona.md`).
 - Message Content intent: enable it in the Developer Portal for the full
-  experience (the "hey <name>" text trigger, thread auto-reply, and
-  `discord_text_search`). Without it, plain mentions and replies still work;
+  experience (the `hey/hi <name>` and `<name> help` text triggers, thread
+  auto-reply, and `discord_text_search`). Without it, plain mentions and replies still work;
   set `MESSAGE_CONTENT_INTENT=false` and `THREAD_HANDOFF_ENABLED=false` while
   it's unapproved.
 
@@ -88,11 +88,10 @@ uv run python bot.py
 ```
 
 Here's what you should expect: settings validate, SQLite opens and initializes
-schema v3 (automatically upgrading older databases), the gateway connects,
-`on_ready` completes boot under the READY
-initialization lock, and JSONL turn events write to `logs/` when enabled. A
-mention in the test guild then round-trips the whole way: mention → ReAct turn
-→ reply → durable transcript.
+schema v4 (automatically migrating supported lower schema versions), the
+gateway connects, `on_ready` completes boot under the READY initialization lock,
+and JSONL turn events write to `logs/` when enabled. A mention in the test guild
+then round-trips the whole way: mention → ReAct turn → reply → durable transcript.
 
 ## 4. Verification gates
 
@@ -101,19 +100,21 @@ enforces:
 
 ```sh
 cd bot
+npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
+npm audit --prefix deploy/betterwright --omit=dev
+node --check web_browser/bridge.mjs
+node --check web_browser/visual_bridge.mjs
 uv sync --locked --extra dev
+uv --preview-features audit-command audit --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy .
 uv run python -m pytest -q
 ```
 
-CI also installs and audits the committed browser-runtime npm lock without
-running package scripts, and syntax-checks both BetterWright bridges. A browser
-deployment must additionally pass the Linux production smoke test documented in
-[Visual rendering](visual-rendering.md).
-
-These are exactly what CI runs (`.github/workflows/ci.yml`).
+The npm install does not run package scripts. A browser deployment must
+additionally pass the Linux production smoke test documented in
+[Visual rendering](visual-rendering.md). The workflow file remains authoritative.
 
 ## 5. When boot fails
 
@@ -122,7 +123,7 @@ Start from the symptom. Each message below is the exact text the process logs.
 | What you see | What it means |
 |---|---|
 | `DISCORD_BOT_TOKEN is not set`, then exit 1 | The token is missing from the selected dotenv file (`.env`, or whatever `ENV_FILE` names). |
-| `Configured model credentials are unavailable; check config/models.yaml and the referenced .env secret values.`, then exit 1 | A reachable model has no usable key. The check covers every role including `roles.compaction`, so a compaction-only profile with an unset key stops boot too. `keyless: true` profiles and Codex profiles are checked differently: gateway-held credentials and the token file. |
+| `Configured model credentials are unavailable; check config/models.yaml and the referenced .env secret values.`, then exit 1 | A reachable model has no usable credentials. The check covers every role including `roles.compaction`, so a compaction-only profile with an unset key stops boot too. `keyless: true` profiles and Codex profiles are checked differently: the gateway needs no local secret, while Codex uses its token file. |
 | `Model routing file not found: <path>. Copy config/models.example.yaml to <path>, then replace its placeholders.` | `<CONFIG_DIR>/models.yaml` does not exist. Boot never falls back to the tracked template. |
 | `Codex authentication rejected (...). Run: python scripts/codex_auth.py --token-file <file>`, then exit 1 | The stored Codex token was revoked. A network error or timeout during the same check only warns and retries on first use. |
 | `Executable skill tools require Linux; unsandboxed execution is disabled` | The skill store declares `tools:` on a non-Linux host. |

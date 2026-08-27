@@ -11,7 +11,7 @@ outside the public repository.
 | Public and tracked | Private and ignored or external |
 |---|---|
 | Python source and tests | `.env` files and credential stores |
-| `.env.example` and `*.example.*` templates | `<CONFIG_DIR>/models.yaml` and `settings.md` |
+| `.env.example` and `*.example.*` templates | `<CONFIG_DIR>/models.yaml`, `settings.md`, and module/plugin/tool overlays |
 | Generic prompt/persona examples | The active prompt, persona, and deployment-specific prompt overrides |
 | Synthetic Discord identifiers in fixtures | `<SKILLS_DIR>` including staff-created and learned skills |
 | Eval code, synthetic scenarios, fixtures, and `models.example.yaml` | Deployment-specific scenarios; `evals/models.yaml`, cassettes, results, transcripts, and run artifacts |
@@ -46,6 +46,8 @@ kimibot-private/
 │   │   ├── commands/<name>/<guild_id>.md
 │   │   ├── servers/<guild_id>.md     # optional full-prompt replacements
 │   │   └── channels/<channel_id>.md  # or <thread_id>.md for one thread
+│   ├── modules/<module_name>.md      # optional safe startup module settings
+│   ├── guild-modules/<guild_id>/<module_name>.md
 │   ├── plugins/<plugin_name>.md      # optional safe plugin settings
 │   └── tools/<tool_name>.md          # optional live per-tool configuration
 └── skills/
@@ -63,7 +65,7 @@ command template as well. In particular, the **Teach Kimi** context menu expects
 `config/prompts/commands/learn.md`; without it, the turn falls back to the base
 prompt and loses its narrower learning workflow and quoted-message handling.
 
-Numeric fragments, full overrides, tool/plugin files, and skills are only
+Numeric fragments, full overrides, module/plugin/tool files, and skills are only
 included when the deployment actually uses them. Copy the public
 `bot/config/prompt.md`, `persona.md`, tracked shared command templates, and
 `models.example.yaml` as starting points; from then on the private copies are
@@ -92,17 +94,17 @@ SKILLS_DIR=/srv/kimi/private/skills
 Clone or update the public and private repositories independently, review and
 commit private configuration changes, then deploy an approved revision of each.
 Prompt templates, instruction fragments, tool fragments, and instruction-skill
-indexes are refreshed from disk during normal turns. Model routing, settings,
-plugins, secrets metadata, and executable skill registrations are startup-only,
-so restart the bot after a private-repository update to rebuild them
-coherently.
+indexes are refreshed from disk during normal turns. Per-guild module settings
+refresh with guild activation and immediately after an approved proposal. Model
+routing, global settings, module and plugin registration, startup module/plugin
+settings, secrets metadata, and executable skill registrations are startup-only,
+so restart the bot after changing those files.
 
-The private templates don't inherit later edits from the public templates.
-Before each application upgrade, diff the new public `prompt.md`, `persona.md`,
-and shared command templates against the private base files and every
-applicable full override. Merge any new placeholders, safety rules, error
-handling, and tool-routing guidance deliberately before deploying the two
-revisions together.
+Private templates are independent copies of the public templates. Before each
+application upgrade, diff the release's public `prompt.md`, `persona.md`, and
+shared command templates against the private base files and every applicable
+full override. Merge required placeholders, safety rules, error handling, and
+tool-routing guidance before deploying the two revisions together.
 
 Staff learning tools write instruction skills into the live `SKILLS_DIR`, and
 Git doesn't commit or push those writes on its own. If the private checkout is
@@ -241,8 +243,8 @@ git diff --check
 
 Review every tracked non-source artifact, run a content secret scanner in CI,
 and verify that the examples contain synthetic IDs and placeholder hosts.
-Remember that ignore rules don't remove files that are already tracked; remove
-those paths from the index while preserving the local instance copy before
-creating or publishing a public repository. Scan the repository's commit
-history as well as the current tree, because deleting a secret from the latest
-revision doesn't remove it from older commits.
+Ignore rules do not untrack files; remove those paths from the index while
+preserving the local instance copy before
+creating or publishing a public repository. Scan the repository object database
+as well as the current tree: a committed secret remains recoverable after its
+file is deleted.

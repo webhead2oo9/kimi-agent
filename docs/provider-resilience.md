@@ -5,13 +5,15 @@ provider-neutral; optional adapters only translate structured provider errors.
 
 ## Fallback within a turn
 
-New turns begin at the primary. Connection, timeout, server errors, and rate
-limits without a `Retry-After` header receive one retry; rate limits that name
-a `Retry-After` and clear access failures advance immediately.
+New turns begin at the primary. Under the generic failure policy, connection,
+timeout, server errors, and rate limits without a `Retry-After` header receive
+one retry; rate limits that name a `Retry-After` and clear access failures
+advance immediately. Structured adapters can advance immediately when a
+provider error identifies a shared account limit or quota without that header.
 
 Fallback is forward-only and sticky within a logical turn. Tool iterations and
 resumed coding tasks continue from the last serving backend instead of retrying
-earlier links.
+higher-priority links.
 
 ## Provider cooldowns
 
@@ -28,13 +30,17 @@ There are two scopes:
 - **Account:** authentication and, through a structured adapter, shared
   rate limits and subscription quotas.
 
-Only opaque keys, safe labels, and normalized reasons are stored—never secrets
-or raw provider responses.
+Stored records contain opaque scope keys, safe labels, scope and normalized
+reason, optional HTTP and provider error codes, and circuit timestamps. They
+never contain secrets or raw provider responses.
 
 ## Cooldown selection
 
-Profiles default to 5 minutes for outages, 30 minutes for quota failures, and
-1 minute for rate limits that carry no `Retry-After`:
+Profile cooldown settings default to 5 minutes for outages, 30 minutes for
+quota, and 1 minute for rate limits. The generic policy uses the outage setting
+for availability and missing-model failures, the quota setting for HTTP 401,
+and the rate-limit setting for a bare 429. Structured provider adapters may map
+their own error codes to these settings differently:
 
 ```yaml
 providers:
@@ -48,8 +54,12 @@ providers:
       rate_limit_cooldown_seconds: 60
 ```
 
-A valid `Retry-After` always wins, even below these defaults. Subscription
-profiles can use a longer quota default:
+For generic HTTP failures, a valid `Retry-After` sets the cooldown on 429,
+408, 425, and 5xx responses, even when it is shorter than the configured
+default. Generic 401 and 404 responses ignore the header and use their mapped
+settings. Structured provider adapters can also honor `Retry-After` when they
+recognize an account limit or quota. Subscription profiles can use a longer
+quota default:
 
 ```yaml
     circuit_breaker:

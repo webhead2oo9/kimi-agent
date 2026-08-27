@@ -134,9 +134,9 @@ from users who never triggered a turn, which is exactly what the privacy consent
 exists to prevent.)
 
 For that reason the gate is re-checked once the root lock is held
-(`_on_message_for_user`). A message posted while the *pausing* turn was still running
-passed the pre-lock check against the old mode and then queued on the same root;
-without the second check it would be answered, and transcribed, after the bot had
+(`_on_message_for_user`). A message posted while the *pausing* turn was still
+running can pass the pre-lock check while auto-response is enabled and then queue
+on the same root; without the second check it would be answered and transcribed after the bot had
 already said it was standing down.
 
 **Managed and auto-responding are separate facts.** Routing keys on *managed*
@@ -169,7 +169,8 @@ There are three ways the mode gets set:
 
 The pause tool's result tells the model the resume tool's name **and** the
 `hey <bot> …` wake phrase, with a nudge to pass the latter along: a user cannot guess
-it, and "you can reply now" typed into a paused thread never reaches the bot.
+it, and an unmentioned "resume replies" message in a paused thread never reaches
+the bot.
 
 ### Tool visibility
 
@@ -450,16 +451,16 @@ owns this thread": any user could right-click → Create Thread on a mapped mess
 the bot would silently start auto-responding in a thread it never opted into.
 Enrollment has to be an explicit bot-side write.
 
-## What does not change
+## Boundaries
 
 - The parent channel stays mention-only. Replies to the bot's pre-handoff messages in
-  the main channel still continue the same root *in the channel* (no redirect to the
-  thread). The current implementation does not redirect users across surfaces.
+  the main channel continue the same root *in the channel*; the bot does not redirect
+  users across surfaces.
 - Automatic thread creation happens only through the operator-gated backstop above
   (off by default, per-channel opt-in). Outside it, only the model opts in: one
   single-slot request per turn, one thread per triggering message (Discord-enforced),
   which bounds abuse from "make a thread" spam to one thread per mention-gated turn.
-- Memory write paths and trust tiers are untouched.
+- Thread handoff does not alter memory write paths or trust tiers.
 
 ## Testing
 
@@ -480,7 +481,7 @@ Enrollment has to be an explicit bot-side write.
 - Tool visibility: `thread_state_blocked_tools` hides all three outside a managed
   thread and exactly one of pause/resume inside one.
 - Tool: queue/replace semantics, in-thread rejection, name validation; a
-  side-effect-free rejection leaves a prior pending request intact (embed parity).
+  side-effect-free rejection leaves any pending request intact (embed parity).
   `leave_thread` queues a close only for the current managed thread.
 - Boundary: creation failure falls back to an in-channel reply; `NotFound` on send
   prunes the mapping; the enrollment row is written exactly once; close requests

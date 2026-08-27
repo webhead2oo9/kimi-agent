@@ -17,9 +17,9 @@ sudo apt-get install bubblewrap util-linux libatk1.0-0t64 \
   libatspi2.0-0t64
 ```
 
-The `t64` suffix is used by current Ubuntu/Debian releases; older distributions
-may provide the same libraries without that suffix. The installer checks the
-BetterChromium binary with `ldd` and fails with the exact missing library names.
+The `t64` suffix is common on supported Ubuntu/Debian hosts. Some hosts provide
+the same libraries without that suffix. The installer checks BetterChromium with
+`ldd` and fails with the exact missing library names.
 Then install the runtime:
 
 ```sh
@@ -39,7 +39,7 @@ Re-run the installer to repair or reproduce the pinned runtime. It runs `npm
 ci` in a sibling staging tree, verifies exact package versions, the Mermaid
 browser bundle, BetterWright import, BetterChromium binary/shared libraries, and
 permissions, then atomically renames the completed tree into place. A failed run
-leaves the previous runtime available.
+leaves the installed runtime available.
 
 Review and bump `VERSION` or `MERMAID_VERSION` explicitly when adopting a later
 release, update `package.json` and `package-lock.json` together, and do not use

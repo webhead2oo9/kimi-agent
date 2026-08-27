@@ -119,8 +119,8 @@ an image, or the call is rejected.
 
 Validation is side-effect free, and it is ordered to stay that way. Every cheap rule
 runs first and the workspace image resolves last, so a call that was going to fail
-anyway never touches the disk. A rejected call leaves `ctx` and any previously pending
-embed exactly as they were.
+anyway never touches the disk. A rejected call leaves `ctx` and any pending embed
+unchanged.
 
 ## How it reaches Discord
 

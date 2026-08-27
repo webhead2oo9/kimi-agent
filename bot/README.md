@@ -24,9 +24,10 @@ guild installations, and permissions stay intact.
 ## What it does
 
 - **Invocation-gated chat.** Replies to an @mention, a pinged reply, a
-  `hey/hi <bot name>` / `<bot name> help` text invocation, or any message in a
-  thread it created via handoff; ignores DMs; and keeps conversations rooted in
-  SQLite so a reply continues its own thread even across restarts.
+  `hey/hi <bot name>` / `<bot name> help` text invocation, or an unmentioned
+  message in an auto-responding managed thread. Paused managed threads use the
+  ordinary invocation rules. DMs are ignored, and conversations stay rooted in
+  SQLite so replies continue the same transcript across restarts.
 - **Provider-neutral.** Route chat, compaction, and optional durable coding models from
   `config/models.yaml`: OpenAI-compatible (Chat Completions or Responses),
   Anthropic (native or compat gateway), OpenRouter, or Codex. The agent core
@@ -86,7 +87,7 @@ guild installations, and permissions stay intact.
 ## How it works
 
 ```
-  @mention / pinged reply / "hey <bot name>"
+  @mention / pinged reply / explicit text invocation / auto-responding thread
           │
    eligibility + invocation gates   (DMs, blocked users, ping-off replies dropped)
           │
@@ -136,7 +137,9 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 ## Quick start
 
 Requirements: Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot
-token, and an LLM API key.
+token, and access to an LLM provider. Most providers use an API key; Codex uses
+a token file, and gateways that inject credentials upstream need no local model
+secret.
 
 ```bash
 git clone <repo-url> kimibot
@@ -150,7 +153,7 @@ cp config/models.example.yaml config/models.yaml
 # Edit .env and set, at minimum:
 #   DISCORD_BOT_TOKEN
 #   ALLOWED_GUILD_IDS (or activate a guild in the private CONFIG_DIR)
-#   the secret env var(s) your config/models.yaml references (e.g. MODEL_API_KEY)
+#   any credential env var(s) your config/models.yaml references (e.g. MODEL_API_KEY)
 
 uv run python bot.py
 ```
@@ -173,7 +176,7 @@ the public repository and what must remain private deployment state.
 ## Development
 
 ```bash
-uv run python -m pytest          # run the test suite (~150 test files)
+uv run python -m pytest          # run the test suite
 uv --preview-features audit-command audit --locked  # dependency vulnerabilities
 uv run ruff check .              # lint
 uv run ruff format --check .     # formatting (owns the 100-col line length)
@@ -181,9 +184,9 @@ uv run mypy .                    # type check
 uv run python -m compileall .    # quick syntax check
 ```
 
-Dependencies are declared in `pyproject.toml` and locked in `uv.lock`. Dev
-extras come from `uv sync --extra dev` (what CI runs); `uv pip install -e ".[dev]"`
-also works for an editable install.
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`. Install
+dev extras with `uv sync --extra dev`; CI adds `--locked`. For an editable
+install, use `uv pip install -e ".[dev]"`.
 
 ## Project layout
 
@@ -207,7 +210,7 @@ commands/          memory, models, moderation, privacy, and usage commands plus 
 trust/             trust-tier resolution
 evals/             offline eval harness (cassette-replayed runs over the real core)
 utils/             small shared helpers
-deploy/            optional service deployments (Hindsight compose stack)
+deploy/            service, Hindsight, browser-runtime, and VPN-netns deployment files
 scripts/           operator/maintenance scripts
 ../docs/           project and per-subsystem documentation
 tests/             test suite

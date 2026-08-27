@@ -34,13 +34,17 @@ that before it is committed.
    signature claimed. Check argument names, keyword-only markers, return types, and raised
    exception types.
 3. **Check for duplicated capability.** Before endorsing new code, search for an existing
-   implementation of the same behavior. This repository has already been observed to contain a
-   working feature that a plan proposed to build from scratch. Look hard for that case.
+   implementation of the same behavior. Do not approve a second implementation of a capability
+   provided by the repository.
 4. **Check convention conformance** against `CLAUDE.md`:
-   - `from __future__ import annotations` at the top of every module.
-   - Internal data types are `@dataclass(frozen=True)`; Pydantic only in `config/settings.py`.
-   - Seams are `typing.Protocol`; `LLMProvider` is the only ABC.
-   - `logger = logging.getLogger(__name__)` with `%s`-style args. No `print()` in runtime code.
+   - New ordinary runtime modules use `from __future__ import annotations`; package markers and
+     docstring-only modules may omit it.
+   - Internal value types normally use `@dataclass(frozen=True)`; Pydantic is reserved for
+     settings and configuration validation.
+   - Prefer `typing.Protocol` for injected seams; `LLMProvider` and `ModerationBackend` are the
+     current ABCs.
+   - Runtime logging normally uses `log = logging.getLogger(__name__)` with `%s`-style args. No
+     `print()` in runtime code.
    - No blocking I/O inside `async def` (ruff flake8-async is on).
    - Line length 100, owned by `ruff format`.
    - `# type: ignore` / `# noqa` must name a specific error code, plus a prose reason when the

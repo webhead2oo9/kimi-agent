@@ -1,9 +1,13 @@
 # xAI Grok
 
-xAI serves an OpenAI-compatible Chat Completions API, so Grok needs no
-Grok-specific code at all. The generic `openai_compat` connector already handles
-everything it offers: text, tool calling, image input (jpg and png),
-`reasoning_content`, and cached-token usage reporting.
+xAI's Chat Completions endpoint is OpenAI-compatible, so the generic
+`openai_compat` connector covers the features Kimi uses there: text, function
+tools, `reasoning_content`, cached-token usage reporting, and JPG or PNG input
+when the selected model supports it.
+It does not expose xAI's Responses API or provider-hosted tools such as web
+search, X search, code execution, or image generation. See xAI's current [Chat
+Completions](https://docs.x.ai/developers/model-capabilities/legacy/chat-completions)
+and [tools](https://docs.x.ai/developers/tools/overview) documentation.
 
 If you're new to how profiles, model entries, and roles fit together, read
 [providers.md](providers.md) first.

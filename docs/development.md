@@ -46,8 +46,8 @@ uv run python bot.py
 Remove-Item Env:ENV_FILE
 ```
 
-When it's unset, the bot loads `.env` exactly as before. A path that doesn't
-exist raises at import, and that's intentional: loading nothing silently would
+When it's unset, the bot loads `.env`. A path that doesn't exist raises at
+import, and that's intentional: loading nothing silently would
 hand you a valid-but-empty config that dies somewhere far from the typo.
 
 Plugin settings must not declare their own hard-coded `env_file`. Put private
@@ -214,15 +214,16 @@ has actually loaded.
 
 ## Tests
 
-The suite needs no dotenv file, no Discord, and no network. These are the
-checks CI runs (`../.github/workflows/ci.yml`):
+The Python suite needs no dotenv file, Discord connection, or network. CI runs
+these checks from `bot/` (`../.github/workflows/ci.yml`):
 
 ```bash
-uv sync --extra dev            # once; CI uses --locked
-uv run python -m pytest
+uv sync --locked --extra dev
+uv --preview-features audit-command audit --locked
 uv run ruff check .
 uv run ruff format --check .   # line length is the formatter's job, not the linter's
 uv run mypy .
+uv run python -m pytest -q
 npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
 npm audit --prefix deploy/betterwright --omit=dev
 node --check web_browser/bridge.mjs
@@ -240,7 +241,7 @@ uv run python -m pytest tests/test_storage.py::test_fresh_database_uses_the_curr
 ```
 
 Use `uv run ruff format <paths>` to format the files you changed, then run the
-full four-command CI sequence before handoff. Tests use temporary databases and
+full CI sequence before handoff. Tests use temporary databases and
 hand-written fakes, so they never need `.env.dev` or the live dev bot.
 
 Offline harness evals replay recorded tool calls through cassettes; see

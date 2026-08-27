@@ -16,7 +16,7 @@ same OpenAI-backed image tool.
 Registration requires all of the following:
 
 - `IMAGE_GEN_ENABLED=true`;
-- a supported `IMAGE_GEN_BACKEND` (`openai` initially);
+- the supported `IMAGE_GEN_BACKEND` value, `openai`;
 - usable credentials for the selected auth mode; and
 - a REGULAR or STAFF caller at dispatch.
 
@@ -120,7 +120,7 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
 
 ## Resource and safety boundaries
 
-- Model: fixed closed choice `gpt-image-2` initially.
+- Model: fixed to `gpt-image-2`.
 - Logical calls: default two per outer turn, configurable 1–8. Failed
   provider calls count once; invalid local references fail before the billable
   counter increments.
@@ -150,9 +150,7 @@ OpenAI's provider-side policy are the controls for image content.
 ## Provider-native image output
 
 `ProviderCapability.IMAGE_OUTPUT`, `GeneratedAsset`, and the Codex/OpenRouter
-response parsers remain part of the provider contract. Direct
-`ProviderRequest` callers may still explicitly request native image output,
-and provider-emitted assets continue through moderation and the generated
-asset delivery rail. The normal Discord conversation path no longer requests
-that capability from message text; `generate_image` is its explicit image
-creation surface.
+response parsers are part of the provider contract. Direct `ProviderRequest`
+callers may explicitly request native image output, and provider-emitted assets
+use the generated-asset moderation and delivery rail. Normal Discord turns use
+`generate_image` as their explicit image-creation surface.

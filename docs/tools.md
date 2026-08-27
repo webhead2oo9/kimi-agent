@@ -22,8 +22,9 @@ them:
 | `/stop` | Member | Cancel the current response/coding work, all of the member's work, or one owned coding task. |
 | `/usage` | Member; expanded for staff | Show the current user's usage, or let staff inspect another user or server totals. |
 | `/models` | Owner | Inspect or change the global chat-model override. |
+| `/modules status`, `/modules manifest` | Owner | Inspect configured application-module health and declarations. |
 | `/moderation block`, `unblock`, `status` | Staff | Manage bot-level user blocks. |
-| `/mod note`, `warn`, `timeout`, `kick`, `ban`, `history`, `case` | Staff | Create Discord moderation actions/cases and inspect case history. |
+| `/mod note`, `warn`, `timeout`, `kick`, `ban`, `history`, `case` | Staff; optional module | Create Discord moderation actions/cases and inspect case history when the companion `community_moderation` module is active. |
 | **Teach Kimi** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
 
 The optional `config_admin` module lets staff inspect guild-scoped fragments

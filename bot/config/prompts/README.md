@@ -47,7 +47,7 @@ section. The full set (`config/fragments/prompt.py:build_system_prompt`):
 | `<date>` | Today's date. |
 | `<bot_name>` | `BOT_NAME`, sanitized. |
 | `<user>`, `<user_id>`, `<trust_tier>` | The current speaker's display name (sanitized), Discord id, and resolved tier. |
-| `<model>` | The chat model serving this turn. |
+| `<model>` | The selected chain's primary chat model. It does not change when a request falls back to another backend. |
 | `<channel>`, `<server>` | Sanitized Discord channel and guild names. |
 | `<persona>` | `config/persona.md`, or the current user's compiled persona override in a code-owned frame (see below). |
 | `<channel_instructions>` | The first non-empty body of `config/threads/<thread_id>.md` > `config/channel_threads/<parent_channel_id>.md` > `config/channels/<channel_id>.md` inside a thread, else `config/channels/<channel_id>.md`. Thread-scoped bodies render under a `## Thread Instructions` heading; the channel body renders under `## Channel Instructions`. |
@@ -56,7 +56,7 @@ section. The full set (`config/fragments/prompt.py:build_system_prompt`):
 | `<skills>` | The shared skills index visible in this guild. |
 | `<personal_skills>` | The current user's `## Your Personal Skills` block, when they have any. Omit it only for intentionally tool-less layouts. |
 | `<community_knowledge>` | Recalled community memory for this turn. |
-| `<current_context>` | A summary block of the scalars above (user, id, tier, model, channel, server). |
+| `<current_context>` | A summary block of the scalars above (user, id, tier, primary model, channel, server). |
 
 Discord-sourced scalars are flattened (newlines and colons removed) before
 substitution so a crafted channel or guild name cannot forge prompt structure.

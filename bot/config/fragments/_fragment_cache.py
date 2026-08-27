@@ -3,8 +3,7 @@
 `config/fragments/tool_config.py` and `config/fragments/tool_policy.py` both read a hand-edited
 markdown fragment on every responding turn, so both need the same thing: when a
 reload fails, keep serving that path's last value rather than reverting to
-"unset" mid-conversation. Both were carrying their own copy of this cache with
-mechanically renamed identifiers.
+"unset" mid-conversation. Both loaders share this cache.
 
 What the two do with a failure still differs and stays with them: tool config
 falls back to defaults when there is no cached value, while tool policy raises

@@ -634,12 +634,10 @@ async def test_execute_turn_passes_prepared_state_to_run_conversation(
 
 @pytest.mark.asyncio
 async def test_execute_turn_forwards_the_thread_scope(tmp_path: Path) -> None:
-    """The middle hop of the thread-instructions chain.
+    """Pin the middle field-copy boundary in the thread-instructions chain.
 
-    ``execute_turn`` copying these onto the run request is the only thing
-    between ``prepare_turn`` and ``build_system_prompt``; drop the copy and a
-    thread silently resolves its own id again, which is the bug the thread
-    scopes exist to fix.
+    Losing ``parent_channel_id`` between ``prepare_turn`` and
+    ``build_system_prompt`` silently resolves instructions against the thread id.
     """
     run_conversation = RecordingRunConversation(ConversationRunResult(text="ok"))
 

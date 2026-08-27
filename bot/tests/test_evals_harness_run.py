@@ -397,9 +397,8 @@ def test_git_short_sha_ignores_configured_unicode_path_quoting(tmp_path):
 
 
 def test_run_data_paths_follows_a_non_default_cassette_dir(tmp_path):
-    # --cassettes <another tracked path> writes there instead, so a hardcoded
-    # "evals/cassettes" exclusion covers none of the run's own writes and the run
-    # stamps itself -dirty from its own data, the exact bug the exclusion fixed.
+    # A non-default cassette directory is run-owned data too. Excluding only
+    # evals/cassettes would mark the run dirty because of its own writes.
     evals_dir = _seeded_repo(tmp_path)
     alt = evals_dir / "tapes-alt"
 
@@ -409,8 +408,7 @@ def test_run_data_paths_follows_a_non_default_cassette_dir(tmp_path):
     (alt / "model-a" / "s.json").write_text('{"entries": [{"tool": "internet_search"}]}\n')
     alt_paths = harness_run.run_data_paths(evals_dir, alt)
     assert "-dirty" not in harness_run.git_short_sha(evals_dir, data_paths=alt_paths)
-    # The stale hardcoded exclusion would have called this run's own write a
-    # source edit.
+    # Excluding only the default path treats this run-owned write as a source edit.
     stale = harness_run.git_short_sha(evals_dir, data_paths=("evals/cassettes",))
     assert "-dirty-" in stale
 

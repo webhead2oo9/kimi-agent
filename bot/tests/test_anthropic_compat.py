@@ -356,7 +356,7 @@ async def test_usage_preserves_cache_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_usage_keeps_thinking_token_details() -> None:
-    """The compat path used to drop output_tokens_details the SDK path keeps."""
+    """Preserve output_tokens_details consistently across compat and SDK paths."""
     payload = dict(CANNED)
     payload["usage"] = {
         "input_tokens": 10,

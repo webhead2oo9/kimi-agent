@@ -83,9 +83,8 @@ def test_split_inside_indented_code_block_preserves_indentation() -> None:
 
     assert len(chunks) > 1
     for chunk in chunks[1:]:
-        # Continuation chunks reopen the fence; the first code line after the
-        # reopen must keep its leading indentation (a bare lstrip() used to
-        # delete it, corrupting the split code block).
+        # Continuation chunks reopen the fence. The first code line must preserve
+        # its leading indentation or the split code block changes meaning.
         lines = chunk.split("\n")
         assert lines[0] == "```python"
         assert lines[1].startswith("    total"), lines[1]

@@ -73,8 +73,8 @@ async def test_grep_workspace_rejects_catastrophic_regex(tmp_path: Path) -> None
         "write_file", {"path": "f.txt", "content": "aaaaaaaaaaaaaaaaaaaaaaaaX"}, staff
     )
 
-    # wait_for so a regression (guard removed) fails via timeout instead of
-    # hanging the whole suite on catastrophic backtracking.
+    # Bound the assertion so a missing ReDoS guard fails by timeout instead of
+    # hanging the suite.
     result = json.loads(
         await asyncio.wait_for(
             reg.dispatch("grep_workspace", {"pattern": "(a+)+$", "regex": True}, staff),

@@ -1,4 +1,4 @@
-"""Composition-level regressions for staging, maintenance, and deletion gates."""
+"""Composition-level checks for staging, maintenance, and deletion gates."""
 
 from __future__ import annotations
 

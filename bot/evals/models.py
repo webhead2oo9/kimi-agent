@@ -81,8 +81,8 @@ class ModelsConfig:
     # Reserved for the deferred multi-judge panel (parsed from judge.panel in YAML); the
     # v1 run loop uses the single `judge` and ignores this.
     judge_panel: list[ModelSpec] = field(default_factory=list)
-    # Optional shared vision arm. Kept after the original positional fields so
-    # existing ModelsConfig(base, candidates, judge, panel) callers stay valid.
+    # Optional shared vision arm. Its position preserves four-argument
+    # ModelsConfig(base, candidates, judge, panel) construction.
     # When present, all compared chat models receive the identical caption.
     image_captioner: ModelSpec | None = None
 

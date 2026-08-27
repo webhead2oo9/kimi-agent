@@ -29,12 +29,8 @@ def _settings(**kwargs: object) -> Settings:
 
 
 def test_every_supported_api_key_env_maps_to_a_real_settings_field() -> None:
-    # The parse-time allowlist and the env-name -> Settings-field map used to be
-    # two hand-maintained literals, and they drifted: a profile naming a key
-    # present in only one was rejected as unsupported. The allowlist is derived
-    # from the map now, so what is left to check is that each field it names
-    # actually exists. Otherwise the failure is an AttributeError at boot on
-    # whichever deployment first uses that profile, not here.
+    # Every API-key environment name accepted by a model profile must map to a
+    # Settings field. Otherwise that profile fails with AttributeError at startup.
     settings = _settings()
 
     assert frozenset(_API_KEY_SETTINGS_FIELDS) == SUPPORTED_API_KEY_ENVS
@@ -804,7 +800,7 @@ overrides:
     assert [(item.model_name, item.context_window) for item in warnings] == [("small-model", 1000)]
 
 
-def test_removed_distill_role_is_rejected(tmp_path: Path) -> None:
+def test_distill_role_is_not_supported(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="distill"):
         load_model_config(
             _write_config(
@@ -828,7 +824,7 @@ roles:
         )
 
 
-def test_removed_scheduler_role_is_rejected(tmp_path: Path) -> None:
+def test_scheduler_role_is_not_supported(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="scheduler"):
         load_model_config(
             _write_config(
@@ -1173,10 +1169,8 @@ def test_override_matching_chat_images_model_is_not_a_redirect(tmp_path: Path) -
 
 
 def test_image_turn_chain_drops_text_only_fallbacks(tmp_path: Path) -> None:
-    # Production regression (2026-07-15): an image-capable chat primary suppressed
-    # the chat_images redirect but kept its text-only fallbacks, and the failover
-    # wrapper's capability intersection stripped image_input from the whole
-    # chain; image turns errored with "does not support image input".
+    # Image turns may use only image-capable fallbacks. A text-only fallback
+    # removes image_input from the failover chain's capability intersection.
     path = _write_config(
         tmp_path / "models.yaml",
         """

@@ -3,7 +3,7 @@
 `test_architecture_boundaries.py` asserts a handful of specific rules about
 specific files. This is the whole graph: every package-to-package import edge
 that executes must appear in `_ALLOWED_EDGES` below. A new edge fails here,
-which is the point: the layering used to live only in prose, and prose drifts.
+making every layering change an explicit review decision.
 
 Adding an edge is allowed. Doing it deliberately, in a diff a reviewer sees, is
 what this asks for.
@@ -224,11 +224,7 @@ def test_no_undeclared_package_dependencies() -> None:
 
 
 def test_declared_edges_still_exist() -> None:
-    """Keep the table honest: a listed edge that is gone should be deleted.
-
-    Without this the table slowly becomes a record of what the graph used to
-    be, and stops constraining anything.
-    """
+    """Reject stale allowlist entries that weaken the graph constraint."""
 
     observed = _observed_edges()
     stale = [
@@ -237,11 +233,11 @@ def test_declared_edges_still_exist() -> None:
         for target in sorted(targets - observed.get(source, set()))
     ]
 
-    assert not stale, f"_ALLOWED_EDGES lists dependencies that no longer exist: {stale}"
+    assert not stale, f"_ALLOWED_EDGES lists unobserved dependencies: {stale}"
 
 
-def test_previously_removed_edges_stay_removed() -> None:
-    """Named regressions, so a reintroduction says what broke rather than "new edge"."""
+def test_forbidden_dependency_edges_are_absent() -> None:
+    """Give high-risk dependency boundaries specific failure diagnostics."""
 
     observed = _observed_edges()
     assert "app" not in observed.get("commands", set()), (
@@ -257,6 +253,6 @@ def test_previously_removed_edges_stay_removed() -> None:
         "workspace is a stdlib-only sandbox library and must stay a leaf."
     )
     assert "agent" not in observed.get("config", set()), (
-        "config must not import agent: the fragment readers were moved out of "
-        "agent/ precisely so operator config stops depending on the ReAct core."
+        "config must not import agent: operator configuration must remain "
+        "independent of the ReAct core."
     )

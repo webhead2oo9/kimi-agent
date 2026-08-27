@@ -913,12 +913,6 @@ async def test_read_file_truncation_header_matches_shown_lines(tmp_path: Path) -
 
 
 def test_file_handlers_are_callable_without_the_registration_wrapper(tmp_path: Path) -> None:
-    """A handler is now a plain function over an explicit deps object.
-
-    While these were closures inside register_file_tools, reaching one meant
-    registering all of them and dispatching through the registry. This is the
-    seam that change bought, so it is worth a test.
-    """
     import asyncio
 
     from tools.workspace.config import WorkspaceToolConfig

@@ -1,8 +1,4 @@
-"""Shared setup for the tools/workspace/ test modules.
-
-Split out of the single 2,700-line test_workspace_tools.py so each module's
-tests sit beside a name that says which module they cover.
-"""
+"""Shared setup for the tools/workspace/ test modules."""
 
 from __future__ import annotations
 

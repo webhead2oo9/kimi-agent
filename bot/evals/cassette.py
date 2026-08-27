@@ -15,9 +15,9 @@ scenarios grade whether the model self-corrects after a tool error.
 
 Tapes are **model-keyed** (`evals/cassettes/<model-key>/<scenario-id>.json`).
 Cassette keys are `(tool, canonical args)` and the args are model-generated, so
-one model's recordings are a poor match for another's calls; worse, the default
-`replay` mode records misses and saves, so a shared file was silently rewritten
-by whichever model ran last. A run now only ever writes its own tape.
+one model's recordings are a poor match for another's calls; worse, default
+`replay` mode records misses and saves them, so a shared file is silently
+rewritten by whichever model ran last. A run only ever writes its own tape.
 
 The flat `evals/cassettes/*.json` tree is kept as a read-only **shared
 baseline** layered underneath a per-model tape. That makes a per-model tape a
@@ -58,9 +58,9 @@ _INTERNET_SEARCH_TOOL = "internet_search"
 # browse_tools/load_skill activate tools on the context, plan rebinds the
 # checklist, workspace and skill-script tools write real files and queue the
 # attachment rail. Allowlisting the network edge keeps every unlisted (and
-# future) tool correct by default; the only cost is that live-local dispatch
-# is not replayed, and it was free anyway. Plugins add their own network-backed
-# tools to this surface via app/tool_surfaces.py.
+# future) tool correct by default. Live-local dispatch is not replayed and has
+# no provider spend. Plugins add their own network-backed tools to this surface
+# via app/tool_surfaces.py.
 CASSETTE_RECORDED_TOOLS = frozenset(
     {
         "discord_text_search",

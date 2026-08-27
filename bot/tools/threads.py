@@ -100,10 +100,11 @@ class ThreadRequest:
     # None = the model did not say, so the boundary applies the operator default
     # for this channel/guild. See app/thread_handoff_boundary.py:_thread_auto_respond_default.
     auto_respond: bool | None = None
-    # None = open the thread here, off the triggering message (the original
-    # behavior). An id means open it in that channel instead, off an anchor
-    # message posted there. Only ever set from a resolver-checked target, so the
-    # boundary can trust it came from the allowlist. It re-checks anyway.
+    # None opens the thread off the triggering message in the current channel.
+    # An id opens it in the referenced channel instead, off an anchor message
+    # posted there.
+    # Only ever set from a resolver-checked target, so the boundary can trust it
+    # came from the allowlist. It re-checks anyway.
     target_channel_id: int | None = None
 
 

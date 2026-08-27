@@ -964,8 +964,7 @@ async def test_run_privacy_deletion_memory_scope_leaves_transcripts() -> None:
     assert store.delete_calls == []
     assert memory.deleted_banks == ["user:7"]
     assert prefs.disabled == ["7"]
-    # Exactly the memory line: no transcript line and, now that the workspace
-    # deps are required for every scope, no workspace line leaking in either.
+    # The memory-only scope reports neither transcript nor workspace status.
     assert outcome.lines == ["Long-term memory wiped and future memory disabled."]
 
 

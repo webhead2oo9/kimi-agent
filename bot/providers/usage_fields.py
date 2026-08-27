@@ -32,10 +32,9 @@ def anthropic_usage_dict(usage: Any) -> dict[str, Any]:
     """Normalize an Anthropic usage payload, SDK object or raw JSON alike.
 
     `usage_field` reads dicts and objects the same way, so both Anthropic
-    providers share this. The compat provider used to hand-roll it and drifted:
-    it dropped `output_tokens_details` entirely and reported `None` rather than
-    `0` for absent token counts, so the same turn billed differently depending
-    on which of the two backends served it.
+    providers share this normalizer: `output_tokens_details` is carried through
+    and the core token counts default to `0` rather than `None`, so a turn bills
+    identically whichever backend served it.
     """
 
     if not usage:

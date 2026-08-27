@@ -5,7 +5,7 @@ than waiting out the 30-day transcript retention window.
 Two buttons ride the TL;DR:
 
 * **Delete my data**: prompts, transcripts, files, and memory.
-* **Delete memory**: long-term memory only (the former ``/memory forget-me``).
+* **Delete memory**: long-term memory only.
 
 This module is a Discord-`View` boundary (importing ``discord`` is expected). The
 TL;DR text mirrors ``docs/privacy-policy.md``; keep the two in sync. Deletion runs

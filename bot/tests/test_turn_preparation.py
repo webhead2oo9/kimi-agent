@@ -201,9 +201,8 @@ def _dependencies(
 async def test_prepare_turn_carries_the_thread_scope_onto_the_request() -> None:
     """The parent channel id has to survive prepare_turn to reach the prompt.
 
-    It is pure field copying, so nothing else in the suite would notice if the
-    copy were dropped: the thread would silently fall back to resolving its own
-    id, which is the bug the thread scopes exist to fix.
+    Losing this field silently resolves per-channel instructions against the
+    thread id.
     """
     dependencies, _manager = _dependencies()
 

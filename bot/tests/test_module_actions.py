@@ -313,6 +313,20 @@ async def test_send_and_fetch_use_snapshots_and_safe_mentions() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply_to",
+    [MessageRef(999, 2, 5), MessageRef(1, 999, 5)],
+)
+async def test_send_rejects_reply_refs_outside_the_destination(reply_to: MessageRef) -> None:
+    impl, _, channel = _actions()
+
+    with pytest.raises(DiscordActionError, match="destination channel"):
+        await impl.send_message(2, "reply", reply_to=reply_to)
+
+    assert channel.sent == []
+
+
+@pytest.mark.asyncio
 async def test_history_channel_and_access_reads_return_public_snapshots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,6 +380,26 @@ async def test_fetch_and_delete_reject_message_refs_for_another_guild() -> None:
         await impl.delete_message(mismatched)
     assert channel.fetches == []
     assert deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_normalizes_and_caps_the_logged_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    impl, _, channel = _actions()
+
+    async def delete() -> None:
+        return None
+
+    channel.messages[5] = SimpleNamespace(delete=delete)
+
+    with caplog.at_level("INFO", logger="discord_adapter.module_actions"):
+        await impl.delete_message(MessageRef(1, 2, 5), reason=f"line one\nline two {'x' * 600}")
+
+    message = caplog.records[-1].getMessage()
+    assert "\n" not in message
+    assert message.startswith("Deleting message 5: [mod] line one line two ")
+    assert len(message.removeprefix("Deleting message 5: ")) == 512
 
 
 @pytest.mark.asyncio

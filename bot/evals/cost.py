@@ -72,7 +72,9 @@ def usage_dict(usage: UsageBreakdown) -> dict[str, int]:
 
 
 def run_cost(run: ScenarioRun, pricing: ModelPricing | None) -> float | None:
-    """USD for one scenario run, or None when the arm is unpriced."""
+    """USD for one run, or ``None`` when pricing or usage is incomplete."""
+    if not run.usage_complete:
+        return None
     return estimate_cost(pricing, run.total_usage)
 
 

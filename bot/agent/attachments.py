@@ -370,31 +370,18 @@ def _message_author_id(message: Any) -> str | None:
 async def _reply_source_images(
     message: Any,
     *,
+    bot_user: Any | None,
+    allow_bot_authored: bool,
     store: AttachmentStore,
     conversation_key: str,
     detail: str,
     budget: _CollectionBudget,
 ) -> list[CollectedImage]:
-    ref = getattr(message, "reference", None)
-    if ref is None:
-        return []
-    current_channel_id = getattr(getattr(message, "channel", None), "id", None)
-    ref_channel_id = getattr(ref, "channel_id", None)
-    if ref_channel_id != current_channel_id:
-        return []  # require positive same-channel match; missing/cross-channel -> no reply image
-    referenced = None
-    resolved = getattr(ref, "resolved", None)
-    if resolved is not None and hasattr(resolved, "attachments"):
-        # A real discord.Message has .attachments; DeletedReferencedMessage does not.
-        referenced = resolved
-    else:
-        message_id = getattr(ref, "message_id", None)
-        if message_id is not None:
-            try:
-                referenced = await message.channel.fetch_message(message_id)
-            except Exception:
-                log.warning("Could not fetch referenced message", exc_info=True)
-                return []
+    referenced = await _resolve_reply_source_message(
+        message,
+        bot_user=bot_user,
+        allow_bot_authored=allow_bot_authored,
+    )
     if referenced is None:
         return []
     try:
@@ -571,6 +558,8 @@ async def collect_turn_images(
     lookback: int,
     max_images: int,
     include_reply_images: bool = True,
+    bot_user: Any | None = None,
+    allow_bot_authored: bool = False,
 ) -> TurnImages:
     normalized_detail = detail if detail in IMAGE_DETAIL_VALUES else "auto"
     max_total_images = max(0, max_images)
@@ -596,6 +585,8 @@ async def collect_turn_images(
         )
         reply = await _reply_source_images(
             message,
+            bot_user=bot_user,
+            allow_bot_authored=allow_bot_authored,
             store=store,
             conversation_key=conversation_key,
             detail=normalized_detail,

@@ -79,6 +79,14 @@ class VideoSessionError(RuntimeError):
         self.result = result
 
 
+class VideoResultCancelled(asyncio.CancelledError):
+    """Cancellation raised after a provider returned a billable result."""
+
+    def __init__(self, *, result: VideoInteractionResult) -> None:
+        super().__init__()
+        self.result = result
+
+
 class VideoSessionRecord(Protocol):
     handle: str
     source_kind: str
@@ -253,6 +261,7 @@ class VideoAnalysis:
     limitations: tuple[str, ...]
     model: str
     usage: VideoUsage
+    usage_present: bool = True
 
 
 class VideoUnderstandingService:
@@ -311,6 +320,9 @@ class VideoUnderstandingService:
                 now=now,
                 expires_at=now + config.session_ttl_minutes * 60,
             )
+        except asyncio.CancelledError as exc:
+            await self._cleanup_cancelled_result(store, actor_user_id, result.interaction_id)
+            raise VideoResultCancelled(result=result) from exc
         except Exception as exc:
             await self._queue_orphan(store, actor_user_id, result.interaction_id)
             raise VideoSessionError(
@@ -369,6 +381,17 @@ class VideoUnderstandingService:
                 thinking_level=config.thinking_level,
                 max_output_tokens=config.max_output_tokens,
             )
+        except asyncio.CancelledError:
+            # The upload reservation is the ownership proof for this newly
+            # created provider file. Releasing it conditionally queues remote
+            # deletion, while an already-claimed reservation remains untouched.
+            await self._cleanup_cancelled_result(
+                store,
+                actor_user_id,
+                "",
+                file_name=file_name,
+            )
+            raise
         except VideoInteractionError as exc:
             if exc.interaction_id:
                 await self._queue_orphan(store, actor_user_id, exc.interaction_id)
@@ -396,6 +419,14 @@ class VideoUnderstandingService:
                 now=now,
                 expires_at=now + config.session_ttl_minutes * 60,
             )
+        except asyncio.CancelledError as exc:
+            await self._cleanup_cancelled_result(
+                store,
+                actor_user_id,
+                result.interaction_id,
+                file_name=file_name,
+            )
+            raise VideoResultCancelled(result=result) from exc
         except Exception as exc:
             await self._queue_orphan(store, actor_user_id, result.interaction_id)
             await self._release_file_or_log(store, actor_user_id, file_name)
@@ -469,6 +500,9 @@ class VideoUnderstandingService:
                 expires_at=now + config.session_ttl_minutes * 60,
                 max_interactions=config.max_session_interactions,
             )
+        except asyncio.CancelledError as exc:
+            await self._cleanup_cancelled_result(store, actor_user_id, result.interaction_id)
+            raise VideoResultCancelled(result=result) from exc
         except Exception as exc:
             await self._queue_orphan(store, actor_user_id, result.interaction_id)
             raise VideoSessionError(
@@ -655,6 +689,33 @@ class VideoUnderstandingService:
             return
         await self._drain_file_deletions(user_id=actor_user_id, limit=1)
 
+    async def _cleanup_cancelled_result(
+        self,
+        store: VideoSessionRepository,
+        actor_user_id: str,
+        interaction_id: str,
+        *,
+        file_name: str | None = None,
+    ) -> None:
+        async def cleanup() -> None:
+            try:
+                if interaction_id:
+                    await self._queue_orphan(store, actor_user_id, interaction_id)
+            finally:
+                if file_name is not None:
+                    await self._release_file_or_log(store, actor_user_id, file_name)
+
+        task = asyncio.create_task(cleanup())
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        try:
+            task.result()
+        except Exception:
+            log.exception("Could not finish cancelled Gemini video cleanup")
+
 
 def _analysis(
     *,
@@ -676,4 +737,5 @@ def _analysis(
         limitations=result.limitations,
         model=result.model,
         usage=result.usage,
+        usage_present=result.usage_present,
     )

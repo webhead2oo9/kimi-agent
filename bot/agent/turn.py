@@ -210,6 +210,8 @@ class CollectTurnImages(Protocol):
         lookback: int,
         max_images: int,
         include_reply_images: bool = True,
+        bot_user: Any | None = None,
+        allow_bot_authored: bool = False,
     ) -> TurnImages: ...
 
 
@@ -687,6 +689,8 @@ async def prepare_turn(
                 lookback=recent_image_lookback,
                 max_images=config.max_turn_images,
                 include_reply_images=False,
+                bot_user=source.bot_user,
+                allow_bot_authored=source.allow_bot_authored_reply_context,
             ),
             deadline,
         )
@@ -1521,6 +1525,7 @@ async def _describe_images(
             pricing_model=response.pricing_model or image_provider.model,
             role="image_distillation",
             usage=normalize_usage(response.usage),
+            usage_present=response.has_reported_usage,
         )
     )
     try:

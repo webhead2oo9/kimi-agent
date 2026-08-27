@@ -696,22 +696,30 @@ async def test_prepare_turn_sets_reply_context_when_referenced_message_is_not_st
 
 @pytest.mark.asyncio
 async def test_prepare_turn_propagates_bot_reply_context_permission() -> None:
+    collect_images = RecordingCollectImages()
     collect_reply = RecordingCollectReplyContext()
-    dependencies, _ = _dependencies(collect_reply_context=collect_reply)
+    dependencies, _ = _dependencies(
+        collect_images=collect_images,
+        collect_reply_context=collect_reply,
+    )
+    source = _input(
+        object(),
+        referenced_message_id="444",
+        allow_bot_authored_reply_context=True,
+    )
 
     prepared = await prepare_turn(
-        _input(
-            object(),
-            referenced_message_id="444",
-            allow_bot_authored_reply_context=True,
-        ),
+        source,
         dependencies=dependencies,
         config=_config(),
     )
 
     assert prepared is not None
-    [call] = collect_reply.calls
-    assert call["allow_bot_authored"] is True
+    [image_call] = collect_images.calls
+    assert image_call["bot_user"] is source.bot_user
+    assert image_call["allow_bot_authored"] is True
+    [reply_call] = collect_reply.calls
+    assert reply_call["allow_bot_authored"] is True
 
 
 @pytest.mark.asyncio

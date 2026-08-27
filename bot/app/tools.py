@@ -280,7 +280,7 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
     (
         "visual rendering",
-        ("render_visual",),
+        ("render_chart", "render_diagram"),
         "BROWSER_ENABLED + BetterWright and Mermaid runtime",
     ),
 )

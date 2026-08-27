@@ -428,7 +428,8 @@ def test_app_registers_browser_only_after_successful_probe(
 
     names = {schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "42")}
     assert "browser" in names
-    assert not registry.is_registered("render_visual")
+    assert not registry.is_registered("render_chart")
+    assert not registry.is_registered("render_diagram")
 
 
 def test_app_registers_visual_only_after_browser_and_visual_runtime_probe(
@@ -454,6 +455,8 @@ def test_app_registers_visual_only_after_browser_and_visual_runtime_probe(
     )
 
     assert registry.is_registered("browser")
-    entry = registry.get_searchable_entry("render_visual", TrustTier.MEMBER)
-    assert entry is not None
-    assert entry.category == "Visuals"
+    chart = registry.get_searchable_entry("render_chart", TrustTier.MEMBER)
+    diagram = registry.get_searchable_entry("render_diagram", TrustTier.MEMBER)
+    assert chart is not None
+    assert diagram is not None
+    assert chart.category == diagram.category == "Visuals"

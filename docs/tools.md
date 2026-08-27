@@ -162,9 +162,12 @@ all covered in [Persistent browser](browser.md).
 
 | Tool | Visibility | Tier | Purpose and availability |
 |---|---|---|---|
-| `render_visual` | Searchable | Member | Render and queue one fixed 1200×675 PNG from structured bar/line/scatter chart data or constrained Mermaid source. Registered automatically when `BROWSER_ENABLED` is true, the persistent-browser gate passes, and the pinned Mermaid runtime is present. |
+| `render_chart` | Searchable | Member | Render and queue one fixed 1200×675 PNG from structured bar, line, or scatter data. |
+| `render_diagram` | Searchable | Member | Render and queue one fixed 1200×675 PNG from constrained Mermaid source. |
 
-The model makes one visual tool call; it never has to call `browser`. Rendering
+Both tools register automatically when `BROWSER_ENABLED` is true, the
+persistent-browser gate passes, and the pinned Mermaid runtime is present. The
+model makes one visual tool call; it never has to call `browser`. Rendering
 uses a fresh offline Chromium process with no persistent profile or VPN lease,
 and the host fully validates the PNG before Discord delivery. The required alt
 text becomes the Discord attachment description. Supported diagrams, chart

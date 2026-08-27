@@ -48,7 +48,7 @@ requirements only; browser and visual-rendering calls do not install packages
 or load Mermaid from a CDN.
 
 The bot does not use BetterWright's credential vault, downloads, live-view
-server, cloud providers, or daemon. `render_visual` reuses the immutable files
+server, cloud providers, or daemon. `render_chart` and `render_diagram` reuse the immutable files
 but launches a separate one-shot, offline worker with no persistent profile or
 VPN lease; see [Visual rendering](../../../docs/visual-rendering.md).
 

@@ -14,6 +14,8 @@ import web_browser.visual_service as visual_service
 from agent.turn import _stage_response_files_sync
 from tools.registry import MessageContext, ToolRegistry
 from tools.visuals import (
+    CHART_TOOL_NAME,
+    DIAGRAM_TOOL_NAME,
     VisualToolConfig,
     init_visual_tool,
     verify_rendered_png,
@@ -41,7 +43,7 @@ def _context(*, context_key: str = "g1:c1:root") -> MessageContext:
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
         context_key=context_key,
-        activated_tools={"render_visual"},
+        activated_tools={CHART_TOOL_NAME, DIAGRAM_TOOL_NAME},
     )
 
 
@@ -74,10 +76,14 @@ def test_visual_schema_is_provider_neutral_and_searchable(tmp_path: Path) -> Non
         UserLocks(),
     )
 
-    entry = registry.get_searchable_entry("render_visual", TrustTier.MEMBER)
-    assert entry is not None
-    assert entry.category == "Visuals"
-    assert entry.searchable is True
+    chart = registry.get_searchable_entry(CHART_TOOL_NAME, TrustTier.MEMBER)
+    diagram = registry.get_searchable_entry(DIAGRAM_TOOL_NAME, TrustTier.MEMBER)
+    assert chart is not None
+    assert diagram is not None
+    assert chart.category == diagram.category == "Visuals"
+    assert chart.searchable is diagram.searchable is True
+    assert "source" not in chart.parameters["properties"]
+    assert not {"chart_type", "categories", "series"} & diagram.parameters["properties"].keys()
 
     def assert_neutral(value: object) -> None:
         if isinstance(value, dict):
@@ -89,7 +95,8 @@ def test_visual_schema_is_provider_neutral_and_searchable(tmp_path: Path) -> Non
             for child in value:
                 assert_neutral(child)
 
-    assert_neutral(entry.parameters)
+    assert_neutral(chart.parameters)
+    assert_neutral(diagram.parameters)
 
 
 def test_chart_validation_rejects_conditional_fields_and_nonfinite_values() -> None:
@@ -422,9 +429,8 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
 
     result = json.loads(
         await registry.dispatch(
-            "render_visual",
+            CHART_TOOL_NAME,
             {
-                "kind": "chart",
                 "chart_type": "scatter",
                 "title": "Relationship",
                 "x_label": "X",
@@ -453,6 +459,23 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
     assert len(ctx.output_files) == 1
     assert Path(ctx.output_files[0]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert ctx.output_file_descriptions[ctx.output_files[0]] == "Three points trend upward."
+
+    diagram = json.loads(
+        await registry.dispatch(
+            DIAGRAM_TOOL_NAME,
+            {
+                "title": "Request flow",
+                "alt_text": "A request flows to a response.",
+                "source": "flowchart LR\nA[Request] --> B[Response]",
+            },
+            ctx,
+        )
+    )
+    assert diagram.get("ok") is True, diagram
+    assert diagram["kind"] == "mermaid"
+    assert "chart_type" not in diagram
+    assert len(service.requests) == 2
+    assert len(ctx.output_files) == 2
 
 
 def test_png_verification_rejects_corrupt_and_incomplete_images(tmp_path: Path) -> None:
@@ -520,14 +543,15 @@ async def test_visual_tool_checks_context_and_attachment_cap_before_rendering(
         UserLocks(),
     )
     args: dict[str, Any] = {
-        "kind": "mermaid",
         "alt_text": "A flow.",
         "source": "flowchart TD\nA-->B",
     }
     missing_context = _context(context_key="")
-    assert "conversation context" in await registry.dispatch("render_visual", args, missing_context)
+    assert "conversation context" in await registry.dispatch(
+        DIAGRAM_TOOL_NAME, args, missing_context
+    )
 
     capped = _context()
     capped.output_files.append(str(tmp_path / "existing.png"))
-    assert "attachment limit" in await registry.dispatch("render_visual", args, capped)
+    assert "attachment limit" in await registry.dispatch(DIAGRAM_TOOL_NAME, args, capped)
     assert service.calls == 0

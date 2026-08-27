@@ -134,6 +134,25 @@ The same `BROWSER_ENABLED` gate and locked runtime expose searchable `render_cha
 
 Optional searchable `video` (`tools/video.py`, `video_understanding/`) analyzes public YouTube URLs plus exact current-message Discord attachments and safe workspace videos through the fixed Google Gemini Files + Interactions APIs. Registration requires both `VIDEO_UNDERSTANDING_ENABLED` and the environment-only `GEMINI_API_KEY`; the tool uses stable `gemini-3.7-flash`, not a role from `config/models.yaml`. Uploaded videos stream in bounded chunks (500 MiB and one-hour hard ceilings; one upload at a time), never whole-file memory, and arbitrary external video URLs remain rejected. `start` creates an actor/guild/root-scoped stored Interaction and opaque local handle; `ask` continues it with `previous_interaction_id`. SQLite persists only safe source/session/provider identifiers and durable Interaction/File deletion outboxes, while structured timestamped answers return as untrusted context. Sessions expire within 24 hours; transcript retention and full `/privacy` deletion queue the complete known provider state for Google deletion. Safe per-call limits live in `config/tools/video.md`. See [`docs/video-understanding.md`](docs/video-understanding.md).
 
+### Image Generation
+
+Optional REGULAR-tier core `generate_image` (`tools/image_gen.py`, `image_gen/`) replaces
+regex-inferred provider image output with an explicit model tool. OpenAI `gpt-image-2` is the
+shipped backend: ChatGPT OAuth is primary through the process-wide cached
+`CodexAuthManager`, with an environment-only platform API key as fallback. The chat provider
+is independent of the image backend. Generation uses JSON in both modes; OAuth edits use
+Codex JSON data URLs while platform edits use multipart `image[]` parts. Safe per-call knobs
+live in `config/tools/generate_image.md`.
+
+Reference paths are bounded PNG/JPEG/WebP workspace files resolved through
+`WorkspaceManager.resolve_user_file_path`, read off-loop under the workspace activity lock,
+and capped per-file and in aggregate. Verified PNG output is quota-checked, saved under the
+user workspace's `generated_images/`, and queued through `enqueue_workspace_file` with a
+required Discord attachment description. Generic queued-file moderation screens that
+description, not the generated image bytes. `ProviderCapability.IMAGE_OUTPUT` and
+`GeneratedAsset` remain provider-contract surfaces for direct provider requests; normal
+Discord turns never infer them from message text. See [`docs/image-generation.md`](docs/image-generation.md).
+
 ### Discord Retrieval and Reply Composition
 
 `get_channel_context` (backed by `discord_adapter/gateway.py`) returns untrusted live context outside the persisted conversation. `discord_text_search` (`tools/discord_text_search.py`, searchable, `MEMBER`) searches a fresh positive scope of channels both the requester and bot can read, minus `DISCORD_SEARCH_EXCLUDED_CHANNELS`; it is enabled by default behind `DISCORD_TEXT_SEARCH_ENABLED` and Message Content intent. Deployment-specific retrieval belongs behind the plugin seam with its own gate, trust scope, and untrusted framing.

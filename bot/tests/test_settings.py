@@ -102,6 +102,35 @@ def test_video_understanding_is_off_and_secret_is_blank_by_default() -> None:
     assert settings.video_understanding_max_concurrency == 4
 
 
+def test_image_generation_is_off_and_oauth_first_by_default() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.image_gen_enabled is False
+    assert settings.image_gen_backend == "openai"
+    assert settings.image_gen_auth_mode == "auto"
+    assert settings.image_gen_api_key.get_secret_value() == ""
+    assert settings.image_gen_max_concurrency == 1
+    assert settings.image_gen_timeout_seconds == 300.0
+
+
+@pytest.mark.parametrize("value", [0, 9])
+def test_image_generation_concurrency_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            image_gen_max_concurrency=value,
+        )
+
+
+@pytest.mark.parametrize("value", [29.9, 900.1])
+def test_image_generation_timeout_is_bounded(value: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            image_gen_timeout_seconds=value,
+        )
+
+
 @pytest.mark.parametrize("value", [0, 33])
 def test_video_concurrency_is_bounded(value: int) -> None:
     with pytest.raises(ValidationError):

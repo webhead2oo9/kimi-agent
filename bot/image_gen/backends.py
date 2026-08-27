@@ -7,6 +7,18 @@ from typing import Protocol
 from image_gen.types import ImageEditRequest, ImageGenRequest, ImageResult
 
 
+class ImageAuthManager(Protocol):
+    """The Codex OAuth subset the images backend needs."""
+
+    def is_available(self) -> bool: ...
+
+    def get_account_id(self) -> str: ...
+
+    async def get_access_token(self) -> str: ...
+
+    async def refresh_tokens(self, *, force: bool = False) -> None: ...
+
+
 class ImageBackend(Protocol):
     """A provider-neutral image generation backend."""
 

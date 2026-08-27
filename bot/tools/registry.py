@@ -62,6 +62,7 @@ class MessageContext:
     browser_calls_this_turn: int = 0
     browser_screenshots_this_turn: int = 0
     visual_renders_this_turn: int = 0
+    image_gen_calls_this_turn: int = 0
     # In netns mode both surfaces draw on one physical VPN namespace lease, and
     # a rooted browser call holds it until the turn's finalizer runs. Without
     # these markers a turn that mixed browser and networked code calls would sit

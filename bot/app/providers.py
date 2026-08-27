@@ -347,9 +347,9 @@ async def _fetch_model_ids(endpoint: str, api_key: str) -> frozenset[str]:
 
 
 def codex_tokens_available(settings: Settings) -> bool:
-    from codex.auth import CodexAuthManager
+    from providers.factory import get_codex_auth_manager
 
-    return CodexAuthManager(settings.codex_token_file).is_available()
+    return get_codex_auth_manager(settings.codex_token_file).is_available()
 
 
 def codex_startup_check(
@@ -372,9 +372,9 @@ def codex_startup_check(
     from codex.auth import CodexAuthError, CodexAuthRevokedError
 
     if manager is None:
-        from providers.factory import _get_codex_auth_manager
+        from providers.factory import get_codex_auth_manager
 
-        manager = _get_codex_auth_manager(settings.codex_token_file)
+        manager = get_codex_auth_manager(settings.codex_token_file)
     try:
         asyncio.run(manager.get_access_token())
     except CodexAuthRevokedError as exc:
@@ -414,6 +414,9 @@ def _provider_has_credentials(config: ProviderConfig, settings: Settings) -> boo
 
 
 def _codex_is_reachable(settings: Settings, model_config: ModelConfig) -> bool:
+    # Only a required model role makes Codex auth a startup-fatal dependency.
+    # Optional credential-gated tools validate their tokens on first use so a
+    # stale image-only token cannot take the whole bot offline.
     for model_name in model_config.reachable_model_names(
         include_compaction=True,
         include_coding=settings.coding_tasks_enabled,

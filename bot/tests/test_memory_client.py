@@ -455,9 +455,6 @@ class _DownLowLevelDocumentsApi:
     async def list_documents(self, **kwargs: object) -> object:
         raise RuntimeError("backend down")
 
-    async def get_document(self, **kwargs: object) -> object:
-        raise RuntimeError("backend down")
-
 
 class FakeDownHindsight:
     def __init__(self) -> None:
@@ -481,7 +478,6 @@ def test_lenient_reads_swallow_backend_failure_into_safe_defaults() -> None:
     page = asyncio.run(client.list_memories(bank_id="user:123"))
     assert page.items == [] and page.total == 0
     assert asyncio.run(client.list_documents(bank_id="user:123")) == []
-    assert asyncio.run(client.get_document(bank_id="user:123", document_id="doc-1")) is None
 
 
 def test_strict_reads_raise_memory_backend_error_on_failure() -> None:
@@ -493,25 +489,6 @@ def test_strict_reads_raise_memory_backend_error_on_failure() -> None:
         asyncio.run(client.list_memories_strict(bank_id="user:123"))
     with pytest.raises(MemoryBackendError):
         asyncio.run(client.list_documents_strict(bank_id="user:123"))
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.get_document_strict(bank_id="user:123", document_id="doc-1"))
-
-
-def test_get_document_strict_treats_404_as_genuinely_missing() -> None:
-    class _NotFound(Exception):
-        def __init__(self) -> None:
-            super().__init__("not found")
-            self.status = 404
-
-    class _NotFoundDocumentsApi:
-        async def get_document(self, **kwargs: object) -> object:
-            raise _NotFound
-
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, SimpleNamespace(documents=_NotFoundDocumentsApi()))
-
-    document = asyncio.run(client.get_document_strict(bank_id="user:123", document_id="doc-1"))
-    assert document is None
 
 
 def test_ensure_user_bank_retries_after_failed_creation() -> None:

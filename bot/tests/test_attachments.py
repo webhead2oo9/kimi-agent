@@ -822,6 +822,85 @@ async def test_reply_image_becomes_vision_part_and_edit_target(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reply_image_from_current_bot_requires_explicit_permission(tmp_path: Path) -> None:
+    attachment = _CountingImageAttachment(b"BOTREPLY")
+    referenced = _FakeMessage(
+        msg_id=2,
+        attachments=[attachment],
+        author_id=999,
+        author_bot=True,
+    )
+    message = _FakeMessage(
+        reference=_FakeRef(resolved=referenced, channel_id=10),
+        channel=_FakeChannel(channel_id=10),
+    )
+    bot_user = SimpleNamespace(id=999)
+
+    excluded = await collect_turn_images(
+        message,
+        bot_user=bot_user,
+        store=_store(tmp_path),
+        conversation_key="excluded",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
+    allowed = await collect_turn_images(
+        message,
+        bot_user=bot_user,
+        allow_bot_authored=True,
+        store=_store(tmp_path),
+        conversation_key="allowed",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
+
+    assert excluded.reply_images == ()
+    assert excluded.edit_target is None
+    assert len(allowed.reply_images) == 1
+    assert allowed.edit_target is not None
+    assert attachment.read_count == 1
+    await cleanup_attachment_paths(allowed.cleanup_paths)
+
+
+@pytest.mark.asyncio
+async def test_reply_image_from_other_bot_remains_excluded_when_explicit(tmp_path: Path) -> None:
+    attachment = _CountingImageAttachment(b"OTHERBOT")
+    referenced = _FakeMessage(
+        msg_id=2,
+        attachments=[attachment],
+        author_id=888,
+        author_bot=True,
+    )
+    message = _FakeMessage(
+        reference=_FakeRef(resolved=referenced, channel_id=10),
+        channel=_FakeChannel(channel_id=10),
+    )
+
+    result = await collect_turn_images(
+        message,
+        bot_user=SimpleNamespace(id=999),
+        allow_bot_authored=True,
+        store=_store(tmp_path),
+        conversation_key="k",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
+
+    assert result.reply_images == ()
+    assert result.edit_target is None
+    assert attachment.read_count == 0
+
+
+@pytest.mark.asyncio
 async def test_collect_turn_images_cancellation_in_reply_rolls_back_current_phase(
     tmp_path: Path,
 ) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -89,6 +89,43 @@ async def test_record_and_user_total(tmp_path) -> None:
     assert agg.output_tokens == 50
     assert agg.est_cost_usd == pytest.approx(0.05)
     assert agg.unpriced_llm_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_usage_and_reported_zero_remain_distinct_in_storage(tmp_path) -> None:
+    db, store = await _store(tmp_path)
+    try:
+        await store.record_turn(
+            user_id="u1",
+            user_name="Ann",
+            channel_id="c",
+            guild_id="g",
+            calls=[
+                LLMUsageCall(
+                    model="m",
+                    role="chat",
+                    usage=UsageBreakdown(),
+                    usage_present=False,
+                    est_cost_usd=None,
+                ),
+                LLMUsageCall(
+                    model="m",
+                    role="chat",
+                    usage=UsageBreakdown(),
+                    est_cost_usd=0.0,
+                ),
+            ],
+        )
+        aggregate = await store.user_total("u1", datetime.now(UTC) - timedelta(hours=1))
+        async with db.conn.execute("SELECT est_cost_usd FROM usage_ledger ORDER BY id") as cursor:
+            costs = [row["est_cost_usd"] for row in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+    assert costs == [None, 0.0]
+    assert aggregate.llm_calls == 2
+    assert aggregate.est_cost_usd == 0.0
+    assert aggregate.unpriced_llm_calls == 1
 
 
 @pytest.mark.asyncio

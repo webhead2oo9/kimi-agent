@@ -16,7 +16,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import random
+import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -42,6 +44,7 @@ MAX_ERROR_CHARS = 300
 _KEY_MAX = 128
 _HANDLER_MAX = 64
 _DEFAULT_BACKOFF = Backoff()
+_MAX_FLOAT_LOG = math.log(sys.float_info.max)
 
 SCHEMA_SQL = f"""CREATE TABLE IF NOT EXISTS {TABLE} (
     job_id           TEXT PRIMARY KEY,
@@ -83,6 +86,30 @@ def _validate(key: str, handler_name: str) -> None:
         raise ModuleContractError(f"invalid job key {key!r}")
     if not handler_name or len(handler_name) > _HANDLER_MAX:
         raise ModuleContractError(f"invalid handler name {handler_name!r}")
+
+
+def _capped_retry_delay(backoff: Backoff, attempt: int) -> float:
+    exponent = max(0, attempt - 1)
+    base = backoff.base_seconds
+    cap = backoff.max_seconds
+    if base >= cap:
+        return cap
+    if exponent == 0 or backoff.multiplier == 1:
+        return base
+
+    growth_log = exponent * math.log(backoff.multiplier)
+    if growth_log >= math.log(cap) - math.log(base):
+        return cap
+
+    # Preserve the existing arithmetic (and rounding) when the intermediate
+    # growth factor is representable. For a tiny base, the factor itself may
+    # overflow even though the final product is finite and below the cap.
+    if growth_log <= _MAX_FLOAT_LOG:
+        try:
+            return base * (backoff.multiplier**exponent)
+        except OverflowError:
+            pass
+    return min(cap, math.exp(math.log(base) + growth_log))
 
 
 @dataclass(slots=True)
@@ -449,10 +476,7 @@ class DurableScheduler:
                 next_run = now + float(row.interval_seconds or 0) + jitter
                 attempt = 0
             else:
-                delay = min(
-                    row.backoff.max_seconds,
-                    row.backoff.base_seconds * (row.backoff.multiplier ** max(0, row.attempt - 1)),
-                )
+                delay = _capped_retry_delay(row.backoff, row.attempt)
                 next_run = now + delay
                 attempt = row.attempt
             cursor = await conn.execute(

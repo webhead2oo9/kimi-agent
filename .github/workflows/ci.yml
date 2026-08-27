@@ -47,6 +47,9 @@ jobs:
           node --check web_browser/bridge.mjs
           node --check web_browser/visual_bridge.mjs
 
+      - name: Test browser runtime
+        run: node --test tests/js/*.test.mjs
+
       # mypy is pinned to platform = "linux" in pyproject.toml, and
       # sqlcipher3-binary is a Linux-only dependency, so CI matches the
       # deployment target rather than a dev host.

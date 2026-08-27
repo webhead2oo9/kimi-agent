@@ -6,7 +6,10 @@ Host-side pieces applied by an operator when the matching feature is enabled.
 `kimi.service.example` is a public, path-neutral user-service starting point for
 the bot process itself. Copy it into the unprivileged bot account's systemd user
 directory, replace `/srv/kimi`, and keep the concrete unit and its environment
-files in private deployment configuration.
+files in private deployment configuration. Its `TasksMax`, `MemoryMax`, and
+`CPUQuota` directives cap the complete service cgroup, including executable
+skill descendants; tune them to the host instead of removing the aggregate
+backstop.
 
 | Directory | Applies when |
 |---|---|

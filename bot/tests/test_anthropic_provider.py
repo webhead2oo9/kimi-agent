@@ -62,6 +62,7 @@ def test_anthropic_provider_sends_system_separately_and_images_as_blocks() -> No
     assert request["messages"][1]["content"][0]["type"] == "image"
     assert response.content == "done"
     assert response.usage == {"input_tokens": 2, "output_tokens": 3}
+    assert response.has_reported_usage is True
     assert response.model == "claude-sonnet-4-20250514-v2"
 
 
@@ -98,6 +99,7 @@ def test_anthropic_provider_extracts_tool_use_blocks() -> None:
     assert fake.calls[0]["tools"][0]["input_schema"] == {}
     assert response.tool_calls[0].id == "toolu_1"
     assert response.tool_calls[0].arguments == {"q": "vr"}
+    assert response.has_reported_usage is False
 
 
 def test_anthropic_provider_preserves_cache_usage_fields() -> None:

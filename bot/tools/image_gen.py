@@ -33,6 +33,7 @@ from tools.workspace.common import (
 )
 from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
+from usage.normalization import LLMUsageCall, normalize_usage
 from workspace import WorkspaceKey, WorkspaceManager
 
 TOOL_NAME = "generate_image"
@@ -162,12 +163,18 @@ def init_image_gen_tool(
                     result = await service.generate(
                         ImageGenRequest(prompt=prompt, **request_fields)
                     )
+                await _record_image_usage(
+                    ctx,
+                    result,
+                    model=request_fields["model"],
+                )
                 output_path, relative_path, output_bytes = await _run_worker(
                     _write_output,
                     workspace_manager,
                     workspace_config,
                     ctx.workspace_key,
                     result.image_base64,
+                    on_cancelled_result=_remove_cancelled_output,
                 )
                 enqueue_workspace_file(
                     ctx,
@@ -300,6 +307,41 @@ def _request_fields(ctx: MessageContext) -> dict[str, str]:
     }
 
 
+async def _record_image_usage(
+    ctx: MessageContext,
+    result: ImageResult,
+    *,
+    model: str,
+) -> None:
+    call = LLMUsageCall(
+        model=model,
+        role="image_generation",
+        usage=normalize_usage(result.usage),
+        usage_present=result.usage is not None,
+    )
+    if ctx.record_usage_call is None:
+        if ctx.usage_sink is not None:
+            ctx.usage_sink.append(call)
+        return
+
+    task: asyncio.Future[None] = asyncio.ensure_future(ctx.record_usage_call(call))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        try:
+            task.result()
+        except Exception:
+            log.warning("image generation usage recording failed", exc_info=True)
+        raise
+    except Exception:
+        log.warning("image generation usage recording failed", exc_info=True)
+
+
 def _reference_images(
     workspace_manager: WorkspaceManager,
     workspace_key: WorkspaceKey,
@@ -346,13 +388,18 @@ def _image_media_type(raw: bytes) -> str | None:
     return None
 
 
-async def _run_worker[T](func: Callable[..., T], *args: Any) -> T:
+async def _run_worker[T](
+    func: Callable[..., T],
+    *args: Any,
+    on_cancelled_result: Callable[[T], None] | None = None,
+) -> T:
     """Delay caller cancellation until an in-flight file worker has finished.
 
     ``asyncio.to_thread`` cannot stop a thread. Keeping the outer coroutine
     alive preserves the workspace activity lease until the worker is done, so
     privacy deletion and other workspace mutations cannot race a late read or
-    write.
+    write. A completed result can be disposed before cancellation propagates;
+    worker and disposal errors remain visible to the caller.
     """
     worker = asyncio.create_task(asyncio.to_thread(func, *args))
     cancelled = False
@@ -364,18 +411,15 @@ async def _run_worker[T](func: Callable[..., T], *args: Any) -> T:
                 raise
             cancelled = True
             continue
-        except Exception as exc:
-            if cancelled:
-                log.warning(
-                    "Image file worker failed while draining cancellation (%s)",
-                    type(exc).__name__,
-                    exc_info=True,
-                )
-                raise asyncio.CancelledError from None
-            raise
         if cancelled:
+            if on_cancelled_result is not None:
+                on_cancelled_result(result)
             raise asyncio.CancelledError
         return result
+
+
+def _remove_cancelled_output(result: tuple[Path, str, int]) -> None:
+    result[0].unlink(missing_ok=True)
 
 
 def _write_output(

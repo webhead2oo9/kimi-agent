@@ -146,3 +146,27 @@ async def test_declared_but_unprovided_service_degrades_health(tmp_path: Path) -
         assert "x.y@1" in health.detail
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_consumer_does_not_receive_same_service_from_wrong_provider(tmp_path: Path) -> None:
+    rogue = Provider()
+    consumer = Consumer()
+    service = ServiceDeclaration("moderation.cases", 1)
+    installed = {
+        "intended": _spec("intended", Forgetful(), provides=(service,)),
+        "rogue": _spec("rogue", rogue, provides=(service,)),
+        "consumer": _spec(
+            "consumer",
+            consumer,
+            dependencies=("intended",),
+            consumes=(ServiceRequirement("moderation.cases", 1, provider="intended"),),
+        ),
+    }
+
+    with pytest.raises(ServiceUnavailable, match="module 'intended'"):
+        await build_test_runtime(
+            tmp_path,
+            ["rogue", "consumer", "intended"],
+            installed=installed,
+        )

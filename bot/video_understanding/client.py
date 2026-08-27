@@ -42,6 +42,10 @@ _MAX_VIDEO_DURATION_SECONDS = 3600.0
 _ACTIVATION_POLL_TIMEOUT_SECONDS = 900.0
 _ACTIVATION_POLL_INITIAL_DELAY_SECONDS = 1.0
 _ACTIVATION_POLL_MAX_DELAY_SECONDS = 10.0
+_MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_ERROR_RESPONSE_BYTES = 64 * 1024
+_MAX_JSON_NODES = 50_000
+_MAX_JSON_DEPTH = 32
 
 _SYSTEM_INSTRUCTION = """\
 You are a video-understanding specialist analyzing one public YouTube video.
@@ -106,6 +110,10 @@ class _RetryableUploadStatus(RuntimeError):
     """A chunk response whose committed offset must be queried before retry."""
 
 
+class _ResponseBodyLimitError(ValueError):
+    """An external response exceeded its byte or structural budget."""
+
+
 class VideoInteractionError(RuntimeError):
     """A sanitized Gemini transport or response failure."""
 
@@ -116,12 +124,14 @@ class VideoInteractionError(RuntimeError):
         interaction_id: str = "",
         model: str = "",
         usage: VideoUsage | None = None,
+        usage_present: bool | None = None,
         file_name: str = "",
     ) -> None:
         super().__init__(message)
         self.interaction_id = interaction_id
         self.model = model
         self.usage = usage
+        self.usage_present = usage is not None if usage_present is None else usage_present
         self.file_name = file_name
 
 
@@ -141,6 +151,7 @@ class VideoInteractionResult:
     evidence: tuple[VideoEvidence, ...]
     limitations: tuple[str, ...]
     usage: VideoUsage
+    usage_present: bool = True
 
 
 # Provider-neutral byte source for uploaded video transport. Any async
@@ -306,7 +317,7 @@ class GeminiVideoClient:
                     json=payload,
                 ) as response:
                     if response.status >= 400:
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
                     data = await _read_json_object(response)
             except VideoInteractionError:
@@ -333,7 +344,7 @@ class GeminiVideoClient:
                         if response.status in (200, 204, 404):
                             return
                         # Drain the provider body so the connection can be reused.
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
             except VideoInteractionError:
                 raise
@@ -415,7 +426,7 @@ class GeminiVideoClient:
                     ) as response:
                         if response.status in (200, 204, 404):
                             return
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
             except VideoInteractionError as exc:
                 raise VideoInteractionError(str(exc), file_name=name) from exc
@@ -452,10 +463,10 @@ class GeminiVideoClient:
                     allow_redirects=False,
                 ) as response:
                     if response.status >= 400:
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
                     upload_url = response.headers.get("X-Goog-Upload-URL")
-                    await response.read()
+                    await _drain_response(response)
         except VideoInteractionError:
             raise
         except (aiohttp.ClientError, TimeoutError, OSError) as exc:
@@ -513,15 +524,15 @@ class GeminiVideoClient:
                         allow_redirects=False,
                     ) as response:
                         if response.status == 429 or response.status >= 500:
-                            await response.read()
+                            await _drain_response(response)
                             raise _RetryableUploadStatus
                         if response.status >= 400:
-                            await response.read()
+                            await _drain_response(response)
                             raise _provider_status_error(response.status)
                         if is_last:
                             data = await _read_json_object(response)
                             return _parse_uploaded_file(data)
-                        await response.read()
+                        await _drain_response(response)
                         return None
             except VideoInteractionError:
                 raise
@@ -571,7 +582,7 @@ class GeminiVideoClient:
                     allow_redirects=False,
                 ) as response:
                     if response.status >= 400:
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
                     status = (
                         _bounded_string(response.headers.get("X-Goog-Upload-Status"), 32)
@@ -580,7 +591,7 @@ class GeminiVideoClient:
                     received = _parse_received_bytes(
                         response.headers.get("X-Goog-Upload-Size-Received")
                     )
-                    await response.read()
+                    await _drain_response(response)
         except VideoInteractionError:
             raise
         except (aiohttp.ClientError, TimeoutError, OSError) as exc:
@@ -597,7 +608,7 @@ class GeminiVideoClient:
                     headers=self._headers,
                 ) as response:
                     if response.status >= 400:
-                        await response.read()
+                        await _drain_response(response)
                         raise _provider_status_error(response.status)
                     data = await _read_json_object(response)
         except VideoInteractionError:
@@ -697,12 +708,59 @@ async def _chunk_stream(
 
 async def _read_json_object(response: aiohttp.ClientResponse) -> dict[str, Any]:
     try:
-        data = await response.json(content_type=None)
-    except (aiohttp.ContentTypeError, json.JSONDecodeError, ValueError) as exc:
+        raw = await _read_bounded_body(response, _MAX_JSON_RESPONSE_BYTES)
+        data = json.loads(raw)
+        _validate_json_structure(data)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        _ResponseBodyLimitError,
+        ValueError,
+    ) as exc:
         raise VideoInteractionError("The video service returned an invalid response.") from exc
     if not isinstance(data, dict):
         raise VideoInteractionError("The video service returned an invalid response.")
     return data
+
+
+async def _read_bounded_body(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    declared = response.headers.get("Content-Length")
+    if declared is not None:
+        try:
+            declared_size = int(declared)
+        except ValueError as exc:
+            raise _ResponseBodyLimitError("invalid Content-Length") from exc
+        if declared_size < 0 or declared_size > max_bytes:
+            raise _ResponseBodyLimitError("response body exceeds byte cap")
+
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(min(65_536, max_bytes + 1)):
+        if len(chunk) > max_bytes - len(body):
+            raise _ResponseBodyLimitError("response body exceeds byte cap")
+        body.extend(chunk)
+    return bytes(body)
+
+
+async def _drain_response(response: aiohttp.ClientResponse) -> None:
+    try:
+        await _read_bounded_body(response, _MAX_ERROR_RESPONSE_BYTES)
+    except _ResponseBodyLimitError:
+        response.close()
+
+
+def _validate_json_structure(value: object) -> None:
+    nodes = 0
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > _MAX_JSON_NODES or depth > _MAX_JSON_DEPTH:
+            raise _ResponseBodyLimitError("response JSON exceeds structure cap")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
 
 
 def _provider_status_error(status: int) -> VideoInteractionError:
@@ -718,7 +776,9 @@ def _provider_status_error(status: int) -> VideoInteractionError:
 def _parse_interaction(data: dict[str, Any]) -> VideoInteractionResult:
     interaction_id = _bounded_string(data.get("id"), 512)
     model = _bounded_string(data.get("model"), 256) or "unknown"
-    usage = _parse_usage(data.get("usage"))
+    raw_usage = data.get("usage")
+    usage_present = isinstance(raw_usage, dict)
+    usage = _parse_usage(raw_usage)
     try:
         if not interaction_id or data.get("status") != "completed":
             raise VideoInteractionError("The video service did not complete the analysis.")
@@ -726,7 +786,8 @@ def _parse_interaction(data: dict[str, Any]) -> VideoInteractionResult:
         text = _last_model_output_text(data.get("steps"))
         try:
             payload = json.loads(text)
-        except json.JSONDecodeError as exc:
+            _validate_json_structure(payload)
+        except (json.JSONDecodeError, RecursionError, _ResponseBodyLimitError) as exc:
             raise VideoInteractionError("The video service returned malformed analysis.") from exc
         if not isinstance(payload, dict):
             raise VideoInteractionError("The video service returned malformed analysis.")
@@ -773,6 +834,7 @@ def _parse_interaction(data: dict[str, Any]) -> VideoInteractionResult:
             evidence=tuple(evidence),
             limitations=tuple(limitations),
             usage=usage,
+            usage_present=usage_present,
         )
     except VideoInteractionError as exc:
         raise VideoInteractionError(
@@ -780,6 +842,7 @@ def _parse_interaction(data: dict[str, Any]) -> VideoInteractionResult:
             interaction_id=interaction_id,
             model=model,
             usage=usage,
+            usage_present=usage_present,
         ) from exc
 
 

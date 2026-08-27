@@ -145,16 +145,32 @@ async def _acquire_rooted_turn(
         return None
     acquisition = asyncio.create_task(service.acquire_turn(ctx.user_id, turn_id))
     finalization = asyncio.create_task(ctx.wait_for_turn_finalization())
+
+    async def cancel_acquisition() -> None:
+        acquisition.cancel()
+        with contextlib.suppress(asyncio.CancelledError, BrowserServiceError):
+            acquired = await acquisition
+            if acquired:
+                await service.release_turn(ctx.user_id, turn_id)
+
     try:
         await asyncio.wait({acquisition, finalization}, return_when=asyncio.FIRST_COMPLETED)
         if ctx.turn_finalization_started:
-            acquisition.cancel()
-            with contextlib.suppress(asyncio.CancelledError, BrowserServiceError):
-                acquired = await acquisition
-                if acquired:
-                    await service.release_turn(ctx.user_id, turn_id)
+            await cancel_acquisition()
             return None
         return await acquisition
+    except asyncio.CancelledError as cancellation:
+        # The acquisition is an independent task and may still win its lease as
+        # caller cancellation arrives. Drain it to ensure no unfinalized rooted
+        # turn remains active, even if the caller is cancelled repeatedly.
+        cleanup = asyncio.create_task(cancel_acquisition())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        await cleanup
+        raise cancellation
     finally:
         finalization.cancel()
         with contextlib.suppress(asyncio.CancelledError):

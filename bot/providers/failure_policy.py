@@ -99,7 +99,7 @@ def raise_for_terminal_finish_reason(finish_reason: str | None) -> None:
         raise ProviderAvailabilityError("provider stream ended with a network error")
     if finish_reason == "model_context_window_exceeded":
         raise ProviderContextOverflowError("The request exceeded the model context window.")
-    if finish_reason == "sensitive":
+    if finish_reason in {"content_filter", "sensitive"}:
         raise ProviderPolicyError("The model provider rejected the request.")
 
 
@@ -127,6 +127,9 @@ def _header(exc: BaseException, name: str) -> str | None:
 
 
 def retry_after_timestamp(exc: BaseException, now: float) -> float | None:
+    seconds = getattr(exc, "retry_after_seconds", None)
+    if isinstance(seconds, int | float) and not isinstance(seconds, bool) and seconds >= 0:
+        return now + float(seconds)
     value = _header(exc, "retry-after")
     if not value:
         return None
@@ -179,6 +182,7 @@ def generic_failure_policy(
             FailureCategory.RATE_LIMIT,
             CircuitScopeKind.MODEL,
             status_code=status,
+            provider_code=(str(code) if (code := getattr(exc, "code", None)) is not None else None),
             retry_at=retry_at or now + policy.rate_limit_seconds,
         )
     if status == 401:

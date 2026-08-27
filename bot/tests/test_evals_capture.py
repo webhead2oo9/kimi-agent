@@ -57,6 +57,14 @@ def test_instrumented_provider_passes_through_and_records_usage():
     assert provider.calls[0].latency_ms >= 0
 
 
+def test_instrumented_provider_tracks_missing_usage() -> None:
+    provider = InstrumentedProvider(_Scripted(ProviderResponse(content="hi", usage_present=False)))
+
+    asyncio.run(provider.run_turn(_req()))
+
+    assert provider.has_complete_usage is False
+
+
 def test_instrumented_provider_paces_request_starts_without_counting_wait_as_latency():
     starts: list[float] = []
 
@@ -160,3 +168,25 @@ def test_instrumented_registry_records_errors_and_coerces_nondict_args():
     # ok=False is what the Task 7 mechanical layer reads to count tool errors.
     assert record.ok is False
     assert record.args == {"_raw": "not-a-dict"}
+
+
+def test_instrumented_registry_samples_provider_calls_before_dispatch() -> None:
+    provider_calls = 1
+
+    async def handler(args, ctx):
+        nonlocal provider_calls
+        provider_calls = 2
+        return json.dumps({"ok": True})
+
+    registry = InstrumentedRegistry()
+    registry.register(
+        name="probe",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    registry.set_provider_call_counter(lambda: provider_calls)
+
+    asyncio.run(registry.dispatch("probe", {}, _ctx()))
+
+    assert registry.sink[-1].provider_calls_before == 1

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
+import stat
 
 import pytest
 
@@ -19,6 +21,44 @@ from storage.image_distillations import ImageDistillationStore
 from storage.memory_banks import UserMemoryBankStateStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
+
+
+@pytest.mark.asyncio
+async def test_database_and_sidecars_are_owner_only_under_permissive_umask(tmp_path) -> None:
+    data_dir = tmp_path / "private-data"
+    db_path = data_dir / "bot.db"
+    previous_umask = os.umask(0)
+    db = Database(db_path)
+    try:
+        await db.connect()
+    finally:
+        os.umask(previous_umask)
+    try:
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
+        for path in (db_path, data_dir / "bot.db-wal", data_dir / "bot.db-shm"):
+            assert path.exists()
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_database_is_tightened_without_changing_parent_mode(tmp_path) -> None:
+    data_dir = tmp_path / "shared-data"
+    data_dir.mkdir(mode=0o750)
+    db_path = data_dir / "bot.db"
+    db_path.write_bytes(b"")
+    db_path.chmod(0o666)
+
+    db = Database(db_path)
+    await db.connect()
+    try:
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o750
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE((data_dir / "bot.db-wal").stat().st_mode) == 0o600
+        assert stat.S_IMODE((data_dir / "bot.db-shm").stat().st_mode) == 0o600
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

@@ -1,15 +1,13 @@
 # Configuration reference
 
-> **Living doc.** This page tracks every `Settings` field the bot reads, the
-> committed `.env.example` keys that are read outside `Settings`, and the
-> model catalog in `config/models.yaml`. That catalog is **untracked instance
-> state**; you create it by copying
-> [`bot/config/models.example.yaml`](../bot/config/models.example.yaml). The
-> source of truth for typed bot settings is
-> [`bot/config/settings.py`](../bot/config/settings.py), so whenever you add or
-> change a setting there, update this file (and `.env.example`) in the same
-> change. The defaults below are the **code defaults**; your local `.env` may
-> override them per deployment.
+> This page documents every `Settings` field the bot reads, the `.env.example`
+> keys read elsewhere, and the model catalog in `config/models.yaml`. The model
+> catalog is deployment-specific; create it by copying
+> [`bot/config/models.example.yaml`](../bot/config/models.example.yaml).
+> Typed settings are defined in
+> [`bot/config/settings.py`](../bot/config/settings.py). Update this page and
+> `.env.example` whenever those settings change. The defaults below are the
+> **code defaults**; a deployment's `.env` may override them.
 
 ## How configuration loading works
 
@@ -79,7 +77,8 @@
 - **Validation at startup:** a few fields validate eagerly so that a typo fails
   fast with a clear message rather than lazily in the middle of a request
   (`ALLOWED_CHANNEL_IDS` must be numeric, for instance).
-- **`.env.example`** is the committed template; `.env` is local and gitignored.
+- **`.env.example`** is the included template; `.env` stays local and is
+  ignored by Git.
   `ENV_FILE` gets its own section because it is read straight from the process
   environment rather than through `config/settings.py`.
 
@@ -93,7 +92,7 @@
 6. A plain scalar field joins `SETTINGS_SPEC` automatically. Add its validation
    metadata beside it in `config/operator_settings.py`: an `int`/`float` **must**
    declare a `_MINIMUMS` floor (a test enforces it). Add a `_CHOICES` entry only
-   if code in this repo already enforces the vocabulary.
+   if the application already enforces the vocabulary.
 
 If the setting belongs to a plugin, do **not** add it to the core catalog. Keep
 it on the plugin's `BaseSettings` model, and add an explicit plugin-settings
@@ -301,11 +300,11 @@ the numeric ids directly in the guild fragment.
 
 Two caveats about `blocked_tools`. First, it is **curation, not a privilege gate**: it only
 ever subtracts visible tools, so `min_tier`/`owner_only`/`guild_ids` remain the real
-security boundary. It applies to every responding turn. Second, channel and deployment-wide
-denylists parse strictly: a malformed or unreadable policy at cold load fails closed, while
-a failed live reload keeps that exact path's last-known-good denylist. Deleting the fragment
-explicitly clears its cached policy. `pinned_tools` stays lenient because losing a pin can't
-widen access.
+security boundary. It applies to every responding turn. Second, deployment-wide, guild, and
+channel denylists parse strictly: a malformed or unreadable policy at cold load fails closed, while
+a missing, empty, body-only, or failed live reload keeps that exact path's last-known-good
+denylist. Set `blocked_tools: []` explicitly to clear it. `pinned_tools` stays lenient because
+losing a pin can't widen access.
 
 ---
 
@@ -345,8 +344,8 @@ rather than being counted as free.
 OpenRouter is a handy reference for the models it lists: its Models API
 (`https://openrouter.ai/api/v1/models`) returns `pricing.prompt`,
 `pricing.completion`, `pricing.input_cache_read`, and `pricing.input_cache_write`
-as USD-per-token strings. To turn those into this repo's USD-per-1M-token config
-values, multiply by 1,000,000 and map them to `input`, `output`, `cached_read`,
+as USD-per-token strings. To convert them to the USD-per-1M-token values used
+here, multiply by 1,000,000 and map them to `input`, `output`, `cached_read`,
 and `cache_write`. Those numbers are a reasonable seed when the OpenRouter
 listing is effectively the official provider price for the route (a model with
 a single MiniMax provider, for example). If OpenRouter omits a bucket such as
@@ -361,7 +360,7 @@ out into its own column while including it in the estimated cost for the window.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `MODEL_API_KEY` | secret | (none) | Neutral key for a generic OpenAI-compatible provider profile, including the tracked placeholder template. |
+| `MODEL_API_KEY` | secret | (none) | Neutral key for generic OpenAI-compatible profiles, including the placeholder profile in `models.example.yaml`. |
 | `ANTHROPIC_API_KEY` | secret | (none) | Anthropic API key for native `anthropic` profiles. |
 | `OPENCODE_GO_API_KEY` | secret | (none) | OpenCode Go subscription key for every `opencode.ai/zen/go/v1` profile (`openai_compat` /chat/completions for Kimi/GLM; `anthropic_compat` /messages for MiniMax). |
 | `RUNINFRA_GATEWAY_KEY` | secret | (none) | RunInfra gateway key for OpenAI-compatible routes such as DeepSeek V4 Flash at `api.runinfra.ai`. |
@@ -810,8 +809,8 @@ of files, each with its own ownership and backup needs:
   scoped configuration. When change history is useful, it belongs in a
   separate, access-controlled configuration repository.
 - `SKILLS_DIR` holds private shared skills. You provision it, but staff tools
-  may update it at runtime, so back it up even when it is also reviewed and
-  committed separately.
+  may update it at runtime, so back it up even when a separate private repository
+  also keeps a versioned copy.
 - The writable paths documented throughout this page, including those under
   [Storage](#storage), hold runtime state such as the database, attachments,
   personal skills, workspaces, and logs. Treat them as user data, not as
@@ -845,7 +844,7 @@ recommended path settings, backup notes, and the provisioning procedure.
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `CONFIG_DIR` | path | `config` | Operator config root: `prompt.md`, `persona.md`, `models.yaml`, `settings.md`, `tools.md`, and the `channels/`, `channel_threads/`, `threads/`, `servers/`, `prompts/`, `modules/`, `plugins/`, and `tools/` fragment trees. Consumed by prompt construction, guild/channel fragment loaders, core, module, and plugin settings overlays, tool policy/config, and model routing. |
-| `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is untracked; a missing store contributes no private skills, while shipped built-ins remain available. |
+| `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is deployment data and is not stored in the repository; a missing store contributes no private skills, while shipped built-ins remain available. |
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
 | `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
 
@@ -935,8 +934,12 @@ Bubblewrap's PID namespace reaps descendants, including new-session children. `p
 supplies inherited per-process virtual-memory, CPU-time, file-size, open-file,
 process-count, and core-file limits. These are not aggregate cgroup accounting, and the
 process-count limit is per real UID, which is why executable-skill startup rejects root.
-Run the bot under a dedicated unprivileged service account and use service-level cgroup and
-egress controls as a second layer.
+Run the bot under a dedicated unprivileged service account. The example systemd
+unit, [`bot/deploy/kimi.service.example`](../bot/deploy/kimi.service.example), applies
+`TasksMax=128`, `MemoryMax=4G`, and `CPUQuota=200%` to the complete service cgroup,
+including executable-skill descendants. Tune those aggregate ceilings for the host, use
+equivalent container limits outside systemd, and retain service-level egress controls as a
+second layer.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -996,9 +999,10 @@ procedure.
 | `CODE_EXEC_ENV_DIR_MAX_FILES` | positive int | `200000` | Regenerable environment entry allowance, including zero-byte files and directories. |
 | `CODE_EXEC_NETWORK_WEEKLY_LIMIT` | nonnegative int | `100` | Per-user rolling seven-day run cap in `host`/`netns`; `0` disables and `STAFF` is exempt. |
 
-Nothing tracked in Git names a VPN provider, namespace, resolver, private
-address, service unit, or production host; all of that stays private instance
-state. The generic helper and sudoers templates live under
+The project does not include deployment-specific names for a VPN provider,
+namespace, resolver, private address, production service unit, or host. Those
+details remain private to each deployment. The generic helper and sudoers
+templates live under
 [`bot/deploy/code-exec-netns/`](../bot/deploy/code-exec-netns/README.md).
 
 ## Persistent browser
@@ -1156,9 +1160,11 @@ If you want to know where a setting is actually read, this is the map:
 
 ## Deployment notes
 
-- Your local `.env` wins over the code defaults and is never committed.
-- The checked-in `.env.example` leaves `HINDSIGHT_URL` empty. Set it explicitly
+- Your local `.env` wins over the code defaults. It is deployment data and is
+  excluded from source control.
+- The included `.env.example` leaves `HINDSIGHT_URL` empty. Set it explicitly
   to the reachable self-hosted endpoint; `deploy/hindsight/` contains the generic
   Docker Compose deployment and bring-up instructions.
-- The Compose stack reads `FIREWORKS_API_KEY` from the untracked `.env` beside
-  its compose file; see `deploy/hindsight/README.md`.
+- The Compose stack reads `FIREWORKS_API_KEY` from the local `.env` beside its
+  compose file. Keep that file outside the repository; see
+  `deploy/hindsight/README.md`.

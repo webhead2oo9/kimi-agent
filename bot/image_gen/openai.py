@@ -254,6 +254,7 @@ def _result_from_response(body: dict[str, Any]) -> ImageResult:
         raise ImageGenError("image API returned no image data")
     size = body.get("size")
     background = body.get("background")
+    raw_usage = body.get("usage")
     return ImageResult(
         image_base64=b64,
         size=size if isinstance(size, str) and _SIZE_RE.fullmatch(size) else None,
@@ -262,6 +263,7 @@ def _result_from_response(body: dict[str, Any]) -> ImageResult:
             if isinstance(background, str) and background in _ALLOWED_BACKGROUNDS
             else None
         ),
+        usage=dict(raw_usage) if isinstance(raw_usage, dict) else None,
     )
 
 

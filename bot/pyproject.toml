@@ -58,8 +58,9 @@ package = false
 
 [tool.mypy]
 # Skill scripts run as subprocesses against the bot's environment, so their
-# runtime-only imports are not type-checked here.
-exclude = "^(workspaces|skills/store/.*/scripts)/"
+# runtime-only imports are not type-checked here. Workspaces may use the default
+# root or a deployment's data/<instance>/workspaces layout.
+exclude = "^(?:(?:data/(?:[^/]+/)*)?workspaces|skills/store/.*/scripts)/"
 # Production runs on Linux and sqlcipher3-binary is a Linux-only dependency;
 # keep type checking deterministic on non-Linux dev hosts.
 platform = "linux"

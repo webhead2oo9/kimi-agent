@@ -41,7 +41,11 @@ def _record(
 
 
 def _turn(
-    records: list[ToolCallRecord], *, provider_calls: int, usage: UsageBreakdown
+    records: list[ToolCallRecord],
+    *,
+    provider_calls: int,
+    usage: UsageBreakdown,
+    usage_complete: bool = True,
 ) -> TurnRecord:
     return TurnRecord(
         user_message="q",
@@ -50,6 +54,7 @@ def _turn(
         tokens=usage.input_tokens + usage.output_tokens,
         latency_ms=10,
         usage=usage,
+        usage_complete=usage_complete,
         provider_calls=provider_calls,
     )
 
@@ -149,6 +154,23 @@ def test_run_cost_prices_each_bucket_and_stays_none_when_unpriced() -> None:
     assert run_cost(run, None) is None
 
 
+def test_run_cost_is_unknown_when_any_provider_call_omits_usage() -> None:
+    run = ScenarioRun(
+        scenario_id="s",
+        model_label="m",
+        turns=[
+            _turn(
+                [],
+                provider_calls=1,
+                usage=UsageBreakdown(),
+                usage_complete=False,
+            )
+        ],
+    )
+
+    assert run_cost(run, ModelPricing(input=2.0, output=6.0)) is None
+
+
 def test_usage_dict_exposes_every_priced_bucket() -> None:
     usage = UsageBreakdown(
         input_tokens=1, cached_read_tokens=2, cache_write_tokens=3, output_tokens=4
@@ -198,8 +220,8 @@ def test_recorded_call_split_names_every_source_present() -> None:
     # reader is invited to add up.
     assert recorded_call_split({"live": 2, "replay": 0}) == "2 live / 0 replayed"
     assert (
-        recorded_call_split({"live": 2, "replay": 1, "fault": 1, "miss": 3})
-        == "2 live / 1 replayed / 1 faulted / 3 missed"
+        recorded_call_split({"live": 2, "replay": 1, "fault": 1, "miss": 3, "denied": 2})
+        == "2 live / 1 replayed / 1 faulted / 3 missed / 2 denied"
     )
     # An unrecognized source is rendered rather than dropped.
     assert recorded_call_split({"live": 1, "replay": 0, "wat": 2}).endswith("/ 2 wat")
@@ -225,6 +247,13 @@ def test_live_calls_count_only_dispatches_that_reached_a_backend() -> None:
                 [
                     _record("discord_text_search", "hit", calls_before=1, source="live"),
                     _record("discord_text_search", "hit", calls_before=1, source="replay"),
+                    _record(
+                        "discord_text_search",
+                        '{"error": "denied"}',
+                        calls_before=1,
+                        ok=False,
+                        source="denied",
+                    ),
                     _record("plan", "ok", calls_before=1, source="live"),
                 ],
                 provider_calls=2,
@@ -235,7 +264,7 @@ def test_live_calls_count_only_dispatches_that_reached_a_backend() -> None:
 
     by_tool = {entry.tool: entry for entry in tool_costs([run])}
 
-    assert by_tool["discord_text_search"].calls == 2
+    assert by_tool["discord_text_search"].calls == 3
     assert by_tool["discord_text_search"].live_calls == 1
     # Local plan calls are not cassette-eligible and stay out of this split.
-    assert recorded_call_sources([run]) == {"live": 1, "replay": 1}
+    assert recorded_call_sources([run]) == {"live": 1, "replay": 1, "denied": 1}

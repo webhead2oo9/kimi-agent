@@ -1,11 +1,9 @@
-"""Discord SDK implementation of the module ``DiscordActions`` and ``TrustLookup`` ports.
+"""Discord implementation of the module action and trust ports.
 
-Every operation takes stable IDs, resolves live objects through the bot, and
-returns public snapshots. Targeted actions (ban, kick, timeout) run the core
-target policy: never the bot, never the acting user, never a member whose
-trust tier is at or above the actor's, unless the module declared
-``override_target_policy``. Guilds the core does not consider active are
-refused.
+Guild and channel operations require an active guild. Moderation always protects
+the bot, actor, and bot accounts; unless overridden, targets must also rank below
+the actor, or below staff for automated actions. The outer declaration wrapper
+controls which actions each module may use.
 """
 
 from __future__ import annotations
@@ -55,6 +53,12 @@ class TrustLookupImpl:
 
     async def tier(self, guild_id: int, user_id: int) -> TrustTierName:
         member = await _member_or_none(self._bot, guild_id, user_id)
+        return self.tier_for_member(guild_id, user_id, member)
+
+    def tier_for_member(
+        self, guild_id: int, user_id: int, member: discord.Member | None
+    ) -> TrustTierName:
+        """Resolve trust from a member that the caller has already fetched."""
         tier = self._resolver.resolve(member, str(user_id), str(guild_id))
         return _tier_name(tier)
 
@@ -103,7 +107,7 @@ def _reason(module_name: str, reason: str) -> str:
 
 
 class DiscordActionsImpl:
-    """Unchecked implementation; ``modules.actions`` wraps it with the declaration gate."""
+    """Discord adapter; the outer wrapper enforces module action declarations."""
 
     def __init__(
         self,
@@ -119,8 +123,6 @@ class DiscordActionsImpl:
         self._module_name = module_name
         self._is_guild_active = is_guild_active
         self._override = override_target_policy
-
-    # ---- helpers --------------------------------------------------------
 
     def _guild(self, guild_id: int) -> discord.Guild:
         if not self._is_guild_active(guild_id):
@@ -167,9 +169,9 @@ class DiscordActionsImpl:
         if member.bot:
             raise TargetProtected("bots cannot be moderated by modules")
         if not self._override:
-            target = _TIER_ORDER[await self._trust.tier(guild_id, user_id)]
-            # An automated module acts with staff authority: it may touch
-            # anyone below staff, never staff.
+            # A failed second fetch could discard this member's role-based trust.
+            target = _TIER_ORDER[self._trust.tier_for_member(guild_id, user_id, member)]
+            # Automated actions use staff authority.
             actor = (
                 _TIER_ORDER["staff"]
                 if actor_id is None
@@ -178,8 +180,6 @@ class DiscordActionsImpl:
             if target >= actor:
                 raise TargetProtected("target's trust tier is not below the actor's")
         return member
-
-    # ---- actions --------------------------------------------------------
 
     async def send_message(
         self,
@@ -191,6 +191,11 @@ class DiscordActionsImpl:
         components: Sequence[Any] = (),
     ) -> MessageRef:
         channel = await self._channel(channel_id)
+        channel_guild_id = int(channel.guild.id)
+        if reply_to is not None and (
+            reply_to.guild_id != channel_guild_id or reply_to.channel_id != int(channel.id)
+        ):
+            raise DiscordActionError("reply target is not in the destination channel")
         kwargs: dict[str, Any] = {"allowed_mentions": discord.AllowedMentions.none()}
         if embed is not None:
             kwargs["embed"] = _build_embed(embed)
@@ -242,7 +247,7 @@ class DiscordActionsImpl:
     async def delete_message(self, ref: MessageRef, *, reason: str = "") -> None:
         message = await self._message(ref)
         # discord.py's Message.delete carries no audit reason; keep it in our log.
-        log.info("Module %s deleting message %s: %s", self._module_name, ref.message_id, reason)
+        log.info("Deleting message %s: %s", ref.message_id, _reason(self._module_name, reason))
         try:
             await message.delete()
         except discord.NotFound:

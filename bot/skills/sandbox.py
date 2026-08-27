@@ -27,8 +27,9 @@ class ScriptSandboxLimits:
     Every field except tmpfs_bytes becomes a prlimit rlimit, which the kernel
     applies to each process separately, so a forking script can multiply the
     totals. The process count is additionally per-real-UID and therefore shared
-    with the rest of the service account. skills/README.md asks operators to add
-    service-level memory, CPU, and PID caps for aggregate protection.
+    with the rest of the service account. The example systemd unit at
+    ``deploy/kimi.service.example`` adds aggregate memory, CPU, and PID caps
+    around the bot and its children.
     """
 
     memory_bytes: int = 2048 * 1024 * 1024

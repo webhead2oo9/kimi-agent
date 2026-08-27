@@ -300,6 +300,7 @@ def _rep_row(rep: RepResult) -> dict:
     row["eval_identity"] = rep.run.identity.as_dict() if rep.run.identity else None
     row["sources"] = rep.sources
     row["usage"] = usage_dict(rep.run.total_usage)
+    row["usage_complete"] = rep.run.usage_complete
     row["user_turns"] = len(rep.run.turns)
     row["model_turns"] = rep.run.provider_calls
     row["provider_calls"] = rep.run.provider_calls
@@ -346,6 +347,7 @@ def _aggregate(reps: list[RepResult]) -> dict:
             output_tokens=output_tokens,
             provider_latency_ms=sum(provider_times),
         ),
+        "usage_complete": all(rep.run.usage_complete for rep in reps),
         # Absent pricing stays None all the way up rather than collapsing to 0,
         # and one unpriced rep makes the whole mean None, matching `sum_costs` at
         # run scope. Averaging the priced reps alone printed a concrete Cost cell
@@ -402,6 +404,7 @@ def build_summary(
         "wall_time_ms": sum(rep.run.wall_time_ms for rep in reps),
         "provider_latency_ms": provider_latency_ms,
         "usage": usage_dict(total_usage),
+        "usage_complete": all(rep.run.usage_complete for rep in reps),
         "effective_output_tokens_per_second": _effective_output_tokens_per_second(
             output_tokens=total_usage.output_tokens,
             provider_latency_ms=provider_latency_ms,
@@ -508,7 +511,7 @@ def render_harness_report(summary: dict) -> str:
             f"{_tokens_per_second(totals.get('effective_output_tokens_per_second'))} tok/s"
         ),
         (
-            f"**Cost:** {_usd(totals.get('est_cost_usd'))} tokens | "
+            f"**Cost:** {_cost_cell(totals.get('est_cost_usd'), totals)} | "
             f"**Recorded tool calls:** {recorded_call_split(recorded)}"
         ),
         "",
@@ -535,6 +538,8 @@ def render_harness_report(summary: dict) -> str:
                 flags.append(f"repeats:{rep['repeated_calls']}")
             if rep.get("live_tool_errors", rep["tool_errors"]):
                 flags.append(f"tool-errors:{rep.get('live_tool_errors', rep['tool_errors'])}")
+            if not rep.get("usage_complete", True):
+                flags.append("usage-missing")
             flags.extend(f"incomplete:{turn}" for turn in rep.get("incomplete_turns", []))
         unique_flags = sorted(set(flags))
         lines.append(
@@ -545,7 +550,7 @@ def render_harness_report(summary: dict) -> str:
             f"| {_seconds(agg['wall_time_mean_ms'])} / "
             f"{_seconds(agg['provider_latency_mean_ms'])} "
             f"| {_tokens_per_second(agg.get('effective_output_tokens_per_second'))} "
-            f"| {_usd(agg.get('cost_mean_usd'))} "
+            f"| {_cost_cell(agg.get('cost_mean_usd'), agg)} "
             f"| {', '.join(unique_flags) or 'clean'} |"
         )
     # Named explicitly, never omitted: a reader comparing two runs has to be able
@@ -583,6 +588,12 @@ def _usd(value: float | None) -> str:
     if value and abs(value) < 0.0001:
         return f"${value:.6f}"
     return f"${value:.4f}"
+
+
+def _cost_cell(value: float | None, summary: dict) -> str:
+    if not summary.get("usage_complete", True):
+        return "unknown (usage missing)"
+    return _usd(value)
 
 
 def _seconds(milliseconds: int | float) -> str:

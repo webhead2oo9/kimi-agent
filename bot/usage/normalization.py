@@ -29,6 +29,7 @@ class LLMUsageCall:
     usage: UsageBreakdown
     pricing_model: str | None = None
     est_cost_usd: float | None = None
+    usage_present: bool = True
 
 
 def normalize_usage(raw: dict[str, Any] | None) -> UsageBreakdown:

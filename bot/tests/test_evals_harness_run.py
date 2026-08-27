@@ -643,6 +643,47 @@ def test_build_summary_carries_llm_token_cost_keys():
     assert summary["scenarios"]["a"]["aggregate"]["cost_mean_usd"] == 0.10
 
 
+def test_missing_usage_is_distinct_from_missing_pricing() -> None:
+    run = ScenarioRun(
+        scenario_id="a",
+        model_label="m",
+        turns=[
+            TurnRecord(
+                user_message="q",
+                final_text="a",
+                tool_calls=[],
+                tokens=0,
+                latency_ms=1,
+                provider_calls=1,
+                usage_complete=False,
+            )
+        ],
+    )
+    rep = RepResult(
+        mechanical=_mech(100.0),
+        sources={},
+        run=run,
+        cost=None,
+    )
+
+    summary = build_summary(
+        run_id="r1",
+        git_sha="abc",
+        model="m",
+        repeat=1,
+        cassette_mode="off",
+        registered_tools=[],
+        results={"a": (_scenario("a"), [rep])},
+    )
+
+    assert summary["scenarios"]["a"]["reps"][0]["usage_complete"] is False
+    assert summary["scenarios"]["a"]["aggregate"]["usage_complete"] is False
+    assert summary["totals"]["usage_complete"] is False
+    report = render_harness_report(summary)
+    assert "**Cost:** unknown (usage missing)" in report
+    assert "| unknown (usage missing) | usage-missing |" in report
+
+
 def test_build_summary_records_cassette_tapes_and_model_key():
     results = {
         "a": (_scenario("a"), [_rep(_mech(100.0))]),
@@ -777,7 +818,7 @@ def test_render_report_shows_llm_token_cost():
 
     report = render_harness_report(summary)
 
-    assert "**Cost:** $0.1000 tokens" in report
+    assert "**Cost:** $0.1000" in report
     assert "| $0.1000 |" in report
 
 

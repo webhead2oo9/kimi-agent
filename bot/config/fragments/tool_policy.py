@@ -47,7 +47,7 @@ TOOL_POLICY_FILENAME = "tools.md"
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _MAX_BLOCKED_TOOLS = 64
 
-_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache()
+_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
 
 
 class ToolPolicyLoadError(RuntimeError):
@@ -56,21 +56,22 @@ class ToolPolicyLoadError(RuntimeError):
 
 _policy_cache_key = LastKnownGoodCache.key
 _remember_policy = _cache.remember
-_forget_policy = _cache.forget
 _last_policy = _cache.last_good
 
 
-def _parse_policy(text: str) -> frozenset[str]:
+def _parse_policy(text: str) -> frozenset[str] | None:
     """Parse one policy without conflating invalid content with an empty policy.
 
     Strict on purpose: the caller turns a raised error into last-known-good, so
     a malformed fragment must not read as "nothing blocked". Body-only and
-    empty fragments are valid policies with no blocked tools.
+    empty fragments are optional policies only when no earlier policy exists.
+    Returning ``None`` lets the caller distinguish omission from an explicit
+    ``blocked_tools: []`` clear.
     """
     meta, _ = split_frontmatter_strict(text)
 
     if "blocked_tools" not in meta:
-        return frozenset()
+        return None
     raw_blocked = meta["blocked_tools"]
     if not isinstance(raw_blocked, list):
         raise ValueError("blocked_tools must be a list")
@@ -106,18 +107,21 @@ def global_tool_policy_path(config_dir: Path | None = None) -> Path:
 def load_global_blocked_tools(*, config_dir: Path | None = None) -> frozenset[str]:
     """Read the deployment-wide denylist, retaining it across failed reloads.
 
-    A missing file is an explicit empty policy and clears any cached value for
-    that path. A present but unreadable or invalid file uses that path's
-    last-known-good value. If none exists, :class:`ToolPolicyLoadError` stops
-    the caller rather than silently granting tools.
+    A missing file with no cached value is an empty optional policy. Once a
+    valid policy has loaded, missing, empty, omitted, unreadable, or invalid
+    input retains that path's last-known-good value. A valid
+    ``blocked_tools: []`` explicitly clears the denylist. If a failed present file has no cached value,
+    :class:`ToolPolicyLoadError` stops the caller rather than silently granting
+    tools.
     """
     fragment = global_tool_policy_path(config_dir)
     key = _policy_cache_key(fragment)
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        _forget_policy(key)
-        return frozenset()
+    except FileNotFoundError as exc:
+        if _last_policy(key) is None:
+            return frozenset()
+        return _retain_or_raise(fragment, key, exc)
     except (OSError, UnicodeError) as exc:
         return _retain_or_raise(fragment, key, exc)
 
@@ -125,6 +129,10 @@ def load_global_blocked_tools(*, config_dir: Path | None = None) -> frozenset[st
         blocked = _parse_policy(text)
     except ValueError as exc:
         return _retain_or_raise(fragment, key, exc)
+    if blocked is None:
+        if _last_policy(key) is None:
+            return frozenset()
+        return _retain_or_raise(fragment, key, ValueError("blocked_tools is absent"))
     _remember_policy(key, blocked)
     return blocked
 

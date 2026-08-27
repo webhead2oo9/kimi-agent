@@ -130,6 +130,97 @@ def test_registry_replay_mode_skips_live_handler(tmp_path):
     assert registry.sink[-1].source == "replay"
 
 
+@pytest.mark.parametrize("gate", ("trust", "owner", "guild", "denylist", "activation"))
+def test_registry_replay_applies_dispatch_gates_without_consuming_recording(tmp_path, gate):
+    calls = {"live": 0}
+
+    async def handler(args, ctx):
+        calls["live"] += 1
+        return json.dumps({"live": True})
+
+    registry = InstrumentedRegistry()
+    register_kwargs = {}
+    denied_ctx = _ctx()
+    allowed_ctx = _ctx()
+    if gate == "trust":
+        register_kwargs["min_tier"] = TrustTier.STAFF
+        allowed_ctx.trust_tier = TrustTier.STAFF
+    elif gate == "owner":
+        register_kwargs["owner_only"] = True
+        registry.set_owner_user_id("owner")
+        allowed_ctx.user_id = "owner"
+    elif gate == "guild":
+        register_kwargs["guild_ids"] = frozenset({"allowed"})
+        denied_ctx.guild_id = "other"
+        allowed_ctx.guild_id = "allowed"
+    elif gate == "denylist":
+        denied_ctx.blocked_tools = frozenset({"discord_text_search"})
+    else:
+        register_kwargs["searchable"] = True
+        allowed_ctx.activated_tools = {"discord_text_search"}
+
+    registry.register(
+        name="discord_text_search",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        **register_kwargs,
+    )
+    cassette = Cassette(tmp_path / "s.json")
+    first_recorded = json.dumps({"recorded": "first"})
+    second_recorded = json.dumps({"recorded": "second"})
+    cassette.record("discord_text_search", {}, first_recorded)
+    cassette.record("discord_text_search", {}, second_recorded)
+    registry.configure_cassette(cassette, "replay")
+
+    denied = json.loads(asyncio.run(registry.dispatch("discord_text_search", {}, denied_ctx)))
+    assert "error" in denied
+    expected_error = "not available" if gate == "activation" else "Unknown tool"
+    assert expected_error in denied["error"]
+    assert calls["live"] == 0
+    assert registry.sink[-1].source == "denied"
+
+    allowed = asyncio.run(registry.dispatch("discord_text_search", {}, allowed_ctx))
+    assert allowed == first_recorded
+    again = asyncio.run(registry.dispatch("discord_text_search", {}, allowed_ctx))
+    assert again == second_recorded
+    assert calls["live"] == 0
+    assert [record.source for record in registry.sink[-3:]] == [
+        "denied",
+        "replay",
+        "replay",
+    ]
+
+
+def test_registry_dispatch_gate_does_not_consume_fault_budget():
+    registry, calls = _registry_with_probe()
+    registry.remove_tools({"discord_text_search"})
+
+    async def handler(args, ctx):
+        calls["live"] += 1
+        return json.dumps({"n": calls["live"]})
+
+    registry.register(
+        name="discord_text_search",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        min_tier=TrustTier.STAFF,
+    )
+    registry.set_faults([Fault(tool="discord_text_search", message="upstream 504", times=1)])
+
+    denied = asyncio.run(registry.dispatch("discord_text_search", {}, _ctx()))
+    assert json.loads(denied) == {"error": "Unknown tool: discord_text_search"}
+    assert registry.sink[-1].source == "denied"
+
+    allowed_ctx = _ctx()
+    allowed_ctx.trust_tier = TrustTier.STAFF
+    faulted = asyncio.run(registry.dispatch("discord_text_search", {}, allowed_ctx))
+    assert json.loads(faulted) == {"error": "upstream 504"}
+    assert registry.sink[-1].source == "fault"
+    assert calls["live"] == 0
+
+
 def test_internet_search_replay_preserves_and_enforces_backend_budget(tmp_path):
     path = tmp_path / "s.json"
     cassette = Cassette(path)

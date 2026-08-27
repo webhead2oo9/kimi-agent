@@ -13,6 +13,7 @@ from openai import AsyncOpenAI, BadRequestError
 
 from branding import DEFAULT_BOT_NAME, provider_identity
 from providers.base import LLMProvider
+from providers.errors import ProviderAvailabilityError
 from providers.failure_policy import raise_for_terminal_finish_reason
 from providers.serializers import (
     content_parts_to_openai_chat,
@@ -291,14 +292,20 @@ class OpenAIChatProvider(LLMProvider):
                 await watchdog
         if fallback_error is not None:
             return await self._non_streaming_fallback(kwargs, fallback_error)
+        if acc.finish_reason is None:
+            log.warning("stream ended without a terminal finish reason: %s", acc.summary())
+            raise ProviderAvailabilityError(
+                "provider stream ended without a terminal finish reason"
+            )
         log.info("stream complete: %s", acc.summary())
         raise_for_terminal_finish_reason(acc.finish_reason)
         provider_response = ProviderResponse(
             content=acc.content(),
             reasoning_content=acc.reasoning(),
             tool_calls=acc.tool_calls(),
-            finish_reason=acc.finish_reason or "stop",
+            finish_reason=acc.finish_reason,
             usage=self._usage_dict(acc.usage),
+            usage_present=acc.usage is not None,
             model=acc.served_model,
         )
         return replace(
@@ -423,6 +430,7 @@ class OpenAIChatProvider(LLMProvider):
         raise_for_terminal_finish_reason(choice.finish_reason)
         msg = choice.message
         parsed_tool_calls = self._parse_tool_calls(getattr(msg, "tool_calls", None))
+        raw_usage = getattr(response, "usage", None)
         provider_response = ProviderResponse(
             content=getattr(msg, "content", None),
             # GLM/DeepSeek expose chain-of-thought as `reasoning_content`; kimi (and some
@@ -434,7 +442,8 @@ class OpenAIChatProvider(LLMProvider):
             ),
             tool_calls=parsed_tool_calls,
             finish_reason=choice.finish_reason or "stop",
-            usage=self._usage_dict(getattr(response, "usage", None)),
+            usage=self._usage_dict(raw_usage),
+            usage_present=raw_usage is not None,
             model=str(getattr(response, "model", "") or ""),
         )
         return replace(

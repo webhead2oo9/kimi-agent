@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from config.fragments.guild_config import (
     load_guild_blocked_tools,
@@ -55,6 +58,41 @@ def test_load_guild_blocked_tools_from_frontmatter(tmp_path: Path) -> None:
 
 def test_load_guild_blocked_tools_missing_or_invalid_is_empty(tmp_path: Path) -> None:
     assert load_guild_blocked_tools("100", config_dir=tmp_path) == frozenset()
+
+
+def test_guild_blocked_tools_retain_last_good_across_reload_failures_then_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_guild(tmp_path, "101", "---\nblocked_tools: [dangerous_tool]\n---\n")
+    path = tmp_path / "servers" / "101.md"
+    expected = frozenset({"dangerous_tool"})
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    path.write_text("---\nblocked_tools: not_a_list\n---\n", encoding="utf-8")
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    path.unlink()
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    path.write_text("", encoding="utf-8")
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    path.write_text("body only\n", encoding="utf-8")
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    path.write_text("---\nblocked_tools: []\n---\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def unreadable(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == path:
+            raise PermissionError("config cannot be read")
+        return original_read_text(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", unreadable)
+        assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == frozenset()
     assert load_guild_blocked_tools("", config_dir=tmp_path) == frozenset()
     assert load_guild_blocked_tools("../100", config_dir=tmp_path) == frozenset()
     _write_guild(tmp_path, "100", "No frontmatter here.\n")

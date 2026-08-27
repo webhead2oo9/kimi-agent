@@ -24,7 +24,10 @@ type ContentMode = Literal["metadata", "redacted", "full"]
 CONTENT_MODES: frozenset[str] = frozenset({"metadata", "redacted", "full"})
 _SENSITIVE_KEY_TERMS = frozenset(
     {
+        "access_key",
+        "accesskey",
         "api_key",
+        "apikey",
         "authorization",
         "cookie",
         "credential",
@@ -402,7 +405,9 @@ class EventWriter:
             if event is _SENTINEL:
                 return
             try:
-                self._write(event)
+                # Keep the single consumer (and therefore event ordering), but
+                # do serialization, file I/O, and rotation outside the event loop.
+                await asyncio.to_thread(self._write, event)
             except OSError:
                 log.warning("Failed to write tool event; stopping writer", exc_info=True)
                 return
@@ -429,20 +434,58 @@ class EventWriter:
         self._open()
 
     async def stop(self) -> None:
-        if self._task is not None:
-            if not self._task.done():
-                # Never block shutdown on a full queue: if the consumer died
-                # with a backlog, an awaited put(_SENTINEL) would hang forever.
+        task = self._task
+        cancellation: asyncio.CancelledError | None = None
+        failure: BaseException | None = None
+        if task is not None:
+            if not task.done():
+                # Never await room for the sentinel: a dead consumer with a
+                # backlog would otherwise make shutdown hang forever.
                 try:
                     self._queue.put_nowait(_SENTINEL)
                 except asyncio.QueueFull:
-                    self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+                    # Drop queued backlog rather than cancelling _run: cancellation
+                    # cannot stop an in-flight to_thread write, and closing the file
+                    # while that worker still owns it would race the write.
+                    while True:
+                        try:
+                            self._queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    self._queue.put_nowait(_SENTINEL)
+
+            # Shield the consumer because cancelling a task that is awaiting
+            # asyncio.to_thread only cancels the await; its worker keeps using
+            # the file. Preserve caller cancellation, but drain the consumer
+            # before closing the descriptor and then re-raise it below.
+            caller = asyncio.current_task()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    if caller is not None and caller.cancelling() and cancellation is None:
+                        cancellation = exc
+                except BaseException as exc:
+                    failure = exc
+                    break
+            if failure is None:
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    # A consumer cancelled independently is still definitively
+                    # finished, so its file can be closed safely.
+                    pass
+                except BaseException as exc:
+                    failure = exc
+            if self._task is task:
+                self._task = None
         if self._file is not None:
             self._file.close()
             self._file = None
+        if cancellation is not None:
+            raise cancellation
+        if failure is not None:
+            raise failure
 
 
 _writer: EventWriter | None = None

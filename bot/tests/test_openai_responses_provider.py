@@ -5,6 +5,15 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
+from providers.errors import (
+    ProviderAvailabilityError,
+    ProviderError,
+    ProviderPolicyError,
+    provider_failure_disposition,
+)
+from providers.failure_policy import CooldownPolicy, FailureCategory, generic_failure_policy
 from providers.openai_responses import OpenAIResponsesProvider
 from providers.types import (
     ContentPart,
@@ -214,11 +223,20 @@ def test_responses_provider_parses_and_replays_function_calls() -> None:
 
 
 def test_responses_provider_normalizes_usage_and_length_finish() -> None:
+    truncated_call = SimpleNamespace(
+        type="function_call",
+        id="item-1",
+        call_id="call-1",
+        name="delete_file",
+        arguments='{"path":"important.txt"}',
+    )
     provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
     fake = FakeResponses(
         _native_response(
             status="incomplete",
             incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            output_text="partial answer",
+            output=[truncated_call],
             usage=SimpleNamespace(
                 input_tokens=20,
                 output_tokens=5,
@@ -232,6 +250,9 @@ def test_responses_provider_normalizes_usage_and_length_finish() -> None:
     response = asyncio.run(provider.run_turn(_request()))
 
     assert response.finish_reason == "length"
+    assert response.content == "partial answer"
+    assert response.has_tool_calls is False
+    assert response.raw_message["output"] == []
     assert response.usage == {
         "input_tokens": 20,
         "output_tokens": 5,
@@ -239,6 +260,90 @@ def test_responses_provider_normalizes_usage_and_length_finish() -> None:
         "input_tokens_details": {"cached_tokens": 7},
     }
     assert response.model == "gpt-5.6-luna"
+
+
+def test_responses_provider_failed_status_raises_classifiable_error() -> None:
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
+    fake = FakeResponses(
+        _native_response(
+            status="failed",
+            output_text="partial output must not escape",
+            error=SimpleNamespace(code="invalid_request"),
+        )
+    )
+    cast(Any, provider)._client.responses = fake
+
+    with pytest.raises(ProviderError, match="failed response") as excinfo:
+        asyncio.run(provider.run_turn(_request()))
+
+    assert provider_failure_disposition(excinfo.value) == "stop"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "disposition", "retry_at"),
+    ((None, "retry", 1045), (2.5, "failover", 1002.5)),
+)
+def test_responses_provider_rate_limit_failure_uses_rate_limit_policy(
+    retry_after: float | None,
+    disposition: str,
+    retry_at: float,
+) -> None:
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
+    fake = FakeResponses(
+        _native_response(
+            status="failed",
+            error=SimpleNamespace(
+                code="rate_limit_exceeded",
+                retry_after_seconds=retry_after,
+            ),
+        )
+    )
+    cast(Any, provider)._client.responses = fake
+
+    with pytest.raises(RuntimeError, match="failed response") as excinfo:
+        asyncio.run(provider.run_turn(_request()))
+
+    failure = generic_failure_policy(
+        excinfo.value,
+        CooldownPolicy(rate_limit_seconds=45),
+        1000,
+    )
+    assert failure.disposition == disposition
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert failure.status_code == 429
+    assert failure.provider_code == "rate_limit_exceeded"
+    assert failure.retry_at == retry_at
+
+
+def test_responses_provider_server_failure_is_retryable() -> None:
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
+    fake = FakeResponses(
+        _native_response(
+            status="failed",
+            error=SimpleNamespace(code="server_error"),
+        )
+    )
+    cast(Any, provider)._client.responses = fake
+
+    with pytest.raises(ProviderAvailabilityError) as excinfo:
+        asyncio.run(provider.run_turn(_request()))
+
+    assert provider_failure_disposition(excinfo.value) == "retry"
+
+
+def test_responses_provider_content_filter_discards_partial_output() -> None:
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
+    fake = FakeResponses(
+        _native_response(
+            status="incomplete",
+            output_text="partial output must not escape",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+        )
+    )
+    cast(Any, provider)._client.responses = fake
+
+    with pytest.raises(ProviderPolicyError):
+        asyncio.run(provider.run_turn(_request()))
 
 
 def test_responses_provider_close_closes_client() -> None:

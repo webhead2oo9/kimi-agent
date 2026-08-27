@@ -13,7 +13,7 @@ it at `HINDSIGHT_URL=http://<host>:8890`.
 | Control Plane | `9990` → 9999 |
 | Model route | Ignored `.env` next to the compose file; seed from `.env.example` and replace every placeholder |
 
-Storage is a **bind mount** (not a named volume) so the data is plainly visible
+Storage is a **bind mount** (not a named volume) so the data is visible
 on the host filesystem and cannot be lost to `docker volume prune` or
 `docker compose down -v`. Back it up by copying `./data`.
 
@@ -34,7 +34,7 @@ cp .env.example ~/kimi-hindsight/.env
 cd ~/kimi-hindsight && docker compose up -d
 ```
 
-The tracked template deliberately contains no usable provider route. Keep the
+The tracked template contains no usable provider route. Keep the
 filled `.env` with the deployment's other private configuration and back it up
 separately from the public source checkout.
 
@@ -51,7 +51,7 @@ curl -s http://<host>:8890/v1/default/banks | head -c 400             # bank lis
 
 ```bash
 docker compose logs --tail=50
-docker compose pull && docker compose up -d   # deliberate upgrade
+docker compose pull && docker compose up -d   # upgrade
 ```
 
 `pull_policy: missing` prevents an accidental image bump on a plain `up`;

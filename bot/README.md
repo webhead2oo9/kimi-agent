@@ -6,12 +6,12 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 
-Kimi is a generalist assistant for Discord communities. It starts AI
-conversations only when invoked. Under the hood it runs a provider-neutral
-[ReAct](https://arxiv.org/abs/2210.03629) tool-use loop: it can search configured
-Discord history, work with per-user files, build structured embeds, move a
-conversation into a managed thread, and remember durable facts about who it's
-talking to, all behind trust tiers and config gates. Staff can separately opt
+Kimi is a generalist assistant for Discord communities. It responds only when
+invoked. It runs a provider-neutral
+[ReAct](https://arxiv.org/abs/2210.03629) tool-use loop behind trust tiers and
+config gates: it can search configured Discord history, work with per-user
+files, build structured embeds, move a conversation into a managed thread, and
+remember durable facts about who it's talking to. Staff can separately opt
 channels into local known-bad image fingerprint enforcement.
 
 The bot's runtime name comes from `BOT_NAME` (default `Kimi`) and is never
@@ -32,7 +32,7 @@ guild installations, and permissions stay intact.
   Anthropic (native or compat gateway), OpenRouter, or Codex. The agent core
   never touches provider-specific types. See [docs/providers.md](../docs/providers.md).
 - **Trust-tiered tools.** `MEMBER < REGULAR < STAFF`, resolved from Discord
-  roles and enforced at dispatch, not by prompt text. See the complete
+  roles and enforced at dispatch, not by prompt text. See the
   [built-in tool catalog](../docs/tools.md).
 - **Long-term memory (optional).** Per-user banks backed by
   [Hindsight](https://github.com/vectorize-io/hindsight), with proactive writes,
@@ -54,16 +54,16 @@ guild installations, and permissions stay intact.
   then continue with rooted follow-ups and timestamped evidence. See
   [docs/video-understanding.md](../docs/video-understanding.md).
 - **Browser and visual rendering (optional).** Keep per-user BetterWright
-  profiles for interactive web work and expose one searchable call for
+  profiles for interactive web work and expose a searchable call that renders
   accessible fixed-style charts or constrained Mermaid PNGs. Visual jobs use a
   separate ephemeral offline worker. See [docs/browser.md](../docs/browser.md)
   and [docs/visual-rendering.md](../docs/visual-rendering.md).
 - **Managed threads.** Move a conversation into a bot-created thread, pause or
   resume automatic replies, and preserve the rooted transcript across the
   handoff. See [docs/thread-handoff.md](../docs/thread-handoff.md).
-- **Skills.** Read-only Markdown guidance can ship with the bot, while
-  deployment-owned instruction docs remain manageable by staff inside Discord.
-  Operator-authored script-backed tools retain mandatory Linux isolation and
+- **Skills.** Built-in read-only Markdown guidance ships with the bot; staff
+  manage deployment-owned instruction docs from inside Discord.
+  Operator-authored script-backed tools run under mandatory Linux isolation and
   default-denied networking; the writable store is private instance data. Staff
   can also teach from a selected human message through the **Teach Kimi**
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
@@ -104,7 +104,7 @@ each turn. The optional `video` tool is a deliberate specialist exception: its
 actor-scoped Gemini Interaction chain persists behind an opaque rooted handle. The full flow lives
 in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 
-## Architecture at a glance
+## Architecture
 
 | Area | Where | Docs |
 |------|-------|------|

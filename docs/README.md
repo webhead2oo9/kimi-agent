@@ -7,8 +7,7 @@ under `../bot/`, and links from these pages point there explicitly.
 If you're new to the project, read [Setup and boot](setup.md) first, then
 [Architecture](architecture.md), then the [developer map](../CLAUDE.md).
 That's enough to get a bot running and to find your way around the source.
-Everything below is reference material, so reach for a page when you touch
-the subsystem it covers.
+The rest is reference material.
 
 ## Start here
 
@@ -29,7 +28,7 @@ the subsystem it covers.
   [OpenAI and OpenRouter](providers-openai.md).
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and
-  guild, and how that containment works.
+  guild.
 - [Video understanding](video-understanding.md): stateful Gemini analysis of
   public YouTube or streamed Discord/workspace videos, session scope, Files API
   lifecycle, caching, limits, and deletion.

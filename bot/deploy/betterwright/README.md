@@ -4,12 +4,12 @@
 npm releases plus the managed BetterChromium binary into
 `/opt/kimi/betterwright`. The committed `package-lock.json` is the complete npm
 input. That directory sits
-deliberately outside the bot checkout: root-owned, and not writable by the bot
+outside the bot checkout: root-owned, and not writable by the bot
 account. It remains readable and traversable by the unprivileged bot account so
 that account can execute the immutable Node and BetterChromium files.
 
 On the Linux host, install Node `>=22.18.0`, npm, Bubblewrap, util-linux, and a
-working per-user systemd manager. Then run:
+working per-user systemd manager. Install the shared libraries:
 
 ```sh
 sudo apt-get install bubblewrap util-linux libatk1.0-0t64 \
@@ -20,7 +20,7 @@ sudo apt-get install bubblewrap util-linux libatk1.0-0t64 \
 The `t64` suffix is used by current Ubuntu/Debian releases; older distributions
 may provide the same libraries without that suffix. The installer checks the
 BetterChromium binary with `ldd` and fails with the exact missing library names.
-Then run:
+Then install the runtime:
 
 ```sh
 sudo sh ./deploy/betterwright/install.sh
@@ -48,9 +48,9 @@ requirements only; browser and visual-rendering calls do not install packages
 or load Mermaid from a CDN.
 
 The bot does not use BetterWright's credential vault, downloads, live-view
-server, cloud providers, or daemon. `render_chart` and `render_diagram` reuse the immutable files
-but launches a separate one-shot, offline worker with no persistent profile or
-VPN lease; see [Visual rendering](../../../docs/visual-rendering.md).
+server, cloud providers, or daemon. `render_chart` and `render_diagram` reuse the immutable
+files but launch a separate one-shot, offline worker with no persistent profile
+or VPN lease; see [Visual rendering](../../../docs/visual-rendering.md).
 
 Enable lingering for the bot account so its user manager remains available
 after logout, along with the transient browser and code-exec units. The unit

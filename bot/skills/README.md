@@ -31,7 +31,7 @@ and test restoration independently of the source checkout. The store may contain
 private community knowledge, so backups should receive the same access controls
 and retention treatment as other production data.
 
-Skill scripts are executable code. Discord-created skills are instruction-only,
+Discord-created skills are instruction-only,
 but an operator can place `tools:` declarations and scripts in the store. Review
 those additions like application code before deployment, keep a versioned copy
 in a separate private repository or artifact system, grant only required
@@ -86,8 +86,8 @@ per-real-UID. Executable-skill startup requires the whole bot to run as a
 dedicated unprivileged service user; add service-level memory/CPU/PID and egress
 limits for aggregate protection.
 
-This is a hostile-code containment boundary, but not permission to install
-unknown scripts casually: Bubblewrap relies on the host kernel. Review and pin
+This is a hostile-code containment boundary, and Bubblewrap relies on the host
+kernel. Review and pin
 operator scripts, patch the host, grant only required secrets, and keep the
 service boundary as a second layer. A script necessarily sees any declared
 secret it is asked to use; it can transform that value to bypass exact-value

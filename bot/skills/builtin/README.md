@@ -11,7 +11,7 @@ Deployment-owned skills belong in the private `SKILLS_DIR` store instead.
 built-in skill's description and body with the configured bot name. Unknown
 placeholders fail startup validation; private skills are never templated.
 
-The shipped catalog is deliberately small and deployment-neutral:
+The shipped catalog is small and deployment-neutral:
 
 - `bot-info` - identity, capability honesty, invocation, and privacy basics;
 - `browser` - routing and evidence-driven operation of the optional browser;

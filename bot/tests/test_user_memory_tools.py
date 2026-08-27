@@ -62,7 +62,7 @@ def test_init_user_memory_tools_registers_into_explicit_registry() -> None:
     assert registry.has_tool("reflect_user")
 
 
-def test_recall_user_includes_source_ref_for_discord_memory(monkeypatch) -> None:
+def test_recall_user_returns_saved_memory_without_source_metadata(monkeypatch) -> None:
     memory = RecordingMemory(
         [
             SimpleNamespace(
@@ -95,86 +95,8 @@ def test_recall_user_includes_source_ref_for_discord_memory(monkeypatch) -> None
         {
             "text": "webhead uses a Quest 3.",
             "type": "world",
-            "source_ref": {
-                "document_id": "user-memory:123:111:abcd",
-                "has_source": True,
-                "source_kind": "discord_user_memory",
-                "source_version": "1",
-                "subject_user_id": "123",
-                "conversation_id": "42",
-                "anchor_message_id": "7",
-                "anchor_discord_message_id": "111",
-                "channel_id": "222",
-                "channel_name": "vr-help",
-                "anchor_source_created_at": "1760000000.123",
-            },
         }
     ]
-
-
-def test_recall_user_includes_source_ref_for_auto_retain_memory(monkeypatch) -> None:
-    memory = RecordingMemory(
-        [
-            SimpleNamespace(
-                text="webhead often works on Air Link stability.",
-                type="observation",
-                document_id="auto-retain:123:42:9",
-                metadata={
-                    "source_kind": "discord_auto_retain",
-                    "source_version": "1",
-                    "subject_user_id": "123",
-                    "conversation_id": "42",
-                    "anchor_message_id": "7",
-                    "channel_id": "222",
-                    "channel_name": "vr-help",
-                    "anchor_source_created_at": "1760000000.123",
-                    "start_message_id": "3",
-                    "end_message_id": "9",
-                },
-            )
-        ]
-    )
-    monkeypatch.setattr(user_memory, "_memory", memory)
-    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
-
-    raw = asyncio.run(user_memory._recall_user({"query": "air link"}, _ctx()))
-
-    payload = json.loads(raw)
-    assert payload["results"][0]["source_ref"] == {
-        "document_id": "auto-retain:123:42:9",
-        "has_source": True,
-        "source_kind": "discord_auto_retain",
-        "source_version": "1",
-        "subject_user_id": "123",
-        "conversation_id": "42",
-        "anchor_message_id": "7",
-        "channel_id": "222",
-        "channel_name": "vr-help",
-        "anchor_source_created_at": "1760000000.123",
-        "start_message_id": "3",
-        "end_message_id": "9",
-    }
-
-
-def test_recall_user_omits_source_ref_without_metadata(monkeypatch) -> None:
-    memory = RecordingMemory(
-        [
-            SimpleNamespace(
-                text="webhead likes concise answers.",
-                type="experience",
-                document_id="untracked-doc",
-                metadata={"source_kind": "admin_manual"},
-            )
-        ]
-    )
-    monkeypatch.setattr(user_memory, "_memory", memory)
-    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
-
-    raw = asyncio.run(user_memory._recall_user({"query": "style"}, _ctx()))
-
-    payload = json.loads(raw)
-    assert payload["context_is_untrusted"] is True
-    assert payload["results"] == [{"text": "webhead likes concise answers.", "type": "experience"}]
 
 
 def test_reflect_user_returns_answer_for_memory_enabled_user(monkeypatch) -> None:

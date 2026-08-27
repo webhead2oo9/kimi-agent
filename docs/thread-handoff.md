@@ -349,7 +349,7 @@ remain until the operator removes them.
    reply mapped under the parent channel would silently miss for in-thread lookups.
    That would be masked while the thread is managed (the `thread_conversations` branch
    routes anyway) but would break reply continuation after `leave_thread` and pollute
-   the `lookup_memory_source` window.
+   later conversation-derived memory.
 3. **Enrollment.** On successful creation, the thread id, the resolved root
    conversation id and the resolved mode are written to the `thread_conversations`
    table and added to the manager's sets. The mode is `request.auto_respond` when the

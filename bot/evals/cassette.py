@@ -72,7 +72,6 @@ CASSETTE_RECORDED_TOOLS = frozenset(
         # makes repeats deterministic.
         "recall_user",
         "reflect_user",
-        "lookup_memory_source",
     }
 )
 

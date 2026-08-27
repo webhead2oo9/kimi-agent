@@ -180,12 +180,14 @@ class AnthropicCompatProvider(LLMProvider):
             for block in blocks
             if block.get("type") == "tool_use"
         ]
-        usage = anthropic_usage_dict(data.get("usage") or {})
+        raw_usage = data.get("usage")
+        usage = anthropic_usage_dict(raw_usage or {})
         return ProviderResponse(
             content="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             finish_reason=normalize_anthropic_stop_reason(data.get("stop_reason")),
             usage=usage,
+            usage_present=raw_usage is not None,
             model=str(data.get("model") or ""),
             raw_message={"role": "assistant", "content": self._blocks_to_data(blocks)},
         )

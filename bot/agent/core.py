@@ -1135,6 +1135,7 @@ class _ConversationRunner:
                 model=model,
                 role=role,
                 usage=usage,
+                usage_present=response.has_reported_usage,
                 pricing_model=response.pricing_model or self.request.provider.model,
             )
         )

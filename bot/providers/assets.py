@@ -10,6 +10,10 @@ from providers.types import GeneratedAsset
 
 log = logging.getLogger(__name__)
 
+_MAX_GENERATED_ASSETS = 8
+_MAX_GENERATED_ASSET_BYTES = 10 * 1024 * 1024
+_MAX_TOTAL_GENERATED_ASSET_BYTES = 25 * 1024 * 1024
+
 
 def write_generated_assets(
     assets: list[GeneratedAsset],
@@ -18,18 +22,35 @@ def write_generated_assets(
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for index, asset in enumerate(assets, start=1):
+    total_bytes = 0
+    if len(assets) > _MAX_GENERATED_ASSETS:
+        log.warning(
+            "Skipping %d generated assets beyond the asset-count cap",
+            len(assets) - _MAX_GENERATED_ASSETS,
+        )
+    for index, asset in enumerate(assets[:_MAX_GENERATED_ASSETS], start=1):
         # data_base64 comes from untrusted upstream provider data and may not be
         # valid base64 (e.g. a provider that returns a raw image URL). Decode
         # defensively so one bad asset cannot crash the whole response turn.
+        max_encoded = ((_MAX_GENERATED_ASSET_BYTES + 2) // 3) * 4
+        if len(asset.data_base64) > max_encoded:
+            log.warning("Skipping generated asset %d: encoded data exceeds byte cap", index)
+            continue
         try:
             raw = base64.b64decode(asset.data_base64, validate=True)
         except binascii.Error, ValueError:
             log.warning("Skipping generated asset %d: data is not valid base64", index)
             continue
+        if len(raw) > _MAX_GENERATED_ASSET_BYTES:
+            log.warning("Skipping generated asset %d: decoded data exceeds byte cap", index)
+            continue
+        if total_bytes + len(raw) > _MAX_TOTAL_GENERATED_ASSET_BYTES:
+            log.warning("Skipping generated asset %d: aggregate asset bytes exceed cap", index)
+            continue
         filename = _safe_filename(asset.suggested_filename or f"asset-{index}.png")
         path = _write_unique_asset(output_dir / filename, raw)
         paths.append(path)
+        total_bytes += len(raw)
     return paths
 
 

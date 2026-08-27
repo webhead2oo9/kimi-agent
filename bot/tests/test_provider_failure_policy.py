@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from codex.transport import CodexWebSocketRequestError
 from providers.errors import (
     ProviderAvailabilityError,
     ProviderContextOverflowError,
@@ -61,6 +62,25 @@ def test_generic_bare_rate_limit_retries_with_short_model_cooldown() -> None:
     assert failure.retry_at == 1045
 
 
+def test_codex_stream_rate_limit_uses_structured_retry_metadata() -> None:
+    failure = generic_failure_policy(
+        CodexWebSocketRequestError(
+            "private detail",
+            status_code=429,
+            code="rate_limit_exceeded",
+            retry_after_seconds=2.5,
+        ),
+        CooldownPolicy(rate_limit_seconds=45),
+        1000,
+    )
+
+    assert failure.disposition == "failover"
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert failure.scope is CircuitScopeKind.MODEL
+    assert failure.provider_code == "rate_limit_exceeded"
+    assert failure.retry_at == 1002.5
+
+
 def test_generic_retry_after_http_date_overrides_default() -> None:
     retry_at = datetime.fromtimestamp(1120, UTC)
     failure = generic_failure_policy(
@@ -108,4 +128,6 @@ def test_openai_compatible_terminal_reasons_are_normalized_generically() -> None
         raise_for_terminal_finish_reason("model_context_window_exceeded")
     with pytest.raises(ProviderPolicyError):
         raise_for_terminal_finish_reason("sensitive")
+    with pytest.raises(ProviderPolicyError):
+        raise_for_terminal_finish_reason("content_filter")
     raise_for_terminal_finish_reason("stop")

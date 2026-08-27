@@ -13,6 +13,10 @@ from codex.auth import CodexAuthManager
 from codex.types import CodexSession, CodexSessionState, PreparedCodexWebSocketRequest
 
 CODEX_WS_BETA_HEADER = "responses_websockets=2026-02-06"
+# The generated-asset writer accepts 25 MiB decoded across one response. Base64
+# expands that to roughly 33.4 MiB; retain a finite 2 MiB envelope allowance for
+# JSON structure, text, reasoning metadata, and the other response output items.
+CODEX_MAX_WS_MESSAGE_BYTES = ((25 * 1024 * 1024 + 2) // 3) * 4 + 2 * 1024 * 1024
 # The backend resolves a bare model id against a per-client bucket before looking
 # it up. Without an originator it picks a restricted bucket, so newer models come
 # back as "Model not found <model>-free-1p-...". Identifying as the Codex CLI is
@@ -29,9 +33,20 @@ log = logging.getLogger(__name__)
 
 
 class CodexWebSocketRequestError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        code: str | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status_code = status_code
+        self.code = code
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _request_error(exc: Exception) -> CodexWebSocketRequestError:
@@ -342,6 +357,7 @@ class CodexTransport:
                 session.ws = await session.client_session.ws_connect(
                     self._websocket_url,
                     headers=headers,
+                    max_msg_size=CODEX_MAX_WS_MESSAGE_BYTES,
                 )
                 return session.ws
             except aiohttp.WSServerHandshakeError as exc:
@@ -425,19 +441,32 @@ class CodexTransport:
             }:
                 last_event_preview = data[:500]
             if last_event_type == "error":
+                status_code, code, retry_after_seconds = _provider_error_metadata(parsed)
                 raise CodexWebSocketRequestError(
                     f"Codex provider error: {_provider_error_message(parsed)}",
                     retryable=_is_retryable_provider_error(parsed),
+                    status_code=status_code,
+                    code=code,
+                    retry_after_seconds=retry_after_seconds,
                 )
             if last_event_type == "response.failed":
-                error_payload = parsed.get("response", {}).get("error") or parsed.get("error") or {}
+                response_payload = parsed.get("response")
+                metadata_payload = (
+                    response_payload if isinstance(response_payload, dict) else parsed
+                )
+                error_payload = metadata_payload.get("error") or parsed.get("error") or {}
+                status_code, code, retry_after_seconds = _provider_error_metadata(metadata_payload)
                 raise CodexWebSocketRequestError(
                     f"Codex response failed: {_provider_error_message(error_payload)}",
                     retryable=_is_retryable_provider_error(error_payload),
+                    status_code=status_code,
+                    code=code,
+                    retry_after_seconds=retry_after_seconds,
                 )
             if last_event_type in {
                 "response.created",
                 "response.in_progress",
+                "response.incomplete",
                 "response.completed",
             }:
                 response = parsed.get("response")
@@ -461,7 +490,7 @@ class CodexTransport:
                 output_index = parsed.get("output_index")
                 index = output_index if isinstance(output_index, int) else 0
                 function_call_args[index] = function_call_args.get(index, "") + parsed["delta"]
-            if last_event_type == "response.completed":
+            if last_event_type in {"response.completed", "response.incomplete"}:
                 return finalize_codex_websocket_response(
                     response_snapshot=response_snapshot,
                     stream_output_items=stream_output_items,
@@ -531,6 +560,41 @@ def _provider_error_message(payload: dict[str, Any]) -> str:
     return "unknown error"
 
 
+def _provider_error_metadata(
+    payload: dict[str, Any],
+) -> tuple[int | None, str | None, float | None]:
+    nested = payload.get("error")
+    detail = nested if isinstance(nested, dict) else payload
+    raw_status = (
+        detail.get("status_code")
+        or detail.get("status")
+        or payload.get("status_code")
+        or payload.get("status")
+    )
+    try:
+        status_code = int(raw_status) if raw_status is not None else None
+    except TypeError, ValueError:
+        status_code = None
+    raw_code = detail.get("code") or payload.get("code")
+    code = str(raw_code) if raw_code is not None else None
+    if status_code is None and code in {"rate_limit_exceeded", "rate_limit_error"}:
+        status_code = 429
+
+    retry_after_seconds: float | None = None
+    raw_retry_after = detail.get("retry_after") or payload.get("retry_after")
+    raw_retry_after_ms = detail.get("retry_after_ms") or payload.get("retry_after_ms")
+    try:
+        if raw_retry_after is not None:
+            retry_after_seconds = float(raw_retry_after)
+        elif raw_retry_after_ms is not None:
+            retry_after_seconds = float(raw_retry_after_ms) / 1000
+    except TypeError, ValueError:
+        retry_after_seconds = None
+    if retry_after_seconds is not None and retry_after_seconds < 0:
+        retry_after_seconds = None
+    return status_code, code, retry_after_seconds
+
+
 def _is_retryable_provider_error(payload: dict[str, Any]) -> bool:
     status = payload.get("status") if isinstance(payload, dict) else None
     error = payload.get("error") if isinstance(payload, dict) else None
@@ -545,6 +609,7 @@ def _is_retryable_provider_error(payload: dict[str, Any]) -> bool:
 
 
 __all__ = [
+    "CODEX_MAX_WS_MESSAGE_BYTES",
     "CodexSessionState",
     "CodexTransport",
     "CodexWebSocketRequestError",

@@ -253,6 +253,7 @@ async def _capture_compiler_usage(
         model=response.model or provider_model,
         role="persona_compile",
         usage=normalize_usage(response.usage),
+        usage_present=response.has_reported_usage,
         pricing_model=response.pricing_model or provider_model,
     )
     if ctx.record_usage_call is not None:

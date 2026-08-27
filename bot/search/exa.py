@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
+import socket
 from typing import Any
+from urllib.parse import urlsplit
 
 from search.http import post_json
 from search.normalize import canonical_url, clean_text, filter_results, unique_content
@@ -69,6 +72,8 @@ class ExaSearchBackend:
         )
 
     async def contents(self, request: ContentsRequest) -> BackendResponse:
+        if not all(_is_safe_contents_url(url) for url in request.urls):
+            raise SearchProviderError("Exa can only read public HTTP(S) URLs.")
         payload: dict[str, Any] = {
             "urls": list(request.urls),
             request.content_mode: True,
@@ -105,6 +110,55 @@ class ExaSearchBackend:
         if not 200 <= response.status < 300:
             raise SearchProviderError(f"Exa returned HTTP {response.status}.")
         return response
+
+
+def _is_safe_contents_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return False
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    address = _parse_ip_literal(host)
+    if address is None:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return not (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or not address.is_global
+    )
+
+
+def _parse_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    # Legacy IPv4 number forms are not accepted by ipaddress, but URL/network
+    # parsers commonly interpret them as addresses (for example 2130706433 and
+    # 127.1 both mean 127.0.0.1). Parse them locally without DNS so the same
+    # public-address checks apply before handing the URL to Exa.
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return ipaddress.IPv4Address(packed)
 
 
 def _normalize_results(raw: object, content_mode: str) -> tuple[SearchResult, ...]:

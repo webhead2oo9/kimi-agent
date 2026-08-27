@@ -136,7 +136,15 @@ class ProviderResponse:
     # Configured backend model whose rate card prices this call. This can differ
     # from ``model`` when an API reports a dated/concrete serving model.
     pricing_model: str = ""
+    # ``None`` preserves compatibility for custom providers: a non-empty usage
+    # mapping is treated as reported. Built-in adapters set this explicitly so
+    # an absent usage object remains distinguishable from reported zero counts.
+    usage_present: bool | None = None
 
     @property
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)
+
+    @property
+    def has_reported_usage(self) -> bool:
+        return bool(self.usage) if self.usage_present is None else self.usage_present

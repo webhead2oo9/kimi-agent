@@ -122,6 +122,29 @@ async def test_records_zero_usage_when_provider_returned_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_records_missing_usage_as_unpriced() -> None:
+    store = _FakeStore()
+    model_config = _FakeModelConfig(ModelPricing(input=0.60, output=2.40))
+    run = ConversationRunResult(
+        text="ok",
+        usage=UsageBreakdown(),
+        llm_calls=[
+            LLMUsageCall(
+                model="minimax-m3",
+                role="chat",
+                usage=UsageBreakdown(),
+                usage_present=False,
+            )
+        ],
+        iterations=1,
+    )
+
+    await _record_usage(_deps(store, model_config, "minimax-m3"), _turn(), run)
+
+    assert store.rows[0]["calls"][0].est_cost_usd is None
+
+
+@pytest.mark.asyncio
 async def test_skips_when_no_provider_response_and_missing_deps() -> None:
     store = _FakeStore()
     model_config = _FakeModelConfig(None)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from config.model_config import ModelPricing
@@ -38,6 +40,26 @@ def test_zero_token_bucket_without_rate_ignored() -> None:
 
 def test_zero_usage_with_pricing_is_zero() -> None:
     assert estimate_cost(FULL, UsageBreakdown()) == 0.0
+
+
+def test_missing_usage_stays_unpriced_but_reported_zero_is_priceable() -> None:
+    config = SimpleNamespace(models={"m": SimpleNamespace(pricing=FULL)})
+    missing = price_usage_call(
+        LLMUsageCall(
+            model="m",
+            role="chat",
+            usage=UsageBreakdown(),
+            usage_present=False,
+        ),
+        config,
+    )
+    reported_zero = price_usage_call(
+        LLMUsageCall(model="m", role="chat", usage=UsageBreakdown()),
+        config,
+    )
+
+    assert missing.est_cost_usd is None
+    assert reported_zero.est_cost_usd == 0.0
 
 
 def test_explicit_specialist_cost_is_preserved_without_catalog_pricing() -> None:

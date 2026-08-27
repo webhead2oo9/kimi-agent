@@ -26,7 +26,10 @@ CODING_CONTROL_TOOLS = frozenset(
     }
 )
 
-CODING_WORKSPACE_TOOLS = frozenset(
+# Foreground tools the worker may borrow. Web tools follow the same
+# registration gates as the assistant (search key, BROWSER_ENABLED): a name that
+# is absent from the source registry is simply absent here, never a fallback.
+CODING_WORKER_TOOLS = frozenset(
     {
         "import_attachment",
         "edit_file",
@@ -39,8 +42,22 @@ CODING_WORKSPACE_TOOLS = frozenset(
         "delete_file",
         "grep_workspace",
         "glob_workspace",
+        "extract_archive",
+        "extract_document_text",
+        "fetch_url",
+        "internet_search",
+        "browser",
     }
 )
+
+# Coding workers do not receive browse_tools, so allowlisted workspace helpers
+# that are searchable in the foreground must be promoted in the cloned view.
+CODING_WORKER_ALWAYS_VISIBLE_TOOLS = frozenset(
+    {"extract_archive", "extract_document_text"}
+)
+
+# Job statuses after which the worker's job no longer occupies the sandbox.
+_ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
 
 
 class CodingTaskControls(Protocol):
@@ -316,8 +333,21 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
     )
 
 
-def build_coding_registry(source: ToolRegistry, controls: CodingTaskControls) -> ToolRegistry:
-    registry = source.clone_only(set(CODING_WORKSPACE_TOOLS))
+def build_coding_registry(
+    source: ToolRegistry,
+    controls: CodingTaskControls,
+    *,
+    netns_jobs: bool = False,
+) -> ToolRegistry:
+    """Clone the worker's allowlist and add its task-scoped controls.
+
+    ``netns_jobs`` is true when managed jobs run in the shared VPN namespace.
+    The job handlers then mark the worker's MessageContext so the browser tool
+    refuses while a job holds the physical lease instead of waiting on it.
+    """
+
+    registry = source.clone_only(set(CODING_WORKER_TOOLS))
+    registry.promote_searchable(set(CODING_WORKER_ALWAYS_VISIBLE_TOOLS))
 
     def task_id(ctx: MessageContext) -> str:
         prefix = "coding:"
@@ -374,6 +404,9 @@ def build_coding_registry(source: ToolRegistry, controls: CodingTaskControls) ->
         if not current_task_id:
             return tool_error("coding task context is unavailable")
         job_id = await controls.start_job(current_task_id, dict(args))
+        if netns_jobs:
+            ctx.networked_exec_job_ids.add(job_id)
+            ctx.networked_exec_inflight = True
         return json.dumps({"job_id": job_id, "status": "queued"})
 
     async def job_status(args: dict, ctx: MessageContext) -> str:
@@ -389,7 +422,12 @@ def build_coding_registry(source: ToolRegistry, controls: CodingTaskControls) ->
         except TypeError, ValueError:
             return tool_error("wait_seconds must be a number")
         result = await controls.job_status(current_task_id, job_id, wait_seconds)
-        return json.dumps(result) if result is not None else tool_error("Coding job not found")
+        if result is None:
+            return tool_error("Coding job not found")
+        if netns_jobs and str(result.get("status", "")) not in _ACTIVE_JOB_STATUSES:
+            ctx.networked_exec_job_ids.discard(job_id)
+            ctx.networked_exec_inflight = bool(ctx.networked_exec_job_ids)
+        return json.dumps(result)
 
     async def cancel_job(args: dict, ctx: MessageContext) -> str:
         current_task_id = task_id(ctx)
@@ -397,6 +435,10 @@ def build_coding_registry(source: ToolRegistry, controls: CodingTaskControls) ->
         if not current_task_id or not job_id:
             return tool_error("job_id is required")
         cancelled = await controls.cancel_job(current_task_id, job_id)
+        if netns_jobs and cancelled:
+            # Cancellation waits for sandbox teardown, so the lease is free again.
+            ctx.networked_exec_job_ids.discard(job_id)
+            ctx.networked_exec_inflight = bool(ctx.networked_exec_job_ids)
         return json.dumps({"job_id": job_id, "cancelled": cancelled})
 
     registry.register(

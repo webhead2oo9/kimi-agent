@@ -191,6 +191,7 @@ def build_runtime_tools(
         network_weekly_limit=settings.code_exec_network_weekly_limit,
         netns_lease=netns_lease,
         netns_conflict=browser_service.has_active_turn,
+        netns_yield=browser_service.close_idle_owner,
     )
     code_sandbox_config = _register_code_exec(
         settings,

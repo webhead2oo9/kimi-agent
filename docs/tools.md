@@ -180,9 +180,11 @@ code-execution sandbox are both enabled and available:
 | `coding_task_cancel` | Cancel a queued or running task after stopping its managed jobs. |
 | `coding_task_retry_delivery` | Retry an exhausted final-report delivery after its Discord target is restored. |
 
-The worker itself sees a narrower surface: the workspace subset plus
-`coding_plan`, `coding_progress`, and the managed job start/status/cancel
-controls. See [Durable coding agent](coding-agent.md).
+The worker itself sees a narrower surface: the workspace subset, the research
+tools `fetch_url`, `internet_search`, and `browser` when the foreground has
+registered them, plus `coding_plan`, `coding_progress`, `coding_request_input`,
+and the managed job start/status/cancel controls. See
+[Durable coding agent](coding-agent.md).
 
 ## Persistent browser
 

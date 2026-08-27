@@ -37,12 +37,13 @@ from storage.usage import UsageStore
 from tools.code_exec import CodeExecRuntimeGuards
 from tools.coding_tasks import (
     CODING_CONTROL_TOOLS,
-    CODING_WORKSPACE_TOOLS,
+    CODING_WORKER_TOOLS,
     CodingTaskControls,
     build_coding_registry,
     init_coding_control_tools,
 )
 from tools.registry import MessageContext, ToolRegistry
+from providers.types import ContentPart, ConversationMessage
 from tools.workspace.common import UserLocks
 from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
@@ -1897,17 +1898,19 @@ def test_coding_registry_is_a_least_privilege_allowlist() -> None:
     async def unused(_args: dict, _ctx: MessageContext) -> str:
         return "unused"
 
-    for name in {*CODING_WORKSPACE_TOOLS, "browser", "run_code", "block_user"}:
+    for name in {*CODING_WORKER_TOOLS, "run_code", "block_user", "teach", "browse_tools"}:
         source.register(
             name=name,
             description=name,
             parameters={"type": "object", "properties": {}},
             handler=unused,
+            searchable=name in {"extract_archive", "extract_document_text"},
         )
 
     registry = build_coding_registry(source, cast(CodingTaskControls, cast(Any, object())))
 
-    assert registry.registered_names() == CODING_WORKSPACE_TOOLS | {
+    assert {"browser", "internet_search", "fetch_url"} <= CODING_WORKER_TOOLS
+    assert registry.registered_names() == CODING_WORKER_TOOLS | {
         "coding_plan",
         "coding_progress",
         "coding_request_input",
@@ -1918,6 +1921,47 @@ def test_coding_registry_is_a_least_privilege_allowlist() -> None:
     assert {
         schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER)
     } == registry.registered_names()
+
+
+def test_coding_checkpoint_serialization_omits_image_payloads() -> None:
+    message = ConversationMessage(
+        role="user",
+        content=[
+            ContentPart.from_text("Transient browser screenshot."),
+            ContentPart.from_image_url(
+                url="data:image/png;base64," + ("A" * 10_000),
+                media_type="image/png",
+            ),
+        ],
+    )
+
+    serialized = CodingTaskService._serialize_message(message)
+
+    assert serialized["content"] == [
+        {"type": "text", "text": "Transient browser screenshot."}
+    ]
+    assert "base64" not in json.dumps(serialized)
+
+
+def test_coding_registry_omits_web_tools_the_foreground_lacks() -> None:
+    """Web tools follow the assistant's gates: not registered there, not here."""
+
+    source = ToolRegistry()
+
+    async def unused(_args: dict, _ctx: MessageContext) -> str:
+        return "unused"
+
+    for name in CODING_WORKER_TOOLS - {"browser", "internet_search", "fetch_url"}:
+        source.register(
+            name=name,
+            description=name,
+            parameters={"type": "object", "properties": {}},
+            handler=unused,
+        )
+
+    registry = build_coding_registry(source, cast(CodingTaskControls, cast(Any, object())))
+
+    assert not registry.registered_names() & {"browser", "internet_search", "fetch_url"}
 
 
 def test_coding_controls_are_visible_to_members() -> None:

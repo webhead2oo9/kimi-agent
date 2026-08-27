@@ -17,7 +17,7 @@ import os
 import re
 import stat
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -101,6 +101,10 @@ class CodeExecRuntimeGuards:
     network_quota_locks: UserLocks
     network_weekly_limit: int
     netns_conflict: Callable[[str, str], bool] | None = None
+    # Ask the browser service to close the named user's idle worker and drop
+    # the physical lease now rather than after its idle TTL. Returns whether the
+    # lease was released. Managed coding jobs use it before waiting on the lease.
+    netns_yield: Callable[[str], Awaitable[bool]] | None = None
 
     @classmethod
     def create(
@@ -110,6 +114,7 @@ class CodeExecRuntimeGuards:
         network_weekly_limit: int,
         netns_lease: NetnsLease | None = None,
         netns_conflict: Callable[[str, str], bool] | None = None,
+        netns_yield: Callable[[str], Awaitable[bool]] | None = None,
     ) -> CodeExecRuntimeGuards:
         return cls(
             semaphore=asyncio.Semaphore(max(1, max_concurrency)),
@@ -117,6 +122,7 @@ class CodeExecRuntimeGuards:
             network_quota_locks=UserLocks(),
             network_weekly_limit=network_weekly_limit,
             netns_conflict=netns_conflict,
+            netns_yield=netns_yield,
         )
 
     async def reserve_network_run(

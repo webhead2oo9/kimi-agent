@@ -1830,6 +1830,32 @@ async def test_provisional_and_rooted_registration_count_as_one_response() -> No
 
 
 @pytest.mark.asyncio
+async def test_multiple_unresolved_provisional_turns_are_counted_separately() -> None:
+    registry = ActiveOperationRegistry()
+    entered = [asyncio.Event(), asyncio.Event()]
+
+    async def foreground(index: int) -> None:
+        with registry.register_provisional(user_id="u1", channel_id="c1"):
+            entered[index].set()
+            await asyncio.Event().wait()
+
+    tasks = [asyncio.create_task(foreground(index)) for index in range(2)]
+    await asyncio.gather(*(event.wait() for event in entered))
+
+    count, clean = await registry.cancel(
+        user_id="u1",
+        root_key="r1",
+        channel_id="c1",
+        all_operations=False,
+        wait_seconds=1,
+    )
+
+    assert count == 2
+    assert clean is True
+    assert all(task.cancelled() for task in tasks)
+
+
+@pytest.mark.asyncio
 async def test_bound_provisional_stop_matches_only_its_resolved_root() -> None:
     registry = ActiveOperationRegistry()
     entered = {"r1": asyncio.Event(), "r2": asyncio.Event()}
@@ -1899,6 +1925,33 @@ async def test_cancel_all_rescans_cleanup_child_registered_during_root_exit() ->
     assert root_task.cancelled()
     assert child_stop.is_set()
     assert children[0].done()
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_cancels_each_task_only_once() -> None:
+    registry = ActiveOperationRegistry()
+    entered = asyncio.Event()
+    cancellation_counts: list[int] = []
+
+    async def foreground() -> None:
+        with registry.register_provisional(user_id="u1", channel_id="c1"):
+            async with registry.register(user_id="u1", root_key="r1", channel_id="c1"):
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    task = asyncio.current_task()
+                    assert task is not None
+                    cancellation_counts.append(task.cancelling())
+                    raise
+
+    task = asyncio.create_task(foreground())
+    await entered.wait()
+
+    await registry.cancel_all()
+
+    assert task.cancelled()
+    assert cancellation_counts == [1]
 
 
 @pytest.mark.asyncio

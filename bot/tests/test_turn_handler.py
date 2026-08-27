@@ -902,6 +902,46 @@ async def test_handle_turn_withholds_unsupported_ambient_attachment_from_tools(
 
 
 @pytest.mark.asyncio
+async def test_handle_turn_preserves_video_stream_when_binary_read_is_withheld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _AttachmentSource(b"not-read")
+    attachment = AttachmentRef(
+        filename="clip.mp4",
+        size=500 * 1024 * 1024,
+        content_type="video/mp4",
+        source=cast(Any, source),
+        video_stream_url="https://cdn.discordapp.com/attachments/1/2/clip.mp4",
+    )
+    service = RecordingModerationService()
+    dependencies = turn_module.replace(_dependencies(), moderation_service=service)
+
+    async def fake_prepare_turn(*args: Any, **kwargs: Any) -> TurnRequest:
+        return _prepared(attachments=(attachment,))
+
+    async def fake_execute(turn: TurnRequest, *args: Any, **kwargs: Any) -> TurnResult:
+        screened = turn.attachments[0]
+        assert screened.source is None
+        assert screened.video_stream_url == attachment.video_stream_url
+        with pytest.raises(ValueError, match="cannot be screened"):
+            await screened.read()
+        return TurnResult(response_text="ok")
+
+    monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
+    monkeypatch.setattr(turn_module, "execute_turn", fake_execute)
+
+    result = await handle_turn(
+        _source(),
+        dependencies=dependencies,
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None and result.response_text == "ok"
+    assert source.reads == 0
+
+
+@pytest.mark.asyncio
 async def test_handle_turn_uses_one_absolute_budget_from_preparation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

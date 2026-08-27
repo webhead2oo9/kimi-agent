@@ -9,7 +9,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -226,6 +226,128 @@ CREATE TABLE IF NOT EXISTS image_distillations (
     created_at      REAL NOT NULL,
     PRIMARY KEY (conversation_id, cache_key)
 );
+
+-- Stateful Gemini video conversations. Local handles never authorize outside
+-- the actor and rooted conversation that created them. Every remote interaction
+-- is tracked separately so retention and /privacy can delete the complete chain.
+-- source_kind distinguishes a directly-referenced public YouTube video from a
+-- session grounded in an uploaded Gemini Files API resource (Discord attachment
+-- or workspace file). source_display_name/source_locator are safe, non-secret
+-- labels only: never a Discord CDN URL, a Gemini file URI, or an absolute
+-- workspace path. File bytes, questions, and answers are never stored here.
+CREATE TABLE IF NOT EXISTS video_sessions (
+    handle                TEXT PRIMARY KEY,
+    conversation_id       INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    actor_user_id         TEXT NOT NULL,
+    guild_id              TEXT NOT NULL,
+    source_kind           TEXT NOT NULL CHECK (source_kind IN ('youtube', 'attachment', 'workspace')),
+    source_display_name   TEXT NOT NULL CHECK (length(source_display_name) > 0),
+    source_locator        TEXT NOT NULL CHECK (length(source_locator) > 0),
+    source_byte_size      INTEGER CHECK (source_byte_size IS NULL OR source_byte_size >= 0),
+    youtube_url           TEXT NOT NULL DEFAULT '',
+    youtube_video_id      TEXT NOT NULL DEFAULT '',
+    model                 TEXT NOT NULL,
+    latest_interaction_id TEXT NOT NULL,
+    interaction_count     INTEGER NOT NULL CHECK (interaction_count > 0),
+    created_at            REAL NOT NULL,
+    last_active_at        REAL NOT NULL,
+    expires_at            REAL NOT NULL,
+    CHECK (
+        (source_kind = 'youtube' AND youtube_url != '' AND youtube_video_id != '')
+        OR (source_kind != 'youtube' AND youtube_url = '' AND youtube_video_id = '')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_sessions_scope
+    ON video_sessions(conversation_id, actor_user_id, guild_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_video_sessions_actor
+    ON video_sessions(actor_user_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS video_interactions (
+    interaction_id TEXT PRIMARY KEY,
+    session_handle TEXT NOT NULL REFERENCES video_sessions(handle) ON DELETE CASCADE,
+    actor_user_id  TEXT NOT NULL,
+    created_at     REAL NOT NULL
+);
+
+-- Provider deletion outbox for Gemini Interaction ids. It deliberately has no
+-- foreign key: deleting a local session must retain enough metadata to finish
+-- deleting Gemini state. session_handle is a content-free local grouping key
+-- only, used to order dependent Files API deletion after every Interaction
+-- deletion for the same session has completed.
+CREATE TABLE IF NOT EXISTS video_interaction_deletions (
+    interaction_id TEXT PRIMARY KEY,
+    actor_user_id  TEXT NOT NULL,
+    session_handle TEXT,
+    queued_at      REAL NOT NULL,
+    updated_at     REAL NOT NULL,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_deletions_actor
+    ON video_interaction_deletions(actor_user_id, queued_at);
+CREATE INDEX IF NOT EXISTS idx_video_deletions_session
+    ON video_interaction_deletions(session_handle);
+
+CREATE TRIGGER IF NOT EXISTS queue_video_interaction_deletion
+BEFORE DELETE ON video_interactions
+BEGIN
+    INSERT INTO video_interaction_deletions (
+        interaction_id, actor_user_id, session_handle, queued_at, updated_at, attempts, last_error
+    ) VALUES (
+        OLD.interaction_id, OLD.actor_user_id, OLD.session_handle,
+        CAST(strftime('%s', 'now') AS REAL), CAST(strftime('%s', 'now') AS REAL), 0, ''
+    ) ON CONFLICT(interaction_id) DO NOTHING;
+END;
+
+-- Durable tracking for Gemini Files API resources backing uploaded-video
+-- sessions. A row can exist before any session (reserved at upload time with a
+-- client-chosen files/<id>) and is claimed by exactly one session once created.
+-- No file bytes, Discord CDN URLs, or absolute workspace paths are stored here.
+CREATE TABLE IF NOT EXISTS video_provider_files (
+    file_name        TEXT PRIMARY KEY,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    actor_user_id   TEXT NOT NULL,
+    guild_id        TEXT NOT NULL,
+    mime_type       TEXT NOT NULL,
+    byte_size       INTEGER NOT NULL CHECK (byte_size >= 0),
+    session_handle  TEXT REFERENCES video_sessions(handle) ON DELETE CASCADE,
+    created_at      REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_provider_files_actor
+    ON video_provider_files(actor_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_video_provider_files_unattached
+    ON video_provider_files(created_at) WHERE session_handle IS NULL;
+
+-- Provider deletion outbox for Files API resources, parallel to the
+-- Interaction outbox above. session_handle carries the same content-free
+-- local grouping key so pending_file_deletions can gate a file behind every
+-- Interaction deletion still queued for its session.
+CREATE TABLE IF NOT EXISTS video_provider_file_deletions (
+    file_name       TEXT PRIMARY KEY,
+    actor_user_id  TEXT NOT NULL,
+    session_handle TEXT,
+    queued_at      REAL NOT NULL,
+    updated_at     REAL NOT NULL,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_file_deletions_actor
+    ON video_provider_file_deletions(actor_user_id, queued_at);
+
+CREATE TRIGGER IF NOT EXISTS queue_video_provider_file_deletion
+BEFORE DELETE ON video_provider_files
+BEGIN
+    INSERT INTO video_provider_file_deletions (
+        file_name, actor_user_id, session_handle, queued_at, updated_at, attempts, last_error
+    ) VALUES (
+        OLD.file_name, OLD.actor_user_id, OLD.session_handle,
+        CAST(strftime('%s', 'now') AS REAL), CAST(strftime('%s', 'now') AS REAL), 0, ''
+    ) ON CONFLICT(file_name) DO NOTHING;
+END;
 
 
 -- Auto-retain progress markers (docs/memory.md): highest messages.id already
@@ -454,8 +576,114 @@ async def _migrate_v1_to_v2(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_v2_to_v3(conn: aiosqlite.Connection) -> None:
+    statements = (
+        """CREATE TABLE video_sessions (
+            handle                TEXT PRIMARY KEY,
+            conversation_id       INTEGER NOT NULL
+                                  REFERENCES conversations(id) ON DELETE CASCADE,
+            actor_user_id         TEXT NOT NULL,
+            guild_id              TEXT NOT NULL,
+            source_kind           TEXT NOT NULL
+                                  CHECK (source_kind IN ('youtube', 'attachment', 'workspace')),
+            source_display_name   TEXT NOT NULL CHECK (length(source_display_name) > 0),
+            source_locator        TEXT NOT NULL CHECK (length(source_locator) > 0),
+            source_byte_size      INTEGER CHECK (source_byte_size IS NULL OR source_byte_size >= 0),
+            youtube_url           TEXT NOT NULL DEFAULT '',
+            youtube_video_id      TEXT NOT NULL DEFAULT '',
+            model                 TEXT NOT NULL,
+            latest_interaction_id TEXT NOT NULL,
+            interaction_count     INTEGER NOT NULL CHECK (interaction_count > 0),
+            created_at            REAL NOT NULL,
+            last_active_at        REAL NOT NULL,
+            expires_at            REAL NOT NULL,
+            CHECK (
+                (source_kind = 'youtube' AND youtube_url != '' AND youtube_video_id != '')
+                OR (source_kind != 'youtube' AND youtube_url = '' AND youtube_video_id = '')
+            )
+        )""",
+        """CREATE INDEX idx_video_sessions_scope
+            ON video_sessions(conversation_id, actor_user_id, guild_id, expires_at)""",
+        """CREATE INDEX idx_video_sessions_actor
+            ON video_sessions(actor_user_id, expires_at)""",
+        """CREATE TABLE video_interactions (
+            interaction_id TEXT PRIMARY KEY,
+            session_handle TEXT NOT NULL
+                           REFERENCES video_sessions(handle) ON DELETE CASCADE,
+            actor_user_id  TEXT NOT NULL,
+            created_at     REAL NOT NULL
+        )""",
+        """CREATE TABLE video_interaction_deletions (
+            interaction_id TEXT PRIMARY KEY,
+            actor_user_id  TEXT NOT NULL,
+            session_handle TEXT,
+            queued_at      REAL NOT NULL,
+            updated_at     REAL NOT NULL,
+            attempts       INTEGER NOT NULL DEFAULT 0,
+            last_error     TEXT NOT NULL DEFAULT ''
+        )""",
+        """CREATE INDEX idx_video_deletions_actor
+            ON video_interaction_deletions(actor_user_id, queued_at)""",
+        """CREATE INDEX idx_video_deletions_session
+            ON video_interaction_deletions(session_handle)""",
+        """CREATE TRIGGER queue_video_interaction_deletion
+        BEFORE DELETE ON video_interactions
+        BEGIN
+            INSERT INTO video_interaction_deletions (
+                interaction_id, actor_user_id, session_handle,
+                queued_at, updated_at, attempts, last_error
+            ) VALUES (
+                OLD.interaction_id, OLD.actor_user_id, OLD.session_handle,
+                CAST(strftime('%s', 'now') AS REAL),
+                CAST(strftime('%s', 'now') AS REAL), 0, ''
+            ) ON CONFLICT(interaction_id) DO NOTHING;
+        END""",
+        """CREATE TABLE video_provider_files (
+            file_name        TEXT PRIMARY KEY,
+            conversation_id INTEGER NOT NULL
+                            REFERENCES conversations(id) ON DELETE CASCADE,
+            actor_user_id   TEXT NOT NULL,
+            guild_id        TEXT NOT NULL,
+            mime_type       TEXT NOT NULL,
+            byte_size       INTEGER NOT NULL CHECK (byte_size >= 0),
+            session_handle  TEXT REFERENCES video_sessions(handle) ON DELETE CASCADE,
+            created_at      REAL NOT NULL
+        )""",
+        """CREATE INDEX idx_video_provider_files_actor
+            ON video_provider_files(actor_user_id, created_at)""",
+        """CREATE INDEX idx_video_provider_files_unattached
+            ON video_provider_files(created_at) WHERE session_handle IS NULL""",
+        """CREATE TABLE video_provider_file_deletions (
+            file_name       TEXT PRIMARY KEY,
+            actor_user_id  TEXT NOT NULL,
+            session_handle TEXT,
+            queued_at      REAL NOT NULL,
+            updated_at     REAL NOT NULL,
+            attempts       INTEGER NOT NULL DEFAULT 0,
+            last_error     TEXT NOT NULL DEFAULT ''
+        )""",
+        """CREATE INDEX idx_video_file_deletions_actor
+            ON video_provider_file_deletions(actor_user_id, queued_at)""",
+        """CREATE TRIGGER queue_video_provider_file_deletion
+        BEFORE DELETE ON video_provider_files
+        BEGIN
+            INSERT INTO video_provider_file_deletions (
+                file_name, actor_user_id, session_handle,
+                queued_at, updated_at, attempts, last_error
+            ) VALUES (
+                OLD.file_name, OLD.actor_user_id, OLD.session_handle,
+                CAST(strftime('%s', 'now') AS REAL),
+                CAST(strftime('%s', 'now') AS REAL), 0, ''
+            ) ON CONFLICT(file_name) DO NOTHING;
+        END""",
+    )
+    for statement in statements:
+        await conn.execute(statement)
+
+
 _MIGRATIONS: dict[int, Migration] = {
     2: ("coding_task_context_inputs", _migrate_v1_to_v2),
+    3: ("video_understanding_sessions", _migrate_v2_to_v3),
 }
 
 

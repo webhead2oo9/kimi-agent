@@ -166,6 +166,12 @@ The tool-owned behavior that exists today:
 |---|---|---|---|---|
 | `discord_text_search` | `max_results` | `25` | 1–25 | `config/tools/discord_text_search.md` |
 | `internet_search` | `strategy` | `blend` | `blend` or `failover` | `config/tools/internet_search.md` |
+| `video` | `model` | `gemini-3.7-flash` | closed choice | `config/tools/video.md` |
+| `video` | `thinking_level` | `low` | `low`, `medium`, `high` | `config/tools/video.md` |
+| `video` | `max_output_tokens` | `8192` | 1,024–32,768 | `config/tools/video.md` |
+| `video` | `max_calls_per_turn` | `4` | 1–8 | `config/tools/video.md` |
+| `video` | `max_session_interactions` | `20` | 2–50 | `config/tools/video.md` |
+| `video` | `session_ttl_minutes` | `1440` | 5–1,440 | `config/tools/video.md` |
 
 The path is relative to `bot/`, the default `CONFIG_DIR`, and the fragment is
 active only while the tool is registered.
@@ -556,6 +562,31 @@ first successful response. Keys and endpoints stay environment-only.
 
 See [Internet search](internet-search.md) for request behavior, output shape,
 deduplication, and cost accounting.
+
+---
+
+## Video understanding (gated)
+
+The searchable member-tier `video` tool registers only when the feature flag
+and its dedicated Gemini secret are both present. One flag enables public
+YouTube plus streamed Discord/workspace video sources; uploaded files retain
+code-owned 500 MiB/one-hour ceilings. The key is independent of
+`config/models.yaml`; chat routing never supplies or inherits it.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `VIDEO_UNDERSTANDING_ENABLED` | bool | `false` | Requests registration of the stateful YouTube/uploaded-video tool. With a missing key, startup continues and leaves the tool absent. |
+| `GEMINI_API_KEY` | secret | `""` | Dedicated Google Gemini API key. Environment-only and never written to a tool fragment. |
+| `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` | int | `4` | Process-wide interactive Gemini request cap, 1–32. Slot waits fail busy after 30 seconds; provider deletion uses a separate bounded pool. |
+
+The fixed client connects only to Google's Gemini API. Safe live behavior is
+owned by `config/tools/video.md` and listed in the per-tool table above. The
+shipped defaults use `gemini-3.7-flash`, low thinking, four calls per outer
+turn, twenty total interactions per session, and a 24-hour idle lifetime.
+
+See [Video understanding](video-understanding.md) for source streaming, formats,
+hard file/duration limits, root/user/guild scope, SQLite v3 crash recovery,
+provider retention/deletion, caching, and prompt-injection posture.
 
 ---
 

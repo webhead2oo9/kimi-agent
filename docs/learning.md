@@ -82,7 +82,8 @@ content visibly untrusted:
 This framing reduces prompt-injection risk but cannot prove that taught content
 is safe or correct. Staff should review the stored result named in the reply. A
 configured learn-log channel adds a shared review trail, but it is optional and
-is not an access-control boundary.
+is not an access-control boundary. This reasoning depends on STAFF being the only
+trigger; widening the learn surface requires revisiting it.
 
 ## Audit log
 

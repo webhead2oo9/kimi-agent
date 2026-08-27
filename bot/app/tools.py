@@ -149,16 +149,18 @@ def build_runtime_tools(
         init_block_user_tool(registry, get_blocked_user_store)
     _register_discord_text_search(settings, registry)
     _register_internet_search(settings, registry)
-    video_service = _register_video(
-        settings,
-        registry,
-        get_video_session_store or (lambda: None),
-    )
     workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
         registry,
         workspace_manager,
         config=workspace_config,
+    )
+    video_service = _register_video(
+        settings,
+        registry,
+        get_video_session_store or (lambda: None),
+        workspace_manager=workspace_manager,
+        workspace_locks=workspace_locks,
     )
     browser_service = _register_browser(
         settings,
@@ -393,6 +395,9 @@ def _register_video(
     settings: Settings,
     registry: ToolRegistry,
     get_store: Callable[[], Any | None],
+    *,
+    workspace_manager: WorkspaceManager,
+    workspace_locks: UserLocks,
 ) -> VideoUnderstandingService:
     key = settings.gemini_api_key.get_secret_value().strip()
     service = VideoUnderstandingService(
@@ -414,7 +419,12 @@ def _register_video(
             "Video understanding requested but GEMINI_API_KEY is not set; tool not registered"
         )
         return service
-    init_video_tool(registry, service)
+    init_video_tool(
+        registry,
+        service,
+        workspace_manager=workspace_manager,
+        workspace_locks=workspace_locks,
+    )
     log.info("Video understanding enabled with Gemini 3.7 Flash")
     return service
 

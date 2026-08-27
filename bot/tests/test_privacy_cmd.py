@@ -201,7 +201,7 @@ async def test_provider_video_cleanup_queue_does_not_keep_privacy_barrier_pendin
             pass
         assert outcome.lines[-2:] == [
             (
-                "Gemini interaction deletion remains durably queued and will retry when "
+                "Gemini video data deletion remains durably queued and will retry when "
                 "provider access is available."
             ),
             "No long-term memory backend is configured, so there was none to wipe.",

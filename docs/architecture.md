@@ -54,7 +54,7 @@ config/fragments/       operator markdown read fresh each turn: guild/channel
                         pins and denylists, per-tool config, prompt templates
 tools/                  registry, browse-tools activation, workspace + memory +
                         community-knowledge + internet/Discord search + persona
-                        tools + optional public-video/code-execution/browser/visual/
+                        tools + optional video/code-execution/browser/visual/
                         coding-task surfaces
 web_browser/            BetterWright persistent-browser bridge and isolated
                         per-user worker lifecycle, plus the fixed-code ephemeral
@@ -123,4 +123,4 @@ Once you have the map, these are the places to go next:
 - `visual-rendering.md`: one-call charts/Mermaid, offline rendering, and deployment.
 - `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
 - `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.
-- `video-understanding.md`: public-YouTube sessions, Gemini state, caching, limits, and deletion.
+- `video-understanding.md`: YouTube/uploaded-video sessions, Files + Interactions state, streaming, caching, limits, and deletion.

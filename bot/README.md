@@ -49,9 +49,9 @@ guild installations, and permissions stay intact.
 - **Discord context and search.** Fetch recent channel context on demand and,
   when configured, search selected Discord channels without persisting the
   retrieved messages.
-- **Public-video understanding (optional).** Ask a stateful Gemini 3.7 Flash
-  specialist about a public YouTube video, then continue with fast rooted
-  follow-ups and timestamped evidence. See
+- **Video understanding (optional).** Ask a stateful Gemini 3.7 Flash specialist
+  about a public YouTube video or a streamed Discord/workspace clip up to 500 MiB,
+  then continue with rooted follow-ups and timestamped evidence. See
   [docs/video-understanding.md](../docs/video-understanding.md).
 - **Browser and visual rendering (optional).** Keep per-user BetterWright
   profiles for interactive web work and expose one searchable call for
@@ -120,7 +120,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | Learning (teach + bot-name-derived menu) | `tools/learn.py`, `app/learn_turn.py`, `commands/learn_cmd.py` | [learning.md](../docs/learning.md) |
 | Workspaces & file tools | `workspace/manager.py`, `tools/workspace/` | [workspace.md](../docs/workspace.md) |
 | Durable coding agent | `app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py` | [coding-agent.md](../docs/coding-agent.md) |
-| Public-video understanding | `video_understanding/`, `tools/video.py`, `storage/video_sessions.py` | [video-understanding.md](../docs/video-understanding.md) |
+| Video understanding | `video_understanding/`, `tools/video.py`, `storage/video_sessions.py` | [video-understanding.md](../docs/video-understanding.md) |
 | Persistent browser and visual rendering | `web_browser/`, `tools/browser.py`, `tools/visuals.py` | [browser.md](../docs/browser.md), [visual-rendering.md](../docs/visual-rendering.md) |
 | Storage (async SQLite) | `storage/` | [database.md](../docs/database.md) |
 | Privacy & content moderation | `app/consent.py`, `moderation/` | [privacy.md](../docs/privacy.md) |

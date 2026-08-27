@@ -21,16 +21,16 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
   matching. A match can delete the message and time out its author; images and
   matches are not sent to the fingerprint service.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
-  memory, moderation, internet-search, and public-YouTube video services receive
-  only the input needed for those features.
+  memory, moderation, internet-search, and Gemini video services receive only
+  the input needed for those features; selected uploads send their video bytes.
 - Conversation history auto-deletes after **30 days**. When long-term memory is
   available, it is on by default; you can opt out with `/memory opt-out`, or
   wipe it any time with `/privacy`.
 - Your data is **never sold or used for ads**.
 - `/privacy` deletes Kimi's local conversation history, workspace files,
-  persistent browser profile, public-video sessions, and personal memory. For
-  video sessions Kimi also requests deletion of every known stored Gemini
-  Interaction; it cannot erase Discord messages or guarantee removal from a
+  persistent browser profile, video sessions, and personal memory. For video
+  sessions Kimi also requests deletion of every known Gemini Interaction and
+  uploaded File; it cannot erase Discord messages or guarantee removal from a
   provider's safety logs or backups.
 
 ## When Kimi is listening
@@ -89,10 +89,11 @@ Depending on the features a server enables, Kimi handles:
 - **Usage metadata**: token counts and attributed LLM/tool-provider costs for a
   turn, plus short-lived counters used to enforce bounded-tool limits. None of
   this includes the content of your messages, code, tool queries, or results.
-- **Public-video session metadata, if enabled**: a canonical YouTube URL, opaque
-  local and Google Interaction identifiers, model, owner/conversation scope,
-  counts, and timestamps. Questions and answers are not duplicated into these
-  local session tables.
+- **Video-session metadata, if enabled**: source kind, safe display filename or
+  relative workspace locator and byte size (or a canonical YouTube URL), opaque
+  local and Google File/Interaction identifiers, model, owner/conversation
+  scope, counts, and timestamps. Uploaded bytes, Discord CDN URLs, questions,
+  and answers are not duplicated into local session tables.
 - **Images in enrolled safety channels**: supported images are read briefly for
   the local comparison described above. The scanner does not keep them.
 - **Public messages in channels Kimi can read**: when someone asks Kimi
@@ -130,10 +131,11 @@ close a managed thread.
   search filters, or URLs to the configured search provider. Built-in providers
   include Exa and Brave. Opening a public URL also shows up as a normal web
   request to that website.
-- **Public YouTube understanding.** If enabled and you ask about a YouTube
-  video, Kimi sends its public URL and your video questions to Google's paid
-  Gemini API. Google stores the Interaction chain so follow-up questions can
-  continue without Kimi resending the whole history.
+- **Video understanding.** If enabled and you ask about a public YouTube video,
+  Kimi sends its URL and your questions to Google's paid Gemini API. If you
+  select a Discord attachment or workspace video, Kimi streams those video
+  bytes to Google's Files API before analysis. Google temporarily stores the
+  File and Interaction chain so follow-ups can continue without re-uploading.
 - **Community learning.** Staff can use the process described above to store
   shared knowledge in Hindsight or in a shared skill. This is separate from
   your personal memory and is managed by staff.
@@ -167,10 +169,11 @@ the configured services and tools needed to answer you.
   of inactivity, or sooner by **Delete my data**. The sites Kimi opens on your
   behalf see that visit, and can set cookies that stay in your profile until it
   expires or you delete it.
-- **Public-video sessions: up to 24 hours idle locally.** Kimi removes local
-  session access after that and queues every known stored Gemini Interaction
-  for provider deletion. Google documents paid-tier Interaction retention of up
-  to 55 days and may retain limited safety/security records under its terms.
+- **Video sessions: up to 24 hours idle locally.** Kimi removes local session
+  access after that and queues every known Gemini Interaction and uploaded File
+  for provider deletion. Google documents Files API retention up to 48 hours
+  and paid-tier Interaction retention up to 55 days, and may retain limited
+  safety/security records under its terms.
 - **Personal skills: until you delete them.** Reusable instruction skills you
   create are stored separately from the expiring workspace. Ask Kimi to delete
   a personal skill when you want it gone.
@@ -204,8 +207,9 @@ the configured services and tools needed to answer you.
 - **`/privacy` → Delete my data**: does everything above and also immediately
   deletes Kimi's local copy of conversations you started, your messages in
   conversations started by someone else, your workspace files, browser profile,
-  and public-video sessions. For those sessions Kimi also requests deletion of
-  every known stored Gemini Interaction and retries temporary failures. If
+  and video sessions. For those sessions Kimi also requests deletion of every
+  known stored Gemini Interaction and Files API upload and retries temporary
+  failures. If
   Gemini access is unavailable, the local deletion still completes and provider
   deletion remains independently queued; this does not keep your account
   activity paused. If you started a shared conversation, Kimi's local copy of
@@ -224,9 +228,9 @@ Deletion waits for any interaction already in progress, and blocks new activity
 for you until the required local deletion finishes. Your confirmation is saved
 before deletion starts, so a restart cannot lose it. If a required local or
 memory service is temporarily unavailable, the request stays pending; retry
-`/privacy` or ask staff for help. Gemini Interaction deletion is different:
-local video-session deletion can finish while its content-free provider cleanup
-row remains queued for later retry.
+`/privacy` or ask staff for help. Gemini video-provider deletion is different:
+local video-session deletion can finish while content-free File/Interaction
+cleanup rows remain queued for later retry.
 
 - **`/memory status`**: see whether memory is on for you.
 - **`/memory opt-out`**: stop Kimi from remembering anything new about you.

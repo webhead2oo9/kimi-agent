@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakValueDictionary
 
@@ -101,6 +101,36 @@ async def _delete_message_quietly(message: discord.Message | discord.PartialMess
         await message.delete()
     except discord.HTTPException:
         log.warning("Could not delete message %s", message.id, exc_info=True)
+
+
+async def _delete_thread_quietly(thread: discord.Thread) -> None:
+    """Best-effort cleanup of a thread this boundary just created."""
+    try:
+        await thread.delete(reason="Thread handoff enrollment failed")
+    except discord.HTTPException:
+        log.warning("Could not delete un-enrolled thread %s", thread.id, exc_info=True)
+
+
+async def _await_definitive[T](
+    coroutine: Coroutine[Any, Any, T],
+) -> tuple[T, asyncio.CancelledError | None]:
+    """Let an ownership-changing Discord/store call reach a definitive result."""
+    task = asyncio.create_task(coroutine)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(task), cancellation
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            if task.done():
+                return task.result(), cancellation or exc
+            if cancellation is None:
+                cancellation = exc
+        except Exception as exc:
+            if cancellation is not None:
+                raise cancellation from exc
+            raise
 
 
 class ThreadHandoffBoundary:
@@ -399,28 +429,33 @@ class ThreadHandoffBoundary:
             )
             return None
 
-        thread = await self._create_thread_with_retry(
-            lambda: anchor.create_thread(
-                name=request.name,
-                auto_archive_duration=CROSS_CHANNEL_ARCHIVE_MINUTES,
-            ),
-            subject=f"anchor {anchor.id} in channel {channel.id}",
-        )
-        if thread is None:
-            await _delete_message_quietly(anchor)
-            return None
+        transferred = False
         try:
-            await thread.add_user(member)
-        except discord.HTTPException:
-            # Not fatal: the pointer reply back in the source channel is what
-            # actually tells them, and a public thread stays readable regardless.
-            log.warning(
-                "Could not add user %s to cross-channel thread %s",
-                member.id,
-                thread.id,
-                exc_info=True,
+            thread = await self._create_thread_with_retry(
+                lambda: anchor.create_thread(
+                    name=request.name,
+                    auto_archive_duration=CROSS_CHANNEL_ARCHIVE_MINUTES,
+                ),
+                subject=f"anchor {anchor.id} in channel {channel.id}",
             )
-        return thread
+            if thread is None:
+                return None
+            try:
+                await thread.add_user(member)
+            except discord.HTTPException:
+                # Not fatal: the pointer reply back in the source channel is what
+                # actually tells them, and a public thread stays readable regardless.
+                log.warning(
+                    "Could not add user %s to cross-channel thread %s",
+                    member.id,
+                    thread.id,
+                    exc_info=True,
+                )
+            transferred = True
+            return thread
+        finally:
+            if not transferred:
+                await _delete_message_quietly(anchor)
 
     def _existing_message_thread(self, message: discord.Message) -> discord.Thread | None:
         """Return the thread attached to a starter message, if Discord knows it."""
@@ -483,20 +518,77 @@ class ThreadHandoffBoundary:
         if not self._thread_handoff_creation_allowed(message):
             return None
         if request.target_channel_id is not None:
-            thread = await self._open_cross_channel_thread(message, request)
+            thread, cancellation = await _await_definitive(
+                self._open_cross_channel_thread(message, request)
+            )
+            if cancellation is not None:
+                if thread is not None:
+                    await self._cleanup_created_handoff(manager, thread, cross_channel=True)
+                raise cancellation
         elif isinstance(message.channel, discord.Thread):
             return None
         else:
             async with self._thread_creation_lock(message):
                 thread = self._existing_message_thread(message)
+                created_here = thread is None
                 if thread is None:
-                    thread = await self._create_thread_with_retry(
-                        lambda: message.create_thread(name=request.name),
-                        subject=f"message {message.id}",
+                    thread, cancellation = await _await_definitive(
+                        self._create_thread_with_retry(
+                            lambda: message.create_thread(name=request.name),
+                            subject=f"message {message.id}",
+                        )
                     )
+                    if cancellation is not None:
+                        if thread is not None:
+                            await self._cleanup_created_handoff(
+                                manager, thread, cross_channel=False
+                            )
+                        raise cancellation
                 if thread is None:
                     return None
-                await self._enroll_handoff_thread(
+                if not await self._enroll_handoff_thread_safely(
+                    manager,
+                    thread,
+                    message,
+                    request,
+                    conv_id,
+                    creator_user_id=creator_user_id,
+                    created_here=created_here,
+                    cross_channel=False,
+                ):
+                    return None
+                return thread
+        if thread is None:
+            return None
+        if not await self._enroll_handoff_thread_safely(
+            manager,
+            thread,
+            message,
+            request,
+            conv_id,
+            creator_user_id=creator_user_id,
+            created_here=True,
+            cross_channel=True,
+        ):
+            return None
+        return thread
+
+    async def _enroll_handoff_thread_safely(
+        self,
+        manager: ThreadHandoffManager,
+        thread: discord.Thread,
+        message: discord.Message,
+        request: ThreadRequest,
+        conv_id: int,
+        *,
+        creator_user_id: str | None,
+        created_here: bool,
+        cross_channel: bool,
+    ) -> bool:
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            _, cancellation = await _await_definitive(
+                self._enroll_handoff_thread(
                     manager,
                     thread,
                     message,
@@ -504,18 +596,42 @@ class ThreadHandoffBoundary:
                     conv_id,
                     creator_user_id=creator_user_id,
                 )
-                return thread
-        if thread is None:
-            return None
-        await self._enroll_handoff_thread(
-            manager,
-            thread,
-            message,
-            request,
-            conv_id,
-            creator_user_id=creator_user_id,
-        )
-        return thread
+            )
+        except asyncio.CancelledError:
+            if created_here:
+                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            raise
+        except Exception:
+            log.exception("Could not enroll handoff thread %s; replying in channel", thread.id)
+            if created_here:
+                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            return False
+        if cancellation is not None:
+            if created_here:
+                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            raise cancellation
+        return True
+
+    async def _cleanup_created_handoff(
+        self,
+        manager: ThreadHandoffManager,
+        thread: discord.Thread,
+        *,
+        cross_channel: bool,
+    ) -> None:
+        async def cleanup() -> None:
+            try:
+                await manager.leave(thread.id)
+            except Exception:
+                log.exception("Could not roll back enrollment for thread %s", thread.id)
+            if cross_channel:
+                await self._discard_cross_channel_thread(thread)
+            else:
+                await _delete_thread_quietly(thread)
+
+        # A second cancellation must not interrupt rollback of the row/resource
+        # created for the already-cancelled handoff.
+        await _await_definitive(cleanup())
 
     async def _enroll_handoff_thread(
         self,

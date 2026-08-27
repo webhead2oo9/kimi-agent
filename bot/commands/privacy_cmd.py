@@ -44,6 +44,12 @@ from storage.privacy import (
 from tools.workspace.common import UserLocks
 
 CancelUserWork = Callable[[str], Awaitable[None]]
+InteractionAvailability = Callable[[], bool]
+
+
+def _always_available() -> bool:
+    return True
+
 
 log = logging.getLogger(__name__)
 
@@ -538,6 +544,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 120.0,
+        is_available: InteractionAvailability = _always_available,
     ) -> None:
         super().__init__(author_id=author_id, timeout=timeout)
         self._scope = scope
@@ -554,10 +561,33 @@ class _DeleteConfirmView(_AuthorGuardedView):
         self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
+        self._is_available = is_available
+        self._decision_lock = asyncio.Lock()
+        self._resolved = False
+
+    async def _claim_decision(self, interaction: discord.Interaction) -> bool:
+        # Discord calls interaction_check before dispatching a button callback.
+        # Keep this defensive check at the claim boundary as well so direct
+        # callback invocation cannot let an unauthorized user consume the view.
+        if not await self.interaction_check(interaction):
+            return False
+        rejection: str | None = None
+        async with self._decision_lock:
+            if not self._is_available():
+                rejection = "This deletion prompt is no longer available."
+            elif self._resolved:
+                rejection = "This deletion choice has already been handled."
+            else:
+                self._resolved = True
+                self.stop()
+        if rejection is not None:
+            await interaction.response.send_message(rejection, ephemeral=True)
+        return rejection is None
 
     @discord.ui.button(label="Yes, delete", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.stop()
+        if not await self._claim_decision(interaction):
+            return
         user_id = str(interaction.user.id)
 
         async def execute(
@@ -646,7 +676,8 @@ class _DeleteConfirmView(_AuthorGuardedView):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.stop()
+        if not await self._claim_decision(interaction):
+            return
         await interaction.response.edit_message(
             embed=_result_embed(
                 "Cancelled. Nothing was deleted.", color=discord.Color.light_grey()
@@ -701,6 +732,7 @@ class _PrivacyView(_AuthorGuardedView):
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 180.0,
+        is_available: InteractionAvailability = _always_available,
     ) -> None:
         super().__init__(author_id=author_id, timeout=timeout)
         self._conversation_store = conversation_store
@@ -716,6 +748,7 @@ class _PrivacyView(_AuthorGuardedView):
         self._video_data_store = video_data_store
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
+        self._is_available = is_available
 
     async def _open_confirm(self, interaction: discord.Interaction, scope: DeleteScope) -> None:
         self.stop()
@@ -735,6 +768,7 @@ class _PrivacyView(_AuthorGuardedView):
             video_data_store=self._video_data_store,
             privacy_barrier=self._privacy_barrier,
             cancel_user_work=self._cancel_user_work,
+            is_available=self._is_available,
         )
         await interaction.response.edit_message(
             embed=_result_embed(_CONFIRM_PROMPTS[scope], color=discord.Color.orange()),
@@ -771,6 +805,7 @@ def register_privacy_command(
     retention_days: int = 30,
     bot_name: str = "",
     policy_url: str = "",
+    is_available: InteractionAvailability = _always_available,
 ) -> None:
     display_name = bot_name.strip() or "this bot"
 
@@ -794,6 +829,7 @@ def register_privacy_command(
             video_data_store=video_data_store,
             privacy_barrier=privacy_barrier,
             cancel_user_work=cancel_user_work,
+            is_available=is_available,
         )
         await interaction.response.send_message(
             embed=_build_tldr_embed(

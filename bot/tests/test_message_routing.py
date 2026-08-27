@@ -215,7 +215,7 @@ def _build_test_app(monkeypatch):
     )
     # Keep tests hermetic and explicitly activate the synthetic guild. Guilds
     # with no saved setup fail closed.
-    return app_runtime.build_app(
+    app = app_runtime.build_app(
         Settings(
             _env_file=None,
             hindsight_url="",
@@ -224,6 +224,8 @@ def _build_test_app(monkeypatch):
             moderation_enabled=False,
         )
     )
+    app.gateway_ready = True
+    return app
 
 
 def test_new_message_root_records_owner_before_transcript_persistence() -> None:
@@ -1564,6 +1566,108 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
     assert (await app.turn_admission.snapshot()).active_total == 0
 
 
+@pytest.mark.asyncio
+async def test_stop_cancels_turn_between_admission_and_root_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.context_manager = cast(ContextManager, object())
+    app.blocked_user_store = None
+    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+
+    admitted = asyncio.Event()
+
+    async def pause_before_root_registration(_message: Any) -> None:
+        admitted.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app, "_on_message_for_user", pause_before_root_registration)
+    message = _trigger_message(
+        content="<@999> begin",
+        author_id=123,
+        author_name="Alice",
+        message_id=1,
+    )
+
+    turn = asyncio.create_task(app.on_message(message))
+    await admitted.wait()
+    summary = await app._cancel_user_work(
+        user_id="123",
+        channel_id=str(message.channel.id),
+        root_key="resolved-root",
+        all_work=False,
+    )
+    await turn
+
+    assert summary.startswith("Stopped 1 active response(s).")
+    assert (await app.turn_admission.snapshot()).active_total == 0
+
+
+@pytest.mark.asyncio
+async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.context_manager = cast(ContextManager, object())
+    app.blocked_user_store = None
+    app.turn_admission = TurnAdmissionController(max_active=2, max_active_per_user=2)
+    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+
+    async def resolve(message: Any, *, allow_new_root: bool) -> ResolvedConversation:
+        assert allow_new_root is True
+        return ResolvedConversation(
+            key=f"root-{message.id}",
+            db_conversation_id=None,
+            owner_user_id=str(message.author.id),
+        )
+
+    monkeypatch.setattr(app, "resolve_conversation_for_message", resolve)
+    reaction_started = {1: asyncio.Event(), 2: asyncio.Event()}
+
+    async def block_processing_reaction(message: Any, emoji: str) -> None:
+        assert emoji == "⏳"
+        reaction_started[message.id].set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app.discord_gateway, "add_status_reaction", block_processing_reaction)
+    monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", AsyncMock())
+    first_message = _trigger_message(
+        content="<@999> first root",
+        author_id=123,
+        author_name="Alice",
+        message_id=1,
+    )
+    second_message = _trigger_message(
+        content="<@999> second root",
+        author_id=123,
+        author_name="Alice",
+        message_id=2,
+    )
+
+    first = asyncio.create_task(app.on_message(first_message))
+    second = asyncio.create_task(app.on_message(second_message))
+    await asyncio.gather(*(event.wait() for event in reaction_started.values()))
+
+    summary = await app._cancel_user_work(
+        user_id="123",
+        channel_id=str(first_message.channel.id),
+        root_key="root-1",
+        all_work=False,
+    )
+
+    assert summary.startswith("Stopped 1 active response(s).")
+    assert first.done()
+    assert not second.done()
+
+    second.cancel()
+    await second
+    assert (await app.turn_admission.snapshot()).active_total == 0
+
+
 def test_blocked_user_is_ignored_before_status_and_turn(monkeypatch):
     app = _build_test_app(monkeypatch)
     app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
@@ -1631,6 +1735,110 @@ def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
     # The ⏳ ack went out before the lock, so it has to be cleaned up.
     message.add_reaction.assert_awaited_once_with("⏳")
     remove_reaction.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_processing_reaction_add_still_removes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.conversation_store = None
+    app.settings.allowed_channel_ids = ""
+
+    reaction_accepted = asyncio.Event()
+
+    async def accepted_add(_message: discord.Message, _emoji: str) -> None:
+        # Model Discord accepting the reaction before the HTTP await returns.
+        reaction_accepted.set()
+        await asyncio.Event().wait()
+
+    remove_reaction = AsyncMock()
+    monkeypatch.setattr(app.discord_gateway, "add_status_reaction", accepted_add)
+    monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", remove_reaction)
+    message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
+
+    routing = asyncio.create_task(app._on_message_for_user(message))
+    await reaction_accepted.wait()
+    routing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await routing
+
+    remove_reaction.assert_awaited_once_with(message, "⏳")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.conversation_store = None
+    app.settings.allowed_channel_ids = ""
+    monkeypatch.setattr(app, "_should_respond", lambda _message: True)
+    monkeypatch.setattr(
+        app,
+        "handle_message",
+        AsyncMock(return_value=TurnResult(response_text="done")),
+    )
+
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+
+    async def slow_remove(_message: discord.Message, _emoji: str) -> None:
+        cleanup_started.set()
+        try:
+            await release_cleanup.wait()
+        except asyncio.CancelledError:
+            cleanup_cancelled.set()
+            raise
+        cleanup_finished.set()
+
+    monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", slow_remove)
+    message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
+
+    routing = asyncio.create_task(app._on_message_for_user(message))
+    await cleanup_started.wait()
+    routing.cancel()
+    await asyncio.sleep(0)
+    cancellation_propagated_before_cleanup = routing.done()
+    removal_was_cancelled = cleanup_cancelled.is_set()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await routing
+
+    assert cancellation_propagated_before_cleanup is False
+    assert removal_was_cancelled is False
+    assert cleanup_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_processing_reaction_cleanup_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+
+    async def stuck_remove(_message: discord.Message, _emoji: str) -> None:
+        cleanup_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_cancelled.set()
+            raise
+
+    monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", stuck_remove)
+    monkeypatch.setattr(app_runtime, "_STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
+
+    await app._remove_processing_reaction(message)
+    await cleanup_started.wait()
+    await cleanup_cancelled.wait()
 
 
 def test_root_lock_evicts_entry_after_release(monkeypatch):

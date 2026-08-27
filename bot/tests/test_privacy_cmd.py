@@ -350,6 +350,7 @@ async def test_confirmation_workflow_is_tracked_while_authorization_is_in_flight
     authorization_started = asyncio.Event()
     release_authorization = asyncio.Event()
     events: list[str] = []
+    available = True
 
     class _SlowRequestStore:
         async def request(self, **kwargs: object) -> PrivacyDeletionRequest:
@@ -392,6 +393,7 @@ async def test_confirmation_workflow_is_tracked_while_authorization_is_in_flight
         auto_retain_watermarks=None,
         deletion_request_store=cast(Any, _SlowRequestStore()),
         privacy_barrier=UserPrivacyBarrier(),
+        is_available=lambda: available,
     )
     interaction = cast(
         Any,
@@ -408,6 +410,7 @@ async def test_confirmation_workflow_is_tracked_while_authorization_is_in_flight
 
     callback = asyncio.create_task(button.callback(interaction))
     await authorization_started.wait()
+    available = False
     draining = asyncio.create_task(drain_confirmed_privacy_deletions())
     await asyncio.sleep(0)
 
@@ -420,6 +423,159 @@ async def test_confirmation_workflow_is_tracked_while_authorization_is_in_flight
 
     assert events.index("authorization-commit") < events.index("discord-defer")
     assert events[-2:] == ["request-complete", "discord-result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", ["Yes, delete", "Cancel"])
+async def test_confirmation_rechecks_readiness_when_click_waits_to_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+) -> None:
+    available = True
+    deletion_calls = 0
+
+    async def deletion(**_kwargs: object) -> privacy_cmd_module.PrivacyDeletionOutcome:
+        nonlocal deletion_calls
+        deletion_calls += 1
+        return privacy_cmd_module.PrivacyDeletionOutcome(ok=True, lines=["Deleted."])
+
+    monkeypatch.setattr(privacy_cmd_module, "run_privacy_deletion", deletion)
+
+    class _InteractionResponse:
+        def __init__(self) -> None:
+            self.sent: list[tuple[object, dict[str, object]]] = []
+            self.edited: list[dict[str, object]] = []
+
+        async def send_message(self, content: object = None, **kwargs: object) -> None:
+            self.sent.append((content, kwargs))
+
+        async def edit_message(self, **kwargs: object) -> None:
+            self.edited.append(kwargs)
+
+    view = privacy_cmd_module._DeleteConfirmView(
+        author_id=42,
+        scope="memory",
+        workspace_manager=_UNUSED_WORKSPACE.manager,
+        workspace_locks=_UNUSED_WORKSPACE.locks,
+        conversation_store=cast(Any, _FakeConversationStore()),
+        preference_store=cast(Any, _FakePreferenceStore()),
+        memory_client=None,
+        auto_retain_watermarks=None,
+        is_available=lambda: available,
+    )
+    button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == label),
+    )
+    response = _InteractionResponse()
+
+    async def edit_original_response(**_kwargs: object) -> None:
+        raise AssertionError("unavailable confirmation unexpectedly edited its response")
+
+    interaction = cast(
+        Any,
+        SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            response=response,
+            edit_original_response=edit_original_response,
+        ),
+    )
+
+    await view._decision_lock.acquire()
+    clicking = asyncio.create_task(button.callback(interaction))
+    await asyncio.sleep(0)
+    available = False
+    view._decision_lock.release()
+    await clicking
+
+    assert deletion_calls == 0
+    assert view._resolved is False
+    assert response.edited == []
+    assert response.sent == [("This deletion prompt is no longer available.", {"ephemeral": True})]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_atomically_claims_one_concurrent_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deletion_started = asyncio.Event()
+    release_deletion = asyncio.Event()
+    deletion_calls = 0
+
+    async def slow_deletion(**_kwargs: object) -> privacy_cmd_module.PrivacyDeletionOutcome:
+        nonlocal deletion_calls
+        deletion_calls += 1
+        deletion_started.set()
+        await release_deletion.wait()
+        return privacy_cmd_module.PrivacyDeletionOutcome(ok=True, lines=["Data deleted."])
+
+    monkeypatch.setattr(privacy_cmd_module, "run_privacy_deletion", slow_deletion)
+
+    class _InteractionResponse:
+        def __init__(self) -> None:
+            self.sent: list[tuple[object, dict[str, object]]] = []
+            self.edited: list[dict[str, object]] = []
+
+        async def defer(self) -> None:
+            return None
+
+        async def edit_message(self, **kwargs: object) -> None:
+            self.edited.append(kwargs)
+
+        async def send_message(self, content: object = None, **kwargs: object) -> None:
+            self.sent.append((content, kwargs))
+
+    async def edit_original_response(**_kwargs: object) -> None:
+        return None
+
+    view = privacy_cmd_module._DeleteConfirmView(
+        author_id=42,
+        scope="memory",
+        workspace_manager=_UNUSED_WORKSPACE.manager,
+        workspace_locks=_UNUSED_WORKSPACE.locks,
+        conversation_store=cast(Any, _FakeConversationStore()),
+        preference_store=cast(Any, _FakePreferenceStore()),
+        memory_client=None,
+        auto_retain_watermarks=None,
+    )
+    confirm_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Yes, delete"),
+    )
+    cancel_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Cancel"),
+    )
+    confirm_response = _InteractionResponse()
+    cancel_response = _InteractionResponse()
+    confirm_interaction = cast(
+        Any,
+        SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            response=confirm_response,
+            edit_original_response=edit_original_response,
+        ),
+    )
+    cancel_interaction = cast(
+        Any,
+        SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            response=cancel_response,
+            edit_original_response=edit_original_response,
+        ),
+    )
+
+    confirming = asyncio.create_task(confirm_button.callback(confirm_interaction))
+    await deletion_started.wait()
+    await cancel_button.callback(cancel_interaction)
+    release_deletion.set()
+    await confirming
+
+    assert deletion_calls == 1
+    assert cancel_response.edited == []
+    assert cancel_response.sent == [
+        ("This deletion choice has already been handled.", {"ephemeral": True})
+    ]
 
 
 @pytest.mark.asyncio

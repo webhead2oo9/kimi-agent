@@ -217,6 +217,50 @@ async def test_concurrent_ready_starts_one_attachment_and_workspace_sweeper_pair
 
 
 @pytest.mark.asyncio
+async def test_concurrent_ready_installs_one_nonblocking_video_sweeper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
+    app.workspace_sweeper_started = True
+    app.video_session_store = cast(Any, object())
+    app._guild_activation_refresh_task = cast(asyncio.Task, object())
+    sweep_started = asyncio.Event()
+    release_sweep = asyncio.Event()
+    sweep_calls = 0
+
+    class BlockingVideoService:
+        async def sweep(self, *, now: float | None = None) -> tuple[int, bool]:
+            nonlocal sweep_calls
+            sweep_calls += 1
+            sweep_started.set()
+            await release_sweep.wait()
+            return 0, True
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_sync(*, guild: object | None = None) -> list[object]:
+        assert guild is None
+        return []
+
+    app.tools.video_service = cast(Any, BlockingVideoService())
+    monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
+    monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
+
+    await asyncio.wait_for(asyncio.gather(app.on_ready(), app.on_ready()), timeout=0.5)
+    await asyncio.wait_for(sweep_started.wait(), timeout=0.5)
+
+    assert sweep_calls == 1
+    assert app.video_session_sweeper_started is True
+    assert app._video_session_sweeper_task is not None
+    release_sweep.set()
+    app._guild_activation_refresh_task = None
+    await app.close()
+
+
+@pytest.mark.asyncio
 async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -413,6 +457,27 @@ async def test_close_cancels_activation_refresher(monkeypatch: pytest.MonkeyPatc
 
     assert task.cancelled()
     assert app._guild_activation_refresh_task is None
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_video_session_sweeper(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _build_test_app(monkeypatch)
+    started = asyncio.Event()
+
+    async def blocked_sweeper() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(blocked_sweeper())
+    await started.wait()
+    app._video_session_sweeper_task = task
+    app.video_session_sweeper_started = True
+
+    await app.close()
+
+    assert task.cancelled()
+    assert app._video_session_sweeper_task is None
+    assert app.video_session_sweeper_started is False
 
 
 @pytest.mark.asyncio

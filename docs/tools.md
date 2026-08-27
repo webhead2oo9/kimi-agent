@@ -84,6 +84,21 @@ which provider answered. A search that found nothing says so in as many words,
 so the model can tell an empty web from a broken provider. See
 [Internet search](internet-search.md).
 
+## Video understanding
+
+| Tool | Visibility | Tier | Purpose and availability |
+|---|---|---|---|
+| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true and `GEMINI_API_KEY` is set. |
+
+`start` sends a canonical public YouTube URL and a specific question;
+`ask` continues through Gemini's stored `previous_interaction_id`. Local opaque
+handles are rechecked against the current user, guild, rooted conversation, and
+expiry on every call. Results are structured, timestamped, and untrusted.
+Sessions default to a 24-hour idle lifetime, while an hourly deletion outbox
+removes known provider Interactions after expiry, transcript retention, or a
+full `/privacy` deletion. See [Video understanding](video-understanding.md) for
+configuration, caching, limits, provider retention, and the threat model.
+
 ## Workspace and files
 
 All of the workspace tools are member-tier and operate only inside the current

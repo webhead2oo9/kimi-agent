@@ -50,7 +50,10 @@ from tools.threads import (
     ThreadTargetResolver,
     init_thread_tools,
 )
+from tools.video import init_video_tool
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
+from video_understanding.client import GeminiVideoClient
+from video_understanding.service import VideoUnderstandingService
 from web_browser.service import BrowserService, BrowserServiceConfig
 from web_browser.visual_service import VisualService
 
@@ -82,6 +85,7 @@ class RuntimeTools:
     script_semaphore: asyncio.Semaphore
     reload_executable_skill_tools: Callable[[], int]
     browser_service: BrowserService
+    video_service: VideoUnderstandingService
     code_sandbox_config: SandboxConfig | None = None
     code_exec_guards: CodeExecRuntimeGuards | None = None
     plugin_load_state: PluginLoadState = field(default_factory=PluginLoadState)
@@ -97,6 +101,7 @@ def build_runtime_tools(
     *,
     get_preference_store: Callable[[], Any | None] | None = None,
     get_blocked_user_store: Callable[[], BlockedUserStoreProtocol | None] | None = None,
+    get_video_session_store: Callable[[], Any | None] | None = None,
     get_thread_handoff: Callable[[], Any | None] | None = None,
     resolve_thread_target: ThreadTargetResolver | None = None,
     can_manage_thread: ThreadLifecyclePermissionChecker | None = None,
@@ -144,6 +149,11 @@ def build_runtime_tools(
         init_block_user_tool(registry, get_blocked_user_store)
     _register_discord_text_search(settings, registry)
     _register_internet_search(settings, registry)
+    video_service = _register_video(
+        settings,
+        registry,
+        get_video_session_store or (lambda: None),
+    )
     workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
         registry,
@@ -256,6 +266,7 @@ def build_runtime_tools(
         script_semaphore=script_semaphore,
         reload_executable_skill_tools=reload_executable_skill_tools,
         browser_service=browser_service,
+        video_service=video_service,
         code_sandbox_config=code_sandbox_config,
         code_exec_guards=code_exec_guards if code_sandbox_config is not None else None,
         plugin_load_state=plugin_load_state,
@@ -276,6 +287,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("thread handoff creation", ("move_to_thread",), "THREAD_HANDOFF_ENABLED"),
     ("discord search", ("discord_text_search",), "DISCORD_SEARCH_CHANNELS"),
     ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
+    (
+        "video understanding",
+        ("video",),
+        "VIDEO_UNDERSTANDING_ENABLED + GEMINI_API_KEY",
+    ),
     ("code execution", ("run_code",), "CODE_EXEC_ENABLED + Linux sandbox support"),
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
     (
@@ -371,6 +387,36 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
         ),
     )
     log.info("Internet search enabled with providers: %s", ", ".join(b.name for b in backends))
+
+
+def _register_video(
+    settings: Settings,
+    registry: ToolRegistry,
+    get_store: Callable[[], Any | None],
+) -> VideoUnderstandingService:
+    key = settings.gemini_api_key.get_secret_value().strip()
+    service = VideoUnderstandingService(
+        client=(
+            GeminiVideoClient(
+                key,
+                max_concurrency=settings.video_understanding_max_concurrency,
+            )
+            if key
+            else None
+        ),
+        get_store=get_store,
+    )
+    if not settings.video_understanding_enabled:
+        log.info("Video understanding disabled; VIDEO_UNDERSTANDING_ENABLED is false")
+        return service
+    if not key:
+        log.warning(
+            "Video understanding requested but GEMINI_API_KEY is not set; tool not registered"
+        )
+        return service
+    init_video_tool(registry, service)
+    log.info("Video understanding enabled with Gemini 3.7 Flash")
+    return service
 
 
 def _register_code_exec(

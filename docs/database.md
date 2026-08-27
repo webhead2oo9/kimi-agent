@@ -5,10 +5,11 @@ The bot uses async SQLite through `storage/db.py`, with the database path set by
 state: it holds rooted conversations, Discord reply routing, user preferences,
 privacy consent, moderation blocks, the operator's global chat-model selection,
 managed-thread state, LLM and paid-tool usage ledgers, durable authorization for
-confirmed privacy deletions, cached image distillations, memory auto-retain
-watermarks, and per-user Hindsight bank tracking.
+confirmed privacy deletions, cached image distillations, stateful video-session
+handles and provider-deletion retries, memory auto-retain watermarks, and
+per-user Hindsight bank tracking.
 
-The core database is schema v2. A newer core database is left alone and
+The core database is schema v3. A newer core database is left alone and
 rejected, so an older bot cannot accidentally use it. Optional application
 modules own their own independent schemas and versions.
 
@@ -130,6 +131,18 @@ authoritative.
   remote Hindsight bank may exist. The flag is written *before* any create or
   retain attempt and cleared only after a confirmed delete, so disabling the
   backend cannot hide a bank from the privacy workflow.
+- **`video_sessions`** holds one actor/root/guild-scoped public-YouTube
+  specialist session: opaque local handle, canonical URL/video id, model,
+  latest Gemini Interaction id, count, and expiry. It stores no questions or
+  answers.
+- **`video_interactions`** records every Gemini Interaction id in each session,
+  so deleting only the latest turn cannot strand earlier provider state.
+- **`video_interaction_deletions`** is the content-free provider deletion
+  outbox. A trigger fills it before session/cascade deletion, and rows survive
+  without a foreign key until Google's delete endpoint succeeds or reports the
+  Interaction already absent. Failed attempts use a capped one-minute-to-six-
+  hour exponential delay; retry-ready rows sort ahead of delayed failures, and
+  attempt count never causes privacy cleanup metadata to be discarded.
 
 ### Operations
 
@@ -162,7 +175,8 @@ authoritative.
 - **`schema_version`** records the version the database has reached.
 
 The coding tables began in schema v1. Schema v2 adds the task's display summary,
-bounded conversation context, and input-file metadata.
+bounded conversation context, and input-file metadata. Schema v3 adds the
+stateful video-session tables and provider deletion outbox.
 
 ## Model, paid-tool, and bounded-tool usage
 
@@ -173,9 +187,11 @@ and those rows share a `turn_id` so they can be reported as one interaction.
 
 Each row records the user, channel, server, model, purpose, token counts,
 timestamp, and an optional estimated cost. It does not store prompts or model
-responses. Cost estimates use the `pricing` rates for the model in
+responses. Cost estimates normally use the `pricing` rates for the model in
 `config/models.yaml`; when the required rates are not configured, the usage
-simply remains unpriced.
+remains unpriced. The fixed Gemini video specialist is the exception: its tool
+attaches Google's published, date-scheduled Gemini 3.7 Flash estimate directly,
+without adding that specialist to chat routing.
 
 Rows are saved as each model request finishes, so if a later request fails or
 the overall interaction times out, usage from the completed requests is still
@@ -207,7 +223,9 @@ thread conversation is not removed midway through use. Set
 
 A background task removes expired conversations in bounded batches. Removing a
 conversation also removes its message-routing records, activated tools,
-managed thread state, memory-retention markers, and cached image descriptions.
+managed thread state, memory-retention markers, cached image descriptions, and
+local video sessions. A trigger first moves every known Gemini Interaction id
+into the independent provider-deletion outbox.
 Each batch is removed in one database transaction, so a failure cannot leave a
 partially deleted transcript behind.
 
@@ -238,6 +256,12 @@ could write to affected conversations are allowed to finish before deletion
 starts. If the bot stops or a dependency fails, the request remains pending and
 resumes after restart, and repeating a deletion is safe.
 
+Full deletion also removes every video session initiated by that user, including
+sessions in a shared root that survives, and attempts provider deletion for the
+complete Gemini Interaction chain. A provider failure leaves the content-free
+outbox pending for retry, but does not keep the privacy request or user activity
+barrier open after local deletion succeeds.
+
 Deleting SQLite transcript data leaves both usage ledgers alone, and it leaves
 active rate-limit markers alone too: a capacity limit anyone can reset by
 deleting their data is not a limit. Those markers age out on their own, pruned
@@ -256,23 +280,25 @@ it walks the registered migrations from the stored version up to
 `SCHEMA_VERSION`. Each migration and its version record are committed together,
 so a failed migration leaves the database at its previous version.
 
-Schema v2, `coding_task_context_inputs`, is the first shipped core migration.
-It adds durable context and input metadata to coding tasks. Future changes add
+Schema v2, `coding_task_context_inputs`, adds durable context and input metadata
+to coding tasks. Schema v3, `video_understanding_sessions`, adds the video
+session and deletion-outbox tables. Future changes add
 an entry keyed by the version they produce, paired with a permanent name for
 the history row:
 
 ```python
-async def _migrate_v2_to_v3(conn: aiosqlite.Connection) -> None:
+async def _migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
     await conn.execute("ALTER TABLE conversations ADD COLUMN locale TEXT")
 
 
 _MIGRATIONS: dict[int, Migration] = {
     2: ("coding_task_context_inputs", _migrate_v1_to_v2),
-    3: ("conversation_locale", _migrate_v2_to_v3),
+    3: ("video_understanding_sessions", _migrate_v2_to_v3),
+    4: ("conversation_locale", _migrate_v3_to_v4),
 }
 ```
 
-`SCHEMA_VERSION` moves to `3` in the same change. Leaving a version in the
+`SCHEMA_VERSION` moves to `4` in the same change. Leaving a version in the
 range unregistered raises at startup on both the fresh and the upgrade path,
 rather than creating a database that claims a version nothing built. A
 migration runs inside its own transaction, so it only has to do its own work;

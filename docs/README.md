@@ -30,6 +30,8 @@ the subsystem it covers.
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and
   guild, and how that containment works.
+- [Video understanding](video-understanding.md): stateful Gemini analysis of
+  public YouTube videos, session scope, caching, limits, and deletion.
 - [Code execution](code-exec.md): the Linux sandbox boundary, network modes,
   deployment, quotas, and operator verification.
 - [Durable coding agent](coding-agent.md): background planning, managed jobs,

@@ -33,6 +33,36 @@ class BrowserProfileStore(Protocol):
     async def sweep_expired(self) -> int: ...
 
 
+class VideoSessionLifecycle(Protocol):
+    async def sweep(self, *, now: float | None = None) -> tuple[int, bool]: ...
+
+
+async def sweep_video_sessions_once(service: VideoSessionLifecycle) -> tuple[int, bool]:
+    """Expire local sessions and best-effort the provider deletion outbox."""
+    try:
+        removed, complete = await service.sweep(now=time.time())
+        if removed:
+            log.info("Video session sweep: expired %d session(s)", removed)
+        if not complete:
+            log.warning("Video session sweep left provider deletions queued for retry")
+        return removed, complete
+    except Exception:
+        log.exception("Video session sweep failed")
+        return 0, False
+
+
+async def video_session_sweeper(
+    service: VideoSessionLifecycle,
+    *,
+    sweep_interval: int,
+) -> None:
+    # Run the startup pass inside the installed background task. READY must not
+    # wait for a potentially large or network-degraded provider cleanup queue.
+    while True:
+        await sweep_video_sessions_once(service)
+        await asyncio.sleep(sweep_interval)
+
+
 async def sweep_attachment_orphans_once(
     store: AttachmentOrphanStore,
     *,

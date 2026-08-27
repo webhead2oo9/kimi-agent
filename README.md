@@ -1,48 +1,53 @@
 # Kimi
 
-> A self-hosted Discord assistant with a provider-neutral tool loop.
+> A Discord assistant you actually run yourself: your host, your model, your rules.
 
 ![Python](https://img.shields.io/badge/python-3.14+-blue.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 
-You run Kimi on your own host, against your own LLM provider: OpenAI-compatible,
-Anthropic, OpenRouter, or Codex, swapped in `config/models.yaml` without touching
-the agent core.
+Kimi is a bot for communities that want an AI helper without handing the whole
+thing to a hosted service. You point it at whatever LLM you like (OpenAI-compatible,
+Anthropic, OpenRouter, or Codex) in one YAML file, give each server or channel its
+own persona and house rules in plain Markdown, and it takes it from there.
 
-It responds to an @mention, a pinged reply, an explicit `hey/hi Kimi` or
-`Kimi help`, or an unmentioned message in an auto-responding managed thread.
-Paused managed threads use the ordinary invocation rules, and DMs are ignored.
-Each invocation runs a [ReAct](https://arxiv.org/abs/2210.03629) tool loop,
-replying with Discord-safe chunking, embeds, and attachments.
+It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
+`Kimi help`, or a message inside a thread it's running. DMs are ignored. Under the
+hood, every invocation runs a [ReAct](https://arxiv.org/abs/2210.03629) tool loop
+and comes back with a properly chunked Discord reply, embeds and attachments
+included.
 
-Persona, rules, and subject matter come from per-server and per-channel
-instruction fragments rather than from the code, so one deployment can serve
-several communities without forking the application.
+Roughly what that looks like:
+
+> **@you:** hey Kimi, what did we decide about the raid schedule last week?
+>
+> **Kimi:** Searching `#planning`… you settled on Thursdays at 8pm UTC, and
+> Sam volunteered to post reminders. Want me to pin that in a thread?
 
 ## What it can do
 
-| Capability | In short |
-|---|---|
-| **Multiple providers** | Route chat, compaction, and optional durable coding models via `config/models.yaml`: OpenAI-compatible, Anthropic, OpenRouter, or Codex. The agent core never sees provider types. |
-| **Trust-tiered tools** | `MEMBER < REGULAR < STAFF`, resolved from Discord roles and enforced at dispatch, not by prompt wording. |
-| **Long-term memory** | Optional per-user memory banks via [Hindsight](https://github.com/vectorize-io/hindsight), with recall, reflection, opt-out, and staff-taught community knowledge. |
-| **Per-user workspaces** | File read/write/edit, archive extraction, document-to-text, and URL fetch, with path, size, quota, and TTL caps enforced by the application. |
-| **Durable coding agent** | Optionally hand large repository work to a separately routed background worker that persists progress, runs managed sandbox jobs, recovers after restarts, and can be steered or cancelled. |
-| **Video understanding** | Optionally ask a stateful Gemini 3.7 Flash specialist about public YouTube videos or uploaded Discord/workspace clips, with rooted follow-ups and timestamped evidence. |
-| **Persistent browser** | Optional per-user BetterWright profiles for interactive web tasks, isolated with Bubblewrap/systemd/seccomp and routed over the host network or a fixed VPN namespace. |
-| **Visual rendering** | A searchable call renders accessible fixed-style charts or constrained Mermaid diagrams as PNG attachments through an ephemeral offline browser worker. |
-| **Skills** | Staff-managed Markdown instruction docs plus operator-authored script tools that run under mandatory Linux isolation with networking denied by default. |
-| **Managed threads** | Hand a conversation into a bot-owned thread and keep the transcript intact across the move. |
-| **Discord context** | Pull recent channel history on demand and, when enabled, search selected channels without persisting what it reads. |
-| **Safety and moderation** | Privacy consent, LLM content moderation, user blocks, moderation cases and staff logs, and known-bad image fingerprint matching. |
-| **Operator plugins** | Add community-specific tools from your own packages through an explicit allowlist. |
+Plain chat works out of the box. Everything below is opt-in and stays off until
+you configure it.
 
-Foreground chat turns are stateless, and each conversation is keyed to the
-message that started it and persisted in SQLite, so a reply continues its own
-thread even across restarts. The optional video specialist is a deliberate
-actor-scoped stateful tool behind the rooted conversation. Optional subsystems stay
-off until configured.
+| | |
+|---|---|
+| **Any provider** | Chat, compaction, and an optional background coding model each get their own route in `config/models.yaml`, with fallbacks. The agent core never learns which vendor it's talking to. |
+| **Trust tiers** | `MEMBER < REGULAR < STAFF`, taken from Discord roles. Who can use which tool is enforced in code at dispatch time, not by asking the model nicely. |
+| **Memory** | Per-user long-term memory via [Hindsight](https://github.com/vectorize-io/hindsight): recall, reflection, opt-out, and staff-taught community knowledge. |
+| **Workspaces** | Each user gets a sandboxed folder: read, write, edit, unzip, pull text out of documents, fetch URLs. Sizes, quotas, and TTLs are capped by the app. |
+| **Coding agent** | Hand bigger repo jobs to a background worker that keeps its own progress, runs sandboxed jobs, survives restarts, and can be steered or cancelled. |
+| **Video** | Ask about a YouTube link or an uploaded clip and get timestamped answers, with follow-up questions in the same conversation. |
+| **Browser** | Per-user persistent browser profiles for real web tasks, locked down with Bubblewrap/systemd/seccomp and optionally routed through a VPN namespace. |
+| **Charts and diagrams** | Render accessible charts or Mermaid diagrams to PNG through an ephemeral, offline browser worker. |
+| **Skills** | Staff-written Markdown playbooks, plus operator-authored script tools that run under mandatory Linux isolation with no network unless you say so. |
+| **Threads** | Move a conversation into a bot-owned thread without losing the transcript. |
+| **Discord context** | Pull recent channel history on demand, or search chosen channels, without persisting what it reads. |
+| **Safety** | Privacy consent, LLM output moderation, user blocks, moderation cases with staff logs, and known-bad image fingerprint matching. |
+| **Plugins** | Add your own tools from your own packages via an explicit allowlist. |
+
+Turns are stateless and every conversation is keyed to the message that started
+it, stored in SQLite, so replying to an old answer picks the thread back up even
+after a restart.
 
 ## Repository layout
 
@@ -51,14 +56,14 @@ bot/     the application (source, config templates, tests, deployment files)
 docs/    the project documentation (setup, architecture, per-subsystem reference)
 ```
 
-All commands run from `bot/`, and CI (`.github/workflows/ci.yml`) audits locked
-dependencies and runs lint, types, and the test suite from there too.
+Everything runs from `bot/`, CI included (`.github/workflows/ci.yml` audits
+locked dependencies and runs lint, types, and tests from there).
 
 ## Quick start
 
-You'll need Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot
-token, and access to at least one LLM provider. Most providers use an API key;
-Codex uses a token file, and some gateways inject credentials upstream.
+You'll need Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot token,
+and one LLM provider you can reach. Most want an API key; Codex uses a token file,
+and some gateways inject credentials upstream.
 
 ```bash
 cd bot
@@ -69,20 +74,20 @@ cp config/models.example.yaml config/models.yaml
 
 Then fill in two files:
 
-- **`.env`**: set `DISCORD_BOT_TOKEN`, `ALLOWED_GUILD_IDS`, and any credential
+- **`.env`**: `DISCORD_BOT_TOKEN`, `ALLOWED_GUILD_IDS`, and whatever credential
   variables your `models.yaml` references (for example `MODEL_API_KEY`).
-- **`config/models.yaml`**: replace every placeholder endpoint and model ID,
-  and set accurate context windows, capabilities, roles, and fallbacks.
+- **`config/models.yaml`**: swap out every placeholder endpoint and model ID, and
+  be honest about context windows, capabilities, roles, and fallbacks.
 
 ```bash
 uv run python bot.py
 ```
 
-Always use `uv run`; a bare `python` or `pytest` picks up an interpreter
-without the locked dependencies. [docs/setup.md](docs/setup.md) walks a first
-deployment end to end, and [docs/development.md](docs/development.md) shows how
-to run a second instance against a test guild without touching production
-state.
+Always go through `uv run`; a bare `python` or `pytest` finds an interpreter
+without the locked dependencies and fails in confusing ways.
+[docs/setup.md](docs/setup.md) walks a first deployment end to end, and
+[docs/development.md](docs/development.md) shows how to run a second instance
+against a test guild without touching production state.
 
 ## Where to go next
 

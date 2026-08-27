@@ -171,6 +171,59 @@ def test_chart_validation_rejects_conditional_fields_and_nonfinite_values() -> N
         )
 
 
+def test_visual_validation_accepts_neutral_flat_schema_placeholders() -> None:
+    chart = validate_visual_request(
+        {
+            "kind": "chart",
+            "chart_type": "line",
+            "title": "Build times",
+            "x_label": "Build",
+            "y_label": "Seconds",
+            "alt_text": "Build times fall over six builds.",
+            "categories": ["1", "2"],
+            "series": [
+                {"name": "Optimized", "values": [42, 37], "points": []},
+            ],
+            "source": "",
+        }
+    )
+    assert chart.chart_type == "line"
+    assert chart.series[0].values == (42.0, 37.0)
+
+    scatter = validate_visual_request(
+        {
+            "kind": "chart",
+            "chart_type": "scatter",
+            "title": "Latency",
+            "x_label": "Payload",
+            "y_label": "Milliseconds",
+            "alt_text": "Latency rises with payload size.",
+            "categories": [],
+            "series": [
+                {"name": "Requests", "values": [], "points": [{"x": 1, "y": 2}]},
+            ],
+            "source": "",
+        }
+    )
+    assert scatter.chart_type == "scatter"
+    assert scatter.series[0].points[0].x == 1.0
+
+    mermaid = validate_visual_request(
+        {
+            "kind": "mermaid",
+            "chart_type": "bar",
+            "title": "Request flow",
+            "x_label": "",
+            "y_label": "",
+            "alt_text": "A request flows from validation to response.",
+            "categories": [],
+            "series": [],
+            "source": "flowchart LR\nA[Request] --> B[Response]",
+        }
+    )
+    assert mermaid.kind == "mermaid"
+
+
 @pytest.mark.parametrize(
     "source",
     [

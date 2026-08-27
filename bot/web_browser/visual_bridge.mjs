@@ -148,8 +148,10 @@ await page.setContent(\`<!doctype html><html><head><meta charset="utf-8"><style>
 #diagram{width:1200px;height:623px;display:flex;align-items:center;justify-content:center;padding:12px 22px 20px}
 #diagram svg{display:block;max-width:1156px!important;max-height:591px!important;width:auto!important;height:auto!important}
 </style></head><body><main id="visual" role="img"><div id="title"></div><div id="diagram"></div></main></body></html>\`);
-await page.locator('#visual').setAttribute('aria-label', INPUT.alt_text);
-await page.locator('#title').evaluate((node, title) => { node.textContent = title || ''; }, INPUT.title);
+await page.evaluate(({ altText, title }) => {
+  document.querySelector('#visual').setAttribute('aria-label', altText);
+  document.querySelector('#title').textContent = title || '';
+}, { altText: INPUT.alt_text, title: INPUT.title });
 if (INPUT.kind === 'mermaid') {
   await page.addScriptTag({ content: MERMAID_BUNDLE });
   await page.evaluate(async (source) => {
@@ -186,14 +188,14 @@ if (INPUT.kind === 'mermaid') {
         }
         if (
           (name === 'style' || element.tagName.toLowerCase() === 'style') &&
-          (/expression\s*\(/i.test(value) || /@import/i.test(value) || /url\s*\(\s*(?!#)/i.test(value))
+          (/expression\\s*\\(/i.test(value) || /@import/i.test(value) || /url\\s*\\(\\s*(?!#)/i.test(value))
         ) {
           throw new Error('Mermaid produced unsafe CSS');
         }
       }
       if (element.tagName.toLowerCase() === 'style') {
         const css = element.textContent || '';
-        if (/expression\s*\(/i.test(css) || /@import/i.test(css) || /url\s*\(\s*(?!#)/i.test(css)) {
+        if (/expression\\s*\\(/i.test(css) || /@import/i.test(css) || /url\\s*\\(\\s*(?!#)/i.test(css)) {
           throw new Error('Mermaid produced unsafe CSS');
         }
       }
@@ -332,10 +334,19 @@ try {
     throw new Error(String(result?.error || "render failed"));
   }
   const artifact = result.result.output;
-  if (!artifact.startsWith("/work/artifacts/") || !artifact.endsWith("/render.png")) {
+  if (!artifact.startsWith("/work/artifacts/") || !artifact.toLowerCase().endsWith(".png")) {
     throw new Error("renderer returned an invalid artifact path");
   }
-  const bytes = await fs.readFile(artifact);
+  const artifactInfo = await fs.lstat(artifact);
+  const resolvedArtifact = await fs.realpath(artifact);
+  if (
+    !artifactInfo.isFile() ||
+    artifactInfo.isSymbolicLink() ||
+    !resolvedArtifact.startsWith("/work/artifacts/")
+  ) {
+    throw new Error("renderer returned an unsafe artifact path");
+  }
+  const bytes = await fs.readFile(resolvedArtifact);
   if (bytes.length < 24 || bytes.length > MAX_OUTPUT_BYTES || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
     throw new Error("renderer produced an invalid PNG");
   }

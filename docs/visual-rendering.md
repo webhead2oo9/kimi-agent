@@ -80,6 +80,13 @@ The result contains only safe metadata: visual kind, chart type when relevant,
 filename, title, alt text, dimensions, byte size, and attachment status. It
 never exposes a host path, browser profile, HTML, SVG, or generated script.
 
+The public tool uses one flat, provider-neutral schema because some model APIs
+do not accept conditional JSON Schema branches. Providers that materialize
+every property may therefore send empty placeholders for the inactive visual
+kind, such as `source: ""` on a chart or empty chart arrays on a Mermaid call.
+The validator ignores only those neutral placeholders; non-empty fields for the
+wrong visual kind remain errors.
+
 ## Supported visuals and limits
 
 Charts support bar, line, and scatter forms with up to eight series, 250 points

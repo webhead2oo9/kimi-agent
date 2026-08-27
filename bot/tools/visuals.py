@@ -77,6 +77,17 @@ def _unknown_fields(args: dict[str, Any], allowed: frozenset[str], scope: str) -
         raise ValueError(f"unknown {scope} field(s): {', '.join(unknown)}")
 
 
+def _without_neutral_fields(
+    value: dict[str, Any], neutral_fields: dict[str, object]
+) -> dict[str, Any]:
+    """Drop harmless placeholders emitted for inactive flat-schema branches."""
+    normalized = dict(value)
+    for name, neutral in neutral_fields.items():
+        if normalized.get(name) == neutral:
+            normalized.pop(name, None)
+    return normalized
+
+
 def _text(
     value: object,
     name: str,
@@ -117,6 +128,10 @@ def _list(value: object, name: str) -> list[Any]:
 
 
 def _validate_mermaid(args: dict[str, Any], title: str, alt_text: str) -> VisualRenderRequest:
+    args = _without_neutral_fields(
+        args,
+        {"chart_type": "bar", "x_label": "", "y_label": "", "categories": [], "series": []},
+    )
     _unknown_fields(args, _MERMAID_FIELDS, "Mermaid")
     raw_source = args.get("source")
     if not isinstance(raw_source, str):
@@ -183,6 +198,7 @@ def _validate_chart_series(
             required=True,
         )
         if chart_type == "scatter":
+            item = _without_neutral_fields(item, {"values": []})
             _unknown_fields(item, frozenset({"name", "points"}), f"series[{series_index}]")
             raw_points = _list(item.get("points"), f"series[{series_index}].points")
             if not raw_points:
@@ -223,6 +239,7 @@ def _validate_chart_series(
             series.append(VisualSeries(name=name, points=tuple(points)))
             continue
 
+        item = _without_neutral_fields(item, {"points": []})
         _unknown_fields(item, frozenset({"name", "values"}), f"series[{series_index}]")
         raw_values = _list(item.get("values"), f"series[{series_index}].values")
         if len(raw_values) != category_count:
@@ -253,6 +270,7 @@ def validate_visual_request(args: dict[str, Any]) -> VisualRenderRequest:
     if kind == "mermaid":
         return _validate_mermaid(args, title, alt_text)
 
+    args = _without_neutral_fields(args, {"source": ""})
     _unknown_fields(args, _CHART_FIELDS, "chart")
     chart_type_raw = args.get("chart_type", "bar")
     if chart_type_raw not in _ALLOWED_CHART_TYPES:
@@ -261,6 +279,7 @@ def validate_visual_request(args: dict[str, Any]) -> VisualRenderRequest:
     x_label = _text(args.get("x_label"), "x_label", maximum=MAX_AXIS_LABEL_CHARS)
     y_label = _text(args.get("y_label"), "y_label", maximum=MAX_AXIS_LABEL_CHARS)
     if chart_type == "scatter":
+        args = _without_neutral_fields(args, {"categories": []})
         if "categories" in args:
             raise ValueError("categories is not allowed for scatter charts")
         categories: tuple[str, ...] = ()

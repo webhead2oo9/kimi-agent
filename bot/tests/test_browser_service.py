@@ -104,6 +104,13 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "new DOMParser()" in visual_bridge
     assert ".innerHTML" not in visual_bridge
     assert "document.importNode(svg, true)" in visual_bridge
+    assert "page.locator('#visual').setAttribute" not in visual_bridge
+    assert "document.querySelector('#visual').setAttribute('aria-label', altText)" in visual_bridge
+    assert "await fs.lstat(artifact)" in visual_bridge
+    assert "await fs.realpath(artifact)" in visual_bridge
+    assert 'resolvedArtifact.startsWith("/work/artifacts/")' in visual_bridge
+    assert visual_bridge.count(r"/expression\\s*\\(/i") == 2
+    assert visual_bridge.count(r"/url\\s*\\(\\s*(?!#)/i") == 2
     assert "const placeLeft=px>right-160" in visual_bridge
     assert "px+(placeLeft?-11:11)" in visual_bridge
     assert "'text-anchor':placeLeft?'end':'start'" in visual_bridge

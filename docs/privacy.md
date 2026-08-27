@@ -204,8 +204,8 @@ A few stores are deliberately not on this clock:
   Discord, not to the local transcript sweep or `/privacy`.
 - **Diagnostic logs** (the tool-event log) form an append-only JSONL file at
   `TOOL_EVENT_LOG_PATH` (default `logs/events.jsonl`) that rotates at 50 MB and
-  keeps only the current file and one `.1` predecessor. Rotation discards
-  everything beyond those files; the transcript sweep's clock does not apply.
+  keeps only the current file and one `.1` predecessor. Rotation deletes
+  anything older than those two files; the transcript sweep's clock does not apply.
 
 Everything else keeps its own lifecycle, by design:
 

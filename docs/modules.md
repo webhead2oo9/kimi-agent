@@ -121,8 +121,8 @@ the ports are a contract and an audit surface, not a sandbox.
   return unless the module already reported otherwise. A module that
   declares a service in `provides` but never provides it is marked
   `degraded`. Detail is truncated, metrics are capped and secret-looking
-  keys dropped. Each change is offered to the optional, best-effort
-  `module_health` event stream.
+  keys dropped. Each change is emitted as a best-effort `module_health`
+  event when the event log is enabled.
 - `ctx.services.provide(name, version, impl)` / `ctx.services.get(name,
   version)`: exact-version services between modules. Both must match the
   spec's `provides` / `consumes`; a consumer must depend on the provider so

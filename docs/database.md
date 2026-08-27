@@ -283,16 +283,16 @@ records one `schema_version` row per version. A database on a supported lower
 version runs each registered migration through `SCHEMA_VERSION`.
 
 The current registry upgrades schema v1 with three ordered migrations:
-`coding_task_context_inputs` produces v2, `video_understanding_sessions`
-produces v3, and `provider_circuit_breakers` produces v4. Each version has a
+`coding_task_context_inputs` moves the schema to v2, `video_understanding_sessions`
+to v3, and `provider_circuit_breakers` to v4. Each version has a
 permanent name in `schema_version`. An unregistered version raises at startup
 on both fresh and upgrade paths. A migration and its version record share one
 transaction, so a failure leaves the schema and version stamp unchanged.
 
 Migrations only move forward and run automatically at startup. Take a
-WAL-consistent backup before upgrading a real instance. A rollback requires the
-database backup matching that release because a process supporting a lower
-schema cannot open schema v4 safely. The bot rejects a non-empty database
+WAL-consistent backup before upgrading a real instance. Rolling back to an older
+release also requires restoring that release's database backup; an older
+process cannot open a newer schema safely. The bot rejects a non-empty database
 without a schema stamp and any database stamped above its supported version.
 
 Before moving or restoring the database, stop the bot and copy the main file

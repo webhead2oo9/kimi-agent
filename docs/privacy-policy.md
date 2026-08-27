@@ -281,8 +281,8 @@ personal memory.
 
 ## Age
 
-Kimi is intended for users who are **at least 13 and old enough to use Discord
-in their country**.
+Kimi is intended for users who are **old enough to use Discord in their
+country, and never under 13**.
 
 ## Changes to this policy
 

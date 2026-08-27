@@ -56,8 +56,8 @@ contract package; `modules/testing.py` the integration harness). `app/runtime.py
 **Code style**
 
 - New ordinary runtime modules use `from __future__ import annotations`; package markers and docstring-only modules may omit it.
-- Prefer `@dataclass(frozen=True)` for internal value types, with `slots=True` where hot. Pydantic is for settings and configuration validation, not ordinary domain types. Prefer `typing.Protocol` for injected seams; `LLMProvider` and `ModerationBackend` are the current ABCs.
-- Use `log = logging.getLogger(__name__)` with `%s`-style args for runtime logging (ruff `G`/`LOG` families). No `print()` in runtime code. Errors surfaced to Discord are concise and never contain tracebacks or secrets.
+- Prefer `@dataclass(frozen=True)` for internal value types, with `slots=True` where hot. Pydantic is confined to settings and configuration validation (`config/settings.py`, module settings specs); do not introduce `BaseModel` for ordinary domain types. Prefer `typing.Protocol` for injected seams; `LLMProvider` and `ModerationBackend` are the current ABCs.
+- Use a module-level `logging.getLogger(__name__)` (named `log`; older modules use `logger`) with `%s`-style args for runtime logging (ruff `G`/`LOG` families). No `print()` in runtime code. Errors surfaced to Discord are concise and never contain tracebacks or secrets.
 - Ruff's flake8-async rules are on: no blocking I/O inside `async def`. Line length is 100, owned by `ruff format`.
 - mypy runs with `check_untyped_defs` on for runtime code (off for `tests/` and `evals/`) and `platform = "linux"`. `# type: ignore` and `# noqa` are rare in runtime code (about a dozen); `tests/` carries more, nearly all `Settings(...)  # type: ignore[call-arg]` against pydantic-settings' generated `__init__`. Always name the specific error code. Add a prose reason as well when the code alone does not explain the suppression: `import yaml  # type: ignore[import-untyped]` speaks for itself, a narrowing or a sentinel assignment does not.
 - Comments explain *why*, not what. Keep the existing module layout; prefer small focused changes.
@@ -165,7 +165,7 @@ Optional, backed by [Hindsight](https://github.com/vectorize-io/hindsight) when 
 
 ### Learning
 
-The staff gesture for adding shared knowledge: a **fact** goes to community memory via `teach`, a **procedure** to a skill via `skill_create`/`skill_edit`; there is no unified `learn` tool. Triggered by prompting in conversation or by the **Teach Kimi** context menu by default (its name follows `BOT_NAME`; `commands/learn_cmd.py` → `app/learn_turn.py:run_learn_turn`, a STAFF turn on a structurally narrowed `LEARN_TOOLS` registry, capped at the module constant `LEARN_TURN_TIMEOUT_SECONDS`). Both sinks emit a `LearnEvent` (`tools/learn.py`) rendered by `app/learn_log.py` to the guild's `learn_log_channel_id`. The quoted message is untrusted and a poisoned skill is persistent injection, an accepted risk. Mechanics and rationale: [`docs/learning.md`](docs/learning.md).
+The staff gesture for adding shared knowledge: a **fact** goes to community memory via `teach`, a **procedure** to a skill via `skill_create`/`skill_edit`; there is no unified `learn` tool. Triggered by prompting in conversation or by the **Teach Kimi** context menu by default (its name follows `BOT_NAME`; `commands/learn_cmd.py` → `app/learn_turn.py:run_learn_turn`, a STAFF turn on a structurally narrowed `LEARN_TOOLS` registry, capped at the module constant `LEARN_TURN_TIMEOUT_SECONDS`). Both sinks emit a `LearnEvent` (`tools/learn.py`) rendered by `app/learn_log.py` to the guild's `learn_log_channel_id`. The quoted message is untrusted and a poisoned skill is persistent injection, an accepted risk that rests on STAFF being the only trigger. Mechanics and rationale: [`docs/learning.md`](docs/learning.md).
 
 ### Persona, Consent, Moderation
 

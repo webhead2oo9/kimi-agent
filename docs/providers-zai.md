@@ -1,8 +1,8 @@
 # Z.AI GLM Coding Plan
 
-Kimi can speak to Z.AI's GLM Coding Plan through its OpenAI-compatible Chat
+Kimi can use Z.AI's GLM Coding Plan through its OpenAI-compatible Chat
 Completions API. No Z.AI-specific provider or SDK is required. This is technical
-compatibility; current plan eligibility does not list Kimi. See
+compatibility; Z.AI's current plan eligibility does not list Kimi. See
 [Subscription use](#subscription-use) before enabling the route.
 
 ## Before you start

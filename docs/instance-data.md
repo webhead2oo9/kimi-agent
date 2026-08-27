@@ -244,7 +244,7 @@ git diff --check
 Review every tracked non-source artifact, run a content secret scanner in CI,
 and verify that the examples contain synthetic IDs and placeholder hosts.
 Ignore rules do not untrack files; remove those paths from the index while
-preserving the local instance copy before
-creating or publishing a public repository. Scan the repository object database
+preserving the local instance copy before creating or publishing a public
+repository. Scan the repository object database
 as well as the current tree: a committed secret remains recoverable after its
 file is deleted.

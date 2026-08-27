@@ -85,8 +85,8 @@ identity is suffixed **`-dirty-<diff-hash>`**, where `<diff-hash>` is the first
 12 hexadecimal characters of SHA-256 over a configuration-independent binary
 diff from HEAD. This keeps an edited working tree distinct from clean HEAD and
 gives different edits different identities. Equal labels therefore mean equal
-tracked source bytes in the working tree. Untracked files and index-only changes are naturally absent from
-the worktree diff; if a staged edit has been restored to HEAD in the working
+tracked source bytes in the working tree. Untracked files and index-only
+changes are naturally absent from the worktree diff; if a staged edit has been restored to HEAD in the working
 tree, the eval executes the clean HEAD bytes and receives the clean sha. Also
 excluded is everything under the
 run's tape directory (`harness_run.run_data_paths`, excluded by pathspec). The

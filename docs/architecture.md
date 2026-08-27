@@ -53,10 +53,11 @@ config/fragments/       operator markdown read fresh each turn: guild/channel
                         pins and denylists, per-tool config, prompt templates
 tools/                  registry, browse-tools activation, workspace + memory +
                         community-knowledge + internet/Discord search + persona
-                        tools + optional code-execution/browser/coding-task
+                        tools + optional code-execution/browser/visual/coding-task
                         surfaces
-web_browser/            BetterWright JSON bridge and isolated per-user worker
-                        lifecycle
+web_browser/            BetterWright persistent-browser bridge and isolated
+                        per-user worker lifecycle, plus the fixed-code ephemeral
+                        offline chart/Mermaid renderer
 workspace/              per-user sandboxed file workspaces (stdlib-only; the
                         runtime data tree at workspaces/ is created on demand)
 sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
@@ -118,5 +119,6 @@ Once you have the map, these are the places to go next:
 - `configuration.md`: complete configuration reference.
 - `tools.md`: complete built-in tool catalog and availability gates.
 - `code-exec.md`: code-execution modes, threat model, deployment, and verification.
+- `visual-rendering.md`: one-call charts/Mermaid, offline rendering, and deployment.
 - `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
 - `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.

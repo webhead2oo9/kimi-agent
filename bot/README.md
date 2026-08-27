@@ -49,6 +49,11 @@ guild installations, and permissions stay intact.
 - **Discord context and search.** Fetch recent channel context on demand and,
   when configured, search selected Discord channels without persisting the
   retrieved messages.
+- **Browser and visual rendering (optional).** Keep per-user BetterWright
+  profiles for interactive web work and expose one searchable call for
+  accessible fixed-style charts or constrained Mermaid PNGs. Visual jobs use a
+  separate ephemeral offline worker. See [docs/browser.md](../docs/browser.md)
+  and [docs/visual-rendering.md](../docs/visual-rendering.md).
 - **Managed threads.** Move a conversation into a bot-created thread, pause or
   resume automatic replies, and preserve the rooted transcript across the
   handoff. See [docs/thread-handoff.md](../docs/thread-handoff.md).
@@ -109,6 +114,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | Learning (teach + bot-name-derived menu) | `tools/learn.py`, `app/learn_turn.py`, `commands/learn_cmd.py` | [learning.md](../docs/learning.md) |
 | Workspaces & file tools | `workspace/manager.py`, `tools/workspace/` | [workspace.md](../docs/workspace.md) |
 | Durable coding agent | `app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py` | [coding-agent.md](../docs/coding-agent.md) |
+| Persistent browser and visual rendering | `web_browser/`, `tools/browser.py`, `tools/visuals.py` | [browser.md](../docs/browser.md), [visual-rendering.md](../docs/visual-rendering.md) |
 | Storage (async SQLite) | `storage/` | [database.md](../docs/database.md) |
 | Privacy & content moderation | `app/consent.py`, `moderation/` | [privacy.md](../docs/privacy.md) |
 | User persona overrides | `tools/persona.py` | [persona.md](../docs/persona.md) |

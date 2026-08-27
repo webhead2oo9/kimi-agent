@@ -18,7 +18,7 @@ class RecordingChannel:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.fail_next_file_upload = True
-        self.guild: SimpleNamespace | None = None
+        self.guild: Any | None = None
 
     async def send(self, content: str, **kwargs: object) -> None:
         self.calls.append({"content": content, **kwargs})
@@ -145,6 +145,25 @@ async def test_send_response_retry_preserves_file_upload(tmp_path: Path) -> None
     assert channel.calls[0]["files"]
     assert channel.calls[1]["content"] == "Here is the artifact."
     assert channel.calls[1]["files"]
+
+
+@pytest.mark.asyncio
+async def test_send_response_preserves_attachment_description_on_retry(tmp_path: Path) -> None:
+    output = tmp_path / "visual.png"
+    output.write_bytes(b"png")
+    channel = RecordingChannel()
+
+    await send_response(
+        cast(discord.abc.Messageable, channel),
+        "Here is the visual.",
+        output_files=[str(output)],
+        output_file_descriptions={str(output): "Weekly signups increase."},
+        allowed_file_roots=[tmp_path],
+    )
+
+    assert len(channel.calls) == 2
+    assert channel.calls[0]["files"][0].description == "Weekly signups increase."
+    assert channel.calls[1]["files"][0].description == "Weekly signups increase."
 
 
 @pytest.mark.asyncio

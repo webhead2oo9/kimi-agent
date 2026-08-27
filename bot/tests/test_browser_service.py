@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,18 +72,58 @@ def test_worker_command_has_filesystem_and_network_boundary(tmp_path: Path) -> N
 
 def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     bridge = (PROJECT_ROOT / "web_browser/bridge.mjs").read_text(encoding="utf-8")
+    visual_bridge = (PROJECT_ROOT / "web_browser/visual_bridge.mjs").read_text(encoding="utf-8")
     installer = (PROJECT_ROOT / "deploy/betterwright/install.sh").read_text(encoding="utf-8")
+    package = json.loads(
+        (PROJECT_ROOT / "deploy/betterwright/package.json").read_text(encoding="utf-8")
+    )
+    lock = json.loads(
+        (PROJECT_ROOT / "deploy/betterwright/package-lock.json").read_text(encoding="utf-8")
+    )
     docs = (REPO_ROOT / "docs/browser.md").read_text(encoding="utf-8")
     tool = (PROJECT_ROOT / "tools/browser.py").read_text(encoding="utf-8")
     skill = (PROJECT_ROOT / "skills/builtin/browser/SKILL.md").read_text(encoding="utf-8")
     api = (PROJECT_ROOT / "skills/builtin/browser/reference/api.md").read_text(encoding="utf-8")
 
     assert "VERSION=1.10.0" in installer
+    assert "MERMAID_VERSION=11.17.2" in installer
+    assert '"$NPM_BIN" ci' in installer
+    assert '"$NPM_BIN" install' not in installer
+    assert "node_modules/mermaid/dist/mermaid.min.js" in installer
+    assert package["dependencies"] == {"betterwright": "1.10.0", "mermaid": "11.17.2"}
+    assert lock["packages"]["node_modules/betterwright"]["version"] == "1.10.0"
+    assert lock["packages"]["node_modules/mermaid"]["version"] == "11.17.2"
     assert "BetterWright **1.10.0**" in docs
-    assert 'HOME="$RUNTIME_DIR" BETTERWRIGHT_HOME="$RUNTIME_DIR"' in installer
+    assert 'HOME="$STAGING_DIR" BETTERWRIGHT_HOME="$STAGING_DIR"' in installer
+    assert 'mv -- "$STAGING_DIR" "$RUNTIME_DIR"' in installer
     assert "allowPrivateNetwork: false" in bridge
     assert "allowLoopback: false" in bridge
     assert "vault: false" in bridge
+    assert "visual renderer is offline" in visual_bridge
+    assert "request.code" not in visual_bridge
+    assert "page.goto" not in visual_bridge
+    assert "new DOMParser()" in visual_bridge
+    assert ".innerHTML" not in visual_bridge
+    assert "document.importNode(svg, true)" in visual_bridge
+    assert "page.locator('#visual').setAttribute" not in visual_bridge
+    assert "document.querySelector('#visual').setAttribute('aria-label', altText)" in visual_bridge
+    assert "await fs.lstat(artifact)" in visual_bridge
+    assert "await fs.realpath(artifact)" in visual_bridge
+    assert 'resolvedArtifact.startsWith("/work/artifacts/")' in visual_bridge
+    assert visual_bridge.count(r"/expression\\s*\\(/i") == 2
+    assert visual_bridge.count(r"/url\\s*\\(\\s*(?!#)/i") == 2
+    assert "const placeLeft=px>right-160" in visual_bridge
+    assert "px+(placeLeft?-11:11)" in visual_bridge
+    assert "'text-anchor':placeLeft?'end':'start'" in visual_bridge
+    assert "if(data.chart_type === 'bar')" in visual_bridge
+    assert "fill:\\`url(#hatch-\\${si})\\`" in visual_bridge
+    assert "series.name.slice(0,21)+'...'" in visual_bridge
+    assert "data.x_scale" in visual_bridge
+    assert "data.y_scale" in visual_bridge
+    assert "data.overlap_mode==='count'" in visual_bridge
+    assert "JSON.stringify([point.x,point.y])" in visual_bridge
+    assert "…" not in visual_bridge
+    assert "�" not in visual_bridge
     assert 'downloadPolicy: "deny"' in bridge
     assert "there is no " in tool and "`browser` global" in tool
     assert "There is no `browser` global" in skill
@@ -91,6 +133,18 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "Do not call `browser.newPage()`,\n  `context.newPage()`" in skill
     assert "CloakBrowser" not in installer
     assert "FONTCONFIG_FILE" not in installer
+
+
+def test_visual_math_node_suite() -> None:
+    result = subprocess.run(
+        ["node", "--test", str(PROJECT_ROOT / "tests/js/visual_math.test.mjs")],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_netns_command_uses_only_fixed_helper_and_resolver(tmp_path: Path) -> None:
@@ -391,3 +445,35 @@ def test_app_registers_browser_only_after_successful_probe(
 
     names = {schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "42")}
     assert "browser" in names
+    assert not registry.is_registered("render_chart")
+    assert not registry.is_registered("render_diagram")
+
+
+def test_app_registers_visual_only_after_browser_and_visual_runtime_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        browser_enabled=True,
+        browser_runtime_dir=str(tmp_path / "runtime"),
+        browser_profiles_dir=str(tmp_path / "profiles"),
+    )
+    registry = ToolRegistry()
+    monkeypatch.setattr(BrowserService, "availability_error", lambda self: None)
+    monkeypatch.setattr(app_tools.VisualService, "availability_error", lambda self: None)
+    monkeypatch.setattr(app_tools, "sandbox_available", lambda config: True)
+
+    app_tools._register_browser(
+        settings,
+        registry,
+        app_tools.WorkspaceManager(tmp_path / "workspace"),
+        workspace_locks=UserLocks(),
+        netns_lease=NetnsLease(),
+    )
+
+    assert registry.is_registered("browser")
+    chart = registry.get_searchable_entry("render_chart", TrustTier.MEMBER)
+    diagram = registry.get_searchable_entry("render_diagram", TrustTier.MEMBER)
+    assert chart is not None
+    assert diagram is not None
+    assert chart.category == diagram.category == "Visuals"

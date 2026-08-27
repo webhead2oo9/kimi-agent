@@ -383,6 +383,7 @@ class TurnRequest:
 class TurnResult:
     response_text: str
     output_files: tuple[str, ...] = ()
+    output_file_descriptions: tuple[tuple[str, str], ...] = ()
     allowed_file_roots: tuple[str | Path, ...] = ()
     workspace_key: WorkspaceKey | None = None
     embed: EmbedSpec | None = None
@@ -1119,13 +1120,18 @@ async def execute_turn(
 
     if _should_moderate_output(moderation_service, turn.trust_tier):
         assert moderation_service is not None
-        # Generic queued workspace files are delivery artifacts, not assistant-authored
-        # content. Screen the reply plus explicitly supported first-class modalities:
-        # native generated assets and the embed (including its owned image attachment).
-        # The embed's text is assembled from embed= inside the service.
+        # Generic queued workspace file bodies are delivery artifacts, not
+        # assistant-authored content. Their optional Discord descriptions are
+        # assistant-visible text, so screen those with the reply plus explicitly
+        # supported first-class modalities: native generated assets and the embed
+        # (including its owned image attachment). The embed's text is assembled
+        # from embed= inside the service.
         decision = await _await_with_deadline(
             moderation_service.check(
-                text=run_result.text,
+                text=_output_moderation_text(
+                    run_result.text,
+                    turn.context.pending_output_file_descriptions,
+                ),
                 direction=Direction.OUTPUT,
                 generated_assets=run_result.generated_assets,
                 embed=turn.context.pending_embed,
@@ -1200,6 +1206,7 @@ async def execute_turn(
         asset_paths = []
 
     pending_files = list(turn.context.pending_output_files)
+    pending_descriptions = dict(turn.context.pending_output_file_descriptions)
     pending_roots: list[str | Path] = list(turn.context.pending_allowed_file_roots)
     embed = turn.context.pending_embed
     embed_attachment = turn.context.pending_embed_attachment
@@ -1215,6 +1222,7 @@ async def execute_turn(
             pending_roots.append(embed_attachment.root)
 
     turn.context.pending_output_files.clear()
+    turn.context.pending_output_file_descriptions.clear()
     turn.context.pending_allowed_file_roots.clear()
     turn.context.pending_embed = None
     turn.context.pending_embed_attachment = None
@@ -1230,6 +1238,11 @@ async def execute_turn(
     return TurnResult(
         response_text=run_result.text,
         output_files=tuple(pending_files),
+        output_file_descriptions=tuple(
+            (path, pending_descriptions[path])
+            for path in pending_files
+            if path in pending_descriptions
+        ),
         allowed_file_roots=tuple(pending_roots),
         workspace_key=workspace_owner_key(turn.user_id, turn.guild_id),
         embed=embed,
@@ -1256,13 +1269,14 @@ async def _stage_pending_response_files(
     locks = dependencies.workspace_locks
     context = turn.context
     files = list(context.pending_output_files)
+    descriptions = dict(context.pending_output_file_descriptions)
     embed_attachment = context.pending_embed_attachment
     if embed_attachment is not None and embed_attachment.path not in files:
         files.append(embed_attachment.path)
     if not files:
         return
 
-    async def stage() -> tuple[list[str], str, Any | None]:
+    async def stage() -> tuple[list[str], str, Any | None, dict[str, str]]:
         allowed_roots = list(context.pending_allowed_file_roots)
         if embed_attachment is not None and embed_attachment.root not in allowed_roots:
             allowed_roots.append(embed_attachment.root)
@@ -1275,15 +1289,22 @@ async def _stage_pending_response_files(
                 files,
                 allowed_roots,
                 embed_attachment,
+                descriptions,
             )
 
-    staged_files, staged_root, staged_embed = await _await_guarded_with_deadline(
+    (
+        staged_files,
+        staged_root,
+        staged_embed,
+        staged_descriptions,
+    ) = await _await_guarded_with_deadline(
         stage,
         deadline=deadline,
         user_id=turn.user_id,
         activity_guard=dependencies.user_activity,
     )
     context.pending_output_files[:] = staged_files
+    context.pending_output_file_descriptions = staged_descriptions
     context.pending_allowed_file_roots[:] = [staged_root]
     context.pending_embed_attachment = staged_embed
 
@@ -1295,7 +1316,8 @@ def _stage_response_files_sync(
     files: list[str],
     allowed_roots: Sequence[str | Path],
     embed_attachment: Any | None,
-) -> tuple[list[str], str, Any | None]:
+    descriptions: Mapping[str, str],
+) -> tuple[list[str], str, Any | None, dict[str, str]]:
     roots = [Path(root).resolve(strict=False) for root in allowed_roots]
     job_dir = workspace_manager.generated_job_dir(
         context_key,
@@ -1303,6 +1325,7 @@ def _stage_response_files_sync(
         owner_user_id=user_id,
     )
     staged: list[str] = []
+    staged_descriptions: dict[str, str] = {}
     mapping: dict[str, Path] = {}
     try:
         for index, raw in enumerate(dict.fromkeys(files), start=1):
@@ -1317,8 +1340,12 @@ def _stage_response_files_sync(
                 destination = job_dir / f"{index}-{source.name}"
             shutil.copyfile(resolved, destination)
             destination.chmod(0o600)
-            staged.append(str(destination))
+            destination_text = str(destination)
+            staged.append(destination_text)
             mapping[str(source)] = destination
+            description = descriptions.get(str(source))
+            if description:
+                staged_descriptions[destination_text] = description
 
         staged_embed = embed_attachment
         if embed_attachment is not None:
@@ -1329,7 +1356,7 @@ def _stage_response_files_sync(
                 root=str(job_dir.resolve()),
                 filename=destination.name,
             )
-        return staged, str(job_dir.resolve()), staged_embed
+        return staged, str(job_dir.resolve()), staged_embed, staged_descriptions
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
@@ -1725,6 +1752,14 @@ def _content_parts_contain_image(parts: Sequence[ContentPart]) -> bool:
     return any(part.type is ContentPartType.IMAGE for part in parts)
 
 
+def _output_moderation_text(text: str, descriptions: Mapping[str, str]) -> str:
+    if not descriptions:
+        return text
+    attachment_text = "\n".join(f"- {value}" for value in descriptions.values())
+    prefix = f"{text}\n\n" if text else ""
+    return f"{prefix}Attachment descriptions:\n{attachment_text}"
+
+
 def _should_moderate_output(
     moderation_service: ModerationService | ModerationServiceLike | None,
     trust_tier: TrustTier,
@@ -1977,6 +2012,7 @@ def _content_part_image_urls(part: ContentPart | None) -> set[str]:
 
 def _clear_pending_response_artifacts(context: ConversationContext) -> None:
     context.pending_output_files.clear()
+    context.pending_output_file_descriptions.clear()
     context.pending_allowed_file_roots.clear()
     context.pending_embed = None
     context.pending_embed_attachment = None

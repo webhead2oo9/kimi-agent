@@ -34,7 +34,6 @@ providers:
     reasoning_effort: medium
     failure_adapter: zai
     circuit_breaker:
-      outage_cooldown_seconds: 1800
       quota_cooldown_seconds: 18000
   zai-coding-xhigh:
     type: openai_compat
@@ -43,7 +42,6 @@ providers:
     reasoning_effort: xhigh
     failure_adapter: zai
     circuit_breaker:
-      outage_cooldown_seconds: 1800
       quota_cooldown_seconds: 18000
 ```
 

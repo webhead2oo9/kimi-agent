@@ -114,10 +114,10 @@ def test_fails_over_on_availability_errors(error: BaseException) -> None:
 
     result = asyncio.run(chain.run_turn(_REQUEST))
 
-    # Rate limits already carry a cooldown decision; other transient failures
-    # retain the same-backend retry before opening the circuit.
+    # Every transient failure, including a bare 429, keeps the same-backend retry
+    # before the circuit opens and the chain advances.
     assert result.content == "fallback-response"
-    assert primary.calls == (1 if getattr(error, "status_code", None) == 429 else 2)
+    assert primary.calls == 2
     assert fallback.calls == 1
 
 

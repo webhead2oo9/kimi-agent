@@ -395,9 +395,9 @@ roles:
   chat_fallbacks: [fallback-chat]
 ```
 
-Connection errors, timeouts, and server failures receive one retry before the
-chain advances. Rate limits and unambiguous account/model failures advance
-immediately. Once a fallback succeeds, later tool iterations in that logical
+Connection errors, timeouts, server failures, and rate limits without a
+`Retry-After` receive one retry before the chain advances. Rate limits with a
+`Retry-After` and unambiguous account/model failures advance immediately. Once a fallback succeeds, later tool iterations in that logical
 turn remain on it rather than retrying earlier links.
 
 The `openai_compat` stall abort falls in this class. A stream silent for

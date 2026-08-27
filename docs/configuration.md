@@ -448,7 +448,7 @@ withheld from tools. On output, moderation covers the assistant's reply, embed
 text and owned embed image, and native model-generated images. Generic workspace
 file bodies queued for Discord delivery are not moderation inputs, regardless
 of file type. Optional Discord attachment descriptions are text sent by the bot,
-so they are screened with the reply; this includes `render_visual` alt text.
+so they are screened with the reply; this includes visual-rendering alt text.
 
 Before delivery, each queued file is checked against the target guild's current
 Discord upload limit (`guild.filesize_limit`), with a conservative 10 MiB
@@ -923,7 +923,7 @@ above.
 
 | Setting | Type | Default | Meaning |
 |---|---|---|---|
-| `BROWSER_ENABLED` | bool | `false` | Request registration of `browser` and, when the exact Mermaid asset is present, searchable `render_visual`; missing runtime or a failed shared sandbox/network probe leaves both unavailable. There is no separate visual flag. |
+| `BROWSER_ENABLED` | bool | `false` | Request registration of `browser` and, when the exact Mermaid asset is present, searchable `render_chart` and `render_diagram`; missing runtime or a failed shared sandbox/network probe leaves them unavailable. There is no separate visual flag. |
 | `BROWSER_NETWORK_MODE` | `host`/`netns` | `host` | Fixed network boundary. `netns` uses the VPN helper and never falls back to host. |
 | `BROWSER_RUNTIME_DIR` | path | `/opt/kimi/betterwright` | Root-owned pinned BetterWright, Mermaid, Node, and BetterChromium runtime. |
 | `BROWSER_PROFILES_DIR` | path | `data/browser_profiles` | Private per-user persistent profile root. |

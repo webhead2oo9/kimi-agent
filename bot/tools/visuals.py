@@ -31,7 +31,8 @@ from web_browser.visual_service import (
 )
 from workspace import WorkspaceManager
 
-TOOL_NAME = "render_visual"
+CHART_TOOL_NAME = "render_chart"
+DIAGRAM_TOOL_NAME = "render_diagram"
 MAX_RENDERS_PER_TURN = 4
 MAX_SERIES = 8
 MAX_POINTS_PER_SERIES = 250
@@ -411,9 +412,9 @@ def init_visual_tool(
     config: VisualToolConfig,
     workspace_locks: UserLocks,
 ) -> None:
-    async def render_visual(args: dict, ctx: MessageContext) -> str:
+    async def render_request(args: dict, ctx: MessageContext, *, kind: str) -> str:
         try:
-            request = validate_visual_request(args)
+            request = validate_visual_request({**args, "kind": kind})
         except ValueError as exc:
             return tool_error(str(exc))
         if not ctx.context_key:
@@ -463,39 +464,43 @@ def init_visual_tool(
                 if job_dir is not None and not keep_job:
                     await asyncio.shield(asyncio.to_thread(shutil.rmtree, job_dir, True))
 
-        return json.dumps(
-            {
-                "ok": True,
-                "kind": request.kind,
-                "chart_type": request.chart_type,
-                "filename": output_path.name,
-                "title": request.title,
-                "alt_text": request.alt_text,
-                "width": width,
-                "height": height,
-                "bytes": size,
-                "attached_to_reply": True,
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            "ok": True,
+            "kind": request.kind,
+            "filename": output_path.name,
+            "title": request.title,
+            "alt_text": request.alt_text,
+            "width": width,
+            "height": height,
+            "bytes": size,
+            "attached_to_reply": True,
+        }
+        if request.chart_type is not None:
+            payload["chart_type"] = request.chart_type
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def render_chart(args: dict, ctx: MessageContext) -> str:
+        return await render_request(args, ctx, kind="chart")
+
+    async def render_diagram(args: dict, ctx: MessageContext) -> str:
+        return await render_request(args, ctx, kind="mermaid")
 
     registry.register(
-        name=TOOL_NAME,
+        name=CHART_TOOL_NAME,
         description=(
-            "Render and attach one accessible, fixed-style PNG visual. Use kind=chart for "
-            "bar, line, or scatter data, or kind=mermaid for a constrained diagram. "
-            "Colors, patterns, typography, dimensions, and safety settings are fixed; do not "
-            "supply styling, HTML, code, URLs, files, paths, or dimensions. Every call queues "
-            "one 1200x675 PNG for the final Discord reply."
+            "Render and attach one accessible fixed-style bar, line, or scatter chart as a "
+            "1200x675 PNG. Bar and line charts use categories plus series values; scatter "
+            "charts use series points and no categories. Colors, patterns, typography, "
+            "dimensions, and safety settings are fixed. Every successful call queues the PNG "
+            "for the final Discord reply."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["chart", "mermaid"]},
                 "chart_type": {
                     "type": "string",
                     "enum": ["bar", "line", "scatter"],
-                    "description": "Optional for kind=chart; defaults to bar.",
+                    "description": "Chart form; defaults to bar when omitted.",
                 },
                 "title": {"type": "string", "maxLength": MAX_TEXT_CHARS},
                 "x_label": {
@@ -517,7 +522,7 @@ def init_visual_tool(
                     "type": "array",
                     "maxItems": MAX_POINTS_PER_SERIES,
                     "items": {"type": "string", "maxLength": MAX_AXIS_LABEL_CHARS},
-                    "description": "Required for bar/line; forbidden for scatter and Mermaid.",
+                    "description": "Required for bar/line; omit for scatter.",
                 },
                 "series": {
                     "type": "array",
@@ -571,16 +576,43 @@ def init_visual_tool(
                         "additionalProperties": False,
                     },
                 },
+            },
+            "required": ["alt_text", "series"],
+            "additionalProperties": False,
+        },
+        handler=render_chart,
+        min_tier=TrustTier.MEMBER,
+        searchable=True,
+        category="Visuals",
+    )
+    registry.register(
+        name=DIAGRAM_TOOL_NAME,
+        description=(
+            "Render and attach one accessible constrained Mermaid diagram as a 1200x675 PNG. "
+            "Supply Mermaid source beginning with an allowed flowchart, sequence, state, "
+            "class, or entity-relationship header. Styling, HTML, links, external content, "
+            "code, files, paths, and dimensions are forbidden. Every successful call queues "
+            "the PNG for the final Discord reply."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "maxLength": MAX_TEXT_CHARS},
+                "alt_text": {
+                    "type": "string",
+                    "maxLength": MAX_ALT_TEXT_CHARS,
+                    "description": "Required concise description of the diagram and its meaning.",
+                },
                 "source": {
                     "type": "string",
                     "maxLength": MAX_MERMAID_CHARS,
-                    "description": "Required only for kind=mermaid; constrained Mermaid source.",
+                    "description": "Constrained Mermaid source with an allowed diagram header.",
                 },
             },
-            "required": ["kind", "alt_text"],
+            "required": ["alt_text", "source"],
             "additionalProperties": False,
         },
-        handler=render_visual,
+        handler=render_diagram,
         min_tier=TrustTier.MEMBER,
         searchable=True,
         category="Visuals",

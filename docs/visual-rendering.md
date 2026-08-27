@@ -1,23 +1,25 @@
 # Visual rendering
 
-Kimi exposes one searchable member-tier tool, `render_visual`, for creating a
-Discord-ready PNG in one model tool call. It renders either structured chart
-data or a constrained Mermaid diagram. The model never supplies Python,
+Kimi exposes two searchable member-tier tools, `render_chart` and
+`render_diagram`, for creating a Discord-ready PNG in one model tool call. They
+render structured chart data and constrained Mermaid diagrams respectively. The
+model never supplies Python,
 JavaScript, HTML, CSS, browser navigation, filesystem paths, or arbitrary
 Matplotlib/Mermaid configuration.
 
 Visual rendering ships with the [persistent browser](browser.md) capability.
 There is no second feature flag: when `BROWSER_ENABLED=true`, the browser
 runtime, selected browser network sandbox, and Mermaid assets pass their startup
-checks, Kimi registers both `browser` and `render_visual`. An older runtime that
+checks, Kimi registers `browser` and both visual tools. An older runtime that
 predates the Mermaid bundle can still register `browser`; boot logs a specific
-warning and leaves only `render_visual` unavailable until the operator reruns
+warning and leaves the visual tools unavailable until the operator reruns
 the installer.
 
 ## Tool contract
 
-`render_visual` is hidden from the provider schema until `browse_tools` loads
-it. One successful call creates, verifies, and queues one 1200×675 PNG for the
+Both tools are hidden from the provider schema until `browse_tools` loads them.
+Their schemas contain only fields relevant to that visual kind. One successful
+call creates, verifies, and queues one 1200×675 PNG for the
 final Discord reply. Its required `alt_text` becomes the Discord attachment
 description rather than being discarded after rendering, and deployments with
 output moderation enabled screen that text before delivery.
@@ -26,7 +28,6 @@ A bar chart (the default chart type):
 
 ```json
 {
-  "kind": "chart",
   "title": "Weekly signups",
   "x_label": "Week",
   "y_label": "Users",
@@ -46,7 +47,6 @@ numeric points and do not accept `categories`:
 
 ```json
 {
-  "kind": "chart",
   "chart_type": "scatter",
   "title": "Response time and payload size",
   "x_label": "Payload (KiB)",
@@ -69,7 +69,6 @@ A Mermaid diagram:
 
 ```json
 {
-  "kind": "mermaid",
   "title": "Request flow",
   "alt_text": "A request is validated and then receives a response.",
   "source": "flowchart LR\n  A[Request] --> B[Validate]\n  B --> C[Respond]"
@@ -80,12 +79,11 @@ The result contains only safe metadata: visual kind, chart type when relevant,
 filename, title, alt text, dimensions, byte size, and attachment status. It
 never exposes a host path, browser profile, HTML, SVG, or generated script.
 
-The public tool uses one flat, provider-neutral schema because some model APIs
-do not accept conditional JSON Schema branches. Providers that materialize
-every property may therefore send empty placeholders for the inactive visual
-kind, such as `source: ""` on a chart or empty chart arrays on a Mermaid call.
-The validator ignores only those neutral placeholders; non-empty fields for the
-wrong visual kind remain errors.
+The split avoids conditional JSON Schema branches, which are not portable
+across every supported model API. `render_chart` never exposes Mermaid source,
+and `render_diagram` never exposes chart fields. Inside `render_chart`, providers
+that materialize both series representations may send an empty inactive array;
+the validator ignores only that neutral placeholder.
 
 ## Supported visuals and limits
 
@@ -130,8 +128,8 @@ size uses `BROWSER_MAX_SCREENSHOT_BYTES`; the shared reply limit uses
 
 ## Execution and security boundary
 
-`render_visual` does not call the model-facing `browser` tool. Its Python
-handler calls a dedicated `VisualService`, which launches one fixed-code
+The visual tools do not call the model-facing `browser` tool. Their shared
+Python handler calls a dedicated `VisualService`, which launches one fixed-code
 `web_browser/visual_bridge.mjs` process and exits after one request.
 
 Each render receives:
@@ -209,7 +207,7 @@ without downloading BetterChromium.
 | Symptom | Meaning and action |
 |---|---|
 | Neither tool registers | `BROWSER_ENABLED` is false, the shared runtime is unavailable, or the selected persistent-browser sandbox/network probe failed. Follow [Persistent browser](browser.md). |
-| `browser` registers but `render_visual` does not | The installed runtime lacks the exact Mermaid bundle or its ownership is unsafe. Rerun the current installer and restart. |
+| `browser` registers but the visual tools do not | The installed runtime lacks the exact Mermaid bundle or its ownership is unsafe. Rerun the current installer and restart. |
 | `Visual rendering is supported only on Linux` | The production containment boundary is unavailable on this host. Use Linux for deployment; tests and validation can still run elsewhere. |
 | Render timeout | The input was pathological or the Chromium boundary exceeded `BROWSER_CALL_TIMEOUT_SECONDS`; simplify it rather than raising limits first. |
 | Invalid or incomplete PNG | The renderer failed or the runtime is incompatible. Run the deployment smoke test and reinstall the pinned runtime. |

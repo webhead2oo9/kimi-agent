@@ -5,7 +5,7 @@ Kimi can expose a member-tier `browser` tool backed by
 sites that ordinary search or a plain HTTP fetch cannot handle. The deployment
 pins BetterWright **1.10.0** together with its managed BetterChromium runtime.
 The same installation includes Mermaid **11.17.2** for the independently
-isolated, searchable [`render_visual`](visual-rendering.md) tool.
+isolated, searchable [`render_chart` and `render_diagram`](visual-rendering.md) tools.
 
 ## How a browser turn works
 
@@ -115,7 +115,7 @@ Point the probe at a private endpoint that really is listening. An address
 nothing answers on would pass the check for the wrong reason and prove nothing
 about the namespace. Restart the bot after changing startup settings. At boot,
 `browser` registers only if the runtime and the complete sandbox and network
-probe pass. `render_visual` then registers automatically when the exact Mermaid
+probe pass. `render_chart` and `render_diagram` then register automatically when the exact Mermaid
 asset also passes its availability and ownership checks. An older browser-only
 runtime leaves `browser` available and logs how to repair visual rendering.
 

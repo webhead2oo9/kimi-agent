@@ -88,16 +88,19 @@ so the model can tell an empty web from a broken provider. See
 
 | Tool | Visibility | Tier | Purpose and availability |
 |---|---|---|---|
-| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true and `GEMINI_API_KEY` is set. |
+| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video, exact current-message Discord attachment, or safe workspace video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true and `GEMINI_API_KEY` is set. |
 
-`start` sends a canonical public YouTube URL and a specific question;
-`ask` continues through Gemini's stored `previous_interaction_id`. Local opaque
-handles are rechecked against the current user, guild, rooted conversation, and
-expiry on every call. Results are structured, timestamped, and untrusted.
-Sessions default to a 24-hour idle lifetime, while an hourly deletion outbox
-removes known provider Interactions after expiry, transcript retention, or a
-full `/privacy` deletion. See [Video understanding](video-understanding.md) for
-configuration, caching, limits, provider retention, and the threat model.
+`start` accepts exactly one canonical public YouTube URL, exact attachment
+filename, or workspace-relative path plus a specific question. Uploaded files
+stream through Gemini Files API without whole-file buffering and have hard
+500 MiB/one-hour limits. `ask` continues through Gemini's stored
+`previous_interaction_id`. Local opaque handles are rechecked against the
+current user, guild, rooted conversation, and expiry on every call. Results are
+structured, timestamped, and untrusted. Sessions default to a 24-hour idle
+lifetime, while durable Interaction and File deletion outboxes remove known
+provider state after expiry, transcript retention, or full `/privacy`. See
+[Video understanding](video-understanding.md) for configuration, caching,
+limits, provider retention, and the threat model.
 
 ## Workspace and files
 

@@ -131,18 +131,22 @@ authoritative.
   remote Hindsight bank may exist. The flag is written *before* any create or
   retain attempt and cleared only after a confirmed delete, so disabling the
   backend cannot hide a bank from the privacy workflow.
-- **`video_sessions`** holds one actor/root/guild-scoped public-YouTube
-  specialist session: opaque local handle, canonical URL/video id, model,
-  latest Gemini Interaction id, count, and expiry. It stores no questions or
-  answers.
+- **`video_sessions`** holds one actor/root/guild-scoped specialist session:
+  opaque local handle, source kind, safe display filename/relative locator and
+  byte size for uploads (or canonical YouTube URL/video id), model, latest
+  Gemini Interaction id, count, and expiry. It stores no video bytes, provider
+  capability URLs, questions, or answers.
 - **`video_interactions`** records every Gemini Interaction id in each session,
   so deleting only the latest turn cannot strand earlier provider state.
-- **`video_interaction_deletions`** is the content-free provider deletion
-  outbox. A trigger fills it before session/cascade deletion, and rows survive
-  without a foreign key until Google's delete endpoint succeeds or reports the
-  Interaction already absent. Failed attempts use a capped one-minute-to-six-
-  hour exponential delay; retry-ready rows sort ahead of delayed failures, and
-  attempt count never causes privacy cleanup metadata to be discarded.
+- **`video_provider_files`** reserves each client-chosen Gemini Files API name
+  before upload and later associates it with one session. Unattached rows let
+  startup/hourly cleanup recover a crash between upload and session creation.
+- **`video_interaction_deletions`** and **`video_provider_file_deletions`** are
+  content-free provider deletion outboxes. Triggers fill them before local
+  session/cascade deletion; Interaction deletion gates the backing File delete.
+  Failed attempts use a capped one-minute-to-six-hour exponential delay;
+  retry-ready rows sort ahead of delayed failures, and attempt count never
+  discards privacy cleanup metadata.
 
 ### Operations
 
@@ -224,8 +228,8 @@ thread conversation is not removed midway through use. Set
 A background task removes expired conversations in bounded batches. Removing a
 conversation also removes its message-routing records, activated tools,
 managed thread state, memory-retention markers, cached image descriptions, and
-local video sessions. A trigger first moves every known Gemini Interaction id
-into the independent provider-deletion outbox.
+local video sessions. Triggers first move every known Gemini Interaction and
+Files API resource name into independent provider-deletion outboxes.
 Each batch is removed in one database transaction, so a failure cannot leave a
 partially deleted transcript behind.
 
@@ -258,9 +262,9 @@ resumes after restart, and repeating a deletion is safe.
 
 Full deletion also removes every video session initiated by that user, including
 sessions in a shared root that survives, and attempts provider deletion for the
-complete Gemini Interaction chain. A provider failure leaves the content-free
-outbox pending for retry, but does not keep the privacy request or user activity
-barrier open after local deletion succeeds.
+complete Gemini Interaction chain plus any backing Files API upload. A provider
+failure leaves the content-free outboxes pending for retry, but does not keep
+the privacy request or user activity barrier open after local deletion succeeds.
 
 Deleting SQLite transcript data leaves both usage ledgers alone, and it leaves
 active rate-limit markers alone too: a capacity limit anyone can reset by

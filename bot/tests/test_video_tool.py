@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import json
+from pathlib import Path
+import tempfile
 from typing import Any, cast
 
 import pytest
@@ -12,6 +15,7 @@ from config.settings import Settings
 from tools.config_spec import default_config
 from tools.registry import MessageContext, ToolRegistry
 from tools.video import TOOL_NAME, canonicalize_youtube_url, init_video_tool
+from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from video_understanding.client import (
     VideoEvidence,
@@ -19,6 +23,7 @@ from video_understanding.client import (
     VideoUsage,
 )
 from video_understanding.service import VideoAnalysis, VideoSessionError
+from workspace import WorkspaceManager
 
 
 @dataclass
@@ -31,9 +36,32 @@ class FakeVideoService:
         self.starts.append(kwargs)
         return _analysis("video_start")
 
+    async def start_uploaded(self, **kwargs: Any) -> VideoAnalysis:
+        self.starts.append(kwargs)
+        source = kwargs["source"]
+        return _analysis(
+            "video_upload",
+            source_kind=source.kind,
+            source_display_name=source.display_name,
+            youtube_url="",
+        )
+
     async def ask(self, **kwargs: Any) -> VideoAnalysis:
         self.asks.append(kwargs)
         return _analysis(str(kwargs.get("session") or "video_active"))
+
+
+@dataclass
+class FakeVideoAttachment:
+    filename: str
+    size: int
+    content_type: str | None
+
+    def iter_video_chunks(self, *, chunk_size: int, max_bytes: int) -> Any:
+        async def chunks() -> Any:
+            yield b"video"
+
+        return chunks()
 
 
 class ErrorVideoService(FakeVideoService):
@@ -51,10 +79,19 @@ class ErrorVideoService(FakeVideoService):
         )
 
 
-def _analysis(session: str) -> VideoAnalysis:
+def _analysis(
+    session: str,
+    *,
+    source_kind: str = "youtube",
+    source_display_name: str = "YouTube video",
+    youtube_url: str = "https://www.youtube.com/watch?v=abcdefghijk",
+) -> VideoAnalysis:
     return VideoAnalysis(
         session=session,
-        youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+        source_kind=source_kind,
+        source_display_name=source_display_name,
+        source_locator=youtube_url or source_display_name,
+        youtube_url=youtube_url,
         answer="The speaker makes the point clearly.",
         evidence=(
             VideoEvidence(
@@ -96,10 +133,29 @@ def _context(**overrides: Any) -> MessageContext:
     return MessageContext(**values)
 
 
-def _registry(service: FakeVideoService) -> ToolRegistry:
+def _workspace_deps() -> tuple[WorkspaceManager, UserLocks]:
+    manager = WorkspaceManager(Path(tempfile.mkdtemp(prefix="video-tool-tests-")))
+    return manager, UserLocks()
+
+
+def _registry_with_workspace(
+    service: FakeVideoService,
+    manager: WorkspaceManager,
+    locks: UserLocks,
+) -> ToolRegistry:
     registry = ToolRegistry()
-    assert init_video_tool(registry, service)  # type: ignore[arg-type]
+    assert init_video_tool(
+        registry,
+        cast(Any, service),
+        workspace_manager=manager,
+        workspace_locks=locks,
+    )
     return registry
+
+
+def _registry(service: FakeVideoService) -> ToolRegistry:
+    manager, locks = _workspace_deps()
+    return _registry_with_workspace(service, manager, locks)
 
 
 def test_video_tool_is_searchable_member_surface_with_typed_config() -> None:
@@ -178,6 +234,81 @@ async def test_start_returns_untrusted_timestamped_result_and_records_usage() ->
     assert ctx.usage_sink[0].pricing_model == "gemini-3.7-flash"
     assert ctx.usage_sink[0].est_cost_usd is not None
     assert ctx.usage_sink[0].est_cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_attachment_and_omits_youtube_links() -> None:
+    service = FakeVideoService()
+    attachment = FakeVideoAttachment("clip.mp4", 5, "video/mp4")
+    ctx = _context(attachments=[attachment])
+
+    payload = json.loads(
+        await _registry(service).dispatch(
+            TOOL_NAME,
+            {
+                "action": "start",
+                "attachment": "clip.mp4",
+                "question": "What happens?",
+            },
+            ctx,
+        )
+    )
+
+    assert service.starts[0]["source"].kind == "attachment"
+    assert payload["source"] == {
+        "type": "uploaded_file",
+        "filename": "clip.mp4",
+        "origin": "attachment",
+    }
+    assert "video_url" not in payload
+    assert "youtube_url" not in payload["evidence"][0]
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_safe_workspace_video(tmp_path: Path) -> None:
+    service = FakeVideoService()
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    locks = UserLocks()
+    ctx = _context()
+    video = manager.resolve_user_file_path(ctx.workspace_key, "imports/clip.webm")
+    video.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(video.write_bytes, b"video")
+
+    payload = json.loads(
+        await _registry_with_workspace(service, manager, locks).dispatch(
+            TOOL_NAME,
+            {
+                "action": "start",
+                "path": "imports/clip.webm",
+                "question": "What happens?",
+            },
+            ctx,
+        )
+    )
+
+    assert service.starts[0]["source"].kind == "workspace"
+    assert service.starts[0]["source"].locator == "imports/clip.webm"
+    assert payload["source"]["origin"] == "workspace"
+
+
+@pytest.mark.asyncio
+async def test_start_requires_exactly_one_video_source() -> None:
+    ctx = _context()
+    payload = json.loads(
+        await _registry(FakeVideoService()).dispatch(
+            TOOL_NAME,
+            {
+                "action": "start",
+                "url": "https://youtu.be/abcdefghijk",
+                "path": "clip.mp4",
+                "question": "Question",
+            },
+            ctx,
+        )
+    )
+
+    assert payload["error"] == "start requires exactly one of url, attachment, or path"
+    assert ctx.video_calls_this_turn == 0
 
 
 @pytest.mark.asyncio
@@ -277,6 +408,7 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_fails()
 
 @pytest.mark.asyncio
 async def test_registration_requires_flag_and_secret() -> None:
+    manager, locks = _workspace_deps()
     disabled = ToolRegistry()
     disabled_service = _register_video(
         Settings(  # type: ignore[call-arg]
@@ -286,6 +418,8 @@ async def test_registration_requires_flag_and_secret() -> None:
         ),
         disabled,
         lambda: None,
+        workspace_manager=manager,
+        workspace_locks=locks,
     )
     assert not disabled.is_registered(TOOL_NAME)
     await disabled_service.close()
@@ -299,6 +433,8 @@ async def test_registration_requires_flag_and_secret() -> None:
         ),
         missing,
         lambda: None,
+        workspace_manager=manager,
+        workspace_locks=locks,
     )
     assert not missing.is_registered(TOOL_NAME)
     await missing_service.close()
@@ -312,6 +448,8 @@ async def test_registration_requires_flag_and_secret() -> None:
         ),
         enabled,
         lambda: None,
+        workspace_manager=manager,
+        workspace_locks=locks,
     )
     assert enabled.is_registered(TOOL_NAME)
     await enabled_service.close()

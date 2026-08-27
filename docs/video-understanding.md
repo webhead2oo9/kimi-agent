@@ -1,13 +1,20 @@
 # Video understanding
 
-The optional `video` tool lets Kimi ask a stateful Gemini specialist questions
-about public YouTube videos. It is a searchable `MEMBER` tool: the chat model
-loads it through `browse_tools` only when a request needs video analysis, and
-activation then follows the rooted conversation like other searchable tools.
+The optional searchable `video` tool lets Kimi ask a stateful Gemini specialist
+questions about one video. A session may start from:
 
-The implementation sends the YouTube URL directly to Google's Gemini
-Interactions API. It never downloads, transcodes, or stores YouTube audiovisual
-content on the bot host.
+- an exact public YouTube URL;
+- a supported video attached to the current Discord message, selected by exact
+  filename; or
+- a safe workspace-relative video path.
+
+The chat model loads the MEMBER tool through `browse_tools`. Activation follows
+the rooted conversation like other searchable tools, while each session remains
+scoped to its initiating user and guild.
+
+YouTube content is referenced directly. Uploaded files use Google's resumable
+Files API and are streamed in bounded chunks; the bot never buffers a complete
+500 MiB attachment in memory.
 
 ## Availability
 
@@ -18,115 +25,134 @@ VIDEO_UNDERSTANDING_ENABLED=true
 GEMINI_API_KEY=...
 ```
 
-The default is disabled. If the flag is false, the tool is absent regardless of
-the key. If the flag is true but the key is blank, startup continues, logs a
-clear warning, and leaves the tool absent. Dispatch and `browse_tools` mask an
-absent tool in the normal way.
+The one feature flag enables all three source types. If it is false, the tool is
+absent regardless of the key. If it is true but the key is blank, startup
+continues, logs a clear warning, and leaves the tool absent.
 
-`GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from
-a tool call, tool fragment, model catalog, prompt, or Discord command. The
-client connects only to Google's fixed
-`https://generativelanguage.googleapis.com` endpoint. The key is still used for
-provider-side cleanup when the feature flag is later disabled, so an operator
-can turn off new sessions without making old stored Interactions undeletable.
+`GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from a
+tool call, tool fragment, model catalog, prompt, or Discord command. The client
+connects only to fixed Google Gemini hosts. The key is still used for cleanup
+when new video use is disabled, so old provider resources remain deletable.
 
-The shipped model is the stable `gemini-3.7-flash`. This is a specialist owned
-by the tool, not a role in `config/models.yaml`, and it never substitutes for
-the configured chat model.
+The shipped specialist is stable `gemini-3.7-flash`, not a role in
+`config/models.yaml`, and it never substitutes for the configured chat model.
 
 ## Model-facing operations
 
-One tool owns two operations.
+One tool owns two actions.
 
 ### `start`
 
-`start` requires a public YouTube URL and a specific question. The handler:
+`start` requires a specific question and exactly one source:
 
-1. accepts only exact HTTPS YouTube hosts and one valid video id;
-2. canonicalizes supported watch, short, live, embed, and `youtu.be` forms to a
-   normal watch URL;
-3. sends the video before the question to Gemini 3.7 Flash with `store=true`;
-4. stores an opaque local session handle and the returned Interaction id; and
-5. returns the answer, limitations, and timestamped evidence as untrusted tool
-   context.
+```json
+{"action":"start","url":"https://youtu.be/...","question":"What happens?"}
+```
 
-Only public videos are supported. Private, unlisted, age/region-restricted,
-deleted, or otherwise unavailable videos fail with a concise error. Playlists
-without one video id, non-YouTube URLs, credentials, fragments, and explicit
-ports are rejected before any provider call.
+```json
+{"action":"start","attachment":"clip.mp4","question":"What happens?"}
+```
+
+```json
+{"action":"start","path":"imports/clip.webm","question":"What happens?"}
+```
+
+For YouTube, the handler accepts only exact HTTPS YouTube hosts and one valid
+video id, canonicalizes watch/short/live/embed/`youtu.be` forms, and sends the
+video before the question. Private, unavailable, playlist-only, credentialed,
+fragmented, explicit-port, and non-YouTube URLs fail before a provider call.
+Arbitrary MP4/web URLs are not a source; import them through the existing guarded
+workspace path first.
+
+For a Discord attachment, the exact filename must identify one current-message
+attachment. The captured source must be an HTTPS Discord CDN attachment URL on
+the fixed CDN host allowlist. Redirects, credentials, fragments, explicit ports,
+size changes, truncation, and over-limit streams fail closed. The normal
+`import_attachment` path remains separately bounded and may still withhold an
+unmoderatable binary; the enabled video tool gets only this narrow video stream,
+never a generic readable binary handle.
+
+For a workspace path, `WorkspaceManager` rejects absolute paths, traversal,
+symlinks, and reserved environment trees. The final file is opened no-follow
+under the per-workspace activity lock and must be regular; the bound fd then
+streams after releasing that lock, so network backpressure does not block global
+workspace maintenance. General workspace quotas are unchanged;
+a workspace cannot acquire a 500 MiB file merely because video analysis accepts
+one from Discord.
+
+Uploaded files must be 1–524,288,000 bytes and use a Gemini-supported format:
+MP4, MPEG/MPG, MOV/QuickTime, AVI, FLV, WebM, WMV, or 3GPP. Common MIME aliases
+are normalized, and an incompatible declared MIME/extension pair is rejected.
+Gemini remains the authoritative container decoder.
+
+The client reserves a provider File name locally before upload, performs the
+resumable upload in 8 MiB chunks, polls until **ACTIVE**, and requires valid video
+duration metadata. Videos over one hour, failed processing, malformed/missing
+duration, or processing beyond 15 minutes are rejected and queued for deletion.
+One upload runs at a time; ordinary analysis/follow-up concurrency remains
+separately configurable.
+
+A successful start stores an opaque local session handle plus every provider
+resource id. The result contains an answer, limitations, and timestamped
+evidence as untrusted tool context.
 
 ### `ask`
 
-`ask` continues the Gemini chain through `previous_interaction_id`; the URL and
-prior turns are not reconstructed or resent by the bot. Pass the opaque session
-handle returned by `start`. It may be omitted only when exactly one unexpired
-session belongs to the current user in the current rooted conversation. More
-than one match fails closed and asks the model to select a handle.
+`ask` continues the Gemini chain through `previous_interaction_id`; the video
+and prior turns are not reconstructed or resent by the bot:
 
-The same interaction-scoped system instruction, structured response format,
-thinking level, and output cap are repeated on every call because
-`previous_interaction_id` preserves conversation history, not those controls.
-A session keeps the model it started with even if live tool configuration is
-edited later.
+```json
+{"action":"ask","session":"video_...","question":"What happens next?"}
+```
 
-## Session scope and lifetime
+The handle may be omitted only when exactly one unexpired session belongs to
+the current user in the current rooted conversation. More than one match fails
+closed. The same system instruction, response schema, thinking level, and output
+cap are repeated because continuation preserves conversation history, not those
+interaction-scoped controls. A session keeps the model it started with.
 
-A local handle is not authority by itself. Every lookup rechecks:
+## Scope and crash consistency
 
-- rooted SQLite `conversation_id`;
-- initiating Discord `user_id`;
-- guild id;
-- expiry; and
-- the expected latest remote Interaction id during an atomic advance.
+A local handle is not authority by itself. Every lookup rechecks rooted
+conversation id, initiating user id, guild id, expiry, and the expected latest
+Interaction id during atomic advancement. Concurrent advances use compare-and-
+swap; the loser deletes its newly created orphan rather than forking the chain.
 
-Another member in a shared channel root therefore cannot continue someone
-else's provider session, and a leaked handle from another guild or root does
-nothing. Concurrent advances use compare-and-swap semantics; the loser deletes
-its newly created remote Interaction rather than forking the local chain.
+For an upload, SQLite records a client-chosen `files/<id>` reservation before
+any bytes reach Google. Provider network work never holds a database write
+transaction. After Interaction creation, one transaction creates the session,
+records its first Interaction, and claims the reservation. Normal failures
+release the reservation into the durable deletion outbox; a crash leaves an
+unattached reservation that startup/hourly cleanup expires after a conservative
+grace period.
 
-Sessions survive normal turns and process restarts in SQLite schema v3. Their
-idle lifetime defaults to 24 hours and can only be reduced through live tool
-configuration. Each follow-up extends the idle deadline. Expiry deletes the
-local session immediately and queues every known Gemini Interaction in the
-session for provider deletion. Deleting the parent conversation through
-transcript retention does the same through a database trigger.
-
-Google currently documents paid-tier Interaction retention of up to 55 days.
-The local 24-hour session clock is not a claim that Google has already deleted
-its copy: the bot calls Google's Interaction deletion endpoint and keeps a
-durable, content-free retry row until that succeeds or Google reports the id is
-already absent.
+Sessions survive turns and restarts in SQLite schema v3. Source rows retain only
+safe metadata: source kind, display filename/relative locator, byte size, model,
+scope, timestamps, and opaque provider ids. They never store video bytes,
+Discord CDN URLs, Gemini File capability URIs, questions, or answers.
 
 ## Output and trust
 
-Gemini is required to return structured data:
+Gemini must return `answer`, `limitations`, and evidence ranges containing
+start/end seconds, `basis`, and `claim`. `basis` is one of `audio`, `visual`,
+`audio_and_visual`, or `inference`, preserving whether a claim was heard, seen,
+corroborated, or inferred.
 
-- `answer`;
-- zero or more evidence ranges with start/end seconds, basis, and claim; and
-- explicit limitations.
+YouTube evidence adds clickable `&t=<seconds>s` links. Uploaded-file evidence
+has readable timestamps but no external link or local absolute path. Its source
+metadata is limited to a safe display filename and `attachment`/`workspace`
+origin.
 
-The tool adds readable timestamps and clickable `&t=<seconds>s` YouTube links.
-Evidence distinguishes `audio`, `visual`, `audio_and_visual`, and `inference`.
-Malformed, incomplete, or empty provider responses fail instead of being passed
-through as prose.
-
-The complete result carries `context_is_untrusted: true`. The specialist's
-fixed system instruction treats video, audio, dialogue, captions, descriptions,
-and on-screen text as evidence and never as instructions. This matters because
-a video can contain prompt injection just as easily as a web page can. Kimi
-must not execute a request merely because a speaker or title card asked it to.
-
-Gemini's video processing is sampled and probabilistic. Timestamp evidence is
-useful grounding, not editing-grade frame accuracy; fast cuts, brief overlays,
-and details between sampled frames may be missed. The MVP intentionally does
-not expose clipping or custom FPS because those `video_metadata` controls are
-available in `generateContent`, while stateful continuation lives in the
-Interactions API.
+The complete result carries `context_is_untrusted: true`. The fixed specialist
+instruction treats video, audio, dialogue, captions, descriptions, and on-screen
+text as evidence, never instructions. Fast cuts, brief overlays, OCR, and details
+between sampled frames may be missed. Timestamps are useful grounding, not
+editing-grade frame accuracy. Interactions does not expose the clipping/custom-
+FPS controls available in `generateContent`.
 
 ## Limits and live tool configuration
 
-Safe behavior lives in `<CONFIG_DIR>/tools/video.md` and is read fresh each
-turn. No file is required; these are the shipped defaults:
+Safe per-call behavior remains in `<CONFIG_DIR>/tools/video.md`:
 
 ```markdown
 ---
@@ -148,89 +174,69 @@ session_ttl_minutes: 1440
 | `max_session_interactions` | `20` | 2–50, including `start` |
 | `session_ttl_minutes` | `1440` | 5–1,440 |
 
-A call that reaches Gemini consumes the per-turn allowance even if the provider
-rejects the video. Internal HTTP behavior, endpoint selection, credentials, and
-provider retention are not model- or fragment-configurable.
+The 500 MiB file ceiling and one-hour duration ceiling are code-owned hard
+policy, not fragment knobs. A call consumes its per-turn allowance only after
+local source validation reaches provider work.
 
 ## Usage, caching, and latency
 
-Every completed specialist call records an `LLMUsageCall` with role
-`video_analysis`. The ledger stores ordinary input, cached input, and output
-(including thought) token counts, but not the URL, question, or answer. The tool
-ships Google's scheduled paid-tier standard rates for Gemini 3.7 Flash: through
-December 31, 2026, $0.75/M ordinary input, $0.075/M cached input, and $3.75/M
-output; from January 1, 2027, $1.50/M, $0.15/M, and $7.50/M respectively. The
-vendor dashboard remains authoritative if Google changes those published rates.
+Files API upload/polling is not an LLM ledger row. Every completed Interaction
+records one `LLMUsageCall` under `video_analysis`, splitting ordinary input,
+cached input, and output including thought tokens. It stores no source content,
+question, or answer.
 
-The Interactions API enables implicit caching automatically. Stateful
-`previous_interaction_id` chains improve cache locality, but a follow-up is not
-assumed cheap: Google defines each interaction's input usage as the complete
-context processed for that call, including preceding turns. The bot therefore
-records every response's full input count—not deltas between chain snapshots—
-and splits out `total_cached_tokens` at its discounted rate. Output and thought
-counts are for the current generation. A live three-turn check confirmed input
-rising with chain history while output remained per-turn. The principal
-guaranteed wins are server-side continuity and not transferring the whole
-history from the bot; latency and cache hits must be measured in production.
+Google defines each continuation's input usage as the complete context processed
+for that call, including preceding turns, so the bot records full response usage
+rather than deltas. Cache hits are automatic but not guaranteed.
 
-Provider calls use one application-owned async client and a fixed five-minute
-request deadline. `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` controls 1–32 concurrent
-interactive calls (default 4); waiting for an interactive slot is capped at 30
-seconds. Provider deletion has a separate bounded pool and 30-second request
-deadline, so cleanup never occupies interactive slots or waits on a five-minute
-analysis deadline. The service never retries a create blindly, because
-losing the response and repeating it could create an untracked stored
-Interaction.
+The tool ships Google's scheduled paid-tier standard rates for Gemini 3.7 Flash:
+through December 31, 2026, $0.75/M ordinary input, $0.075/M cached input, and
+$3.75/M output; from January 1, 2027, $1.50/M, $0.15/M, and $7.50/M. The vendor
+dashboard remains authoritative.
+
+Interactive concurrency defaults to four and is controlled by
+`VIDEO_UNDERSTANDING_MAX_CONCURRENCY` (1–32); a slot wait fails busy after 30
+seconds. Uploads are serialized and bounded to 30 minutes end-to-end; the processing
+poll has its own 15-minute ceiling within that total budget. Provider deletion uses a separate bounded
+pool and 30-second request deadline. Create/upload operations are never blindly
+replayed when their remote outcome is ambiguous.
 
 ## Retention, privacy, and deletion
 
-The local tables are `video_sessions`, `video_interactions`, and the
-content-free `video_interaction_deletions` outbox. Session rows contain the
-canonical public URL, model, owner/root scope, timestamps, and opaque local and
-provider ids. They do not contain questions or answers; those remain in
-Google's stored Interaction and any normal Discord reply that enters Kimi's
-ordinary transcript.
+Local sessions expire after at most 24 hours idle. Expiry, transcript retention,
+and full `/privacy` remove local access and enqueue every known Interaction and
+Files API resource for deletion. Interaction deletion is completed before its
+backing File deletion. Provider cleanup drains in bounded batches with capped
+one-minute-to-six-hour exponential backoff; no attempt count discards privacy
+cleanup metadata.
 
-A full `/privacy` deletion removes all sessions initiated by that user,
-including sessions inside a surviving shared root, then immediately attempts up
-to four provider deletion rows. Provider cleanup is independently durable: if Google or
-the credential is unavailable, the privacy request still completes after local
-data is gone, the user barrier is released, and the result says that Gemini
-deletion remains queued. This avoids indefinitely locking out a user while
-preserving eventual provider cleanup.
+Files API uploads are independently documented by Google as retained for up to
+48 hours, and paid-tier Interactions for up to 55 days. The bot manually requests
+deletion and does not rely on those clocks. If Google or the credential is
+unavailable during `/privacy`, local deletion still completes, the user barrier
+is released, and content-free provider deletion rows remain queued.
 
-The hourly video-session sweeper expires sessions and retries provider deletes.
-Its startup pass runs in the installed background task rather than blocking a
-Discord READY event. Cleanup drains at most 100 rows per pass; failures use
-capped exponential backoff from one minute to six hours, and retry-ready rows
-are ordered ahead of delayed failures so a poison row cannot starve new work.
-Rows are never dropped merely for reaching an attempt count. The sweeper runs
-even when new video analysis is disabled. Without `GEMINI_API_KEY`, it can
-remove expired local state but must leave provider deletion rows queued until
-provider access is restored.
-
-Google may separately retain limited safety/security logs under its paid-service
-terms. Deleting an Interaction is not a promise that provider backups or legally
-required records disappear immediately. Deployments should use a billing-enabled
-Gemini project: Google's terms say paid-service prompts and responses are not
-used to improve its products, while unpaid-service data may be.
+Google may retain limited safety/security logs, backups, or legally required
+records separately. Deployments should use a dedicated billing-enabled project;
+Google's terms say paid-service prompts and responses are not used to improve
+its products, while unpaid-service data may be.
 
 ## Operator checklist
 
-1. Use a dedicated, billing-enabled Gemini project and key.
-2. Set both registration values and restart.
-3. Confirm the startup capability summary lists `video understanding`.
-4. Optionally create `<CONFIG_DIR>/tools/video.md` with lower limits first.
-5. Test one public YouTube URL, one follow-up, and `/privacy` provider deletion
-   before enabling the tool broadly.
-6. Monitor `video_analysis` usage and cached-token ratios rather than assuming a
-   follow-up cost.
+1. Use a dedicated billing-enabled Gemini project and key.
+2. Enable video understanding and restart.
+3. Confirm startup reports `video understanding`.
+4. Test a public YouTube URL, a small Discord MP4, a workspace video, one
+   follow-up, and `/privacy` cleanup before broad use.
+5. Monitor video duration, provider storage/quota, latency, token usage, and
+   cache ratios rather than assuming follow-ups are cheap.
 
 Current Google references:
 
-- [Gemini video understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
-- [Interactions API](https://ai.google.dev/gemini-api/docs/interactions/interactions-overview)
-- [Interactions API reference](https://ai.google.dev/api/interactions-api)
+- [Video understanding](https://ai.google.dev/gemini-api/docs/interactions/video-understanding)
+- [Files API](https://ai.google.dev/gemini-api/docs/interactions/files)
+- [File input methods](https://ai.google.dev/gemini-api/docs/file-input-methods)
+- [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 - [Interaction token accounting](https://ai.google.dev/gemini-api/docs/interactions/tokens)
 - [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
 - [Gemini API data terms](https://ai.google.dev/gemini-api/terms)

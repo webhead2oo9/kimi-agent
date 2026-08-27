@@ -9,9 +9,12 @@ import time
 from typing import Protocol
 
 from video_understanding.client import (
+    UploadedVideoFile,
+    VideoByteSource,
     VideoEvidence,
     VideoInteractionError,
     VideoInteractionResult,
+    VideoUploadRequest,
     VideoUsage,
 )
 
@@ -19,6 +22,7 @@ log = logging.getLogger(__name__)
 
 _DELETION_BATCH_SIZE = 100
 _PRIVACY_DELETION_BATCH_SIZE = 4
+_STALE_UPLOAD_GRACE_SECONDS = 3_600
 
 
 class VideoInteractionClient(Protocol):
@@ -26,6 +30,19 @@ class VideoInteractionClient(Protocol):
         self,
         *,
         url: str,
+        question: str,
+        model: str,
+        thinking_level: str,
+        max_output_tokens: int,
+    ) -> VideoInteractionResult: ...
+
+    async def upload_video(self, request: VideoUploadRequest) -> UploadedVideoFile: ...
+
+    async def start_from_file(
+        self,
+        *,
+        file_uri: str,
+        mime_type: str,
         question: str,
         model: str,
         thinking_level: str,
@@ -43,6 +60,8 @@ class VideoInteractionClient(Protocol):
     ) -> VideoInteractionResult: ...
 
     async def delete(self, interaction_id: str) -> None: ...
+
+    async def delete_file(self, name: str) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -62,6 +81,10 @@ class VideoSessionError(RuntimeError):
 
 class VideoSessionRecord(Protocol):
     handle: str
+    source_kind: str
+    source_display_name: str
+    source_locator: str
+    source_byte_size: int | None
     youtube_url: str
     youtube_video_id: str
     model: str
@@ -72,6 +95,11 @@ class VideoSessionRecord(Protocol):
 
 class VideoDeletionRecord(Protocol):
     interaction_id: str
+    retry_at: float
+
+
+class VideoFileDeletionRecord(Protocol):
+    file_name: str
     retry_at: float
 
 
@@ -90,6 +118,40 @@ class VideoSessionRepository(Protocol):
         now: float,
         expires_at: float,
     ) -> None: ...
+
+    async def reserve_provider_file(
+        self,
+        *,
+        file_name: str,
+        conversation_id: int,
+        actor_user_id: str,
+        guild_id: str,
+        mime_type: str,
+        byte_size: int,
+        now: float,
+    ) -> None: ...
+
+    async def create_uploaded_session(
+        self,
+        *,
+        handle: str,
+        conversation_id: int,
+        actor_user_id: str,
+        guild_id: str,
+        source_kind: str,
+        source_display_name: str,
+        source_locator: str,
+        source_byte_size: int,
+        model: str,
+        interaction_id: str,
+        file_name: str,
+        now: float,
+        expires_at: float,
+    ) -> None: ...
+
+    async def release_provider_file(self, file_name: str, actor_user_id: str) -> bool: ...
+
+    async def delete_stale_provider_files(self, cutoff: float, *, limit: int) -> int: ...
 
     async def find_sessions(
         self,
@@ -132,11 +194,28 @@ class VideoSessionRepository(Protocol):
         limit: int,
     ) -> Sequence[VideoDeletionRecord]: ...
 
+    async def pending_file_deletions(
+        self,
+        *,
+        user_id: str | None,
+        limit: int,
+    ) -> Sequence[VideoFileDeletionRecord]: ...
+
     async def complete_deletion(self, interaction_id: str) -> None: ...
+
+    async def complete_file_deletion(self, file_name: str) -> None: ...
 
     async def fail_deletion(
         self,
         interaction_id: str,
+        error: str,
+        *,
+        now: float | None = None,
+    ) -> None: ...
+
+    async def fail_file_deletion(
+        self,
+        file_name: str,
         error: str,
         *,
         now: float | None = None,
@@ -153,8 +232,21 @@ class VideoSessionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class UploadedVideoSource:
+    kind: str
+    display_name: str
+    locator: str
+    mime_type: str
+    byte_size: int
+    bytes: VideoByteSource
+
+
+@dataclass(frozen=True, slots=True)
 class VideoAnalysis:
     session: str
+    source_kind: str
+    source_display_name: str
+    source_locator: str
     youtube_url: str
     answer: str
     evidence: tuple[VideoEvidence, ...]
@@ -225,7 +317,100 @@ class VideoUnderstandingService:
                 "The video was analyzed, but its follow-up session could not be saved.",
                 result=result,
             ) from exc
-        return _analysis(handle, youtube_url, result)
+        return _analysis(
+            handle=handle,
+            source_kind="youtube",
+            source_display_name="YouTube video",
+            source_locator=youtube_url,
+            youtube_url=youtube_url,
+            result=result,
+        )
+
+    async def start_uploaded(
+        self,
+        *,
+        conversation_id: int,
+        actor_user_id: str,
+        guild_id: str,
+        source: UploadedVideoSource,
+        question: str,
+        config: VideoSessionConfig,
+    ) -> VideoAnalysis:
+        client = self._require_client()
+        store = self._require_store()
+        file_id = f"kv-{secrets.token_hex(16)}"
+        file_name = f"files/{file_id}"
+        reserved_at = time.time()
+        await store.reserve_provider_file(
+            file_name=file_name,
+            conversation_id=conversation_id,
+            actor_user_id=actor_user_id,
+            guild_id=guild_id,
+            mime_type=source.mime_type,
+            byte_size=source.byte_size,
+            now=reserved_at,
+        )
+
+        try:
+            uploaded = await client.upload_video(
+                VideoUploadRequest(
+                    file_id=file_id,
+                    display_name=source.display_name,
+                    mime_type=source.mime_type,
+                    declared_size_bytes=source.byte_size,
+                    source=source.bytes,
+                )
+            )
+            result = await client.start_from_file(
+                file_uri=uploaded.uri,
+                mime_type=uploaded.mime_type,
+                question=question,
+                model=config.model,
+                thinking_level=config.thinking_level,
+                max_output_tokens=config.max_output_tokens,
+            )
+        except VideoInteractionError as exc:
+            if exc.interaction_id:
+                await self._queue_orphan(store, actor_user_id, exc.interaction_id)
+            await self._release_file_or_log(store, actor_user_id, file_name)
+            raise
+        except Exception:
+            await self._release_file_or_log(store, actor_user_id, file_name)
+            raise
+
+        now = time.time()
+        handle = f"video_{secrets.token_urlsafe(12)}"
+        try:
+            await store.create_uploaded_session(
+                handle=handle,
+                conversation_id=conversation_id,
+                actor_user_id=actor_user_id,
+                guild_id=guild_id,
+                source_kind=source.kind,
+                source_display_name=source.display_name,
+                source_locator=source.locator,
+                source_byte_size=source.byte_size,
+                model=config.model,
+                interaction_id=result.interaction_id,
+                file_name=file_name,
+                now=now,
+                expires_at=now + config.session_ttl_minutes * 60,
+            )
+        except Exception as exc:
+            await self._queue_orphan(store, actor_user_id, result.interaction_id)
+            await self._release_file_or_log(store, actor_user_id, file_name)
+            raise VideoSessionError(
+                "The video was analyzed, but its follow-up session could not be saved.",
+                result=result,
+            ) from exc
+        return _analysis(
+            handle=handle,
+            source_kind=source.kind,
+            source_display_name=source.display_name,
+            source_locator=source.locator,
+            youtube_url="",
+            result=result,
+        )
 
     async def ask(
         self,
@@ -239,17 +424,17 @@ class VideoUnderstandingService:
     ) -> VideoAnalysis:
         client = self._require_client()
         store = self._require_store()
-        now = time.time()
+        lookup_now = time.time()
         matches = await store.find_sessions(
             conversation_id=conversation_id,
             actor_user_id=actor_user_id,
             guild_id=guild_id,
-            now=now,
+            now=lookup_now,
             handle=session,
         )
         if not matches:
             raise VideoSessionError(
-                "No active video session matches this conversation. Start one with a YouTube URL."
+                "No active video session matches this conversation. Start one with a video source."
             )
         if len(matches) > 1:
             raise VideoSessionError(
@@ -273,6 +458,7 @@ class VideoUnderstandingService:
             if exc.interaction_id:
                 await self._queue_orphan(store, actor_user_id, exc.interaction_id)
             raise
+        now = time.time()
         try:
             advanced = await store.advance_session(
                 handle=current.handle,
@@ -295,19 +481,28 @@ class VideoUnderstandingService:
                 "That video session changed concurrently. Retry the follow-up against its latest state.",
                 result=result,
             )
-        return _analysis(current.handle, current.youtube_url, result)
+        return _analysis(
+            handle=current.handle,
+            source_kind=current.source_kind,
+            source_display_name=current.source_display_name,
+            source_locator=current.source_locator,
+            youtube_url=current.youtube_url,
+            result=result,
+        )
 
     async def delete_user_data(self, user_id: str) -> tuple[int, bool]:
         """Delete local sessions and report whether provider cleanup remains queued."""
         store = self._require_store()
         removed = await store.delete_user_sessions(user_id)
-        complete = await self._drain_deletions(
+        interactions_complete = await self._drain_deletions(
             user_id=user_id,
             limit=_PRIVACY_DELETION_BATCH_SIZE,
         )
-        # Provider cleanup is independently durable in the outbox. It must not
-        # keep the user's privacy barrier active after all local data is gone.
-        return removed, not complete
+        files_complete = await self._drain_file_deletions(
+            user_id=user_id,
+            limit=_PRIVACY_DELETION_BATCH_SIZE,
+        )
+        return removed, not (interactions_complete and files_complete)
 
     async def sweep(self, *, now: float | None = None) -> tuple[int, bool]:
         store = self._require_store()
@@ -319,8 +514,13 @@ class VideoUnderstandingService:
             removed += batch
             if batch < batch_limit:
                 break
-        complete = await self._drain_deletions(user_id=None, limit=5_000)
-        return removed, complete
+        await store.delete_stale_provider_files(
+            cutoff - _STALE_UPLOAD_GRACE_SECONDS,
+            limit=100,
+        )
+        interactions_complete = await self._drain_deletions(user_id=None, limit=5_000)
+        files_complete = await self._drain_file_deletions(user_id=None, limit=5_000)
+        return removed, interactions_complete and files_complete
 
     async def close(self) -> None:
         client, self._client = self._client, None
@@ -368,14 +568,45 @@ class VideoUnderstandingService:
         for deletion, error in results:
             if error is not None:
                 complete = False
-                await store.fail_deletion(
-                    deletion.interaction_id,
-                    str(error),
-                    now=now,
-                )
+                await store.fail_deletion(deletion.interaction_id, str(error), now=now)
                 log.warning("Gemini interaction deletion failed: %s", error)
             else:
                 await store.complete_deletion(deletion.interaction_id)
+        return complete and not backlog
+
+    async def _drain_file_deletions(self, *, user_id: str | None, limit: int) -> bool:
+        store = self._require_store()
+        batch_limit = min(limit, _DELETION_BATCH_SIZE)
+        pending = await store.pending_file_deletions(user_id=user_id, limit=batch_limit + 1)
+        if not pending:
+            return True
+        backlog = len(pending) > batch_limit
+        pending = pending[:batch_limit]
+        client = self._client
+        if client is None:
+            return False
+
+        now = time.time()
+        ready = [deletion for deletion in pending if deletion.retry_at <= now]
+        complete = len(ready) == len(pending)
+
+        async def attempt(
+            deletion: VideoFileDeletionRecord,
+        ) -> tuple[VideoFileDeletionRecord, VideoInteractionError | None]:
+            try:
+                await client.delete_file(deletion.file_name)
+            except VideoInteractionError as exc:
+                return deletion, exc
+            return deletion, None
+
+        results = await asyncio.gather(*(attempt(deletion) for deletion in ready))
+        for deletion, error in results:
+            if error is not None:
+                complete = False
+                await store.fail_file_deletion(deletion.file_name, str(error), now=now)
+                log.warning("Gemini file deletion failed: %s", error)
+            else:
+                await store.complete_file_deletion(deletion.file_name)
         return complete and not backlog
 
     async def _queue_orphan(
@@ -393,10 +624,7 @@ class VideoUnderstandingService:
             )
             queued = True
         except Exception:
-            log.exception(
-                "Could not queue orphaned Gemini video interaction %s",
-                interaction_id,
-            )
+            log.exception("Could not queue orphaned Gemini video interaction %s", interaction_id)
         client = self._client
         if client is None:
             return
@@ -414,10 +642,34 @@ class VideoUnderstandingService:
             if queued:
                 await store.complete_deletion(interaction_id)
 
+    async def _release_file_or_log(
+        self,
+        store: VideoSessionRepository,
+        actor_user_id: str,
+        file_name: str,
+    ) -> None:
+        try:
+            await store.release_provider_file(file_name, actor_user_id)
+        except Exception:
+            log.exception("Could not release orphaned Gemini video file %s", file_name)
+            return
+        await self._drain_file_deletions(user_id=actor_user_id, limit=1)
 
-def _analysis(handle: str, youtube_url: str, result: VideoInteractionResult) -> VideoAnalysis:
+
+def _analysis(
+    *,
+    handle: str,
+    source_kind: str,
+    source_display_name: str,
+    source_locator: str,
+    youtube_url: str,
+    result: VideoInteractionResult,
+) -> VideoAnalysis:
     return VideoAnalysis(
         session=handle,
+        source_kind=source_kind,
+        source_display_name=source_display_name,
+        source_locator=source_locator,
         youtube_url=youtube_url,
         answer=result.answer,
         evidence=result.evidence,

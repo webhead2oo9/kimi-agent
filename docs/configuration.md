@@ -568,12 +568,14 @@ deduplication, and cost accounting.
 ## Video understanding (gated)
 
 The searchable member-tier `video` tool registers only when the feature flag
-and its dedicated Gemini secret are both present. The key is independent of
+and its dedicated Gemini secret are both present. One flag enables public
+YouTube plus streamed Discord/workspace video sources; uploaded files retain
+code-owned 500 MiB/one-hour ceilings. The key is independent of
 `config/models.yaml`; chat routing never supplies or inherits it.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `VIDEO_UNDERSTANDING_ENABLED` | bool | `false` | Requests registration of the stateful public-YouTube tool. With a missing key, startup continues and leaves the tool absent. |
+| `VIDEO_UNDERSTANDING_ENABLED` | bool | `false` | Requests registration of the stateful YouTube/uploaded-video tool. With a missing key, startup continues and leaves the tool absent. |
 | `GEMINI_API_KEY` | secret | `""` | Dedicated Google Gemini API key. Environment-only and never written to a tool fragment. |
 | `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` | int | `4` | Process-wide interactive Gemini request cap, 1–32. Slot waits fail busy after 30 seconds; provider deletion uses a separate bounded pool. |
 
@@ -582,9 +584,9 @@ owned by `config/tools/video.md` and listed in the per-tool table above. The
 shipped defaults use `gemini-3.7-flash`, low thinking, four calls per outer
 turn, twenty total interactions per session, and a 24-hour idle lifetime.
 
-See [Video understanding](video-understanding.md) for the operation schema,
-root/user/guild session scope, implicit caching, SQLite v3 state, provider
-retention and deletion, and prompt-injection posture.
+See [Video understanding](video-understanding.md) for source streaming, formats,
+hard file/duration limits, root/user/guild scope, SQLite v3 crash recovery,
+provider retention/deletion, caching, and prompt-injection posture.
 
 ---
 

@@ -11,7 +11,7 @@ The rest is reference material.
 
 ## Start here
 
-- [Setup and boot](setup.md): initial setup and verification.
+- [Setup and boot](setup.md): first deployment and verification.
 - [Architecture](architecture.md): the shape of the system and its package map.
 - [Configuration](configuration.md): every deployment setting and every live
   fragment surface.
@@ -29,6 +29,10 @@ The rest is reference material.
   [OpenAI and OpenRouter](providers-openai.md).
 - [Provider resilience](provider-resilience.md): sticky fallback, persistent
   circuit breakers, cooldown policy, and owner recovery controls.
+- [Internet search](internet-search.md): Exa/Brave search and page reading,
+  blending, limits, cost, and privacy.
+- [Wolfram|Alpha](wolfram-alpha.md): optional computational queries, limits,
+  credentials, and cost tracking.
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and
   guild.
@@ -57,7 +61,7 @@ The rest is reference material.
 
 ## Operations, safety, and evaluation
 
-- [Database](database.md): the initial SQLite schema and its operational
+- [Database](database.md): the SQLite schema and its operational
   safeguards.
 - [Privacy](privacy.md): data flow, retention, deletion, and operator access.
 - [Privacy policy](privacy-policy.md): the member-facing plain-language policy.

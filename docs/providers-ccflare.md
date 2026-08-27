@@ -37,17 +37,19 @@ providers:
 models:
   claude-subscription:
     provider: ccflare
-    model: anthropic/claude-opus-5
-    context_window: 200000
-    capabilities: [text, tool_calling, image_input]
+    model: anthropic/<served-model-id>
+    context_window: <verified-context-window>
+    capabilities: [text, tool_calling]
 ```
+
+Set the context window and capabilities from the served model's documentation.
+Add `image_input` only when that model supports it.
 
 Four details decide whether this works:
 
 - **The base URL must be the `/v1/ccflare/anthropic` prefix.** The provider
   POSTs to `{base_url}/messages`, which is exactly the route ccflare parses.
-- **The model id needs the `anthropic/` family prefix**, as in
-  `anthropic/claude-opus-5`. ccflare strips the prefix and dispatches to the
+- **The model id needs the `anthropic/` family prefix.** ccflare strips the prefix and dispatches to the
   Claude Code or API-key accounts that deployment has configured.
 - **The profile is `keyless: true`.** ccflare deletes our `x-api-key`, sets
   `Authorization: Bearer <oauth token>` itself, and adds the
@@ -72,8 +74,8 @@ controls this and defaults to on.
 
 The cached prefix is everything *before* that block: the system prompt, the tool
 schemas, and the whole transcript. Each ReAct iteration therefore reads the
-previous iteration's prefix instead of paying to write it again. Here is what
-that looked like measured on a 5.3k-token system prompt through ccflare:
+cached prefix instead of paying to write it again. Example accounting for a
+5.3k-token system prompt through ccflare:
 
 | Iteration | Cache write | Cache read |
 |---|---|---|
@@ -81,13 +83,12 @@ that looked like measured on a 5.3k-token system prompt through ccflare:
 | 2 | 102 (the delta) | 5351 |
 | 3 | -- | 5453 |
 
-Two implementation details matter here, and we found both the hard way:
+Two implementation details matter here:
 
 - **The breakpoint rides the message list, not `system`.** A breakpoint placed
   inside the `system` array is silently ignored on ccflare's claude-code route.
-  We verified this live: zero cache creation across repeated identical
-  requests. Nothing about the request errors; it simply never caches, which is
-  the worst kind of failure because it is invisible and expensive.
+  Repeated identical requests then report no cache creation without returning
+  an error, making the failure easy to miss and potentially expensive.
 - **The marked block and its containing list are copied first.** An assistant
   message's content list is shared with the stored `raw_provider_data`. Writing
   a breakpoint back into it would replay in every later turn and eventually blow

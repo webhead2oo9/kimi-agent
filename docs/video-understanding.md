@@ -31,8 +31,8 @@ continues, logs a clear warning, and leaves the tool absent.
 
 `GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from a
 tool call, tool fragment, model catalog, prompt, or Discord command. The client
-connects only to fixed Google Gemini hosts. The key is still used for cleanup
-when new video use is disabled, so old provider resources remain deletable.
+connects only to fixed Google Gemini hosts. Cleanup remains available while video
+analysis is disabled, so registered provider resources remain deletable.
 
 The shipped specialist is stable `gemini-3.7-flash`, not a role in
 `config/models.yaml`, and it never substitutes for the configured chat model.
@@ -98,8 +98,8 @@ evidence as untrusted tool context.
 
 ### `ask`
 
-`ask` continues the Gemini chain through `previous_interaction_id`; the video
-and prior turns are not reconstructed or resent by the bot:
+`ask` continues the Gemini chain through `previous_interaction_id`; the bot does
+not reconstruct or resend the video or the chain's turn content:
 
 ```json
 {"action":"ask","session":"video_...","question":"What happens next?"}
@@ -126,7 +126,7 @@ release the reservation into the durable deletion outbox; a crash leaves an
 unattached reservation that startup/hourly cleanup expires after a conservative
 grace period.
 
-Sessions survive turns and restarts in SQLite schema v3. Source rows retain only
+Sessions survive turns and restarts in SQLite. Source rows retain only
 safe metadata: source kind, display filename/relative locator, byte size, model,
 scope, timestamps, and opaque provider ids. They never store video bytes,
 Discord CDN URLs, Gemini File capability URIs, questions, or answers.

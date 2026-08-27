@@ -1,6 +1,6 @@
 # Kimi privacy policy
 
-_Last updated: 2026-08-24_
+_Last updated: 2026-08-27_
 
 > **Deployment template:** Before publishing this policy, the operator must
 > verify that its enabled services, retention periods, moderation features, and
@@ -14,15 +14,16 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 
 ## TL;DR
 
-- Kimi only starts an AI conversation when you call on it (a mention, a reply,
-  "hey kimi", or its own threads). During that conversation it may use recent
-  public messages as context. It **ignores DMs** entirely.
+- Kimi only starts an AI conversation when you call on it: a mention, a pinged
+  reply, `hey/hi Kimi`, `Kimi help`, or an unmentioned message in one of its
+  auto-responding threads. During that conversation it may use recent public
+  messages as context. It **ignores DMs** entirely.
 - Staff can separately opt specific channels into local known-bad image
   matching. A match can delete the message and time out its author; images and
   matches are not sent to the fingerprint service.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
-  memory, moderation, internet-search, and Gemini video services receive only
-  the input needed for those features; selected uploads send their video bytes.
+  services receive the input needed for the feature you request. Browser tasks
+  and network-enabled code can also contact sites or services chosen by the task.
 - Conversation history auto-deletes after **30 days**. When long-term memory is
   available, it is on by default; you can opt out with `/memory opt-out`, or
   wipe it any time with `/privacy`.
@@ -35,10 +36,10 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 
 ## When Kimi is listening
 
-Kimi only starts a conversation when you actually call on it: by @mentioning
-it, replying to it (with ping on), saying "hey kimi", or chatting inside a
-thread it started. It does **not** store ordinary channel conversation as chat
-history.
+Kimi only starts a conversation when you call on it: by @mentioning it,
+replying with the ping on, saying `hey/hi Kimi` or `Kimi help`, or posting in an
+auto-responding thread it started. Paused threads require an explicit
+invocation. It does **not** store ordinary channel conversation as chat history.
 
 While it works on something you asked for, Kimi may read recent messages from
 the current channel or search other channels that you and the bot can both read,
@@ -106,8 +107,14 @@ Depending on the features a server enables, Kimi handles:
 - **Messages staff teach to Kimi**: staff can deliberately turn a public
   message into shared community knowledge or a reusable shared skill. The
   quoted message is sent to the AI provider for that task. What Kimi learns may
-  be stored in community memory or a shared skill, and a summary is posted to a
-  staff learn-log channel.
+  be stored in community memory or a shared skill. If the server configures a
+  staff learn-log channel, Kimi attempts to post a summary there; the log is
+  optional and a failed post does not undo the learned item.
+- **Staff configuration proposals**: modules can store proposed configuration,
+  its exact baseline, staff proposer and decider IDs, a decision reason, and the
+  Discord review-message location. These operational records have no automatic
+  expiry and are not removed by `/privacy`. The review channel also receives a
+  Discord card with the proposer, summary, a bounded preview, and the decision.
 
 Kimi never reads your DMs. It may also check whether you hold a role or channel
 permission that a command depends on, such as the one that lets a moderator
@@ -117,7 +124,11 @@ close a managed thread.
 
 - **Answering you.** Your message and recent conversation are sent to the AI
   provider that powers Kimi's replies. Like any cloud AI service, that provider
-  may process or log prompts on its own systems under its own policies.
+  may also receive recalled personal or community memory and tool results needed
+  for the turn, and may process or log that input under its own policies.
+- **Coding work.** If the coding agent is enabled, its provider receives the
+  task objective, acceptance criteria, bounded conversation context, and files
+  or tool results the worker reads. This may be a different provider from chat.
 - **Long-term memory.** When enabled, conversation slices, durable facts, and
   recall queries are sent to the configured Hindsight service for users who
   have not opted out.
@@ -132,6 +143,20 @@ close a managed thread.
   search filters, or URLs to the configured search provider. Built-in providers
   include Exa and Brave. Opening a public URL also shows up as a normal web
   request to that website.
+- **Persistent browser.** If enabled, sites receive normal browser requests and
+  anything entered or submitted during the task. They can set cookies and site
+  storage in your private browser profile. Depending on operator configuration,
+  traffic uses either the bot host's routes or a separate network boundary.
+- **Network-enabled code.** If enabled, `run_code` and coding jobs can contact
+  destinations chosen by generated code and can send task inputs or readable
+  workspace data. Host-network mode can reach services available through the
+  bot host; isolated-network mode uses a boundary configured by the operator.
+- **Image generation and editing.** If enabled, Kimi sends the image prompt,
+  output settings, and any workspace reference images selected for the edit to
+  OpenAI's image service. The returned PNG is stored in your workspace for
+  delivery and later edits.
+- **Wolfram|Alpha.** If enabled, Kimi sends a bounded, single-line computation
+  query and optional units choice to Wolfram|Alpha.
 - **Video understanding.** If enabled and you ask about a public YouTube video,
   Kimi sends its URL and your questions to Google's paid Gemini API. If you
   select a Discord attachment or workspace video, Kimi streams those video
@@ -196,9 +221,10 @@ the configured services and tools needed to answer you.
   moderation history you could erase yourself would not be much of a record.
   Ordinary staff-written cases hold the moderator's reason rather than your
   message text, and image-match cases hold fingerprint metadata, not the image.
-- **Discord staff logs: controlled by server staff.** Moderation and learning
-  log cards are messages in Discord. They remain until staff or Discord remove
-  them and are not covered by Kimi's local retention sweep.
+- **Discord staff records: controlled by server staff.** Moderation, learning,
+  and configuration-proposal cards are messages in Discord. They remain until
+  staff or Discord remove them and are not covered by Kimi's local retention
+  sweep or `/privacy`.
 
 ## Your controls
 
@@ -210,9 +236,8 @@ the configured services and tools needed to answer you.
   conversations started by someone else, your workspace files, browser profile,
   and video sessions. For those sessions Kimi also requests deletion of every
   known stored Gemini Interaction and Files API upload and retries temporary
-  failures. If
-  Gemini access is unavailable, the local deletion still completes and provider
-  deletion remains independently queued; this does not keep your account
+  failures. If Gemini access is unavailable, local deletion still completes.
+  Provider deletion remains independently queued; this does not keep your account
   activity paused. If you started a shared conversation, Kimi's local copy of
   that whole conversation is removed, including messages other people added to
   it; their other conversations, workspaces, preferences, and personal memory
@@ -220,9 +245,9 @@ the configured services and tools needed to answer you.
 - **What `/privacy` cannot delete**: messages or files stored by Discord;
   provider safety logs, legally required records, backups, and copies outside
   the stored Gemini video Interactions Kimi knows how to delete; diagnostic
-  logs; community knowledge; shared or personal
-  skills; usage and rate-limit records; moderation cases and staff log
-  messages; blocks; or your saved consent preference. Each of those has its own
+  logs; community knowledge; shared or personal skills; usage and rate-limit
+  records; moderation cases, module configuration proposals, staff log messages,
+  and proposal-review cards; blocks; or your saved consent preference. Each has its own
   lifecycle, described above.
 
 Deletion waits for any interaction already in progress, and blocks new activity
@@ -247,15 +272,17 @@ cleanup rows remain queued for later retry.
 
 The bot operator can access the database, workspace files, diagnostic logs, and
 Hindsight backend as the infrastructure administrator. Anyone can check their
-own usage totals with `/usage`. Discord staff can additionally use
-`/moderation`, read and annotate moderation case records with `/mod`, and view
-other users' usage totals, and staff with access to configured moderation or
-learning log channels can see the event cards posted there. None of these
-commands expose private transcripts or personal memory.
+own usage totals with `/usage`. Discord staff can use `/moderation` and view
+other users' usage totals. If the server enables the companion moderation
+module, staff can also read and annotate case records with `/mod`. Staff with
+access to configured moderation or learning log channels can see the event
+cards posted there. None of these commands expose private transcripts or
+personal memory.
 
 ## Age
 
-Kimi is intended for users **13 and older**, in line with Discord's own terms.
+Kimi is intended for users who are **at least 13 and old enough to use Discord
+in their country**.
 
 ## Changes to this policy
 

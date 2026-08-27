@@ -46,8 +46,8 @@ Exa outranks Brave wherever both are configured. The default `blend` strategy
 calls every eligible provider at once and interleaves their results into one
 list. Duplicate URLs are collapsed by canonical form, and the higher-ranked
 provider keeps the page: if Brave lists a page second and Exa lists it eighth,
-the merged list keeps Exa's copy at Exa's position rather than Brave's earlier
-one. If one provider fails, the other's results still come back.
+the merged list keeps Exa's copy at Exa's position. If one provider fails, the
+other's results still come back.
 
 To change strategies, edit `strategy` in `config/tools/internet_search.md`.
 `failover` tries Exa, then Brave, and stops at the first provider that answers,
@@ -64,7 +64,7 @@ one turn can do, not to charge a provider for a flaky connection.
 
 ## Cost and privacy
 
-Every provider response is priced on its own and written to the schema v1
+Every provider response is priced on its own and written to
 `paid_usage_ledger`. A cost the provider reports wins, including a reported
 zero. When it reports nothing, the configured per-call price for that provider
 and mode is used; when that is unset too, the call is not billed locally.

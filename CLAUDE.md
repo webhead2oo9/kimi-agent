@@ -4,11 +4,11 @@ Developer map for the Kimi Discord bot. The application lives entirely in `bot/`
 
 ## What This Is
 
-A Python 3.14 Discord bot: a generalist assistant for Discord communities, named Kimi by default. The name comes from `BOT_NAME`/`settings.bot_name`; never hardcode it. The bot responds only when actually invoked: an @mention, a reply with the reply ping on (ping off is ignored), a "hey <bot_name>"/"<bot_name> help" text invocation, or any message inside a thread it created via thread handoff. It ignores DMs, runs a provider-neutral ReAct tool loop, and replies with Discord-safe chunking and attachments. Trust-tiered tools, script-backed skills, per-user workspaces, SQLite-backed conversation persistence, optional Hindsight memory.
+A Python 3.14 Discord bot: a generalist assistant for Discord communities, named Kimi by default. The name comes from `BOT_NAME`/`settings.bot_name`; never hardcode it. The bot responds only when actually invoked: an @mention, a reply with the reply ping on (ping off is ignored), a `hey/hi <bot_name>` or `<bot_name> help` text invocation, or an unmentioned message inside an auto-responding thread it created via thread handoff. Paused managed threads use ordinary invocation rules. It ignores DMs, runs a provider-neutral ReAct tool loop, and replies with Discord-safe chunking and attachments. Trust-tiered tools, script-backed skills, per-user workspaces, SQLite-backed conversation persistence, optional Hindsight memory.
 
 This file is the map; per-subsystem behavior docs live in [`docs/`](docs/README.md) and [`docs/architecture.md`](docs/architecture.md) is the orientation-level tree. Design rationale belongs in a doc, not here. Two upkeep rules:
 
-- When a change alters behavior described in a `docs/*.md`, update that doc in the same change. Docs describe current behavior only; do not keep obsolete implementation plans around after their work has landed unless asked for an archival plan.
+- When a change alters behavior described in a `docs/*.md`, update that doc in the same change. Docs describe current behavior only; keep an implementation plan only when an archival plan is explicitly requested.
 - Release history belongs in tagged GitHub releases, not a rolling document in the repository. Put operator-facing changes and any required migration steps in the notes for the release that ships them.
 
 The deployment host and process supervisor are deliberately not recorded here. Ask rather than inferring them, and never invent or carry over host paths, service units, or restart commands.
@@ -45,7 +45,7 @@ Before handing off Python changes, run everything CI runs (`.github/workflows/ci
 
 **Boundaries (enforced by tests)**
 
-- The package import graph is frozen in `tests/test_package_graph.py:_ALLOWED_EDGES`. A new cross-package import fails there until declared; removed edges (`commands`→`app`, `memory`→`agent`, `config`→`agent`) stay removed.
+- The package import graph is frozen in `tests/test_package_graph.py:_ALLOWED_EDGES`. A new cross-package import fails there until declared. Imports from `commands` to `app`, `memory` to `agent`, and `config` to `agent` are forbidden.
 - `import discord` is confined to `discord_adapter/`, `app/`, and `commands/` (`tests/test_architecture_boundaries.py`). `tools/`, `workspace/`, and everything else are discord-free plain data and logic.
 - `agent/core.py` is provider-agnostic: no provider imports. Provider-specific parsing stays under `providers/`; `providers/types.py` is the shared vocabulary (`ContentPart`, `ConversationMessage`, `ProviderRequest`, `ProviderResponse`, `ToolCall`, `GeneratedAsset`, `ProviderCapability`).
 - `tools/registry.py:dispatch` is the privilege boundary. `min_tier`, `owner_only`, `guild_ids`, and the operator denylist are all re-checked there, and a tool the caller may not use is masked as `"Unknown tool"`, never refused, so existence never leaks. Never rely on prompt text for staff-only behavior.
@@ -55,14 +55,14 @@ contract package; `modules/testing.py` the integration harness). `app/runtime.py
 
 **Code style**
 
-- `from __future__ import annotations` at the top of every module.
-- Internal data types are `@dataclass(frozen=True)` (with `slots=True` where hot). Pydantic is used in exactly one place, `config/settings.py`; do not introduce `BaseModel` elsewhere. Seams are `typing.Protocol`; `LLMProvider` is the one ABC.
-- Logging is `logger = logging.getLogger(__name__)` with `%s`-style args (ruff `G`/`LOG` families). No `print()` in runtime code. Errors surfaced to Discord are concise and never contain tracebacks or secrets.
+- New ordinary runtime modules use `from __future__ import annotations`; package markers and docstring-only modules may omit it.
+- Prefer `@dataclass(frozen=True)` for internal value types, with `slots=True` where hot. Pydantic is for settings and configuration validation, not ordinary domain types. Prefer `typing.Protocol` for injected seams; `LLMProvider` and `ModerationBackend` are the current ABCs.
+- Use `log = logging.getLogger(__name__)` with `%s`-style args for runtime logging (ruff `G`/`LOG` families). No `print()` in runtime code. Errors surfaced to Discord are concise and never contain tracebacks or secrets.
 - Ruff's flake8-async rules are on: no blocking I/O inside `async def`. Line length is 100, owned by `ruff format`.
 - mypy runs with `check_untyped_defs` on for runtime code (off for `tests/` and `evals/`) and `platform = "linux"`. `# type: ignore` and `# noqa` are rare in runtime code (about a dozen); `tests/` carries more, nearly all `Settings(...)  # type: ignore[call-arg]` against pydantic-settings' generated `__init__`. Always name the specific error code. Add a prose reason as well when the code alone does not explain the suppression: `import yaml  # type: ignore[import-untyped]` speaks for itself, a narrowing or a sentinel assignment does not.
 - Comments explain *why*, not what. Keep the existing module layout; prefer small focused changes.
 - Commit subjects are imperative present tense with no prefix ("Reject root for executable skill tools").
-- This repo has production data: remove dead config, stale compatibility paths, and TODO scaffolding rather than letting them become patterns. Keep the schema source, tests, and docs aligned with the initial baseline.
+- This repo has production data: remove dead config, stale compatibility paths, and TODO scaffolding rather than letting them become patterns. Keep the schema source, tests, and docs aligned with the current baseline.
 
 **Tests**
 
@@ -81,7 +81,7 @@ contract package; `modules/testing.py` the integration harness). `app/runtime.py
 
 ### Message Flow
 
-`KimiApplication.on_message` (`app/runtime.py`) → hard eligibility gates (`discord_adapter.io.is_eligible_to_respond`, DM rejection, user blocks) → privacy consent gate (`app/consent.py`) → mention gate (`discord_adapter.io.should_respond`) → rooted conversation resolution (`app/conversation_routing.py`) → admission (`app/admission.py`) → `KimiApplication.handle_message` → turn wiring (`app/turn_entry.py`) → `agent/turn.py:handle_turn` (`prepare_turn`, `execute_turn`) → `agent/core.py:run_conversation` (ReAct loop) → provider `run_turn` → tool dispatch via `tools/registry.py` → `discord_adapter.io.send_response`.
+`KimiApplication.on_message` (`app/runtime.py`) → eligibility and DM rejection → invocation gate (`discord_adapter.io.should_respond`) → user block and stop-message gates → send-permission and admission gates (`app/admission.py`) → per-user privacy lease → consent (`app/consent.py`) → rooted conversation resolution (`app/conversation_routing.py`) → root lock and invocation re-check → `KimiApplication.handle_message` → turn wiring (`app/turn_entry.py`) → `agent/turn.py:handle_turn` (`prepare_turn`, `execute_turn`) → `agent/core.py:run_conversation` (ReAct loop) → provider `run_turn` → tool dispatch via `tools/registry.py` → `discord_adapter.io.send_response`.
 
 Turns are stateless: no provider continuation, no in-process context cache. Each fresh mention creates a rooted conversation keyed by the triggering message id; `message_contexts` maps both user trigger ids and bot reply ids back to that root so replies continue the same transcript across restarts. `agent/context.py` builds a fresh `ConversationContext` each turn from persisted SQLite rows; reply chunks persist back through `ConversationStore.save_channel_messages`, deduped by Discord message id. The response lock is per root: different roots run in parallel, concurrent replies to one root serialize. `on_message` enforces user blocks before reactions, transcript writes, locks, tools, or provider calls; `block_user` is a member-tier self-block only, staff block others via `/moderation`.
 
@@ -182,7 +182,7 @@ The staff gesture for adding shared knowledge: a **fact** goes to community memo
 
 Tool calls, turn summaries, compaction, and moderation decisions emit structured JSONL through a non-blocking writer (`observability/events.py`, `TOOL_EVENT_LOG_ENABLED`, degrades silently). See [`docs/observability.md`](docs/observability.md).
 
-`evals/` is an offline harness over the production `run_conversation` with a stub gateway: `evals.run` (blind-judged qualification), `evals.harness_run` (repeated mechanical scoring), `evals.compare`. Dispatch-level cassettes record `discord_text_search` and the read-only Hindsight tools plus plugin tools on `eval_record`; `teach`/`remember_user_memory` and `eval_stub` plugin tools are write-stubbed. Nothing in `evals/` may call the Anthropic API; use `--dry-run` first. See [`docs/evals.md`](docs/evals.md).
+`evals/` is an offline harness over the production `run_conversation` with a stub gateway: `evals.run` (blind-judged qualification), `evals.harness_run` (repeated mechanical scoring), `evals.compare`. Dispatch-level cassettes record `discord_text_search`, `internet_search`, the read-only Hindsight tools, and plugin tools on `eval_record`; `teach`/`remember_user_memory` and `eval_stub` plugin tools are write-stubbed. Nothing in `evals/` may call the Anthropic API; use `--dry-run` first. See [`docs/evals.md`](docs/evals.md).
 
 ### Configuration and Plugins
 

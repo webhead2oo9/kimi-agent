@@ -120,8 +120,9 @@ requires a restart.
 - **Provider resilience.** Provider profiles may set `failure_adapter` (default
   `generic`) and positive `circuit_breaker.outage_cooldown_seconds` (default
   300), `quota_cooldown_seconds` (default 1800), and
-  `rate_limit_cooldown_seconds` (default 60) values. Exact `Retry-After`
-  values override these defaults. See
+  `rate_limit_cooldown_seconds` (default 60) values. Recognized rate-limit and
+  availability responses use an exact `Retry-After` when their failure policy
+  supports it; other classifications use their configured mapping. See
   [Provider resilience](provider-resilience.md).
 - **Feature gating.** Several tools register only when the thing they depend on
   is configured (a key present, a file valid, and so on). When the dependency is
@@ -370,9 +371,9 @@ out into its own column while including it in the estimated cost for the window.
 | `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional key for profiles assigned to `roles.compaction`. |
 | `REACT_MAX_ITERATIONS` | int | `200` | Max tool-use iterations per turn before the loop stops. |
-| `NEW_USER_ONBOARDING_TURNS` | int | `5` | Inject the `<onboarding>` system-prompt note while a user has fewer than this many prior messages with the bot (model is told they're new and may `block_user`, or use a server-provided reporting tool, on clear abuse). `0` disables. Mention-path turns only. |
+| `NEW_USER_ONBOARDING_TURNS` | int | `5` | Inject the `<onboarding>` system-prompt note while a user has fewer than this many stored messages with the bot (model is told they're new and may `block_user`, or use a server-provided reporting tool, on clear abuse). `0` disables. Mention-path turns only. |
 | `REACT_MAX_TOKENS` | int | `65536` | Max output tokens per model call. |
-| `REACT_TURN_TIMEOUT_SECONDS` | float | `3600.0` | Absolute wall-clock budget starting at response-turn entry. Preparation, attachment reads, input moderation, memory/persistence, provider calls, every tool, output moderation, and finalization all consume the same budget. Timed-out mutable child work keeps its privacy activity lease until it really exits, but no longer holds the conversation root. |
+| `REACT_TURN_TIMEOUT_SECONDS` | float | `3600.0` | Absolute wall-clock budget starting at response-turn entry. Preparation, attachment reads, input moderation, memory/persistence, provider calls, every tool, output moderation, and finalization all consume the same budget. Timed-out mutable child work releases the conversation root but keeps its privacy activity lease until it exits. |
 | `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` | float | `90.0` | Abort a streamed provider request (`openai_compat`) when its stream produces no data (headers or chunks) for this long. The abort is a transient availability error, so a failover chain tries the next backend. |
 | `LLM_MAX_CONCURRENCY` | int | `8` | Max concurrent in-flight LLM provider calls across all users/channels (a shared semaphore). |
 | `TURN_MAX_CONCURRENCY` | positive int | `16` | Maximum admitted responding turns. It covers preparation, tools, delivery, and persistence; excess work is rejected immediately, never queued. |
@@ -434,7 +435,7 @@ otherwise it can share another supported secret env var, or use Codex auth.
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `COMPACTION_TRIGGER_TOKENS` | int | `120000` | Projected input-token threshold that triggers compaction before the next request. Keep this plus `REACT_MAX_TOKENS` under the deployed model window. |
-| `COMPACTION_KEEP_RECENT_ITERATIONS` | int | `3` | Minimum number of most recent assistant/tool iterations kept verbatim after compaction. Older iterations are summarized or elided. |
+| `COMPACTION_KEEP_RECENT_ITERATIONS` | int | `3` | Minimum number of most recent assistant/tool iterations kept verbatim after compaction. Additional recent whole iterations are retained while `COMPACTION_KEEP_RECENT_TOKENS` allows; the remaining prefix is summarized or elided. |
 | `COMPACTION_KEEP_RECENT_TOKENS` | int | `50000` | Token budget for the verbatim tail: whole recent iterations are kept until it is spent, never fewer than `COMPACTION_KEEP_RECENT_ITERATIONS`. Keep it well under `COMPACTION_TRIGGER_TOKENS`. |
 | `COMPACTION_MAX_TOKENS` | int | `32768` | Max output tokens for the summarizer's progress note. |
 | `COMPACTION_MAX_ITERATION_TOOL_OUTPUT_TOKENS` | int | `48000` | Max cumulative tool-output tokens appended within one ReAct iteration before later results are head/tail-truncated for the model-facing transcript. |
@@ -521,12 +522,12 @@ maximum `25`, minimum `1`) in `config/tools/discord_text_search.md`.
 
 Channel instruction fragments are a separate configuration surface. The files under
 `config/channels/`, `config/channel_threads/`, and `config/threads/` tell the model how to
-behave in those scopes, but their presence neither grants nor denies historical-message
+behave in those scopes, but their presence neither grants nor denies message-history
 access. Use Discord permissions for member visibility and
 `DISCORD_SEARCH_EXCLUDED_CHANNELS` for channels that must stay outside the search surface.
 
-`DISCORD_SEARCH_CHANNELS` is a removed allowlist setting. A non-empty legacy value aborts
-startup with migration guidance instead of silently reversing the deployment's policy.
+`DISCORD_SEARCH_CHANNELS` is unsupported. A non-empty value aborts startup with
+guidance instead of silently reversing the deployment's policy.
 
 ---
 
@@ -623,7 +624,7 @@ shipped defaults use `gemini-3.7-flash`, low thinking, four calls per outer
 turn, twenty total interactions per session, and a 24-hour idle lifetime.
 
 See [Video understanding](video-understanding.md) for source streaming, formats,
-hard file/duration limits, root/user/guild scope, SQLite v3 crash recovery,
+hard file/duration limits, root/user/guild scope, SQLite-backed crash recovery,
 provider retention/deletion, caching, and prompt-injection posture.
 
 ---
@@ -639,7 +640,7 @@ unregistered. Safe per-call behavior lives in
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `IMAGE_GEN_ENABLED` | bool | `false` | Requests registration of the image generation and editing tool. |
-| `IMAGE_GEN_BACKEND` | str | `openai` | Image backend name. Only `openai` ships initially. |
+| `IMAGE_GEN_BACKEND` | str | `openai` | Image backend name. The supported value is `openai`. |
 | `IMAGE_GEN_AUTH_MODE` | str | `auto` | `auto` prefers Codex OAuth and falls back to `IMAGE_GEN_API_KEY`; `oauth` and `api_key` select one path explicitly. |
 | `IMAGE_GEN_API_KEY` | secret | `""` | Dedicated OpenAI platform key for API-key mode. Environment-only and never written to a tool fragment. |
 | `IMAGE_GEN_MAX_CONCURRENCY` | int | `1` | Process-wide image request cap, 1–8. |
@@ -661,7 +662,7 @@ persistence, local file limits, quota errors, and the moderation boundary.
 | `ATTACHMENT_ORPHAN_SWEEP_INTERVAL_SECONDS` | positive int | `3600` | Interval between bounded orphan scans; one scan also runs on READY startup. |
 | `ATTACHMENT_ORPHAN_SWEEP_MAX_FILES` | positive int | `1000` | Maximum regular files inspected by one orphan scan; directory traversal is bounded proportionally and symlinks are never followed. |
 | `IMAGE_DETAIL` | str | `auto` | Vision detail hint (`low`/`high`/`original`/`auto`); unknown values fall back to `auto`. |
-| `RECENT_IMAGE_LOOKBACK` | int | `10` | How far back to look for a recent image to reference on replies or turns with prior conversation history. Fresh @mentions do not scan ambient channel images. |
+| `RECENT_IMAGE_LOOKBACK` | int | `10` | How far back to look for a recent image to reference on replies or turns with stored conversation history. Fresh @mentions do not scan ambient channel images. |
 | `MAX_TURN_IMAGES` | int | `10` | Max newly collected current/reply/recent vision images. Persisted history has its own database cap; `0` disables all image input, including persisted images. |
 
 ---
@@ -854,7 +855,7 @@ recommended path settings, backup notes, and the provisioning procedure.
 |---|---|---|---|
 | `DATABASE_PATH` | path | `data/bot.db` | SQLite database path (WAL). Production state; back it up consistently with its WAL sidecars. See [`docs/database.md`](database.md). |
 | `DATABASE_ENCRYPTION_KEY` | secret | "" | SQLCipher encryption-at-rest passphrase. Empty (default) = plaintext `sqlite3`; when set, the DB is opened through `sqlcipher3` and keyed before any access. Losing the key makes an encrypted DB unrecoverable. Convert an existing plaintext DB with `sqlcipher_export` (see [`docs/database.md`](database.md)); do not just set this on it. Requires the Linux-only `sqlcipher3-binary` dependency. |
-| `TRANSCRIPT_RETENTION_DAYS` | int | `30` | Rolling retention window for raw conversation transcripts. A background sweep purges a whole conversation (and its `messages`/routing/metadata/watermark rows) once `conversations.last_active_at` is older than this. Memory and the usage ledger are not on this clock. `0` disables the sweep (keep forever). Must be ≥ 0. See [`docs/privacy.md`](privacy.md). |
+| `TRANSCRIPT_RETENTION_DAYS` | int | `30` | Rolling retention window for raw conversation transcripts. A background sweep purges a whole conversation (and its `messages`/routing/metadata/watermark rows) when `conversations.last_active_at` falls outside this window. Memory and the usage ledger are not on this clock. `0` disables the sweep (keep forever). Must be ≥ 0. See [`docs/privacy.md`](privacy.md). |
 | `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` | int | `3600` | How often the transcript retention sweeper runs. Must be ≥ 1. |
 | `PERSONAL_SKILLS_DIR` | path | `data/personal_skills` | Durable per-user instruction-only personal skill store. Not executable and not swept by workspace cleanup. |
 | `USER_PERSONA_MAX_CHARS` | int | `2000` | Max compiled persona text stored in SQLite and inserted into the `<persona>` prompt slot. Must be positive. |

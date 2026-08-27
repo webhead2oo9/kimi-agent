@@ -61,7 +61,7 @@ supported:
 | `type` | Transport | Supports |
 |---|---|---|
 | `openai_compat` | OpenAI-compatible Chat Completions, streamed | text, tool calling, image input on vision models |
-| `openai_responses` | OpenAI-compatible Responses API over a configurable `base_url` | text, image input and output, function tools, reasoning with encrypted replay |
+| `openai_responses` | OpenAI-compatible Responses API over a configurable `base_url` | text, image input, function tools, reasoning with encrypted replay |
 | `anthropic` | Anthropic Messages API via the native SDK, api.anthropic.com only | text, image input, client-side tool use |
 | `anthropic_compat` | Minimal Anthropic Messages over plain HTTP, for compatible gateways | text, image input, tool use, prompt caching |
 | `openrouter` | OpenRouter Chat Completions | text, multimodal input, tool calling, provider routing, image output |
@@ -79,8 +79,8 @@ Subscription routes such as [Z.AI's GLM Coding Plan](providers-zai.md),
 route](providers-ccflare.md) are different from ordinary metered APIs. Their
 usage counts against a subscription rather than a per-token API balance.
 
-They suit personal deployments and small trusted servers where the operator
-holds the subscription. Keep three things in mind:
+Subscription access is not a general-purpose API entitlement. Keep three things
+in mind:
 
 - **The quota is your personal quota**, shared with your own use of the same
   account. A busy bot and a busy terminal compete for it.
@@ -88,14 +88,15 @@ holds the subscription. Keep three things in mind:
   turns contribute nothing to `/usage`. That is accurate, since there is no
   per-token charge, but it means the ledger cannot show you what the bot is
   consuming.
-- **Whether a multi-user bot fits the subscription's terms is your call to
-  make.** Check the provider's terms before pointing a public instance at one.
-  This is a scope question, not a security one.
+- **Eligibility is provider-specific.** Z.AI currently limits Coding Plan
+  benefits to the subscriber and its officially supported tools, prohibits
+  multi-user access, and does not list Kimi as a supported tool. Use its metered
+  API for Kimi unless Z.AI confirms that this deployment is eligible. Check the
+  current terms for every other subscription route as well.
 
-None of that makes them bad choices; a personal instance is exactly what they
-suit. It just means "point the bot at my Claude subscription" is a different
-decision from "add another API key," and the metered routes are the
-straightforward answer for an instance serving people you do not know.
+Where the provider permits the client and use case, a subscription route can fit
+a personal deployment. It is still a different decision from adding a metered
+API key, especially for an instance serving other people.
 
 ### How `openai_compat` streams
 
@@ -228,13 +229,13 @@ variable name, and the values themselves stay in `.env`.
 
 ### Provider profile fields
 
-Unknown fields are rejected outright, so a stale knob left over from the `.env`
-era cannot sit in the file looking effective while doing nothing.
+Unknown fields are rejected outright, so unsupported configuration cannot look
+effective while doing nothing.
 
 | Field | Default | Applies to | Meaning |
 |---|---|---|---|
 | `type` | required | all | Which transport to speak. |
-| `base_url` | `""` | all but `anthropic` | Endpoint to call. Required for `keyless` profiles. |
+| `base_url` | `""` | `openai_compat`, `openai_responses`, `anthropic_compat` | Endpoint to call. Required for `keyless` profiles. OpenRouter and Codex use code-owned endpoints; native Anthropic uses its SDK default. |
 | `api_key_env` | `""` | all | Name of the env var holding the key. Must be one of the supported names below. |
 | `keyless` | `false` | gateways | The endpoint injects its own upstream credentials, so no key is read. |
 | `models_endpoint` | `""` | OpenAI-compatible | A `/v1/models` URL used to filter selectable candidates at startup. |
@@ -287,7 +288,7 @@ blank.
 | `provider` | required | Name of the profile in `providers:` that serves this model. |
 | `model` | required | The upstream model id, sent verbatim. |
 | `context_window` | `0` | Conservative token capacity. `0` disables the capacity warning for this model. |
-| `capabilities` | `[]` | Declared abilities. Three are consulted: `image_input`, plus `text` and `tool_calling` on selectable models. |
+| `capabilities` | `[]` | Declared abilities. Recognized declarations filter the provider's matching capabilities; an empty list leaves them unfiltered. |
 | `pricing` | unset | Rates per million tokens: `input`, `output`, `cached_read`, `cache_write`. |
 | `reasoning_after_tools` | `{}` | Effort to tool names that escalate the rest of the turn. |
 
@@ -296,14 +297,14 @@ around what a model claims here, so an entry claiming `image_input` for a model
 without vision produces a provider error rather than a graceful downgrade. Be
 accurate, and when in doubt be conservative.
 
-The list is not a closed vocabulary, and only three strings currently change
-behavior: `image_input` drives image routing and the `chat_images` validation,
-while `text` and `tool_calling` are required of anything in
-`selectable_chat_models`. Notably, listing `image_output` on a model entry does
-nothing, because image generation is gated on the *provider's* declared
-`ProviderCapability`, not on this list. Declaring the rest is still worth doing
-as documentation of intent, but don't expect an undeclared capability to be
-enforced here.
+The list is not a closed vocabulary. Four strings currently filter matching
+provider capabilities: `text`, `tool_calling`, `image_input`, and
+`image_output`. `image_input` also drives image routing and `chat_images`
+validation, while `text` and `tool_calling` are required of anything in
+`selectable_chat_models`. `image_output` affects provider-native output for
+explicit `ProviderRequest` callers; normal Discord image creation uses the
+`generate_image` tool. Other strings document intent but do not change runtime
+behavior.
 
 If you omit `pricing`, turns on that model contribute no cost to `/usage`.
 That is correct for subscription-covered backends and wrong for metered ones,
@@ -327,7 +328,8 @@ rejected, so a misspelled role is a startup failure rather than a silently
 ignored line.
 
 Reachable roles must have their referenced secret available, unless the provider
-is Codex. "Reachable" is doing real work in that sentence, and
+is Codex or the profile declares `keyless: true`. "Reachable" is doing real work
+in that sentence, and
 [what is checked at startup](#what-is-checked-at-startup) below spells out
 exactly what it covers.
 
@@ -347,10 +349,10 @@ land on the same entry share one instance.
 ### Choosing a chat model at runtime
 
 After startup the bot owner can run `/models` and switch the global chat primary
-without a restart. The choice applies to new turns in every conversation, old
-and new, and survives restarts in SQLite. Choosing **Default** removes the
-override and restores normal role and scope routing. In-flight turns keep the
-provider they already resolved.
+without a restart. The choice applies to each conversation's next turn and
+survives restarts in SQLite. Choosing **Default** removes the override and
+restores normal role and scope routing. In-flight turns keep the provider they
+already resolved.
 
 Only models listed in `selectable_chat_models` are offered, and each must
 declare at least `text` and `tool_calling`; a chat model that cannot call
@@ -395,10 +397,13 @@ roles:
   chat_fallbacks: [fallback-chat]
 ```
 
-Connection errors, timeouts, server failures, and rate limits without a
-`Retry-After` receive one retry before the chain advances. Rate limits with a
-`Retry-After` and unambiguous account/model failures advance immediately. Once a fallback succeeds, later tool iterations in that logical
-turn remain on it rather than retrying earlier links.
+Under the generic failure policy, connection errors, timeouts, server failures,
+and rate limits without a `Retry-After` receive one retry before the chain
+advances. Rate limits with a `Retry-After` and unambiguous account/model failures
+advance immediately. Structured adapters can also advance immediately when the
+provider body identifies a shared account limit or quota. Once a fallback
+succeeds, later tool iterations in that logical turn remain on it rather than
+retrying higher-priority links.
 
 The `openai_compat` stall abort falls in this class. A stream silent for
 `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` raises `TimeoutError`, so a wedged
@@ -534,7 +539,7 @@ DeepSeek targets need one additional compatibility knob. They are detected in
 `providers/openai_chat.py:_is_deepseek_target` by `deepseek` appearing in the
 `base_url`, or a model id starting with `deepseek-`. Those requests also carry
 `extra_body: {"thinking": {"type": "enabled"}}`; when neither the turn nor the
-profile supplies an effort, DeepSeek defaults to `high` as before.
+profile supplies an effort, DeepSeek defaults to `high`.
 
 The separate `openrouter` provider does not inherit this request field. It uses
 OpenRouter's own request extensions rather than the generic OpenAI-compatible
@@ -551,8 +556,8 @@ reason.
 
 `openai_responses` adds one rule of its own. A profile with no
 `reasoning_effort`, on a turn that escalates none, sends no `reasoning`
-parameter whatsoever, so compat gateways that reject unknown fields see exactly
-the request shape they saw before reasoning existed. Once reasoning is in play
+parameter, which keeps the non-reasoning request compatible with gateways that
+reject unknown fields. Once reasoning is in play
 the provider also sends `include: ["reasoning.encrypted_content"]`. That is not
 optional: production construction always sends `store=false`, so there is no
 server-side reasoning state, and continuity across tool-call rounds exists only
@@ -609,8 +614,8 @@ vision model contributes eyes, not voice.
 A message's own images are transcribed as it arrives, before the message is
 written to the transcript, and the description is stored as a text part on that
 same row. That is what makes it durable: a conversation keeps only its ten most
-recent images and evicts the oldest, so without a stored description the visual
-context of an older image would be lost outright. The description is labeled so
+recent images and evicts the rest, so the stored description preserves their
+visual context. The description is labeled so
 the model reads it as machine output rather than as something the user typed,
 and it is never written to the message's plain `content` text.
 
@@ -654,7 +659,7 @@ these messages, they come from `config/model_config.py`:
 |---|---|
 | `config/models.yaml must contain a YAML mapping` | The file parsed to a list, a scalar, or nothing. |
 | `unknown provider type '<x>'; expected one of: ...` | A `providers:` entry names a type outside `SUPPORTED_PROVIDER_NAMES`. |
-| `unsupported api_key_env '<X>'; expected one of: ...` | The profile names an env var outside the closed set. Retired names such as `DEEP_RESEARCH_API_KEY` land here. |
+| `unsupported api_key_env '<X>'; expected one of: ...` | The profile names an env var outside `SUPPORTED_API_KEY_ENVS`, including `DEEP_RESEARCH_API_KEY`. |
 | `keyless profiles must not set api_key_env` / `keyless profiles must set base_url` | A `keyless: true` profile contradicts itself, or has no endpoint to call. |
 | `unsupported reasoning_effort '<x>'; expected one of: ...` | An effort outside the accepted ladder, or outside Anthropic's narrower one on an `anthropic_compat` profile. |
 | `reasoning_effort is only supported for provider types: ...` | The field is set on a profile type that cannot carry it. |

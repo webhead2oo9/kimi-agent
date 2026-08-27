@@ -17,7 +17,9 @@ Once a module is on that list it is part of the deployment contract, so
 startup fails if it is missing, has an incompatible module API, has a
 dependency that is not active, has invalid settings, or fails to start.
 Dependencies start first, and modules close in reverse order. An empty
-`KIMI_MODULES` loads no module code and no module schema.
+`KIMI_MODULES` loads no module code and runs no module migrations. Existing
+module tables remain in the shared database while their modules are disabled or
+absent; disabling a module is not data deletion.
 
 A module may separately declare `activation_capabilities` for an optional
 feature that is meaningful only when core is configured to expose it. Missing
@@ -29,9 +31,10 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
 
 - Pin module distributions in deployment-owned requirements or lock data. Do
   not add optional packages to the core lock file.
-- Each module has its own version and its own independent, ordered migration
-  list. The core stores applied versions in `module_schema_versions`, and a
-  module's tables are absent until that module starts.
+- Each module has its own version and independent, ordered, forward-only
+  migrations. Core records applied versions in `module_schema_versions`.
+  Migrations create or update tables when the module starts; those tables remain
+  while the module is disabled or absent.
 - A module can depend on another named module. Every dependency must also be
   present in `KIMI_MODULES`, because dependencies are never activated
   implicitly.
@@ -77,7 +80,8 @@ a malformed declaration aborts startup with a named reason:
 
 - `permissions.discord_actions`: the Discord operations the module will call
   (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
-  `timeout`, `fetch_message`, `fetch_member`).
+  `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`,
+  `fetch_pins`, `fetch_public_threads`, `check_channel_access`).
 - `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
   module subscribes to. A module never declares its own namespace; it may
   publish only under `<module_name>.*`.
@@ -106,7 +110,7 @@ the ports are a contract and an audit surface, not a sandbox.
 
 - `ctx.storage`: the shared database seen through the module's table prefix.
   `ctx.storage.table("cases")` returns the quoted physical name
-  `"<module>_cases"`, or the legacy name when the spec declares a
+  `"<module>_cases"`, or the aliased name when the spec declares a
   `table_aliases` entry. A module that defines `scoped_migrations` gets a
   `MigrationContext` with the same `table()` helper instead of a raw
   connection. This is naming discipline on one shared connection, not SQL
@@ -117,7 +121,8 @@ the ports are a contract and an audit surface, not a sandbox.
   return unless the module already reported otherwise. A module that
   declares a service in `provides` but never provides it is marked
   `degraded`. Detail is truncated, metrics are capped and secret-looking
-  keys dropped; every change is a `module_health` observability event.
+  keys dropped. Each change is offered to the optional, best-effort
+  `module_health` event stream.
 - `ctx.services.provide(name, version, impl)` / `ctx.services.get(name,
   version)`: exact-version services between modules. Both must match the
   spec's `provides` / `consumes`; a consumer must depend on the provider so

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 
@@ -17,6 +17,7 @@ class ActiveOperation:
     task: asyncio.Task[object]
     cancel_on_stop: bool
     stop_event: asyncio.Event
+    provisional: bool = False
 
 
 class ActiveOperationRegistry:
@@ -25,6 +26,53 @@ class ActiveOperationRegistry:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._operations: dict[str, ActiveOperation] = {}
+
+    @contextmanager
+    def register_provisional(
+        self,
+        *,
+        user_id: str,
+        channel_id: str,
+    ) -> Iterator[None]:
+        """Synchronously cover an admitted turn until its rooted registration."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("active operation registration requires an asyncio task")
+        operation = ActiveOperation(
+            id=uuid4().hex,
+            user_id=user_id,
+            root_key="",
+            channel_id=channel_id,
+            task=task,
+            cancel_on_stop=True,
+            stop_event=asyncio.Event(),
+            provisional=True,
+        )
+        # All registry mutation occurs on the event-loop thread. Keeping this
+        # insertion synchronous closes the post-admission race before the turn's
+        # next await; cancel() never awaits while inspecting the dictionary.
+        self._operations[operation.id] = operation
+        try:
+            yield
+        finally:
+            self._operations.pop(operation.id, None)
+
+    def bind_current_provisional(self, root_key: str) -> None:
+        """Narrow the current turn's provisional STOP scope to its resolved root."""
+
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("active operation binding requires an asyncio task")
+        # Like provisional insertion/removal, binding runs synchronously on the
+        # event-loop thread. Once resolution returns there is no await at which
+        # a root-scoped STOP can still mistake this turn for an unknown root.
+        for operation_id, operation in tuple(self._operations.items()):
+            if operation.task is task and operation.provisional:
+                self._operations[operation_id] = replace(
+                    operation,
+                    root_key=root_key,
+                    provisional=False,
+                )
 
     @asynccontextmanager
     async def register(
@@ -77,7 +125,12 @@ class ActiveOperationRegistry:
                 ]
             if not all_operations:
                 if root_key:
-                    owned = [operation for operation in owned if operation.root_key == root_key]
+                    owned = [
+                        operation
+                        for operation in owned
+                        if operation.root_key == root_key
+                        or (operation.provisional and operation.channel_id == channel_id)
+                    ]
                 else:
                     owned = [operation for operation in owned if operation.channel_id == channel_id]
             if not owned:
@@ -87,7 +140,21 @@ class ActiveOperationRegistry:
             # Count it once in the user-facing STOP result, but cancel and drain
             # every task. Rescanning after the roots exit closes the race where a
             # child registers immediately after the first cancellation snapshot.
-            matched_scopes.update((operation.root_key, operation.channel_id) for operation in owned)
+            rooted_tasks = {
+                operation.task: operation.root_key
+                for operation in owned
+                if not operation.provisional
+            }
+            matched_scopes.update(
+                (
+                    rooted_tasks.get(operation.task)
+                    or operation.root_key
+                    or root_key
+                    or f"channel:{operation.channel_id}",
+                    operation.channel_id,
+                )
+                for operation in owned
+            )
             for operation in owned:
                 operation.stop_event.set()
             tasks = {operation.task for operation in owned}
@@ -103,3 +170,23 @@ class ActiveOperationRegistry:
                     task.result()
             if pending:
                 return len(matched_scopes), False
+
+    async def cancel_all(self) -> None:
+        """Cancel roots and drain every active operation, including late children."""
+        current = asyncio.current_task()
+        while True:
+            async with self._lock:
+                operations = [
+                    operation
+                    for operation in self._operations.values()
+                    if operation.task is not current
+                ]
+            if not operations:
+                return
+            for operation in operations:
+                operation.stop_event.set()
+            tasks = {operation.task for operation in operations}
+            for operation in operations:
+                if operation.cancel_on_stop:
+                    operation.task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

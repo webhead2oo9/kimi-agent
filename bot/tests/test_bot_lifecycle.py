@@ -3,8 +3,9 @@ from __future__ import annotations
 from workspace import WorkspaceKey
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
@@ -16,6 +17,7 @@ from app import runtime as app_runtime
 from utils.privacy_barrier import PrivacyDeletionPendingError
 from config.model_config import ModelConfig
 from config.settings import Settings
+from discord_adapter.module_events import ModuleEventPublisher
 from providers.base import LLMProvider
 from storage.auto_retain import AutoRetainStore
 from storage.conversations import ConversationStore, UserDataDeletion
@@ -98,6 +100,211 @@ def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.KimiApplicat
 
 
 @pytest.mark.asyncio
+async def test_component_interaction_readiness_closes_before_resource_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def slow_close_resources() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    monkeypatch.setattr(app, "_close_resources", slow_close_resources)
+    app.gateway_ready = True
+    assert app.gateway_interactions_ready() is True
+
+    closing = asyncio.create_task(app.close())
+    await close_started.wait()
+
+    # Resource cleanup has not proceeded, but new component callbacks must
+    # already be rejected at the same boundary as slash commands.
+    assert app.gateway_ready is True
+    assert app.gateway_interactions_ready() is False
+
+    release_close.set()
+    await closing
+
+
+@pytest.mark.asyncio
+async def test_ready_does_not_initialize_after_close_has_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    initialize = AsyncMock(return_value=True)
+    sync = AsyncMock(return_value=[])
+    start_background = MagicMock()
+
+    async def blocked_close_resources() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
+    monkeypatch.setattr(app, "_initialize_ready_locked", initialize)
+    monkeypatch.setattr(app.bot.tree, "sync", sync)
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", start_background)
+
+    closing = asyncio.create_task(app.close())
+    await close_started.wait()
+    await app.on_ready()
+
+    initialize.assert_not_awaited()
+    sync.assert_not_awaited()
+    start_background.assert_not_called()
+    assert app.gateway_ready is False
+
+    release_close.set()
+    await closing
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_ready_initialization_then_prevents_reentry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    initialize_started = asyncio.Event()
+    release_initialize = asyncio.Event()
+    close_started = asyncio.Event()
+    events: list[str] = []
+    initialize_calls = 0
+
+    async def blocked_initialize() -> bool:
+        nonlocal initialize_calls
+        initialize_calls += 1
+        events.append("ready-start")
+        initialize_started.set()
+        await release_initialize.wait()
+        events.append("ready-finish")
+        return True
+
+    async def close_resources() -> None:
+        events.append("close")
+        close_started.set()
+
+    monkeypatch.setattr(app, "_initialize_ready_locked", blocked_initialize)
+    monkeypatch.setattr(app, "_close_resources", close_resources)
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+    app.workspace_sweeper_started = True
+
+    ready = asyncio.create_task(app.on_ready())
+    await initialize_started.wait()
+    closing = asyncio.create_task(app.close())
+    await asyncio.sleep(0)
+
+    assert close_started.is_set() is False
+    assert app._closed is False
+
+    release_initialize.set()
+    await asyncio.gather(ready, closing)
+    await app.on_ready()
+
+    assert events == ["ready-start", "ready-finish", "close"]
+    assert initialize_calls == 1
+    assert app._closed is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_waits_for_the_single_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    close_calls = 0
+
+    async def blocked_close_resources() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        close_started.set()
+        await release_close.wait()
+
+    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
+
+    first = asyncio.create_task(app.close())
+    await close_started.wait()
+    second = asyncio.create_task(app.close())
+    await asyncio.sleep(0)
+
+    assert second.done() is False
+    release_close.set()
+    await asyncio.gather(first, second)
+
+    assert close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_application_close_uninstalls_module_gateway_events_before_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    published: list[str] = []
+
+    class _Gateway:
+        def __init__(self) -> None:
+            self.listeners: list[tuple[Any, str]] = []
+
+        def add_listener(self, callback: Any, name: str) -> None:
+            self.listeners.append((callback, name))
+
+        def remove_listener(self, callback: Any, name: str) -> None:
+            self.listeners.remove((callback, name))
+
+        async def dispatch_message(self, message: object) -> None:
+            for callback, name in list(self.listeners):
+                if name == "on_message":
+                    await callback(message)
+
+    gateway = _Gateway()
+    publisher = ModuleEventPublisher(
+        gateway,  # type: ignore[arg-type]
+        lambda topic, _payload: published.append(topic),
+    )
+    publisher.install()
+    app._module_event_publisher = publisher
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class _BlockingScheduler:
+        async def close(self) -> None:
+            close_started.set()
+            await release_close.wait()
+
+    monkeypatch.setattr(app.tools.module_manager, "scheduler", _BlockingScheduler())
+    message = SimpleNamespace(
+        id=3,
+        guild=SimpleNamespace(id=1),
+        channel=SimpleNamespace(id=2, parent_id=None),
+        author=SimpleNamespace(id=4, display_name="Ada", bot=False),
+        content="hello",
+        attachments=(),
+        jump_url="",
+        created_at=None,
+        reference=None,
+        pinned=False,
+        edited_at=None,
+        embeds=(),
+    )
+
+    await gateway.dispatch_message(message)
+    assert published == ["discord.message"]
+    published.clear()
+
+    closing = asyncio.create_task(app.close())
+    await close_started.wait()
+    await gateway.dispatch_message(message)
+
+    assert published == []
+    assert app._module_event_publisher is None
+
+    release_close.set()
+    await closing
+    await app.close()
+
+
+@pytest.mark.asyncio
 async def test_on_ready_closes_client_when_required_startup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,9 +320,40 @@ async def test_on_ready_closes_client_when_required_startup_fails(
 
     await app.on_ready()
 
+    response = MagicMock()
+    response.is_done.return_value = False
+    response.send_message = AsyncMock()
+    interaction = MagicMock()
+    interaction.id = 42
+    interaction.type = discord.InteractionType.application_command
+    interaction.response = response
+    interaction.followup.send = AsyncMock()
+    allowed = await app.bot.tree.interaction_check(interaction)
+
     assert app._startup_error is failure
     assert app.db_initialized is False
+    assert app.gateway_ready is False
+    assert allowed is False
+    response.send_message.assert_awaited_once_with(
+        "The bot is still starting up or temporarily unavailable. Please try again shortly.",
+        ephemeral=True,
+    )
     close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_on_message_is_ignored_before_ready_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.context_manager = cast(ContextManager, object())
+    handler = AsyncMock()
+    monkeypatch.setattr(app, "_on_message_for_user", handler)
+
+    await app.on_message(cast(discord.Message, object()))
+
+    handler.assert_not_awaited()
+    assert (await app.turn_admission.snapshot()).active_total == 0
 
 
 @pytest.mark.asyncio
@@ -154,6 +392,7 @@ async def test_on_ready_delegates_memory_manager_and_starts_one_activation_refre
         (conversation_store, preference_store),
         (conversation_store, preference_store),
     ]
+    assert app.gateway_ready is True
 
 
 @pytest.mark.asyncio
@@ -292,11 +531,12 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
 
     ready_task = asyncio.get_running_loop().create_task(app.on_ready())
     await sweep_started.wait()
-    await app.close()
+    closing = asyncio.create_task(app.close())
+    await asyncio.sleep(0)
+    assert closing.done() is False
     release_sweep.set()
-    await ready_task
+    await asyncio.gather(ready_task, closing)
 
-    assert app.workspace_sweeper_started is False
     assert app._workspace_sweeper_task is None
     assert app._attachment_sweeper_task is None
 
@@ -445,6 +685,87 @@ async def test_application_close_runs_memory_and_provider_cleanup(
 
     assert memory_manager.close_count == 1
     assert provider_manager.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_application_close_drains_active_message_before_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.gateway_ready = True
+    app.context_manager = cast(ContextManager, object())
+    app.blocked_user_store = None
+    events: list[str] = []
+    entered = asyncio.Event()
+
+    async def active_message(_message: object) -> None:
+        events.append("turn-start")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("turn-exit")
+
+    async def close_provider() -> None:
+        events.append("provider")
+
+    class _OrderingMemoryManager(FakeMemoryManager):
+        async def close(self) -> None:
+            events.append("memory")
+
+    class _OrderingDatabase:
+        async def close(self) -> None:
+            events.append("database")
+
+    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_on_message_for_user", active_message)
+    monkeypatch.setattr(app.provider_manager, "close", close_provider)
+    app.memory_manager = cast(MemoryManager, _OrderingMemoryManager())
+    app.database = cast(Database, _OrderingDatabase())
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    guild = MagicMock()
+    guild.id = 999
+    guild.me = None
+    author = MagicMock()
+    author.id = 123
+    message = MagicMock()
+    message.channel = channel
+    message.guild = guild
+    message.author = author
+    message.content = "work"
+    message.type = discord.MessageType.default
+
+    turn = asyncio.create_task(app.on_message(message))
+    await entered.wait()
+    await app.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert events == ["turn-start", "turn-exit", "memory", "provider", "database"]
+
+
+@pytest.mark.asyncio
+async def test_bot_close_drains_application_before_discord_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    events: list[str] = []
+
+    async def close_application() -> None:
+        events.append("application")
+
+    async def close_discord(_bot: object) -> None:
+        events.append("discord")
+
+    monkeypatch.setattr(app, "close", close_application)
+    monkeypatch.setattr(app_runtime.commands.Bot, "close", close_discord)
+
+    await app.bot.close()
+
+    assert events == ["application", "discord"]
 
 
 @pytest.mark.asyncio

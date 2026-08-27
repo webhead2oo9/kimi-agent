@@ -56,6 +56,7 @@ from agent.turn import (
 )
 from app.admission import (
     TURN_ADMISSION_BUSY_MESSAGE,
+    AdmissionRejection,
     TurnAdmissionController,
 )
 from app.cancellation import ActiveOperationRegistry
@@ -175,6 +176,8 @@ if TYPE_CHECKING:
     from moderation.service import ModerationService
     from tools.embeds import EmbedSpec
 
+_STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS = 2.0
+
 
 def _settings_secret_values(settings: Settings) -> tuple[str, ...]:
     """Every non-empty secret the settings hold, for the event log to redact.
@@ -207,6 +210,13 @@ class KimiCommandTree(app_commands.CommandTree):
         application = getattr(self.client, "_agent_application", None)
         if application is None:
             return True
+        if not application.gateway_interactions_ready():
+            log.warning(
+                "Rejecting app command interaction %s while the application is not ready",
+                getattr(interaction, "id", "?"),
+            )
+            await _reject_unready_interaction(interaction)
+            return False
         active_guilds = application.active_guilds()
         if is_allowed_guild_interaction(interaction, allowed_guilds=active_guilds):
             return True
@@ -224,10 +234,10 @@ class KimiBot(commands.Bot):
 
     async def close(self) -> None:
         try:
-            await super().close()
-        finally:
             if self._agent_application is not None:
                 await self._agent_application.close()
+        finally:
+            await super().close()
 
 
 async def _reject_unapproved_guild_interaction(
@@ -236,6 +246,19 @@ async def _reject_unapproved_guild_interaction(
     if interaction.type is discord.InteractionType.autocomplete:
         return
     text = "This bot is not available in this server."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
+async def _reject_unready_interaction(interaction: discord.Interaction) -> None:
+    if interaction.type is discord.InteractionType.autocomplete:
+        return
+    text = "The bot is still starting up or temporarily unavailable. Please try again shortly."
     try:
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)
@@ -298,6 +321,7 @@ class KimiApplication:
     _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
     _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
     _closed: bool = False
+    _close_complete: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _startup_error: Exception | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -320,6 +344,11 @@ class KimiApplication:
         )
         self._guild_activation_cache.refresh()
         self._ready_init_lock = asyncio.Lock()
+
+    def gateway_interactions_ready(self) -> bool:
+        """Whether a new Discord interaction may enter application code."""
+
+        return self.gateway_ready and self._startup_error is None and not self._closed
 
     @property
     def registry(self) -> ToolRegistry:
@@ -385,7 +414,8 @@ class KimiApplication:
         if service is None:
             return
         targets = {guild_id} if guild_id is not None else self._known_guild_ids()
-        await asyncio.to_thread(service.refresh, targets)
+        batch = await asyncio.to_thread(service.build_refresh, targets)
+        service.apply_refresh(batch)
 
     async def _channel_guild_id(self, channel_id: int) -> int | None:
         channel = self.bot.get_channel(channel_id)
@@ -456,9 +486,27 @@ class KimiApplication:
 
     async def close(self) -> None:
         if self._closed:
+            await self._close_complete.wait()
             return
-        self._closed = True
+        wait_for_close = False
+        async with self._ready_init_lock:
+            if self._closed:
+                wait_for_close = True
+            else:
+                self._closed = True
+                try:
+                    await self._close_resources()
+                finally:
+                    self._close_complete.set()
+        if wait_for_close:
+            await self._close_complete.wait()
+
+    async def _close_resources(self) -> None:
         self.gateway_ready = False
+        if self._module_event_publisher is not None:
+            self._module_event_publisher.uninstall()
+            self._module_event_publisher = None
+        await self.turn_admission.close()
         if self._guild_activation_refresh_task is not None:
             self._guild_activation_refresh_task.cancel()
             try:
@@ -517,6 +565,7 @@ class KimiApplication:
             self.transcript_retention_sweeper_started = False
             self.active_transcript_retention_days = 0
             self.active_transcript_retention_sweep_interval_seconds = None
+        await self.active_operations.cancel_all()
         await drain_confirmed_privacy_deletions()
         await stop_event_writer()
         if self.coding_tasks is not None:
@@ -536,9 +585,6 @@ class KimiApplication:
         await self.tools.module_manager.close()
         if self.tools.module_manager.http is not None:
             await self.tools.module_manager.http.close()
-        if self._module_event_publisher is not None:
-            self._module_event_publisher.uninstall()
-            self._module_event_publisher = None
         if self.tools.module_manager.events is not None:
             await self.tools.module_manager.events.close()
         await self.memory_manager.close()
@@ -553,7 +599,9 @@ class KimiApplication:
         self.gateway_ready = False
 
     async def on_ready(self) -> None:
-        self.gateway_ready = True
+        if self._closed:
+            return
+        self.gateway_ready = False
         log.info(
             "Logged in as %s (ID: %s)",
             self.bot.user,
@@ -578,74 +626,25 @@ class KimiApplication:
             pending_guilds,
         )
 
-        if self.settings.tool_event_log_enabled:
-            start_event_writer(
-                self.settings.tool_event_log_path,
-                self.settings.tool_event_log_max_field_bytes,
-                content_mode=self.settings.tool_event_log_content_mode,
-                secret_values=_settings_secret_values(self.settings),
-            )
-            if self.settings.tool_event_log_content_mode == "full":
-                log.warning(
-                    "Tool event log enabled at %s in full mode; sensitive content may be written",
-                    self.settings.tool_event_log_path,
-                )
-            else:
-                log.info(
-                    "Tool event log enabled at %s in %s mode",
-                    self.settings.tool_event_log_path,
-                    self.settings.tool_event_log_content_mode,
-                )
-
         async with self._ready_init_lock:
-            if self._startup_error is not None:
+            if self._closed or self._startup_error is not None:
                 return
-            first_init = not self.db_initialized
-            if first_init:
-                try:
-                    await self._first_init_core()
-                except Exception as exc:
-                    self._startup_error = exc
-                    log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
-                    await self.bot.close()
-                    return
-
-            if self.memory_manager.client:
-                assert self.conversation_store is not None
-                assert self.preference_store is not None
-                await self.memory_manager.ensure_ready(
-                    self.conversation_store,
-                    self.preference_store,
-                )
-            else:
-                log.warning("No Hindsight URL configured - running without memory")
-
-            if first_init:
-                self.db_initialized = True
-                log.info("Database initialized at %s", self.settings.database_path)
-
-        try:
-            synced = await self.bot.tree.sync()
-            log.info("Synced %d slash command(s)", len(synced))
-        except discord.HTTPException:
-            # Command propagation is retried on the next READY, but a transient
-            # Discord failure must not prevent local sweepers from starting.
-            log.warning("Failed to sync global slash commands", exc_info=True)
+            startup_succeeded = await self._initialize_ready_locked()
+        if not startup_succeeded:
+            await self.bot.close()
+            return
 
         # READY events can overlap on reconnect. Serialize the check/start pair so
         # only one copy of each filesystem maintenance loop is created.
         async with self._ready_init_lock:
+            if self._closed:
+                return
             if not self.workspace_sweeper_started:
                 await sweep_attachment_orphans_once(
                     self.tools.attachment_store,
                     max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
                     max_files=self.settings.attachment_orphan_sweep_max_files,
                 )
-                # ``close()`` can run while the startup sweep is off-thread. It
-                # cannot cancel a task that has not been installed yet, so honor
-                # the closed state again before creating either maintenance loop.
-                if self._closed:
-                    return
                 self._workspace_sweeper_task = asyncio.create_task(
                     workspace_sweeper(
                         self.tools.workspace_manager,
@@ -672,18 +671,79 @@ class KimiApplication:
                 )
 
         async with self._ready_init_lock:
-            if not self.video_session_sweeper_started and self.video_session_store is not None:
-                # Install the singleton atomically; its first background iteration
-                # performs startup cleanup without blocking READY or this lock.
-                sweep_interval = self.settings.transcript_retention_sweep_interval_seconds
-                self._video_session_sweeper_task = asyncio.create_task(
-                    video_session_sweeper(
-                        self.tools.video_service,
-                        sweep_interval=sweep_interval,
-                    )
+            if self._closed:
+                return
+            self._start_ready_background_tasks_locked()
+
+    async def _initialize_ready_locked(self) -> bool:
+        """Initialize READY-owned resources while ``_ready_init_lock`` is held."""
+
+        if self.settings.tool_event_log_enabled:
+            start_event_writer(
+                self.settings.tool_event_log_path,
+                self.settings.tool_event_log_max_field_bytes,
+                content_mode=self.settings.tool_event_log_content_mode,
+                secret_values=_settings_secret_values(self.settings),
+            )
+            if self.settings.tool_event_log_content_mode == "full":
+                log.warning(
+                    "Tool event log enabled at %s in full mode; sensitive content may be written",
+                    self.settings.tool_event_log_path,
                 )
-                self.video_session_sweeper_started = True
-                log.info("Video session sweeper started (every %ds)", sweep_interval)
+            else:
+                log.info(
+                    "Tool event log enabled at %s in %s mode",
+                    self.settings.tool_event_log_path,
+                    self.settings.tool_event_log_content_mode,
+                )
+
+        first_init = not self.db_initialized
+        if first_init:
+            try:
+                await self._first_init_core()
+            except Exception as exc:
+                self._startup_error = exc
+                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
+                return False
+
+        if self.memory_manager.client:
+            assert self.conversation_store is not None
+            assert self.preference_store is not None
+            await self.memory_manager.ensure_ready(
+                self.conversation_store,
+                self.preference_store,
+            )
+        else:
+            log.warning("No Hindsight URL configured - running without memory")
+
+        if first_init:
+            self.db_initialized = True
+            log.info("Database initialized at %s", self.settings.database_path)
+
+        try:
+            synced = await self.bot.tree.sync()
+            log.info("Synced %d slash command(s)", len(synced))
+        except discord.HTTPException:
+            # Command propagation is retried on the next READY, but a transient
+            # Discord failure must not prevent local sweepers from starting.
+            log.warning("Failed to sync global slash commands", exc_info=True)
+        return True
+
+    def _start_ready_background_tasks_locked(self) -> None:
+        """Install READY-owned singleton tasks while ``_ready_init_lock`` is held."""
+
+        if not self.video_session_sweeper_started and self.video_session_store is not None:
+            # Its first background iteration performs startup cleanup without
+            # blocking READY or this lock.
+            sweep_interval = self.settings.transcript_retention_sweep_interval_seconds
+            self._video_session_sweeper_task = asyncio.create_task(
+                video_session_sweeper(
+                    self.tools.video_service,
+                    sweep_interval=sweep_interval,
+                )
+            )
+            self.video_session_sweeper_started = True
+            log.info("Video session sweeper started (every %ds)", sweep_interval)
 
         if (
             not self.transcript_retention_sweeper_started
@@ -742,7 +802,7 @@ class KimiApplication:
                 self.settings.memory_auto_retain_sweep_interval_seconds,
             )
 
-        if self._guild_activation_refresh_task is None and not self._closed:
+        if self._guild_activation_refresh_task is None:
             self._guild_activation_refresh_task = asyncio.create_task(
                 self._guild_activation_refresh_loop()
             )
@@ -750,6 +810,8 @@ class KimiApplication:
                 "Guild activation refresher started (every %.0fs)",
                 GUILD_ACTIVATION_REFRESH_SECONDS,
             )
+        if self._startup_error is None:
+            self.gateway_ready = True
 
     async def _first_init_core(self) -> None:
         """One-time startup wiring: DB connect, stores, gates, slash commands.
@@ -799,6 +861,7 @@ class KimiApplication:
             timeout=self.settings.privacy_consent_timeout,
             preference_store=self.preference_store,
             redispatch=self.on_message,
+            is_available=self.gateway_interactions_ready,
         )
         self.context_manager = ContextManager(store=self.conversation_store)
         if self.settings.thread_handoff_enabled:
@@ -868,6 +931,7 @@ class KimiApplication:
             browser_data_store=self.tools.browser_service,
             video_data_store=self.tools.video_service,
             cancel_user_work=self._cancel_user_for_privacy,
+            is_available=self.gateway_interactions_ready,
         )
         module_manager = self.tools.module_manager
         module_manager.health.on_change = lambda name, health: emit_module_health(
@@ -895,7 +959,10 @@ class KimiApplication:
         self._module_event_publisher.install()
         module_trust = TrustLookupImpl(self.bot, self.trust_resolver)
         is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
-        interaction_runtime = InteractionRuntime(self.bot)
+        interaction_runtime = InteractionRuntime(
+            self.bot,
+            is_available=self.gateway_interactions_ready,
+        )
         interaction_runtime.install()
         proposal_actions = DiscordActionsImpl(
             bot=self.bot,
@@ -1888,7 +1955,12 @@ class KimiApplication:
         return f"Stopped {' and '.join(parts)}. {cleanup} Partial file changes were kept."
 
     async def on_message(self, message: discord.Message) -> None:
-        if self.context_manager is None:
+        if (
+            not self.gateway_ready
+            or self._startup_error is not None
+            or self._closed
+            or self.context_manager is None
+        ):
             return
         active_guilds = self.active_guilds()
         if not is_eligible_to_respond(
@@ -1933,6 +2005,8 @@ class KimiApplication:
             return
         admission = await self.turn_admission.try_acquire(str(message.author.id))
         if admission.lease is None:
+            if admission.rejection is AdmissionRejection.SHUTTING_DOWN:
+                return
             log.info(
                 "Rejecting turn from user %s at admission boundary: %s",
                 message.author.id,
@@ -1950,9 +2024,13 @@ class KimiApplication:
         # drains already-started leases before wiping and blocks later ones until
         # the wipe finishes.
         try:
-            async with admission.lease:
-                async with self.privacy_barrier.activity(str(message.author.id)):
-                    await self._on_message_for_user(message)
+            with self.active_operations.register_provisional(
+                user_id=str(message.author.id),
+                channel_id=str(message.channel.id),
+            ):
+                async with admission.lease:
+                    async with self.privacy_barrier.activity(str(message.author.id)):
+                        await self._on_message_for_user(message)
         except PrivacyDeletionPendingError:
             log.info(
                 "Ignoring user %s while their privacy deletion remains pending",
@@ -1978,45 +2056,88 @@ class KimiApplication:
         )
         if resolved is None:
             return
+        self.active_operations.bind_current_provisional(resolved.key)
 
         lock_key = self.response_lock_key(message, resolved_conversation=resolved)
         # Ack before acquiring the lock so a continuation that queues behind an
         # in-flight turn on the same root (rapid replies / handoff-thread bursts)
         # shows ⏳ immediately instead of waiting silently for the lock.
-        await self.discord_gateway.add_status_reaction(message, "⏳")
-        async with self._root_lock(lock_key):
-            # Re-check now that we hold the root lock. An earlier turn on this
-            # root may have paused the thread while this message queued behind
-            # it, and a paused thread must be neither answered nor transcribed
-            # (docs/thread-handoff.md). The pre-lock check was made against the
-            # old mode.
-            # Re-read the cheap activation snapshot after waiting for the root
-            # lock so an operator deactivation stops queued work immediately.
-            if not self._should_respond(message):
-                await self.discord_gateway.remove_status_reaction(message, "⏳")
-                return
-            try:
-                result = await self.handle_message(
-                    message,
-                    lock_acquired=True,
-                    resolved_conversation=resolved,
-                )
-                await self.discord_gateway.remove_status_reaction(message, "⏳")
-                if result is None:
-                    # No turn ran: a bare @mention with no text/attachment to act
-                    # on. Acknowledge the ping with a wave rather than leaving the
-                    # user with no signal; not ✅, since no reply was sent.
-                    await self.discord_gateway.add_status_reaction(message, "👋")
-                elif result.blocked_by_moderation:
-                    await self.discord_gateway.add_status_reaction(message, "🚫")
-                elif result.delivery_failed:
+        try:
+            await self.discord_gateway.add_status_reaction(message, "⏳")
+            async with self._root_lock(lock_key):
+                # Re-check now that we hold the root lock. An earlier turn on this
+                # root may have paused the thread while this message queued behind
+                # it, and a paused thread must be neither answered nor transcribed
+                # (docs/thread-handoff.md). The pre-lock check was made against the
+                # old mode.
+                # Re-read the cheap activation snapshot after waiting for the root
+                # lock so an operator deactivation stops queued work immediately.
+                if not self._should_respond(message):
+                    return
+                try:
+                    result = await self.handle_message(
+                        message,
+                        lock_acquired=True,
+                        resolved_conversation=resolved,
+                    )
+                    if result is None:
+                        # No turn ran: a bare @mention with no text/attachment to act
+                        # on. Acknowledge the ping with a wave rather than leaving the
+                        # user with no signal; not ✅, since no reply was sent.
+                        await self.discord_gateway.add_status_reaction(message, "👋")
+                    elif result.blocked_by_moderation:
+                        await self.discord_gateway.add_status_reaction(message, "🚫")
+                    elif result.delivery_failed:
+                        await self.discord_gateway.add_status_reaction(message, "❌")
+                    else:
+                        await self.discord_gateway.add_status_reaction(message, "✅")
+                except Exception:
+                    log.exception("Error handling message %s", message.id)
                     await self.discord_gateway.add_status_reaction(message, "❌")
-                else:
-                    await self.discord_gateway.add_status_reaction(message, "✅")
+        finally:
+            await self._remove_processing_reaction(message)
+
+    async def _remove_processing_reaction(self, message: discord.Message) -> None:
+        """Remove the working reaction without letting cancellation strand it."""
+
+        removal = asyncio.create_task(self.discord_gateway.remove_status_reaction(message, "⏳"))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS
+        cancellation: asyncio.CancelledError | None = None
+
+        while not removal.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait((removal,), timeout=remaining)
+            except asyncio.CancelledError as exc:
+                # asyncio.wait does not cancel the task it is watching. Finish
+                # the bounded cleanup before preserving the caller's cancellation.
+                if cancellation is None:
+                    cancellation = exc
+
+        if not removal.done():
+            removal.cancel()
+
+            def consume_result(completed: asyncio.Task[None]) -> None:
+                with suppress(asyncio.CancelledError, Exception):
+                    completed.result()
+
+            removal.add_done_callback(consume_result)
+            log.warning("Timed out removing Discord processing reaction")
+        else:
+            try:
+                removal.result()
+            except asyncio.CancelledError:
+                pass
             except Exception:
-                log.exception("Error handling message %s", message.id)
-                await self.discord_gateway.remove_status_reaction(message, "⏳")
-                await self.discord_gateway.add_status_reaction(message, "❌")
+                # Reaction cleanup is cosmetic and must not replace a provider,
+                # routing, or cancellation outcome.
+                log.debug("Could not remove Discord processing reaction", exc_info=True)
+
+        if cancellation is not None:
+            raise cancellation
 
     async def handle_message(
         self,

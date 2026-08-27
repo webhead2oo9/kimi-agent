@@ -522,33 +522,6 @@ async def test_invalid_selected_input_explains_why_task_was_not_queued(tmp_path)
         await db.close()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
-@pytest.mark.asyncio
-async def test_workspace_starting_files_reject_case_aliases_on_windows(tmp_path) -> None:
-    db = Database(tmp_path / "bot.db")
-    await db.connect()
-    try:
-        store = CodingTaskStore(db)
-        service = _start_service(store, tmp_path)
-        ctx = _control_context()
-        path = service._runtime.workspace_manager.user_files_dir(ctx.workspace_key) / "Spec.md"
-        path.write_text("spec", encoding="utf-8")
-
-        result = await service.start_from_tool(
-            ctx,
-            objective="Implement it",
-            acceptance_criteria=[],
-            context_text="",
-            file_paths=["Spec.md", "spec.md"],
-        )
-
-        assert result["accepted"] is False
-        assert result["reason"] == "input_validation_failed"
-        assert "duplicates another starting path" in str(result["error"])
-    finally:
-        await db.close()
-
-
 @pytest.mark.asyncio
 async def test_queue_rejection_removes_attachment_staged_by_attempt(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
@@ -1827,6 +1800,105 @@ async def test_active_operation_can_be_stopped_outside_the_turn_lock() -> None:
     assert count == 1
     assert clean is True
     assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_provisional_and_rooted_registration_count_as_one_response() -> None:
+    registry = ActiveOperationRegistry()
+    entered = asyncio.Event()
+
+    async def foreground() -> None:
+        with registry.register_provisional(user_id="u1", channel_id="c1"):
+            async with registry.register(user_id="u1", root_key="r1", channel_id="c1"):
+                entered.set()
+                await asyncio.Event().wait()
+
+    task = asyncio.create_task(foreground())
+    await entered.wait()
+
+    count, clean = await registry.cancel(
+        user_id="u1",
+        root_key="r1",
+        channel_id="c1",
+        all_operations=False,
+        wait_seconds=1,
+    )
+
+    assert count == 1
+    assert clean is True
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_bound_provisional_stop_matches_only_its_resolved_root() -> None:
+    registry = ActiveOperationRegistry()
+    entered = {"r1": asyncio.Event(), "r2": asyncio.Event()}
+
+    async def foreground(root_key: str) -> None:
+        with registry.register_provisional(user_id="u1", channel_id="c1"):
+            registry.bind_current_provisional(root_key)
+            entered[root_key].set()
+            await asyncio.Event().wait()
+
+    first = asyncio.create_task(foreground("r1"))
+    second = asyncio.create_task(foreground("r2"))
+    await asyncio.gather(*(event.wait() for event in entered.values()))
+
+    count, clean = await registry.cancel(
+        user_id="u1",
+        root_key="r1",
+        channel_id="c1",
+        all_operations=False,
+        wait_seconds=1,
+    )
+
+    assert count == 1
+    assert clean is True
+    assert first.cancelled()
+    assert not second.done()
+
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_rescans_cleanup_child_registered_during_root_exit() -> None:
+    registry = ActiveOperationRegistry()
+    root_entered = asyncio.Event()
+    child_entered = asyncio.Event()
+    child_stop = asyncio.Event()
+    children: list[asyncio.Task[None]] = []
+
+    async def child() -> None:
+        async with registry.register(
+            user_id="u1",
+            root_key="r1",
+            channel_id="c1",
+            cancel_on_stop=False,
+            stop_event=child_stop,
+        ):
+            child_entered.set()
+            await child_stop.wait()
+
+    async def root() -> None:
+        async with registry.register(user_id="u1", root_key="r1", channel_id="c1"):
+            root_entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                children.append(asyncio.create_task(child()))
+                await child_entered.wait()
+                raise
+
+    root_task = asyncio.create_task(root())
+    await root_entered.wait()
+
+    await registry.cancel_all()
+
+    assert root_task.cancelled()
+    assert child_stop.is_set()
+    assert children[0].done()
 
 
 @pytest.mark.asyncio

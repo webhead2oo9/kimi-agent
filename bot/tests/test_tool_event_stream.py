@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -317,6 +318,50 @@ def test_redacted_mode_scrubs_sensitive_keys_in_json_result_and_error() -> None:
     assert "runtime-private-key" not in json.dumps(e)
 
 
+def test_redacted_mode_scrubs_compact_secret_keys_without_partial_word_matches() -> None:
+    e = ev.build_tool_call_event(
+        ts="t",
+        duration_ms=1,
+        turn_id="turn",
+        iteration=0,
+        ctx=_ctx(),
+        tool="issue_credential",
+        args={
+            "nested": {
+                "apikey": "argument-api-key",
+                "provider_apikey_value": "prefixed-api-key",
+                "tokenizer": "sentencepiece",
+            }
+        },
+        result=json.dumps(
+            {
+                "nested": {
+                    "accesskey": "result-access-key",
+                    "aws-accesskey-id": "prefixed-access-key",
+                    "monkey": "capuchin",
+                }
+            }
+        ),
+        max_field_bytes=8192,
+        content_mode="redacted",
+    )
+
+    assert e["args"] == {
+        "nested": {
+            "apikey": "[REDACTED]",
+            "provider_apikey_value": "[REDACTED]",
+            "tokenizer": "sentencepiece",
+        }
+    }
+    assert json.loads(e["result"]) == {
+        "nested": {
+            "accesskey": "[REDACTED]",
+            "aws-accesskey-id": "[REDACTED]",
+            "monkey": "capuchin",
+        }
+    }
+
+
 def test_build_turn_event_shape() -> None:
     e = ev.build_turn_event(
         ts="t",
@@ -508,6 +553,47 @@ def test_writer_appends_one_line_per_emit(tmp_path: Path) -> None:
     assert lines[0]["turn_id"] == "t1"
     assert lines[1]["reason"] == "threshold"
     assert lines[2]["response"]["text"] == "Done."
+
+
+def test_blocked_writer_does_not_stall_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "events.jsonl"
+
+    async def run() -> None:
+        writer = ev.EventWriter(
+            log_path,
+            max_field_bytes=8192,
+            max_file_bytes=10_000_000,
+            content_mode="metadata",
+        )
+        writer.start()
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        original_write = writer._write
+
+        def blocked_write(event: dict[str, object]) -> None:
+            loop.call_soon_threadsafe(started.set)
+            release.wait()
+            original_write(event)
+
+        monkeypatch.setattr(writer, "_write", blocked_write)
+        # Prevent a broken implementation from hanging the suite while still
+        # making it observable that the loop could not run during the write.
+        safety_release = threading.Timer(1.0, release.set)
+        safety_release.start()
+        try:
+            writer.enqueue({"sequence": 1})
+            await started.wait()
+            assert not release.is_set()
+        finally:
+            release.set()
+            safety_release.cancel()
+            await writer.stop()
+
+    asyncio.run(run())
 
 
 def test_emit_is_noop_when_writer_disabled(tmp_path: Path) -> None:
@@ -735,6 +821,123 @@ def test_writer_stop_returns_after_consumer_death_with_full_queue(tmp_path: Path
             writer._queue.put_nowait({"k": "v"})
 
         await asyncio.wait_for(writer.stop(), timeout=2.0)
+
+    asyncio.run(run())
+
+
+def test_writer_stop_waits_for_blocked_write_before_closing_full_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "events.jsonl"
+
+    async def run() -> None:
+        writer = ev.EventWriter(
+            log_path,
+            max_field_bytes=8192,
+            max_file_bytes=10_000_000,
+            content_mode="metadata",
+        )
+        writer.start()
+        assert writer._file is not None
+        opened_file = writer._file
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        closed_during_write: list[bool] = []
+
+        def blocked_write(_: dict[str, object]) -> None:
+            loop.call_soon_threadsafe(started.set)
+            release.wait()
+            closed_during_write.append(opened_file.closed)
+
+        monkeypatch.setattr(writer, "_write", blocked_write)
+        safety_release = threading.Timer(1.0, release.set)
+        safety_release.start()
+        stop_task: asyncio.Task[None] | None = None
+        try:
+            writer.enqueue({"in_flight": True})
+            await started.wait()
+            while not writer._queue.full():
+                writer._queue.put_nowait({"backlog": True})
+
+            stop_task = asyncio.create_task(writer.stop())
+            await asyncio.sleep(0)
+
+            assert not stop_task.done()
+            assert not opened_file.closed
+            assert writer._queue.qsize() == 1
+        finally:
+            release.set()
+            safety_release.cancel()
+            if stop_task is not None:
+                await asyncio.wait_for(stop_task, timeout=2.0)
+            else:
+                await writer.stop()
+
+        assert closed_during_write == [False]
+        assert opened_file.closed
+        assert writer._file is None
+
+    asyncio.run(run())
+
+
+def test_cancelling_writer_stop_drains_in_flight_write_before_closing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "events.jsonl"
+
+    async def run() -> None:
+        writer = ev.EventWriter(
+            log_path,
+            max_field_bytes=8192,
+            max_file_bytes=10_000_000,
+            content_mode="metadata",
+        )
+        writer.start()
+        assert writer._file is not None
+        opened_file = writer._file
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        closed_during_write: list[bool] = []
+        original_write = writer._write
+
+        def blocked_write(event: dict[str, object]) -> None:
+            loop.call_soon_threadsafe(started.set)
+            release.wait()
+            closed_during_write.append(opened_file.closed)
+            original_write(event)
+
+        monkeypatch.setattr(writer, "_write", blocked_write)
+        safety_release = threading.Timer(1.0, release.set)
+        safety_release.start()
+        stop_task: asyncio.Task[None] | None = None
+        try:
+            writer.enqueue({"in_flight": True})
+            await started.wait()
+            stop_task = asyncio.create_task(writer.stop())
+            await asyncio.sleep(0)
+
+            stop_task.cancel()
+            await asyncio.sleep(0)
+
+            assert not stop_task.done()
+            assert not opened_file.closed
+        finally:
+            release.set()
+            safety_release.cancel()
+
+        assert stop_task is not None
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stop_task, timeout=2.0)
+
+        assert closed_during_write == [False]
+        assert opened_file.closed
+        assert writer._file is None
+        assert writer._task is None
+        await writer.stop()  # repeated shutdown is idempotent
 
     asyncio.run(run())
 

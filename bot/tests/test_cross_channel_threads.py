@@ -53,6 +53,7 @@ class _Thread:
         self._perms = perms or {}
         self.added: list[Any] = []
         self.add_user = AsyncMock(side_effect=self.added.append)
+        self.delete = AsyncMock()
 
     def permissions_for(self, who: Any) -> _Perms:
         return self._perms.get(who.id, _Perms())
@@ -75,7 +76,8 @@ class _Anchor:
 
     async def _create(self, *, name: str, auto_archive_duration: int | None = None) -> _Thread:
         self.channel.created.append((name, auto_archive_duration))
-        return _Thread(9000 + self.id, parent=self.channel)
+        # A public thread created from a message shares its starter's ID.
+        return _Thread(self.id, parent=self.channel)
 
     async def delete(self) -> None:
         self._deleted.append(self.id)
@@ -543,6 +545,81 @@ def test_same_channel_creation_adopts_existing_thread(monkeypatch):
         creator_user_id=str(ASKER_ID),
         auto_respond=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_same_channel_cancellation_during_enrollment_removes_created_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    message.create_thread = AsyncMock(return_value=thread)
+    enrollment_started = asyncio.Event()
+    release_enrollment = asyncio.Event()
+    enrollment_cancelled = asyncio.Event()
+
+    async def slow_enroll(*_args: Any, **_kwargs: Any) -> None:
+        enrollment_started.set()
+        try:
+            await release_enrollment.wait()
+        except asyncio.CancelledError:
+            enrollment_cancelled.set()
+            raise
+
+    handoff.enroll = AsyncMock(side_effect=slow_enroll)
+    handoff.leave = AsyncMock()
+
+    creating = asyncio.create_task(
+        app.threads._create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
+    )
+    await enrollment_started.wait()
+    creating.cancel()
+    await asyncio.sleep(0)
+    enrollment_was_cancelled = enrollment_cancelled.is_set()
+    release_enrollment.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    assert enrollment_was_cancelled is False
+    handoff.leave.assert_awaited_once_with(thread.id)
+    thread.delete.assert_awaited_once_with(reason="Thread handoff enrollment failed")
+
+
+def test_cross_channel_enrollment_failure_deletes_owned_anchor(monkeypatch):
+    target = _TextChannel(200, "bot-spam")
+    app, guild, asker = _app(monkeypatch, targets={"200"}, channels=[target])
+    handoff = _enable(app, monkeypatch)
+    handoff.enroll = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    handoff.leave = AsyncMock()
+
+    thread = _create(
+        app,
+        _message(guild, asker),
+        ThreadRequest(name="Quest help", target_channel_id=200),
+    )
+
+    assert thread is None
+    assert target.deleted == [7001]
+    handoff.leave.assert_awaited_once_with(7001)
+
+
+def test_adopted_thread_enrollment_failure_does_not_delete_thread(monkeypatch):
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    handoff.enroll = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    handoff.leave = AsyncMock()
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    message.thread = thread
+
+    adopted = _create(app, message, ThreadRequest(name="Quest help"))
+
+    assert adopted is None
+    thread.delete.assert_not_awaited()
+    handoff.leave.assert_not_awaited()
 
 
 @pytest.mark.asyncio

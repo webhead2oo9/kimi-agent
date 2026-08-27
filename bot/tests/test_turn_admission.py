@@ -98,3 +98,17 @@ async def test_lease_releases_after_repeated_cancellation_while_lock_is_busy() -
     with pytest.raises(asyncio.CancelledError):
         await task
     assert (await controller.snapshot()).active_total == 0
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_new_admission_while_existing_lease_can_drain() -> None:
+    controller = TurnAdmissionController(max_active=2, max_active_per_user=1)
+    existing = await controller.try_acquire("alice")
+    assert existing.lease is not None
+
+    await controller.close()
+    rejected = await controller.try_acquire("bob")
+
+    assert rejected.rejection is AdmissionRejection.SHUTTING_DOWN
+    await existing.lease.release()
+    assert (await controller.snapshot()).active_total == 0

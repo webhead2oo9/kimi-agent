@@ -55,7 +55,7 @@ Search and browser budgets cover the whole worker run and reset when a task
 resumes after restart or requested input. The command prompt requires
 `coding_plan` before edits or jobs and directs the worker to research unfamiliar
 APIs instead of guessing. Plan and progress calls produce the user-visible
-milestones; no separate summarizer interprets hidden reasoning.
+milestones; there is no separate summarizer reading the worker's hidden reasoning.
 
 The worker's browser calls release their turn lease after every call because
 the run may last minutes and its managed jobs need the shared VPN namespace

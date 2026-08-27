@@ -35,7 +35,7 @@ that before it is committed.
    exception types.
 3. **Check for duplicated capability.** Before endorsing new code, search for an existing
    implementation of the same behavior. Do not approve a second implementation of a capability
-   provided by the repository.
+   the repository already provides.
 4. **Check convention conformance** against `CLAUDE.md`:
    - New ordinary runtime modules use `from __future__ import annotations`; package markers and
      docstring-only modules may omit it.
@@ -43,7 +43,8 @@ that before it is committed.
      settings and configuration validation.
    - Prefer `typing.Protocol` for injected seams; `LLMProvider` and `ModerationBackend` are the
      current ABCs.
-   - Runtime logging normally uses `log = logging.getLogger(__name__)` with `%s`-style args. No
+   - Runtime logging uses a module-level `logging.getLogger(__name__)` (named `log`; older
+     modules use `logger`) with `%s`-style args. No
      `print()` in runtime code.
    - No blocking I/O inside `async def` (ruff flake8-async is on).
    - Line length 100, owned by `ruff format`.

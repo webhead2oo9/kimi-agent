@@ -1,17 +1,6 @@
-"""Last-known-good cache for operator config fragments read every turn.
+"""Thread-safe last-known-good cache for hot-reloaded config fragments.
 
-`config/fragments/tool_config.py` and `config/fragments/tool_policy.py` both read a hand-edited
-markdown fragment on every responding turn, so both need the same thing: when a
-reload fails, keep serving that path's last value rather than reverting to
-"unset" mid-conversation. Both loaders share this cache.
-
-What the two do with a failure still differs and stays with them: tool config
-falls back to defaults when there is no cached value, while tool policy raises
-rather than silently un-blocking a tool. This only owns the remembering.
-
-Keyed by resolved path and locked because turns run concurrently. Ordinary
-config caches use the default LRU bound; security-policy callers can opt out of
-eviction so a denylist never disappears merely because other scopes were read.
+Entries use a bounded LRU by default. Fail-closed policies can disable eviction.
 """
 
 from __future__ import annotations
@@ -33,11 +22,7 @@ class LastKnownGoodCache[T]:
 
     @staticmethod
     def key(fragment: Path) -> Path:
-        """Resolve a fragment path to its cache key.
-
-        Non-strict: the fragment legitimately may not exist yet, and an absent
-        file must still map to the same key it will have once created.
-        """
+        """Return a stable resolved key for an optional fragment."""
 
         return fragment.resolve(strict=False)
 
@@ -50,12 +35,7 @@ class LastKnownGoodCache[T]:
                     self._entries.popitem(last=False)
 
     def forget(self, key: Path) -> None:
-        """Drop a path's cached value.
-
-        Callers use this when the file is genuinely absent, so deleting a
-        fragment actually reverts the setting instead of pinning the last value
-        it had.
-        """
+        """Remove the cached value for ``key``."""
 
         with self._lock:
             self._entries.pop(key, None)

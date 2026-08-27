@@ -84,6 +84,24 @@ which provider answered. A search that found nothing says so in as many words,
 so the model can tell an empty web from a broken provider. See
 [Internet search](internet-search.md).
 
+## Video understanding
+
+| Tool | Visibility | Tier | Purpose and availability |
+|---|---|---|---|
+| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video, exact current-message Discord attachment, or safe workspace video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true and `GEMINI_API_KEY` is set. |
+
+`start` accepts exactly one canonical public YouTube URL, exact attachment
+filename, or workspace-relative path plus a specific question. Uploaded files
+stream through Gemini Files API without whole-file buffering and have hard
+500 MiB/one-hour limits. `ask` continues through Gemini's stored
+`previous_interaction_id`. Local opaque handles are rechecked against the
+current user, guild, rooted conversation, and expiry on every call. Results are
+structured, timestamped, and untrusted. Sessions default to a 24-hour idle
+lifetime, while durable Interaction and File deletion outboxes remove known
+provider state after expiry, transcript retention, or full `/privacy`. See
+[Video understanding](video-understanding.md) for configuration, caching,
+limits, provider retention, and the threat model.
+
 ## Workspace and files
 
 All of the workspace tools are member-tier and operate only inside the current

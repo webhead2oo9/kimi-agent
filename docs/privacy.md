@@ -34,6 +34,9 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `message_contexts` | Maps Discord message ids → conversation roots so reply routing survives a reboot. |
 | `conversation_activated_tools`, `thread_conversations` | Per-root tool activation and thread-handoff enrollment, including the initiating user id used to authorize close/pause/resume. |
 | `image_distillations` | Conversation-scoped, model-produced descriptions of transcript images, including OCR, approximate normalized bounding boxes, and uncertainty. No additional image bytes. Rows cascade with deleted conversations and are invalidated when one participant's messages are scrubbed from a surviving shared conversation. This table is only a cache; the durable copy is the description stored on the `messages` row it describes, which a per-user scrub removes along with that user's rows. |
+| `video_sessions`, `video_interactions` | Actor/root/guild-scoped specialist metadata: source kind, safe display filename/relative locator and byte size (or canonical YouTube URL/video id), model, opaque local and Gemini Interaction ids, counts, and timestamps. No uploaded bytes, Discord CDN URLs, questions, or answers. |
+| `video_provider_files` | Client-chosen Gemini File resource name, actor/root/guild scope, MIME, byte size, session association, and timestamps. No File capability URI or bytes. |
+| `video_interaction_deletions`, `video_provider_file_deletions` | Content-free retry rows for provider-side Interaction/File deletion: opaque provider id, user/session grouping, timestamps, attempt count, and bounded last error. No source content, question, or answer. |
 | `user_preferences` | `user_id`, `memory_enabled`, `privacy_consent`(+`_at`), `persona_prompt`(+`_updated_at`). Settings, not message content. |
 | `usage_ledger` | Cost/usage metadata, one row per completed LLM call, grouped into logical turns by `turn_id`: `user_id`, `user_name`, `channel_id`, `guild_id`, serving model/role, token counts, estimated cost. **No message content.** |
 | `paid_usage_ledger` | Cost metadata, one row per non-LLM tool backend that actually charged: user/channel/guild attribution, tool and provider names, dollars, turn id, and timestamp. **No query, result, or message content.** |
@@ -108,6 +111,26 @@ by default). A full `/privacy` deletion closes the user's active browser worker
 and deletes the profile immediately. The browser credential vault, credential
 capture, downloads, and live-view server are all switched off. See [Persistent
 browser](browser.md).
+
+### Gemini video interactions (optional)
+
+When `VIDEO_UNDERSTANDING_ENABLED` and `GEMINI_API_KEY` register the searchable
+`video` tool, `start` sends either a public YouTube URL or streamed bytes from an
+exact current-message Discord attachment/safe workspace video plus the user's
+question to Google's paid Gemini API. Uploads use Files API (500 MiB and one-hour
+hard ceilings); Google documents File retention up to 48 hours. Interactions use
+`store=true` and follow-ups use `previous_interaction_id`. The normal Kimi chat
+provider sees only the untrusted specialist result.
+
+Local sessions contain safe identifiers/scope metadata only and expire after at
+most 24 hours idle. Expiry, transcript retention, and full `/privacy` remove
+local access immediately and queue every known Gemini Interaction and uploaded
+File for deletion. Outboxes retry hourly. If provider access is unavailable
+during `/privacy`, local deletion completes, the user barrier is released, and
+provider deletion stays independently queued. Google documents paid-tier
+Interaction retention up to 55 days and may separately retain limited
+safety/security records; local expiry is not a claim every provider copy has
+already disappeared. See [Video understanding](video-understanding.md).
 
 ### Long-term memory: Hindsight (optional)
 
@@ -186,6 +209,7 @@ Everything else keeps its own lifecycle, by design:
 |---|---|
 | Workspace files | 7-day inactivity TTL + size quota (above). |
 | Browser profile | 7-day inactivity TTL + per-profile quota; full `/privacy` deletion removes it immediately. |
+| Video specialist sessions | 24-hour maximum idle lifetime; local access is removed on expiry/root deletion and all known Gemini Interaction/File ids are queued for provider deletion. Google Files API uploads are independently retained for up to 48 hours unless deleted sooner. |
 | Attachment temp files | Deleted at the end of each turn. |
 | Coding task state and command output | Retained with the local operational database until full `/privacy` deletion; terminal delivery state supports restart retries. |
 | Long-term memory (Hindsight) | Per-user default on when the backend is configured; `/memory opt-out` stops future user-memory use and writes. Retained until the user deletes it via `/privacy` (**Delete memory** / **Delete my data**). Not part of the 30-day transcript sweep, since memory is the long-term store. |
@@ -219,9 +243,9 @@ Everything else keeps its own lifecycle, by design:
     covers another participant's already-running model turn, Discord delivery,
     and assistant-transcript persistence, so a shared-root reply derived from
     the deleted rows cannot land after deletion. It then purges the SQLite
-    transcript, the user's per-guild workspace files, and their persistent
-    browser profile, and finally deletes long-term memory without waiting for
-    automatic expiry. Transcripts go through
+    transcript, the user's per-guild workspace files, their persistent browser
+    profile, and every video-specialist session they initiated, then deletes
+    long-term memory without waiting for automatic expiry. Transcripts go through
     `ConversationStore.delete_user_data`, which deletes whole conversations the
     user rooted (tracked explicitly at root creation, including timeout
     transcripts), scrubs the user's own message rows from other shared
@@ -233,15 +257,21 @@ Everything else keeps its own lifecycle, by design:
     directory for that user (`<user_id>__*`) plus every generated job directory
     whose `.owner-user-id` marker names them. Memory goes through the same
     `forget_user_memory` path described below. A transcript deletion error
-    aborts before later stores are touched; workspace, browser-profile, or
-    memory failures leave the durable request pending for retry. Already-absent
+    aborts before later stores are touched; workspace, browser-profile or memory failures leave the durable request pending for retry.
+    A provider-side video deletion failure does not: local video metadata is
+    already gone, its content-free deletion outbox remains durable, the result
+    reports pending provider cleanup, and the user barrier is released.
+    Already-absent
     Hindsight banks count as success, so replay is safe if a crash happened
     after remote deletion. Personal skills have their own lifecycle and are not
     part of this action; users remove them individually with `my_skill_delete`.
-    The action also cannot delete Discord messages, provider-side copies or
-    logs, backups, the tool-event log, community memory, shared skills, usage
-    ledgers/markers, moderation cases or Discord staff-log messages, blocks, the
-    retained consent choice, or the non-content bank-state marker.
+    For video sessions the bot requests deletion of every known stored Gemini
+    Interaction and Files API upload and retries failures; it still cannot guarantee removal from
+    provider safety logs, backups, or legally required records. The action also
+    cannot delete Discord messages, other provider-side copies or logs, backups,
+    the tool-event log, community memory, shared skills, usage ledgers/markers,
+    moderation cases or Discord staff-log messages, blocks, the retained consent
+    choice, or the non-content bank-state marker.
   - **Delete memory** runs `forget_user_memory` only; the transcript is left to
     the retention sweep.
 - **`forget_user_memory`** (`memory/privacy.py`) runs under a shared per-user
@@ -279,6 +309,7 @@ transcript or memory.
 | Persona compiler | A user's raw persona request + display name when they set a persona | a `persona` role in `config/models.yaml` | off |
 | Exa internet search | Search queries and filters; for page reading, the requested public URLs | `EXA_API_KEY` | off |
 | Brave internet search | Search queries and filters | `BRAVE_API_KEY` | off |
+| Google Gemini video understanding | A public YouTube URL or streamed Discord/workspace video bytes plus the user's questions; Google temporarily stores uploaded Files and the Interaction chain for stateful continuation | `VIDEO_UNDERSTANDING_ENABLED` + `GEMINI_API_KEY` | off |
 | Workspace URL fetch | The normal HTTPS request for a user/model-supplied public URL; private, LAN, loopback, and unsafe redirects are blocked | core workspace tool | on |
 
 **Operator-hosted services** (data stays on infrastructure the operator runs):

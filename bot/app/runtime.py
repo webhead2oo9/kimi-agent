@@ -95,6 +95,7 @@ from discord_adapter.lifecycle import (
     auto_retain_sweeper,
     sweep_attachment_orphans_once,
     transcript_retention_sweeper,
+    video_session_sweeper,
     workspace_sweeper,
 )
 from commands.learn_cmd import register_learn_command
@@ -161,6 +162,7 @@ from storage.memory_banks import UserMemoryBankStateStore
 from storage.preferences import PreferenceStore
 from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
+from storage.video_sessions import VideoSessionStore
 from tools.embeds import embed_transcript_summary
 from tools.registry import ToolRegistry
 from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
@@ -262,6 +264,7 @@ class KimiApplication:
     learn_log: LearnLogFeed | None = None
     image_distillation_store: ImageDistillationStore | None = None
     usage_store: UsageStore | None = None
+    video_session_store: VideoSessionStore | None = None
     coding_task_store: CodingTaskStore | None = None
     coding_tasks: CodingTaskService | None = None
     _module_event_publisher: ModuleEventPublisher | None = None
@@ -276,6 +279,7 @@ class KimiApplication:
     workspace_sweeper_started: bool = False
     auto_retain_sweeper_started: bool = False
     transcript_retention_sweeper_started: bool = False
+    video_session_sweeper_started: bool = False
     gateway_ready: bool = False
     active_transcript_retention_days: int = 0
     active_transcript_retention_sweep_interval_seconds: int | None = None
@@ -283,6 +287,7 @@ class KimiApplication:
     _attachment_sweeper_task: asyncio.Task | None = None
     _workspace_sweeper_task: asyncio.Task | None = None
     _transcript_retention_task: asyncio.Task | None = None
+    _video_session_sweeper_task: asyncio.Task | None = None
     _guild_activation_refresh_task: asyncio.Task | None = None
     context_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _lock_refcounts: dict[str, int] = field(default_factory=dict)
@@ -489,6 +494,16 @@ class KimiApplication:
             except Exception:
                 log.exception("Error stopping attachment orphan sweeper")
             self._attachment_sweeper_task = None
+        if self._video_session_sweeper_task is not None:
+            self._video_session_sweeper_task.cancel()
+            try:
+                await self._video_session_sweeper_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("Error stopping video session sweeper")
+            self._video_session_sweeper_task = None
+            self.video_session_sweeper_started = False
         if self._transcript_retention_task is not None:
             self._transcript_retention_task.cancel()
             try:
@@ -527,6 +542,10 @@ class KimiApplication:
             await self.tools.module_manager.events.close()
         await self.memory_manager.close()
         await self.provider_manager.close()
+        try:
+            await self.tools.video_service.close()
+        except Exception:
+            log.exception("Error closing video understanding service")
         await self.database.close()
 
     async def on_disconnect(self) -> None:
@@ -651,6 +670,20 @@ class KimiApplication:
                     self.settings.attachment_orphan_sweep_interval_seconds,
                 )
 
+        async with self._ready_init_lock:
+            if not self.video_session_sweeper_started and self.video_session_store is not None:
+                # Install the singleton atomically; its first background iteration
+                # performs startup cleanup without blocking READY or this lock.
+                sweep_interval = self.settings.transcript_retention_sweep_interval_seconds
+                self._video_session_sweeper_task = asyncio.create_task(
+                    video_session_sweeper(
+                        self.tools.video_service,
+                        sweep_interval=sweep_interval,
+                    )
+                )
+                self.video_session_sweeper_started = True
+                log.info("Video session sweeper started (every %ds)", sweep_interval)
+
         if (
             not self.transcript_retention_sweeper_started
             and self.settings.transcript_retention_days > 0
@@ -741,6 +774,7 @@ class KimiApplication:
             await self.model_selection_store.set(None)
             self.provider_manager.set_active_chat_model(None)
         self.usage_store = UsageStore(self.database)
+        self.video_session_store = VideoSessionStore(self.database)
         self.coding_task_store = CodingTaskStore(self.database)
         self.privacy_deletion_store = PrivacyDeletionRequestStore(self.database)
         self.user_memory_bank_state_store = UserMemoryBankStateStore(self.database)
@@ -830,6 +864,7 @@ class KimiApplication:
             bot_name=self.settings.bot_name,
             policy_url=self.settings.privacy_policy_url,
             browser_data_store=self.tools.browser_service,
+            video_data_store=self.tools.video_service,
             cancel_user_work=self._cancel_user_for_privacy,
         )
         module_manager = self.tools.module_manager
@@ -1668,6 +1703,8 @@ class KimiApplication:
             # Keep the replay helper usable in recovery/tests that compose the
             # stores directly instead of going through _first_init_core.
             self.user_memory_bank_state_store = UserMemoryBankStateStore(self.database)
+        if self.video_session_store is None:
+            self.video_session_store = VideoSessionStore(self.database)
 
         pending = await self.privacy_deletion_store.list_pending()
         if not pending:
@@ -1697,6 +1734,7 @@ class KimiApplication:
                     memory_bank_state_store=self.user_memory_bank_state_store,
                     conversation_turn_lock=self._lock_user_conversation_turns,
                     browser_data_store=self.tools.browser_service,
+                    video_data_store=self.tools.video_service,
                 )
             except Exception:
                 log.exception(
@@ -2764,6 +2802,7 @@ def build_app(settings: Settings) -> KimiApplication:
             on_learn=learn_log.record,
             get_preference_store=lambda: application.preference_store,
             get_blocked_user_store=lambda: application.blocked_user_store,
+            get_video_session_store=lambda: application.video_session_store,
             get_thread_handoff=lambda: application.thread_handoff,
             resolve_thread_target=lambda ctx, raw: application.threads.resolve_thread_target(
                 ctx, raw

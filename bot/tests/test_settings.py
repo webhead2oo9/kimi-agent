@@ -94,6 +94,23 @@ def test_browser_network_mode_is_normalized() -> None:
     assert settings.browser_network_mode == "host"
 
 
+def test_video_understanding_is_off_and_secret_is_blank_by_default() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.video_understanding_enabled is False
+    assert settings.gemini_api_key.get_secret_value() == ""
+    assert settings.video_understanding_max_concurrency == 4
+
+
+@pytest.mark.parametrize("value", [0, 33])
+def test_video_concurrency_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            video_understanding_max_concurrency=value,
+        )
+
+
 def test_internet_search_defaults_match_tool_contract() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 

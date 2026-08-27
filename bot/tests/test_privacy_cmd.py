@@ -113,6 +113,17 @@ class _FakeBrowserService:
         return self._removed
 
 
+class _FakeVideoService:
+    def __init__(self, removed: int = 1, *, provider_cleanup_pending: bool = False) -> None:
+        self._removed = removed
+        self._provider_cleanup_pending = provider_cleanup_pending
+        self.delete_calls: list[str] = []
+
+    async def delete_user_data(self, user_id: str) -> tuple[int, bool]:
+        self.delete_calls.append(user_id)
+        return self._removed, self._provider_cleanup_pending
+
+
 @pytest.mark.asyncio
 async def test_run_privacy_deletion_all_deletes_transcripts_and_memory() -> None:
     store = _FakeConversationStore()
@@ -120,6 +131,7 @@ async def test_run_privacy_deletion_all_deletes_transcripts_and_memory() -> None
     memory = _FakeMemoryClient(deleted=True)
     retain = _FakeAutoRetain()
     browser = _FakeBrowserService()
+    video = _FakeVideoService(removed=2)
 
     outcome = await run_privacy_deletion(
         workspace_manager=_UNUSED_WORKSPACE.manager,
@@ -131,6 +143,7 @@ async def test_run_privacy_deletion_all_deletes_transcripts_and_memory() -> None
         memory_client=cast(Any, memory),
         auto_retain_watermarks=cast(Any, retain),
         browser_data_store=browser,
+        video_data_store=video,
     )
 
     assert outcome.ok is True
@@ -146,12 +159,55 @@ async def test_run_privacy_deletion_all_deletes_transcripts_and_memory() -> None
         "Deleted **2** coding task record(s).",
         "Wiped your workspace files across **0** community workspace(s).",
         "Wiped **1** persistent browser profile(s).",
+        "Deleted **2** stored video session(s).",
         "Long-term memory wiped and future memory disabled.",
     ]
     assert memory.deleted_banks == ["user:42"]
     assert prefs.disabled == ["42"]
     assert retain.fast_forwarded == ["42"]
     assert browser.delete_calls == ["42"]
+    assert video.delete_calls == ["42"]
+
+
+@pytest.mark.asyncio
+async def test_provider_video_cleanup_queue_does_not_keep_privacy_barrier_pending(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        barrier = UserPrivacyBarrier()
+        requests = PrivacyDeletionRequestStore(db)
+        video = _FakeVideoService(removed=2, provider_cleanup_pending=True)
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope="all",
+            user_id="42",
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=barrier,
+            deletion_request_store=requests,
+            video_data_store=video,
+        )
+
+        assert outcome.ok is True
+        assert outcome.durable_request_completed is True
+        assert await requests.list_pending() == []
+        async with barrier.activity(WorkspaceKey("42")):
+            pass
+        assert outcome.lines[-2:] == [
+            (
+                "Gemini video data deletion remains durably queued and will retry when "
+                "provider access is available."
+            ),
+            "No long-term memory backend is configured, so there was none to wipe.",
+        ]
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

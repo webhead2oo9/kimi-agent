@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent import attachments as attachments_module
 from agent.attachments import (
     AttachmentRef,
     AttachmentStore,
@@ -33,6 +34,7 @@ class FakeAttachment:
         self.filename = filename
         self.content_type: str | None = content_type
         self.size = len(payload)
+        self.url = f"https://cdn.discordapp.com/attachments/1/2/{filename}"
         self._payload = payload
 
     async def read(self) -> bytes:
@@ -1393,6 +1395,85 @@ async def test_attachment_ref_reads_through_source() -> None:
     src = _AttSrc(filename="a.txt", content_type="text/plain", payload=b"hello")
     [ref] = collect_turn_attachments(_att_message([src]))
     assert await ref.read() == b"hello"
+
+
+def test_collect_turn_attachments_exposes_narrow_video_stream() -> None:
+    source = FakeAttachment(
+        filename="clip.mp4",
+        content_type="video/mp4",
+        payload=b"video",
+    )
+
+    [ref] = collect_turn_attachments(_att_message([source]))
+
+    assert ref.video_stream_url == source.url
+    assert "video tool" in format_attachments_context([ref])
+
+
+@pytest.mark.asyncio
+async def test_video_stream_reads_discord_source_in_bounded_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Content:
+        async def iter_chunked(self, chunk_size: int):
+            assert chunk_size == 2
+            yield b"ab"
+            yield b"cde"
+
+    class Response:
+        status = 200
+        content_length = 5
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, *, allow_redirects: bool):
+            assert url.startswith("https://cdn.discordapp.com/attachments/")
+            assert allow_redirects is False
+            return Response()
+
+    monkeypatch.setattr(
+        attachments_module.aiohttp,
+        "ClientSession",
+        lambda **kwargs: Session(),
+    )
+    ref = AttachmentRef(
+        filename="clip.mp4",
+        size=5,
+        content_type="video/mp4",
+        source=None,
+        video_stream_url="https://cdn.discordapp.com/attachments/1/2/clip.mp4",
+    )
+
+    chunks = [chunk async for chunk in ref.iter_video_chunks(chunk_size=2, max_bytes=10)]
+
+    assert chunks == [b"ab", b"cde"]
+
+
+@pytest.mark.asyncio
+async def test_video_stream_rejects_non_discord_source_before_network() -> None:
+    ref = AttachmentRef(
+        filename="clip.mp4",
+        size=5,
+        content_type="video/mp4",
+        source=None,
+        video_stream_url="https://example.com/clip.mp4",
+    )
+
+    with pytest.raises(ValueError, match="safe Discord"):
+        async for _chunk in ref.iter_video_chunks(chunk_size=2, max_bytes=10):
+            pass
 
 
 def test_format_attachments_context_empty() -> None:

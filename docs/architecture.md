@@ -48,13 +48,14 @@ discord_adapter/        the Discord boundary: io (send/receive gates, chunking),
                         gateway (live channel/member reads), lifecycle (sweepers)
 providers/              neutral LLM interface, provider profiles, failover
 search/                 provider-neutral internet search chain + Exa/Brave clients
+video_understanding/    Gemini Interactions client + rooted session coordinator
 config/                 pydantic-settings, models.yaml routing, operator overlay
 config/fragments/       operator markdown read fresh each turn: guild/channel
                         pins and denylists, per-tool config, prompt templates
 tools/                  registry, browse-tools activation, workspace + memory +
                         community-knowledge + internet/Discord search + persona
-                        tools + optional code-execution/browser/visual/coding-task
-                        surfaces
+                        tools + optional video/code-execution/browser/visual/
+                        coding-task surfaces
 web_browser/            BetterWright persistent-browser bridge and isolated
                         per-user worker lifecycle, plus the fixed-code ephemeral
                         offline chart/Mermaid renderer
@@ -65,9 +66,9 @@ sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
 commands/               staff/user app commands (/privacy, /memory, /usage,
                         /models, ...) and the "Teach Kimi" context menu
 memory/                 Hindsight client, bank scoping, auto-retain, opt-out
-storage/                SQLite WAL core schema v2, module schema ledger,
-                        conversation + coding task/event/job state,
-                        LLM/paid-tool usage stores, global model selection
+storage/                SQLite WAL core schema v3, module schema ledger,
+                        conversation + video session/deletion + coding task/event/job
+                        state, LLM/paid-tool usage stores, global model selection
 trust/                  trust-tier resolution from Discord roles + allowlists
 moderation/             content safety: LLM input/output screening, tier
                         exemptions, pluggable backend (shipped and wired)
@@ -122,3 +123,4 @@ Once you have the map, these are the places to go next:
 - `visual-rendering.md`: one-call charts/Mermaid, offline rendering, and deployment.
 - `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
 - `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.
+- `video-understanding.md`: YouTube/uploaded-video sessions, Files + Interactions state, streaming, caching, limits, and deletion.

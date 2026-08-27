@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from config.model_config import ModelPricing
-from usage.normalization import UsageBreakdown
-from usage.pricing import estimate_cost
+from usage.normalization import LLMUsageCall, UsageBreakdown
+from usage.pricing import estimate_cost, price_usage_call
 
 FULL = ModelPricing(input=0.60, output=2.40, cached_read=0.12, cache_write=0.75)
 
@@ -38,3 +38,18 @@ def test_zero_token_bucket_without_rate_ignored() -> None:
 
 def test_zero_usage_with_pricing_is_zero() -> None:
     assert estimate_cost(FULL, UsageBreakdown()) == 0.0
+
+
+def test_explicit_specialist_cost_is_preserved_without_catalog_pricing() -> None:
+    call = LLMUsageCall(
+        model="gemini-3.7-flash-001",
+        pricing_model="gemini-3.7-flash",
+        role="video_analysis",
+        usage=UsageBreakdown(input_tokens=100),
+        est_cost_usd=0.123,
+    )
+
+    priced = price_usage_call(call, model_config=None)
+
+    assert priced.est_cost_usd == 0.123
+    assert priced.pricing_model == "gemini-3.7-flash"

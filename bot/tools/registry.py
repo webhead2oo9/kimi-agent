@@ -57,6 +57,7 @@ class MessageContext:
     # retries) spent by internet_search in this user turn. Blend consumes one
     # per configured provider; a new MessageContext resets the allowance.
     internet_search_backend_calls_this_turn: int = 0
+    video_calls_this_turn: int = 0
     browser_calls_this_turn: int = 0
     browser_screenshots_this_turn: int = 0
     visual_renders_this_turn: int = 0

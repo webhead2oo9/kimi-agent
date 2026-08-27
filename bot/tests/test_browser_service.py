@@ -104,6 +104,14 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "new DOMParser()" in visual_bridge
     assert ".innerHTML" not in visual_bridge
     assert "document.importNode(svg, true)" in visual_bridge
+    assert "const placeLeft=px>right-160" in visual_bridge
+    assert "px+(placeLeft?-11:11)" in visual_bridge
+    assert "'text-anchor':placeLeft?'end':'start'" in visual_bridge
+    assert "if(data.chart_type === 'bar')" in visual_bridge
+    assert "fill:\\`url(#hatch-\\${si})\\`" in visual_bridge
+    assert "series.name.slice(0,21)+'...'" in visual_bridge
+    assert "…" not in visual_bridge
+    assert "�" not in visual_bridge
     assert 'downloadPolicy: "deny"' in bridge
     assert "there is no " in tool and "`browser` global" in tool
     assert "There is no `browser` global" in skill

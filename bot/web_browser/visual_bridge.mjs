@@ -285,15 +285,26 @@ if (INPUT.kind === 'mermaid') {
       const xs=data.series.flatMap(s=>s.points.map(p=>p.x)); let minX=Math.min(...xs),maxX=Math.max(...xs);
       if(minX===maxX){minX-=1;maxX+=1;} const x=value=>left+((value-minX)/(maxX-minX))*plotW;
       for(let tick=0;tick<=5;tick++){const value=minX+(maxX-minX)*tick/5,px=x(value); text(px,bottom+22,Number(value.toPrecision(4)).toString(),{'text-anchor':'middle','font-size':13});}
-      data.series.forEach((series,si)=>series.points.forEach(point=>markerPath(markers[si],x(point.x),y(point.y),8,palette[si])));
+      data.series.forEach((series,si)=>series.points.forEach(point=>{
+        const px=x(point.x), py=y(point.y);
+        markerPath(markers[si],px,py,8,palette[si]);
+        if(point.label) {
+          const placeLeft=px>right-160;
+          text(px+(placeLeft?-11:11),py-10,point.label,{'text-anchor':placeLeft?'end':'start','font-size':12});
+        }
+      }));
     }
     if(data.x_label) text((left+right)/2,608,data.x_label,{'text-anchor':'middle','font-size':18,'font-weight':'700'});
     if(data.y_label){const label=text(25,(top+bottom)/2,data.y_label,{'text-anchor':'middle','font-size':18,'font-weight':'700'});label.setAttribute('transform',\`rotate(-90 25 \${(top+bottom)/2})\`);}
     const legendColumns=Math.min(4,data.series.length), legendCell=plotW/legendColumns;
     data.series.forEach((series,si)=>{
       const legendX=left+(si%legendColumns)*legendCell, legendY=18+Math.floor(si/legendColumns)*25;
-      markerPath(markers[si],legendX,legendY,6,palette[si]);
-      const legendName=series.name.length>24?series.name.slice(0,23)+'…':series.name;
+      if(data.chart_type === 'bar') {
+        add('rect',{x:legendX-6,y:legendY-6,width:12,height:12,fill:\`url(#hatch-\${si})\`,stroke:'#111','stroke-width':1});
+      } else {
+        markerPath(markers[si],legendX,legendY,6,palette[si]);
+      }
+      const legendName=series.name.length>24?series.name.slice(0,21)+'...':series.name;
       text(legendX+13,legendY+5,legendName,{'font-size':14});
     });
     document.querySelector('#diagram').replaceChildren(svg);

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from search.brave import BraveSearchBackend
-from search.exa import ExaSearchBackend
+from search.exa import ExaSearchBackend, _is_safe_contents_url
 from search.types import ContentsRequest, HttpResponse, SearchProviderError, SearchRequest
 
 
@@ -94,6 +94,41 @@ async def test_exa_contents_uses_top_level_content_option_and_statuses() -> None
         "text": True,
     }
     assert [item.url for item in response.results] == ["https://example.com/good"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    (
+        "file:///etc/passwd",
+        "https://user:password@example.com/private",
+        "http://localhost/admin",
+        "https://service.localhost/internal",
+        "http://127.0.0.1/admin",
+        "http://10.0.0.1/internal",
+        "http://169.254.169.254/latest/meta-data",
+        "https://192.0.2.1/reserved",
+        "http://[::1]/admin",
+        "http://[::ffff:127.0.0.1]/admin",
+        "http://2130706433/admin",
+        "http://127.1/admin",
+        "http://0x7f000001/admin",
+        "http://017700000001/admin",
+    ),
+)
+async def test_exa_contents_rejects_unsafe_urls_before_request(url: str) -> None:
+    post = RecordingPost({})
+    backend = ExaSearchBackend("secret", request=post)
+
+    with pytest.raises(SearchProviderError, match=r"public HTTP\(S\) URLs"):
+        await backend.contents(ContentsRequest(urls=(url,)))
+
+    assert post.calls == []
+
+
+@pytest.mark.parametrize("url", ("https://example.com/page", "https://8.8.8.8/page"))
+def test_exa_contents_url_validation_preserves_public_hosts(url: str) -> None:
+    assert _is_safe_contents_url(url) is True
 
 
 @pytest.mark.asyncio

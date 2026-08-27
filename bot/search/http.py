@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import aiohttp
@@ -8,6 +9,9 @@ import aiohttp
 from search.types import HttpResponse, SearchProviderError
 
 _TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
+_MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_JSON_NODES = 50_000
+_MAX_JSON_DEPTH = 32
 
 
 async def post_json(
@@ -16,21 +20,28 @@ async def post_json(
     payload: dict[str, Any],
     timeout_seconds: float,
 ) -> HttpResponse:
-    """POST JSON with one bounded retry for transient transport failures."""
+    """POST JSON with one bounded retry for transient failures."""
     last_error: Exception | None = None
     for attempt in range(2):
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
                 async with session.post(url, headers=headers, json=payload) as response:
-                    data = await _response_json(response)
-                    result = HttpResponse(
-                        status=response.status,
-                        payload=data,
-                        headers={key.casefold(): value for key, value in response.headers.items()},
-                    )
-                    if response.status not in _TRANSIENT_STATUSES or attempt == 1:
-                        return result
+                    try:
+                        data = await _response_json(response)
+                    except SearchProviderError:
+                        if response.status not in _TRANSIENT_STATUSES or attempt == 1:
+                            raise
+                    else:
+                        result = HttpResponse(
+                            status=response.status,
+                            payload=data,
+                            headers={
+                                key.casefold(): value for key, value in response.headers.items()
+                            },
+                        )
+                        if response.status not in _TRANSIENT_STATUSES or attempt == 1:
+                            return result
         except (aiohttp.ClientError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt == 1:
@@ -44,9 +55,42 @@ async def post_json(
 
 async def _response_json(response: aiohttp.ClientResponse) -> dict[str, Any]:
     try:
-        data = await response.json(content_type=None)
-    except (aiohttp.ContentTypeError, ValueError) as exc:
+        raw = await _read_bounded_body(response, _MAX_JSON_RESPONSE_BYTES)
+        data = json.loads(raw)
+        _validate_json_structure(data)
+    except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise SearchProviderError("Search provider returned invalid JSON.") from exc
     if not isinstance(data, dict):
         raise SearchProviderError("Search provider returned an invalid response shape.")
     return data
+
+
+async def _read_bounded_body(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    declared = response.headers.get("Content-Length")
+    if declared is not None:
+        try:
+            if int(declared) > max_bytes:
+                raise ValueError("response body exceeds byte cap")
+        except ValueError as exc:
+            raise ValueError("invalid or oversized response body") from exc
+
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(min(65_536, max_bytes + 1)):
+        if len(chunk) > max_bytes - len(body):
+            raise ValueError("response body exceeds byte cap")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _validate_json_structure(value: object) -> None:
+    nodes = 0
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > _MAX_JSON_NODES or depth > _MAX_JSON_DEPTH:
+            raise ValueError("response JSON exceeds structure cap")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)

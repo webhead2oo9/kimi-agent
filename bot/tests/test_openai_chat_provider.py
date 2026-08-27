@@ -4,8 +4,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2
+import pytest
 from openai import BadRequestError
 
+from providers.errors import (
+    ProviderAvailabilityError,
+    ProviderPolicyError,
+    is_provider_availability_error,
+)
 from providers.openai_chat import OpenAIChatProvider
 from providers.openai_compat import OpenAICompatProvider
 from providers.types import (
@@ -458,6 +464,86 @@ def test_openai_compat_streams_text_content() -> None:
     assert response.content == "Hello world"
     assert response.finish_reason == "stop"
     assert response.tool_calls == []
+
+
+def test_openai_compat_clean_eof_discards_partial_text() -> None:
+    provider = _streaming_provider(
+        FakeStreamingCompletions(
+            [_delta_chunk(content="partial output must not escape", tool_calls=None)]
+        )
+    )
+
+    with pytest.raises(ProviderAvailabilityError) as exc_info:
+        _run_streaming(provider)
+
+    assert is_provider_availability_error(exc_info.value)
+
+
+def test_openai_compat_clean_eof_discards_partial_tool_call() -> None:
+    provider = _streaming_provider(
+        FakeStreamingCompletions(
+            [
+                _delta_chunk(
+                    content=None,
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id="call_1",
+                            function=SimpleNamespace(
+                                name="lookup",
+                                arguments='{"q":',
+                            ),
+                        )
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(ProviderAvailabilityError) as exc_info:
+        _run_streaming(provider)
+
+    assert is_provider_availability_error(exc_info.value)
+
+
+def test_openai_chat_native_content_filter_discards_partial_output() -> None:
+    provider = OpenAIChatProvider(
+        api_key="test",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4.1",
+        provider_key="openai_compat",
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="content_filter",
+                message=SimpleNamespace(
+                    content="partial output must not escape",
+                    reasoning_content=None,
+                    tool_calls=[],
+                ),
+            )
+        ],
+        usage=None,
+        model="gpt-4.1",
+    )
+
+    with pytest.raises(ProviderPolicyError):
+        provider._response_from_native(response)
+
+
+def test_openai_compat_stream_content_filter_discards_partial_output() -> None:
+    chunks = [
+        _delta_chunk(content="partial output must not escape", tool_calls=None),
+        SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(finish_reason="content_filter", delta=None)],
+        ),
+    ]
+    provider = _streaming_provider(FakeStreamingCompletions(chunks))
+
+    with pytest.raises(ProviderPolicyError):
+        _run_streaming(provider)
 
 
 class HangingStream:

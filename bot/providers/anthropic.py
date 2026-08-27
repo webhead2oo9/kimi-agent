@@ -80,11 +80,13 @@ class AnthropicProvider(LLMProvider):
 
         response = await self._create_message(kwargs)
         content = list(getattr(response, "content", []) or [])
+        raw_usage = getattr(response, "usage", None)
         return ProviderResponse(
             content=self._text_from_blocks(content),
             tool_calls=self._parse_tool_calls(content),
             finish_reason=normalize_anthropic_stop_reason(getattr(response, "stop_reason", None)),
-            usage=anthropic_usage_dict(getattr(response, "usage", None)),
+            usage=anthropic_usage_dict(raw_usage),
+            usage_present=raw_usage is not None,
             model=str(getattr(response, "model", "") or ""),
             raw_message={
                 "role": "assistant",

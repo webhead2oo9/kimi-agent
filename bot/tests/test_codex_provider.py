@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from providers.codex import CodexProvider
+from providers.errors import ProviderPolicyError
 from providers.types import (
     ContentPart,
     ConversationMessage,
@@ -95,6 +96,71 @@ async def test_codex_provider_sends_full_replay_input_and_delegates_delta_to_tra
     assert result.model == "gpt-5.5-codex-2026"
     assert result.provider_state == {"latest_response_id": "resp_2"}
     assert result.usage == {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
+
+
+@pytest.mark.asyncio
+async def test_codex_provider_maps_incomplete_max_tokens_to_length() -> None:
+    truncated_call = {
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "delete_file",
+        "arguments": '{"path":"important.txt"}',
+    }
+    provider = CodexProvider(
+        transport=FakeTransport(
+            {
+                "id": "resp_1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": "partial answer",
+                "output": [truncated_call],
+            }
+        ),
+        model="gpt-5.5",
+    )
+
+    result = await provider.run_turn(
+        ProviderRequest(
+            conversation_id=1,
+            system_prompt="",
+            messages=[],
+            current_user_parts=[ContentPart.from_text("answer")],
+            tools=[],
+            max_tokens=64,
+        )
+    )
+
+    assert result.content == "partial answer"
+    assert result.finish_reason == "length"
+    assert result.has_tool_calls is False
+    assert result.raw_message["output"] == []
+
+
+@pytest.mark.asyncio
+async def test_codex_provider_maps_incomplete_content_filter_to_policy_error() -> None:
+    provider = CodexProvider(
+        transport=FakeTransport(
+            {
+                "id": "resp_1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [],
+            }
+        ),
+        model="gpt-5.5",
+    )
+
+    with pytest.raises(ProviderPolicyError):
+        await provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("answer")],
+                tools=[],
+                max_tokens=64,
+            )
+        )
 
 
 @pytest.mark.asyncio

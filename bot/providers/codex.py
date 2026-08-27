@@ -6,6 +6,7 @@ from typing import Any
 from codex.auth import CodexAuthManager
 from codex.transport import CodexTransport, sanitize_codex_input_item_for_replay
 from providers.base import LLMProvider
+from providers.failure_policy import raise_for_terminal_finish_reason
 from providers.serializers import (
     content_parts_to_openai_responses,
     text_from_content_parts,
@@ -175,11 +176,20 @@ class CodexProvider(LLMProvider):
         output = payload.get("output") or []
         output_items = [item for item in output if isinstance(item, dict)]
         response_id = payload.get("id")
+        finish_reason = self._finish_reason(payload)
+        raise_for_terminal_finish_reason(finish_reason)
+        is_incomplete = payload.get("status") == "incomplete"
+        replay_items = (
+            [item for item in output_items if item.get("type") != "function_call"]
+            if is_incomplete
+            else output_items
+        )
         return ProviderResponse(
             content=self._extract_text(payload, output_items),
-            tool_calls=self._parse_tool_calls(output_items),
-            finish_reason=str(payload.get("status") or "completed"),
+            tool_calls=[] if is_incomplete else self._parse_tool_calls(output_items),
+            finish_reason=finish_reason,
             usage=dict(payload.get("usage") or {}),
+            usage_present=payload.get("usage") is not None,
             model=str(payload.get("model") or ""),
             provider_state=(
                 {"latest_response_id": response_id} if isinstance(response_id, str) else {}
@@ -187,9 +197,20 @@ class CodexProvider(LLMProvider):
             generated_assets=self._parse_generated_assets(output_items),
             raw_message={
                 "type": "response_output",
-                "output": self._output_items_to_data(output_items),
+                "output": self._output_items_to_data(replay_items),
             },
         )
+
+    @staticmethod
+    def _finish_reason(payload: dict[str, Any]) -> str:
+        status = str(payload.get("status") or "completed")
+        details = payload.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        if status == "incomplete" and reason == "max_output_tokens":
+            return "length"
+        if status == "incomplete" and reason == "content_filter":
+            return "sensitive"
+        return status
 
     @staticmethod
     def _extract_text(payload: dict[str, Any], output_items: list[dict[str, Any]]) -> str | None:

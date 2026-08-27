@@ -16,7 +16,12 @@ from web_browser.service import (
     BrowserService,
     BrowserServiceConfig,
 )
-from web_browser.visual_service import VisualRenderRequest, VisualSeries, VisualService
+from web_browser.visual_service import (
+    ScatterPoint,
+    VisualRenderRequest,
+    VisualSeries,
+    VisualService,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -136,7 +141,8 @@ async def main() -> None:
             replace(
                 service.config,
                 bridge_script=PROJECT_ROOT / "web_browser/visual_bridge.mjs",
-            )
+            ),
+            max_output_bytes=settings.browser_max_screenshot_bytes,
         )
         with tempfile.TemporaryDirectory(prefix="kimi-visual-smoke-") as temporary:
             root = Path(temporary)
@@ -145,11 +151,26 @@ async def main() -> None:
             chart = await visual_service.render(
                 VisualRenderRequest(
                     kind="chart",
-                    chart_type="line",
-                    title="Deployment smoke chart",
-                    alt_text="Two values rise from one to two.",
-                    categories=("One", "Two"),
-                    series=(VisualSeries(name="Values", values=(1.0, 2.0)),),
+                    chart_type="scatter",
+                    title="Deployment smoke scatter chart",
+                    alt_text=(
+                        "Two observations overlap at zero while values span both signs and "
+                        "several orders of magnitude."
+                    ),
+                    x_scale="symlog",
+                    y_scale="symlog",
+                    overlap_mode="count",
+                    series=(
+                        VisualSeries(
+                            name="Values",
+                            points=(
+                                ScatterPoint(0.0, 0.0),
+                                ScatterPoint(0.0, 0.0),
+                                ScatterPoint(-0.001, 0.002),
+                                ScatterPoint(1_000_000.0, -1_000_000.0),
+                            ),
+                        ),
+                    ),
                 ),
                 chart_dir,
             )
@@ -170,7 +191,7 @@ async def main() -> None:
 
         print(
             "browser smoke passed: public navigation, persistence, user isolation, "
-            "chart rendering, and Mermaid rendering"
+            "symlog/count scatter rendering, and Mermaid rendering"
         )
     finally:
         for owner, turn in (

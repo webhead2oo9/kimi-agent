@@ -18,12 +18,15 @@ from web_browser.service import BrowserService, BrowserServiceConfig, _runtime_e
 
 type VisualKind = Literal["chart", "mermaid"]
 type ChartType = Literal["bar", "line", "scatter"]
+type AxisScale = Literal["linear", "symlog"]
+type OverlapMode = Literal["none", "count"]
 
 _RESULT_PREFIX = "__VISUAL_RESULT__"
 _MERMAID_VERSION = "11.17.2"
 _MAX_REQUEST_BYTES = 256 * 1024
 _MAX_RESULT_BYTES = 16 * 1024
 _MAX_STDERR_BYTES = 16 * 1024
+_DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 
 
 class VisualServiceError(RuntimeError):
@@ -54,6 +57,9 @@ class VisualRenderRequest:
     y_label: str = ""
     categories: tuple[str, ...] = ()
     series: tuple[VisualSeries, ...] = ()
+    x_scale: AxisScale = "linear"
+    y_scale: AxisScale = "linear"
+    overlap_mode: OverlapMode = "none"
     source: str = ""
 
     def to_payload(self) -> dict[str, object]:
@@ -70,6 +76,9 @@ class VisualRenderRequest:
                 "chart_type": self.chart_type,
                 "x_label": self.x_label,
                 "y_label": self.y_label,
+                "x_scale": self.x_scale,
+                "y_scale": self.y_scale,
+                "overlap_mode": self.overlap_mode,
                 "categories": list(self.categories),
                 "series": [
                     {
@@ -103,9 +112,17 @@ class VisualRenderResult:
 class VisualService:
     """Launch one offline worker for one normalized render request."""
 
-    def __init__(self, config: BrowserServiceConfig) -> None:
+    def __init__(
+        self,
+        config: BrowserServiceConfig,
+        *,
+        max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
+    ) -> None:
         # Visual jobs never use the persistent browser's VPN or profile state.
         self.config = replace(config, network_mode="host")
+        if isinstance(max_output_bytes, bool) or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
+        self.max_output_bytes = max_output_bytes
         # Chromium is the expensive boundary here. Serialize first-party renders
         # process-wide rather than letting concurrent Discord turns multiply it.
         self._semaphore = asyncio.Semaphore(1)
@@ -186,6 +203,7 @@ class VisualService:
             job_dir,
             unit_name=unit_name,
             seccomp_fd=seccomp_fd,
+            max_output_bytes=self.max_output_bytes,
         )
         try:
             process = await asyncio.create_subprocess_exec(
@@ -342,11 +360,13 @@ def build_visual_worker_command(
     *,
     unit_name: str,
     seccomp_fd: int,
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
 ) -> list[str]:
     """Compose the ephemeral offline renderer boundary."""
 
     runtime = str(config.runtime_dir.resolve())
     bridge = str(config.bridge_script.resolve())
+    visual_math = str((config.bridge_script.parent / "visual_math.mjs").resolve())
     output = str(job_dir.resolve())
     limits = [
         "-p",
@@ -407,6 +427,12 @@ def build_visual_worker_command(
         "MERMAID_BUNDLE",
         "/runtime/node_modules/mermaid/dist/mermaid.min.js",
         "--setenv",
+        "VISUAL_CALL_TIMEOUT_SECONDS",
+        str(config.call_timeout_seconds),
+        "--setenv",
+        "VISUAL_MAX_OUTPUT_BYTES",
+        str(max_output_bytes),
+        "--setenv",
         "NODE_NO_WARNINGS",
         "1",
         "--setenv",
@@ -445,6 +471,9 @@ def build_visual_worker_command(
         "--ro-bind",
         bridge,
         "/visual_bridge.mjs",
+        "--ro-bind",
+        visual_math,
+        "/visual_math.mjs",
         "--bind",
         output,
         "/output",

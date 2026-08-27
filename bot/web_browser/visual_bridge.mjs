@@ -1,14 +1,23 @@
 import fs from "node:fs/promises";
 
+import { buildAxisScale, formatScaleLabel, layoutOverlapBadge } from "./visual_math.mjs";
+
 const RESULT_PREFIX = "__VISUAL_RESULT__";
 const MAX_INPUT_BYTES = 256 * 1024;
-const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = Number(process.env.VISUAL_MAX_OUTPUT_BYTES);
+const CALL_TIMEOUT_SECONDS = Number(process.env.VISUAL_CALL_TIMEOUT_SECONDS);
 const WIDTH = 1200;
 const HEIGHT = 675;
 const MAX_ABS_VALUE = 1_000_000_000_000_000;
 const modulePath = String(process.env.BETTERWRIGHT_MODULE || "").trim();
 const mermaidPath = String(process.env.MERMAID_BUNDLE || "").trim();
 if (!modulePath || !mermaidPath) throw new Error("visual runtime is not configured");
+if (!Number.isSafeInteger(MAX_OUTPUT_BYTES) || MAX_OUTPUT_BYTES <= 0) {
+  throw new Error("visual output limit is invalid");
+}
+if (!Number.isFinite(CALL_TIMEOUT_SECONDS) || CALL_TIMEOUT_SECONDS <= 0) {
+  throw new Error("visual timeout is invalid");
+}
 
 const { BetterWright, NetworkPolicy } = await import(modulePath);
 const browser = new BetterWright({
@@ -75,10 +84,20 @@ function validateRequest(value) {
   if (value.kind !== "chart") throw new Error("kind is invalid");
   assertKeys(
     value,
-    new Set(["kind", "title", "alt_text", "chart_type", "x_label", "y_label", "categories", "series"]),
+    new Set([
+      "kind", "title", "alt_text", "chart_type", "x_label", "y_label",
+      "x_scale", "y_scale", "overlap_mode", "categories", "series",
+    ]),
     "chart request",
   );
   if (!["bar", "line", "scatter"].includes(value.chart_type)) throw new Error("chart type is invalid");
+  if (!["linear", "symlog"].includes(value.x_scale)) throw new Error("x scale is invalid");
+  if (!["linear", "symlog"].includes(value.y_scale)) throw new Error("y scale is invalid");
+  if (!["none", "count"].includes(value.overlap_mode)) throw new Error("overlap mode is invalid");
+  if (
+    value.chart_type !== "scatter" &&
+    (value.x_scale !== "linear" || value.y_scale !== "linear" || value.overlap_mode !== "none")
+  ) throw new Error("scatter controls are invalid for this chart type");
   assertText(value.x_label, "x label", 100);
   assertText(value.y_label, "y label", 100);
   if (!Array.isArray(value.categories) || value.categories.length > 250) throw new Error("categories are invalid");
@@ -207,6 +226,9 @@ if (INPUT.kind === 'mermaid') {
   }, INPUT.source);
 } else {
   await page.evaluate((data) => {
+    ${buildAxisScale.toString()}
+    ${formatScaleLabel.toString()}
+    ${layoutOverlapBadge.toString()}
     const NS = 'http://www.w3.org/2000/svg';
     const palette = ['#E69F00','#56B4E9','#009E73','#F0E442','#0072B2','#D55E00','#CC79A7','#000000'];
     const dashes = ['', '12 6', '4 5', '16 5 3 5', '2 4', '10 4 2 4 2 4', '18 7', '7 3'];
@@ -246,17 +268,22 @@ if (INPUT.kind === 'mermaid') {
       return add('path',{d:paths[shape],fill:['cross','plus'].includes(shape)?'none':color,stroke:color,'stroke-width':3,'stroke-linecap':'round','stroke-linejoin':'round'});
     };
     const left=105, right=1160, top=76, bottom=520, plotW=right-left, plotH=bottom-top;
+    const tickLabel=value=>{
+      const absolute=Math.abs(value);
+      if(absolute>=1e6||(absolute>0&&absolute<0.001)) return value.toExponential(2);
+      return Number(value.toPrecision(4)).toString();
+    };
     const all = data.chart_type === 'scatter'
       ? data.series.flatMap(s => s.points.map(p => p.y)) : data.series.flatMap(s => s.values);
-    let minY=Math.min(...all), maxY=Math.max(...all); minY=Math.min(0,minY); maxY=Math.max(0,maxY);
-    if (minY === maxY) { minY -= 1; maxY += 1; }
-    const y = value => bottom - ((value-minY)/(maxY-minY))*plotH;
+    const yAxis=buildAxisScale(all,bottom,top,data.chart_type==='scatter'?data.y_scale:'linear',true);
+    const y=yAxis.position;
     const text = (x,yPos,value,attrs={}) => add('text',{x,y:yPos,fill:'#111','font-size':16,'font-family':'Arial, sans-serif',...attrs},value);
-    for(let tick=0;tick<=5;tick++){
-      const value=minY+(maxY-minY)*tick/5, py=y(value);
-      add('line',{x1:left,y1:py,x2:right,y2:py,stroke:'#777','stroke-width':tick===0?1.5:1,'stroke-dasharray':tick===0?'':'3 5'});
-      text(left-12,py+5,Number(value.toPrecision(4)).toString(),{'text-anchor':'end','font-size':14});
-    }
+    yAxis.ticks.forEach((value,tick)=>{
+      const py=y(value);
+      const isZero=value===0;
+      add('line',{x1:left,y1:py,x2:right,y2:py,stroke:'#777','stroke-width':isZero?1.5:1,'stroke-dasharray':isZero?'':'3 5'});
+      text(left-12,py+5,tickLabel(value),{'text-anchor':'end','font-size':14});
+    });
     add('line',{x1:left,y1:top,x2:left,y2:bottom,stroke:'#111','stroke-width':2});
     add('line',{x1:left,y1:bottom,x2:right,y2:bottom,stroke:'#111','stroke-width':2});
     if(data.chart_type === 'bar'){
@@ -284,20 +311,41 @@ if (INPUT.kind === 'mermaid') {
         series.values.forEach((value,i)=>markerPath(markers[si],x(i),y(value),6,palette[si]));
       });
     } else {
-      const xs=data.series.flatMap(s=>s.points.map(p=>p.x)); let minX=Math.min(...xs),maxX=Math.max(...xs);
-      if(minX===maxX){minX-=1;maxX+=1;} const x=value=>left+((value-minX)/(maxX-minX))*plotW;
-      for(let tick=0;tick<=5;tick++){const value=minX+(maxX-minX)*tick/5,px=x(value); text(px,bottom+22,Number(value.toPrecision(4)).toString(),{'text-anchor':'middle','font-size':13});}
+      const xs=data.series.flatMap(s=>s.points.map(p=>p.x));
+      const xAxis=buildAxisScale(xs,left,right,data.x_scale,false), x=xAxis.position;
+      xAxis.ticks.forEach(value=>text(x(value),bottom+22,tickLabel(value),{'text-anchor':'middle','font-size':13}));
+      const overlaps=new Map();
+      data.series.forEach(series=>series.points.forEach(point=>{
+        const key=JSON.stringify([point.x,point.y]);
+        const current=overlaps.get(key)||{point,count:0};current.count+=1;overlaps.set(key,current);
+      }));
       data.series.forEach((series,si)=>series.points.forEach(point=>{
         const px=x(point.x), py=y(point.y);
         markerPath(markers[si],px,py,8,palette[si]);
         if(point.label) {
           const placeLeft=px>right-160;
-          text(px+(placeLeft?-11:11),py-10,point.label,{'text-anchor':placeLeft?'end':'start','font-size':12});
+          const overlap=overlaps.get(JSON.stringify([point.x,point.y]));
+          const labelWidth=16+String(overlap.count).length*8;
+          const layout=overlap.count>1&&data.overlap_mode==='count'
+            ? layoutOverlapBadge(px,py,left,right,top,bottom,labelWidth,true):null;
+          text(px+(placeLeft?-11:11),layout?layout.pointLabelY:py-10,point.label,{'text-anchor':placeLeft?'end':'start','font-size':12});
         }
       }));
+      if(data.overlap_mode==='count'){
+        overlaps.forEach(({point,count})=>{
+          if(count<2)return;
+          const px=x(point.x),py=y(point.y),label='x'+count,labelWidth=16+String(count).length*8;
+          const hasLabel=data.series.some(series=>series.points.some(candidate=>candidate.x===point.x&&candidate.y===point.y&&candidate.label));
+          const layout=layoutOverlapBadge(px,py,left,right,top,bottom,labelWidth,hasLabel);
+          add('rect',{x:layout.x,y:layout.y,width:labelWidth,height:19,rx:8,fill:'#fff',stroke:'#111','stroke-width':1.5});
+          text(layout.x+labelWidth/2,layout.y+14,label,{'text-anchor':'middle','font-size':12,'font-weight':'700'});
+        });
+      }
     }
-    if(data.x_label) text((left+right)/2,608,data.x_label,{'text-anchor':'middle','font-size':18,'font-weight':'700'});
-    if(data.y_label){const label=text(25,(top+bottom)/2,data.y_label,{'text-anchor':'middle','font-size':18,'font-weight':'700'});label.setAttribute('transform',\`rotate(-90 25 \${(top+bottom)/2})\`);}
+    const xLabel=formatScaleLabel(data.x_label,data.chart_type==='scatter'?data.x_scale:'linear');
+    const yLabel=formatScaleLabel(data.y_label,data.chart_type==='scatter'?data.y_scale:'linear');
+    if(xLabel) text((left+right)/2,608,xLabel,{'text-anchor':'middle','font-size':18,'font-weight':'700'});
+    if(yLabel){const label=text(25,(top+bottom)/2,yLabel,{'text-anchor':'middle','font-size':18,'font-weight':'700'});label.setAttribute('transform',\`rotate(-90 25 \${(top+bottom)/2})\`);}
     const legendColumns=Math.min(4,data.series.length), legendCell=plotW/legendColumns;
     data.series.forEach((series,si)=>{
       const legendX=left+(si%legendColumns)*legendCell, legendY=18+Math.floor(si/legendColumns)*25;
@@ -328,7 +376,7 @@ try {
   const mermaidBundle = request.kind === "mermaid" ? await fs.readFile(mermaidPath, "utf8") : "";
   const result = await browser.run(renderCode(request, mermaidBundle), {
     session: "visual",
-    timeout: 30,
+    timeout: CALL_TIMEOUT_SECONDS,
   });
   if (!result?.ok || typeof result.result?.output !== "string") {
     throw new Error(String(result?.error || "render failed"));

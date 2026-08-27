@@ -51,6 +51,9 @@ numeric points and do not accept `categories`:
   "title": "Response time and payload size",
   "x_label": "Payload (KiB)",
   "y_label": "Milliseconds",
+  "x_scale": "symlog",
+  "y_scale": "symlog",
+  "overlap_mode": "count",
   "alt_text": "Response time generally increases with payload size.",
   "series": [
     {
@@ -65,6 +68,19 @@ numeric points and do not accept `categories`:
 }
 ```
 
+Scatter defaults are `x_scale: "linear"`, `y_scale: "linear"`, and
+`overlap_mode: "none"`. Set either axis scale to `symlog` when values cross
+zero or span several orders of magnitude. The
+renderer derives a deterministic linear threshold from the smallest non-zero
+value on that axis, keeps zero and negative values valid, prints ticks in the
+original units, and labels the transformed axis as a symlog scale.
+
+Scatter points at exactly the same numeric coordinates overlap by default. Set
+`overlap_mode` to `count` to add an `xN` badge at every coordinate shared by
+multiple observations. Counting is deterministic and does not move or jitter
+the points. These three controls reject non-default values on bar and line
+charts.
+
 A Mermaid diagram:
 
 ```json
@@ -75,9 +91,10 @@ A Mermaid diagram:
 }
 ```
 
-The result contains only safe metadata: visual kind, chart type when relevant,
-filename, title, alt text, dimensions, byte size, and attachment status. It
-never exposes a host path, browser profile, HTML, SVG, or generated script.
+The result contains only safe metadata: visual kind, chart type and active
+scatter controls when relevant, filename, title, alt text, dimensions, byte
+size, and attachment status. It never exposes a host path, browser profile,
+HTML, SVG, or generated script.
 
 The split avoids conditional JSON Schema branches, which are not portable
 across every supported model API. `render_chart` never exposes Mermaid source,
@@ -99,6 +116,7 @@ visual distinctions:
 - grouped bars combine color with distinct hatch patterns;
 - lines combine color with dash patterns and marker shapes;
 - scatter series combine color with marker shapes;
+- optional exact-coordinate count badges expose overlapping scatter observations;
 - legends reproduce the same distinctions.
 
 The model cannot select colors, fonts, dimensions, CSS, or arbitrary rendering

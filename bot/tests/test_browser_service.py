@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +118,10 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "if(data.chart_type === 'bar')" in visual_bridge
     assert "fill:\\`url(#hatch-\\${si})\\`" in visual_bridge
     assert "series.name.slice(0,21)+'...'" in visual_bridge
+    assert "data.x_scale" in visual_bridge
+    assert "data.y_scale" in visual_bridge
+    assert "data.overlap_mode==='count'" in visual_bridge
+    assert "JSON.stringify([point.x,point.y])" in visual_bridge
     assert "…" not in visual_bridge
     assert "�" not in visual_bridge
     assert 'downloadPolicy: "deny"' in bridge
@@ -128,6 +133,18 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     assert "Do not call `browser.newPage()`,\n  `context.newPage()`" in skill
     assert "CloakBrowser" not in installer
     assert "FONTCONFIG_FILE" not in installer
+
+
+def test_visual_math_node_suite() -> None:
+    result = subprocess.run(
+        ["node", "--test", str(PROJECT_ROOT / "tests/js/visual_math.test.mjs")],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_netns_command_uses_only_fixed_helper_and_resolver(tmp_path: Path) -> None:

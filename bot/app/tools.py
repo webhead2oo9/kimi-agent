@@ -559,7 +559,10 @@ def _register_browser(
     )
 
     visual_bridge = Path(__file__).resolve().parent.parent / "web_browser/visual_bridge.mjs"
-    visual_service = VisualService(replace(service.config, bridge_script=visual_bridge))
+    visual_service = VisualService(
+        replace(service.config, bridge_script=visual_bridge),
+        max_output_bytes=settings.browser_max_screenshot_bytes,
+    )
     visual_unavailable = visual_service.availability_error()
     if visual_unavailable is not None:
         log.warning(

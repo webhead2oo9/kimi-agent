@@ -50,6 +50,7 @@ def test_env_example_keeps_model_routing_out_of_settings() -> None:
     assert values["OPENCODE_GO_API_KEY"] == ""
     assert values["RUNINFRA_GATEWAY_KEY"] == ""
     assert values["ANTHROPIC_API_KEY"] == ""
+    assert values["ZAI_API_KEY"] == ""
     assert values["COMPACTION_API_KEY"] == ""
 
 

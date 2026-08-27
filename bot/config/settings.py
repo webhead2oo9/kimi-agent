@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     # Fireworks AI key (openai_compat profile pointing at
     # https://api.fireworks.ai/inference/v1).
     fireworks_api_key: SecretStr = SecretStr("")
+    # Z.AI GLM Coding Plan key (openai_compat profile pointing at the dedicated
+    # Coding API; separate from Z.AI's pay-as-you-go general API endpoint).
+    zai_api_key: SecretStr = SecretStr("")
     # Kimi Code membership coding-plan key from the Kimi Code Console
     # (anthropic_compat profile pointing at https://api.kimi.com/coding/v1).
     # Separate product from the pay-as-you-go Kimi Open Platform.

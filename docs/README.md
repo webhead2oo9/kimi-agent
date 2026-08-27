@@ -23,8 +23,9 @@ The rest is reference material.
 
 - [Tool catalog](tools.md): all built-in model-callable tools and their gates.
 - [Providers](providers.md): model profiles, routing, fallback, and image
-  capability. Backend guides: [xAI Grok](providers-grok.md),
-  [Claude via ccflare](providers-ccflare.md), [Codex](providers-codex.md),
+  capability. Backend guides: [Z.AI GLM Coding Plan](providers-zai.md),
+  [xAI Grok](providers-grok.md), [Claude via ccflare](providers-ccflare.md),
+  [Codex](providers-codex.md), and
   [OpenAI and OpenRouter](providers-openai.md).
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and

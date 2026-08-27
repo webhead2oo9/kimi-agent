@@ -20,6 +20,7 @@ _API_KEY_SETTINGS_FIELDS = {
     "ANTHROPIC_API_KEY": "anthropic_api_key",
     "GROK_API_KEY": "grok_api_key",
     "FIREWORKS_API_KEY": "fireworks_api_key",
+    "ZAI_API_KEY": "zai_api_key",
     "KIMI_CODING_API_KEY": "kimi_coding_api_key",
     "COMPACTION_API_KEY": "compaction_api_key",
 }

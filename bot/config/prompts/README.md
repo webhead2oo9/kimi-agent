@@ -6,7 +6,7 @@ slot fragments in `config/channels/`, `config/channel_threads/`, and
 template) and `config/servers/` (which fills `<server_instructions>`).
 
 Most channels and servers want a fragment, not a full override. Reach for a full
-override only when a scope needs a genuinely different layout: different section
+override only when a scope needs a different layout: different section
 order, sections removed, or a different persona/tone.
 
 ## Resolution (most specific wins)
@@ -27,11 +27,11 @@ thread's own id replaces it. There is no `prompts/threads/` directory; a
 thread's own override is a `prompts/channels/` file named for the thread id. A
 per-guild command template is a file named for the guild id inside a directory
 named for the command (`prompts/commands/learn/<guild_id>.md`). The first file
-that exists wins and becomes the whole layout; its `<placeholder>` tokens are
+that exists wins; its `<placeholder>` tokens are
 then filled the same way as the default template.
 
 Subdirectories (`commands/`, `channels/`, `servers/`) are created on demand; a
-missing file simply falls through to the next resolution level. Create and edit
+missing file falls through to the next resolution level. Create and edit
 these files directly under `<CONFIG_DIR>/prompts/`; they are read fresh each
 turn.
 
@@ -71,8 +71,8 @@ Copy `../prompt.md` and edit it.
   content-rating line, error hygiene, and the memory/tool-routing rules are all
   prose in the default template: carry across whatever the scope still needs.
   `<safety>` and `<guardrails>` are not tokens and no code appends those rules.
-  Command templates are narrower by design: `commands/learn.md` carries the
-  safety and guardrail rules but deliberately omits the content-rating and
+  Command templates are narrower: `commands/learn.md` carries the
+  safety and guardrail rules but omits the content-rating and
   error-hygiene lines, since a learn turn reports privately to Staff and the
   conversational template already governs what members see.
 - When the current user has a compiled persona override, `<persona>` renders it

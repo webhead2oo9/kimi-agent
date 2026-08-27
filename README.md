@@ -27,27 +27,27 @@ several communities without forking the application.
 | **Trust-tiered tools** | `MEMBER < REGULAR < STAFF`, resolved from Discord roles and enforced at dispatch, not by prompt wording. |
 | **Long-term memory** | Optional per-user memory banks via [Hindsight](https://github.com/vectorize-io/hindsight), with recall, reflection, opt-out, and staff-taught community knowledge. |
 | **Per-user workspaces** | File read/write/edit, archive extraction, document-to-text, and URL fetch, with path, size, quota, and TTL caps enforced by the application. |
-| **Durable coding agent** | Optionally hand repository-scale work to a separately routed background worker with persisted progress, managed sandbox jobs, recovery, steering, and cancellation. |
+| **Durable coding agent** | Optionally hand large repository work to a separately routed background worker that persists progress, runs managed sandbox jobs, recovers after restarts, and can be steered or cancelled. |
 | **Video understanding** | Optionally ask a stateful Gemini 3.7 Flash specialist about public YouTube videos or uploaded Discord/workspace clips, with rooted follow-ups and timestamped evidence. |
 | **Persistent browser** | Optional per-user BetterWright profiles for interactive web tasks, isolated with Bubblewrap/systemd/seccomp and routed over the host network or a fixed VPN namespace. |
-| **Visual rendering** | One searchable call creates accessible fixed-style charts or constrained Mermaid diagrams as PNG attachments through an ephemeral offline browser worker. |
+| **Visual rendering** | A searchable call renders accessible fixed-style charts or constrained Mermaid diagrams as PNG attachments through an ephemeral offline browser worker. |
 | **Skills** | Staff-managed Markdown instruction docs plus operator-authored script tools that run under mandatory Linux isolation with networking denied by default. |
 | **Managed threads** | Hand a conversation into a bot-owned thread and keep the transcript intact across the move. |
 | **Discord context** | Pull recent channel history on demand and, when enabled, search selected channels without persisting what it reads. |
-| **Safety rails** | Privacy consent, LLM content moderation, user blocks, moderation cases and staff logs, and known-bad image fingerprint matching. |
+| **Safety and moderation** | Privacy consent, LLM content moderation, user blocks, moderation cases and staff logs, and known-bad image fingerprint matching. |
 | **Operator plugins** | Add community-specific tools from your own packages through an explicit allowlist. |
 
 Foreground chat turns are stateless, and each conversation is keyed to the
 message that started it and persisted in SQLite, so a reply continues its own
 thread even across restarts. The optional video specialist is a deliberate
-actor-scoped stateful tool behind the rooted conversation. Everything is gated by config:
-what you don't configure stays off.
+actor-scoped stateful tool behind the rooted conversation. Optional subsystems stay
+off until configured.
 
 ## Repository layout
 
 ```
 bot/     the application (source, config templates, tests, deployment files)
-docs/    the canonical documentation set (setup, architecture, per-subsystem reference)
+docs/    the project documentation (setup, architecture, per-subsystem reference)
 ```
 
 All commands run from `bot/`, and CI (`.github/workflows/ci.yml`) audits locked

@@ -8,12 +8,14 @@ import pytest
 
 from codex.transport import CodexWebSocketRequestError
 from providers.base import LLMProvider
+from providers.circuit_breaker import CircuitRecord, CircuitTarget, ProviderCircuitBreaker
 from providers.errors import (
     ProviderBackendAccessError,
     ProviderCapabilityError,
     is_provider_availability_error,
 )
-from providers.failover import FailoverProvider
+from providers.failover import FailoverBackend, FailoverProvider
+from providers.failure_policy import CircuitScopeKind
 from providers.types import ProviderCapability, ProviderRequest, ProviderResponse
 
 
@@ -112,9 +114,10 @@ def test_fails_over_on_availability_errors(error: BaseException) -> None:
 
     result = asyncio.run(chain.run_turn(_REQUEST))
 
-    # The failing primary is retried once before the chain advances.
+    # Rate limits already carry a cooldown decision; other transient failures
+    # retain the same-backend retry before opening the circuit.
     assert result.content == "fallback-response"
-    assert primary.calls == 2
+    assert primary.calls == (1 if getattr(error, "status_code", None) == 429 else 2)
     assert fallback.calls == 1
 
 
@@ -208,8 +211,10 @@ def test_provider_state_is_only_replayed_to_the_backend_that_created_it() -> Non
     assert fallback.request_states[-1] == {"cursor": "fallback"}
 
     primary._error = None
+    primary_calls = primary.calls
     asyncio.run(chain.run_turn(replace(_REQUEST, provider_state=continued_fallback.provider_state)))
-    assert primary.request_states[-1] == {}
+    assert primary.calls == primary_calls
+    assert fallback.request_states[-1] == {"cursor": "fallback"}
 
 
 def test_retries_same_backend_before_failing_over() -> None:
@@ -224,6 +229,58 @@ def test_retries_same_backend_before_failing_over() -> None:
     assert result.content == "primary-response"
     assert primary.calls == 2
     assert fallback.calls == 0
+
+
+def test_cancelled_half_open_call_releases_probe() -> None:
+    class _CancelledProvider(_StubProvider):
+        async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+            raise asyncio.CancelledError
+
+    target = CircuitTarget.create(
+        model_identity="primary/model",
+        account_identity="primary",
+        label="primary/model",
+    )
+    record = CircuitRecord(
+        target.model_scope_key,
+        CircuitScopeKind.MODEL,
+        "primary/model",
+        "outage",
+        503,
+        None,
+        1,
+        2,
+        1,
+    )
+
+    class _Store:
+        async def load(self) -> list[CircuitRecord]:
+            return [record]
+
+        async def upsert(self, value: CircuitRecord) -> None:
+            return None
+
+        async def delete(self, scope_key: str) -> None:
+            return None
+
+        async def reset_all(self) -> None:
+            return None
+
+    breaker = ProviderCircuitBreaker(clock=lambda: 10)
+
+    async def run() -> None:
+        await breaker.initialize(_Store(), {target.model_scope_key, target.account_scope_key})
+        chain = FailoverProvider(
+            [_CancelledProvider("primary")],
+            retry_delay_seconds=0,
+            circuit_breaker=breaker,
+            backends=[FailoverBackend(target)],
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await chain.run_turn(_REQUEST)
+        assert await breaker.allow(target) is not None
+
+    asyncio.run(run())
 
 
 def test_no_failover_on_capability_error() -> None:

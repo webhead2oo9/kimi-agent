@@ -13,6 +13,7 @@ from openai import AsyncOpenAI, BadRequestError
 
 from branding import DEFAULT_BOT_NAME, provider_identity
 from providers.base import LLMProvider
+from providers.failure_policy import raise_for_terminal_finish_reason
 from providers.serializers import (
     content_parts_to_openai_chat,
     text_from_content_parts,
@@ -291,6 +292,7 @@ class OpenAIChatProvider(LLMProvider):
         if fallback_error is not None:
             return await self._non_streaming_fallback(kwargs, fallback_error)
         log.info("stream complete: %s", acc.summary())
+        raise_for_terminal_finish_reason(acc.finish_reason)
         provider_response = ProviderResponse(
             content=acc.content(),
             reasoning_content=acc.reasoning(),
@@ -416,6 +418,7 @@ class OpenAIChatProvider(LLMProvider):
 
     def _response_from_native(self, response: Any) -> ProviderResponse:
         choice = response.choices[0]
+        raise_for_terminal_finish_reason(choice.finish_reason)
         msg = choice.message
         parsed_tool_calls = self._parse_tool_calls(getattr(msg, "tool_calls", None))
         provider_response = ProviderResponse(

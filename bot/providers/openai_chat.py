@@ -348,11 +348,13 @@ class OpenAIChatProvider(LLMProvider):
             kwargs["tools"] = [tool_schema_to_openai_chat(t) for t in tools]
         if self._service_tier:
             kwargs["service_tier"] = self._service_tier
-        if self._deepseek_thinking and request.reasoning_enabled:
-            kwargs["reasoning_effort"] = (
-                request.reasoning_effort or self._reasoning_effort or "high"
-            )
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        if self._provider_key == "openai_compat" and request.reasoning_enabled:
+            effort = request.reasoning_effort or self._reasoning_effort
+            if effort:
+                kwargs["reasoning_effort"] = effort
+            if self._deepseek_thinking:
+                kwargs.setdefault("reasoning_effort", "high")
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         self._apply_provider_options(kwargs, request)
         return kwargs
 

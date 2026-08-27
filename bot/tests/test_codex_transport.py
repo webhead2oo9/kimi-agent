@@ -348,7 +348,7 @@ async def test_codex_send_once_times_out_when_stream_stalls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_codex_incomplete_is_terminal_and_preserves_partial_output() -> None:
+async def test_codex_incomplete_is_retried_as_stream_failure_without_committing_state() -> None:
     events: list[dict[str, Any]] = [
         {
             "type": "response.output_text.delta",
@@ -363,27 +363,68 @@ async def test_codex_incomplete_is_terminal_and_preserves_partial_output() -> No
             },
         },
     ]
-    transport = ScriptedTransport(events, idle_timeout=3000, read_timeout=0.01)
+    first = ScriptedWebSocket(events)
+    second = ScriptedWebSocket(events)
+    transport = SocketSequenceTransport([first, second], idle_timeout=3000)
     try:
-        response = await transport.send_request("conv-1", _basic_payload())
+        with pytest.raises(CodexWebSocketRequestError, match="max_output_tokens") as exc_info:
+            await transport.send_request("conv-1", _basic_payload())
+        state = transport._sessions["conv-1"].state
     finally:
         await transport.close_all()
 
-    assert response["status"] == "incomplete"
-    assert response["output_text"] == "partial answer"
-    assert len(transport.fake_ws.sent) == 1
+    assert exc_info.value.retryable is True
+    assert state.last_response_id is None
+    assert len(first.sent) == 1
+    assert len(second.sent) == 1
 
 
 @pytest.mark.asyncio
-async def test_codex_stream_rate_limit_preserves_failure_metadata_without_transport_retry() -> None:
+async def test_codex_wrapped_error_uses_official_status_and_header_shape() -> None:
     transport = ScriptedTransport(
         [
             {
                 "type": "error",
+                "status": 429,
                 "error": {
-                    "code": "rate_limit_exceeded",
-                    "message": "too many requests",
-                    "retry_after": 2.5,
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "plan_type": "pro",
+                    "resets_at": 1738888888,
+                },
+                "headers": {
+                    "x-codex-primary-used-percent": "100.0",
+                    "x-codex-primary-window-minutes": 15,
+                },
+            }
+        ],
+        idle_timeout=3000,
+    )
+    try:
+        with pytest.raises(CodexWebSocketRequestError) as exc_info:
+            await transport.send_request("conv-1", _basic_payload())
+    finally:
+        await transport.close_all()
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.code is None
+    assert exc_info.value.retry_after_seconds is None
+    assert exc_info.value.retryable is False
+    assert len(transport.fake_ws.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_codex_response_failed_parses_official_rate_limit_message() -> None:
+    transport = ScriptedTransport(
+        [
+            {
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": "Rate limit reached. Please try again in 11.054s.",
+                    },
                 },
             }
         ],
@@ -397,9 +438,65 @@ async def test_codex_stream_rate_limit_preserves_failure_metadata_without_transp
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.code == "rate_limit_exceeded"
-    assert exc_info.value.retry_after_seconds == 2.5
+    assert exc_info.value.retry_after_seconds == 11.054
     assert exc_info.value.retryable is False
-    assert len(transport.fake_ws.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_codex_previous_response_not_found_retries_full_request() -> None:
+    rejected = ScriptedWebSocket(
+        [
+            {
+                "type": "error",
+                "status": 400,
+                "error": {"code": "previous_response_not_found"},
+            }
+        ]
+    )
+    completed = ScriptedWebSocket(
+        [
+            {
+                "type": "response.completed",
+                "response": {"id": "resp_retry", "status": "completed", "output": []},
+            }
+        ]
+    )
+    transport = SocketSequenceTransport([rejected, completed], idle_timeout=3000)
+    payload = {
+        "model": "gpt-5.5",
+        "input": [
+            {"role": "user", "content": "earlier"},
+            {"role": "user", "content": "next"},
+        ],
+    }
+    session = transport._get_session("conv-1")
+    session.state = CodexSessionState(
+        last_request_input=[{"role": "user", "content": "earlier"}],
+        last_request_signature=prepare_codex_websocket_request(
+            payload,
+            CodexSessionState(),
+        ).request_signature,
+        last_response_id="resp_previous",
+    )
+    try:
+        response = await transport.send_request(
+            "conv-1",
+            payload,
+            expected_previous_response_id="resp_previous",
+        )
+    finally:
+        await transport.close_all()
+
+    assert response["id"] == "resp_retry"
+    assert rejected.closed is True
+    assert len(rejected.sent) == 1
+    assert len(completed.sent) == 1
+    incremental = json.loads(rejected.sent[0])
+    assert incremental["previous_response_id"] == "resp_previous"
+    assert incremental["input"] == [{"role": "user", "content": "next"}]
+    full_retry = json.loads(completed.sent[0])
+    assert "previous_response_id" not in full_retry
+    assert full_retry["input"] == payload["input"]
 
 
 @pytest.mark.asyncio

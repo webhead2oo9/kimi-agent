@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -17,6 +18,10 @@ CODEX_WS_BETA_HEADER = "responses_websockets=2026-02-06"
 # expands that to roughly 33.4 MiB; retain a finite 2 MiB envelope allowance for
 # JSON structure, text, reasoning metadata, and the other response output items.
 CODEX_MAX_WS_MESSAGE_BYTES = ((25 * 1024 * 1024 + 2) // 3) * 4 + 2 * 1024 * 1024
+_RETRY_AFTER_MESSAGE_RE = re.compile(
+    r"try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)",
+    re.IGNORECASE,
+)
 # The backend resolves a bare model id against a per-client bucket before looking
 # it up. Without an originator it picks a restricted bucket, so newer models come
 # back as "Model not found <model>-free-1p-...". Identifying as the Codex CLI is
@@ -463,10 +468,17 @@ class CodexTransport:
                     code=code,
                     retry_after_seconds=retry_after_seconds,
                 )
+            if last_event_type == "response.incomplete":
+                response = parsed.get("response")
+                details = response.get("incomplete_details") if isinstance(response, dict) else None
+                reason = details.get("reason") if isinstance(details, dict) else None
+                raise CodexWebSocketRequestError(
+                    f"Incomplete response returned, reason: {reason or 'unknown'}",
+                    retryable=True,
+                )
             if last_event_type in {
                 "response.created",
                 "response.in_progress",
-                "response.incomplete",
                 "response.completed",
             }:
                 response = parsed.get("response")
@@ -490,7 +502,7 @@ class CodexTransport:
                 output_index = parsed.get("output_index")
                 index = output_index if isinstance(output_index, int) else 0
                 function_call_args[index] = function_call_args.get(index, "") + parsed["delta"]
-            if last_event_type in {"response.completed", "response.incomplete"}:
+            if last_event_type == "response.completed":
                 return finalize_codex_websocket_response(
                     response_snapshot=response_snapshot,
                     stream_output_items=stream_output_items,
@@ -581,15 +593,24 @@ def _provider_error_metadata(
         status_code = 429
 
     retry_after_seconds: float | None = None
-    raw_retry_after = detail.get("retry_after") or payload.get("retry_after")
-    raw_retry_after_ms = detail.get("retry_after_ms") or payload.get("retry_after_ms")
+    headers = payload.get("headers")
+    raw_retry_after = None
+    if isinstance(headers, dict):
+        raw_retry_after = next(
+            (value for name, value in headers.items() if str(name).lower() == "retry-after"),
+            None,
+        )
     try:
         if raw_retry_after is not None:
             retry_after_seconds = float(raw_retry_after)
-        elif raw_retry_after_ms is not None:
-            retry_after_seconds = float(raw_retry_after_ms) / 1000
     except TypeError, ValueError:
         retry_after_seconds = None
+    if retry_after_seconds is None and code == "rate_limit_exceeded":
+        message = detail.get("message")
+        match = _RETRY_AFTER_MESSAGE_RE.search(message) if isinstance(message, str) else None
+        if match is not None:
+            value = float(match.group(1))
+            retry_after_seconds = value / 1000 if match.group(2).lower() == "ms" else value
     if retry_after_seconds is not None and retry_after_seconds < 0:
         retry_after_seconds = None
     return status_code, code, retry_after_seconds
@@ -597,11 +618,13 @@ def _provider_error_metadata(
 
 def _is_retryable_provider_error(payload: dict[str, Any]) -> bool:
     status = payload.get("status") if isinstance(payload, dict) else None
+    if status is None and isinstance(payload, dict):
+        status = payload.get("status_code")
     error = payload.get("error") if isinstance(payload, dict) else None
     code = error.get("code") if isinstance(error, dict) else payload.get("code")
     message = _provider_error_message(payload)
     return (
-        code == "connection_limit_exceeded"
+        code in {"previous_response_not_found", "websocket_connection_limit_reached"}
         or (isinstance(status, int) and status >= 500)
         or "connection limit" in message.lower()
         or "too many connections" in message.lower()

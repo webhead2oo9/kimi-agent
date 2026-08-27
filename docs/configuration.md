@@ -310,12 +310,13 @@ and the YAML refers to them by name through `api_key_env`.
 when the file is parsed at startup. The accepted names, each backed by a
 `Settings` field, are `MODEL_API_KEY`, `OPENCODE_GO_API_KEY`,
 `RUNINFRA_GATEWAY_KEY`, `ANTHROPIC_API_KEY`, `GROK_API_KEY`,
-`FIREWORKS_API_KEY`, `KIMI_CODING_API_KEY`, and `COMPACTION_API_KEY`. To add a
-backend that needs a new key, add the `Settings` field and an entry in
+`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`, and
+`COMPACTION_API_KEY`.
+
+To support another key name, add its `Settings` field and an entry in
 `config/model_config.py:_API_KEY_SETTINGS_FIELDS`; the allowlist derives from
-that map, so there is one list to maintain rather than two. A profile whose
-endpoint holds its own credentials (a local proxy, an OAuth transport) sets
-`keyless: true` instead and names no env var at all.
+that map. A profile whose endpoint holds its own credentials, such as a local
+proxy or OAuth transport, sets `keyless: true` and does not name an env var.
 
 ### Per-model pricing (cost tracking)
 
@@ -352,6 +353,7 @@ out into its own column while including it in the estimated cost for the window.
 | `RUNINFRA_GATEWAY_KEY` | secret | (none) | RunInfra gateway key for OpenAI-compatible routes such as DeepSeek V4 Flash at `api.runinfra.ai`. |
 | `GROK_API_KEY` | secret | (none) | xAI Grok key (`openai_compat` profile pointing at `https://api.x.ai/v1`). |
 | `FIREWORKS_API_KEY` | secret | (none) | Fireworks AI key (`openai_compat` profile pointing at `https://api.fireworks.ai/inference/v1`). Also the key the Hindsight Compose stack reads into its own containers (see Deployment notes). |
+| `ZAI_API_KEY` | secret | (none) | Z.AI key for GLM Coding Plan profiles using the dedicated `https://api.z.ai/api/coding/paas/v4` Chat Completions endpoint; see [providers-zai.md](providers-zai.md). |
 | `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional key for profiles assigned to `roles.compaction`. |
 | `REACT_MAX_ITERATIONS` | int | `200` | Max tool-use iterations per turn before the loop stops. |

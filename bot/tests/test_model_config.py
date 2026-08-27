@@ -55,6 +55,12 @@ def test_runinfra_gateway_key_is_a_supported_profile_key_env() -> None:
     assert _secret_from_settings(_settings(runinfra_gateway_key="x"), "RUNINFRA_GATEWAY_KEY") == "x"
 
 
+def test_zai_api_key_is_a_supported_profile_key_env() -> None:
+    assert "ZAI_API_KEY" in SUPPORTED_API_KEY_ENVS
+    assert _API_KEY_SETTINGS_FIELDS["ZAI_API_KEY"] == "zai_api_key"
+    assert _secret_from_settings(_settings(zai_api_key="x"), "ZAI_API_KEY") == "x"
+
+
 def _write_config(path: Path, body: str) -> Path:
     path.write_text(body, encoding="utf-8")
     return path

@@ -11,6 +11,7 @@ backend, what you can declare in `config/models.yaml`, how failover and image
 routing behave, and what happens when the file is wrong. Each backend that
 needs real setup has its own page:
 
+- [Z.AI GLM Coding Plan](providers-zai.md)
 - [xAI Grok](providers-grok.md)
 - [Claude subscription via ccflare](providers-ccflare.md)
 - [Codex](providers-codex.md)
@@ -73,14 +74,13 @@ which models a gateway exposes on which path is a property of that deployment.
 
 ### Subscription-backed routes
 
-Two of the documented routes are different in kind from the rest:
-[Codex](providers-codex.md) and the [ccflare Claude
-route](providers-ccflare.md). Both point the bot at a personal subscription
-rather than a metered API key.
+Subscription routes such as [Z.AI's GLM Coding Plan](providers-zai.md),
+[Codex](providers-codex.md), and the [ccflare Claude
+route](providers-ccflare.md) are different from ordinary metered APIs. Their
+usage counts against a subscription rather than a per-token API balance.
 
-They exist for the case where you already hold the subscription and are running
-Kimi for yourself or a small trusted server. Three things follow from that, and
-you should know them before you lean on either one:
+They suit personal deployments and small trusted servers where the operator
+holds the subscription. Keep three things in mind:
 
 - **The quota is your personal quota**, shared with your own use of the same
   account. A busy bot and a busy terminal compete for it.
@@ -274,7 +274,7 @@ error rather than as an empty key at request time:
 
 `MODEL_API_KEY`, `ANTHROPIC_API_KEY`, `OPENCODE_GO_API_KEY`,
 `RUNINFRA_GATEWAY_KEY`, `COMPACTION_API_KEY`, `GROK_API_KEY`,
-`FIREWORKS_API_KEY`, `KIMI_CODING_API_KEY`.
+`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`.
 
 `MODEL_API_KEY` is the neutral one for any other OpenAI-compatible profile.
 Codex profiles authenticate from `CODEX_TOKEN_FILE` and leave `api_key_env`

@@ -4,6 +4,8 @@ Kimi can expose a member-tier `browser` tool backed by
 [BetterWright](https://github.com/CuriosityOS/betterwright), for interactive
 sites that ordinary search or a plain HTTP fetch cannot handle. The deployment
 pins BetterWright **1.10.0** together with its managed BetterChromium runtime.
+The same installation includes Mermaid **11.17.2** for the independently
+isolated, searchable [`render_chart` and `render_diagram`](visual-rendering.md) tools.
 
 ## How a browser turn works
 
@@ -72,6 +74,12 @@ helper never accepts a namespace name from the model.
 
 ## Install and enable
 
+`BROWSER_ENABLED` gates both the persistent `browser` tool and visual rendering;
+there is no separate visual-rendering switch. The two capabilities share pinned
+runtime files but not browser sessions, profiles, networking, or concurrency.
+Visual jobs always use a fresh offline process. See
+[Visual rendering](visual-rendering.md) for that boundary and tool contract.
+
 On the Linux host, install Node `>=22.18.0`, npm, Bubblewrap, util-linux, the
 Chromium shared-library dependencies listed in the
 [installer guide](../bot/deploy/betterwright/README.md), and a working user
@@ -81,9 +89,10 @@ systemd manager. From `bot/`:
 sudo sh ./deploy/betterwright/install.sh
 ```
 
-The installer pins `betterwright@1.10.0`, runs `betterwright setup`, verifies
-the Linux BetterChromium binary and the import entry point, and locks the
-external runtime to root ownership. Installing the runtime doesn't register
+The installer consumes the committed npm lock, pins `betterwright@1.10.0` and
+`mermaid@11.17.2`, runs `betterwright setup`, verifies the Linux BetterChromium
+binary, Mermaid bundle, and import entry point, then atomically replaces the
+external root-owned runtime. Installing the runtime doesn't register
 anything on its own, so you still need to switch the tool on with either:
 
 ```dotenv
@@ -106,7 +115,9 @@ Point the probe at a private endpoint that really is listening. An address
 nothing answers on would pass the check for the wrong reason and prove nothing
 about the namespace. Restart the bot after changing startup settings. At boot,
 `browser` registers only if the runtime and the complete sandbox and network
-probe pass.
+probe pass. `render_chart` and `render_diagram` then register automatically when the exact Mermaid
+asset also passes its availability and ownership checks. An older browser-only
+runtime leaves `browser` available and logs how to repair visual rendering.
 
 ## Limits and lifecycle
 
@@ -129,9 +140,10 @@ policy as workspaces. See [Privacy](privacy.md).
 
 ## Upgrade procedure
 
-Don't change the installer to `latest`. Instead, review a candidate release
-first: its Node floor, setup command, browser path, network defaults,
-changelog, tests, and npm audit. Then update the pinned installer version and
-this page together, deploy to a test instance, confirm whichever of the `host`
-and `netns` startup probes apply to you, and only then replace the production
-runtime.
+Don't change either locked package to `latest`. Instead, review candidate
+BetterWright and Mermaid releases: Node floor, setup command, browser/bundle
+paths, network defaults, changelogs, security advisories, tests, and npm audit.
+Update `package.json`, `package-lock.json`, installer assertions, and the browser
+and visual-rendering docs together. Deploy to a test instance, pass the complete
+browser/visual smoke test plus whichever `host` and `netns` startup probes apply
+to you, and only then replace the production runtime.

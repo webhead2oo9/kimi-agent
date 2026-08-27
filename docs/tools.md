@@ -158,6 +158,22 @@ by the model. Profiles, screenshots, lifecycle, VPN lease sharing, and the
 vault, download, and live-view surfaces that are deliberately switched off are
 all covered in [Persistent browser](browser.md).
 
+## Visual rendering
+
+| Tool | Visibility | Tier | Purpose and availability |
+|---|---|---|---|
+| `render_chart` | Searchable | Member | Render and queue one fixed 1200×675 PNG from structured bar, line, or scatter data. |
+| `render_diagram` | Searchable | Member | Render and queue one fixed 1200×675 PNG from constrained Mermaid source. |
+
+Both tools register automatically when `BROWSER_ENABLED` is true, the
+persistent-browser gate passes, and the pinned Mermaid runtime is present. The
+model makes one visual tool call; it never has to call `browser`. Rendering
+uses a fresh offline Chromium process with no persistent profile or VPN lease,
+and the host fully validates the PNG before Discord delivery. The required alt
+text becomes the Discord attachment description. Supported diagrams, chart
+limits, accessibility distinctions, deployment, and the threat model are in
+[Visual rendering](visual-rendering.md).
+
 ## Memory and community knowledge
 
 These tools register only once the optional Hindsight backend is ready. The

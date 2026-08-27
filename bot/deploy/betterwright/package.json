@@ -1,0 +1,9 @@
+{
+  "name": "kimi-betterwright-runtime",
+  "version": "1.1.0",
+  "private": true,
+  "dependencies": {
+    "betterwright": "1.10.0",
+    "mermaid": "11.17.2"
+  }
+}

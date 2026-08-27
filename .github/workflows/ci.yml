@@ -33,6 +33,20 @@ jobs:
           enable-cache: true
           cache-dependency-glob: bot/uv.lock
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.18.0"
+          cache: npm
+          cache-dependency-path: bot/deploy/betterwright/package-lock.json
+
+      - name: Check browser runtime lock
+        run: |
+          npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
+          npm audit --prefix deploy/betterwright --omit=dev
+          node --check web_browser/bridge.mjs
+          node --check web_browser/visual_bridge.mjs
+
       # mypy is pinned to platform = "linux" in pyproject.toml, and
       # sqlcipher3-binary is a Linux-only dependency, so CI matches the
       # deployment target rather than a dev host.

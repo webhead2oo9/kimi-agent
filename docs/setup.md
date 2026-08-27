@@ -30,12 +30,15 @@ unprivileged service account; executable-skill boot explicitly rejects UID 0.
 There is no unsandboxed fallback. If your skill store is
 instruction-only or empty, none of these binaries are required.
 
-The persistent browser has its own requirements: Node 22.18 or newer and the
-root-owned pinned runtime installed by
+The persistent browser and one-call visual renderer have their own requirements:
+Node 22.18 or newer and the root-owned pinned runtime installed by
 [`bot/deploy/betterwright/install.sh`](../bot/deploy/betterwright/install.sh).
-Follow [Persistent browser](browser.md) for host or VPN-namespace deployment.
-Without a valid runtime and sandbox probe, boot still continues, but the
-`browser` tool doesn't register.
+Follow [Persistent browser](browser.md) for host or VPN-namespace deployment and
+[Visual rendering](visual-rendering.md) for charts and Mermaid. One
+`BROWSER_ENABLED` gate requests both; visual rendering adds no second setting.
+Without a valid runtime and sandbox probe, boot still continues, but neither
+tool registers. An older browser-only runtime may leave `browser` available
+while logging that its exact Mermaid asset is missing.
 
 ## 2. Minimal configuration
 
@@ -104,6 +107,11 @@ uv run ruff format --check .
 uv run mypy .
 uv run python -m pytest -q
 ```
+
+CI also installs and audits the committed browser-runtime npm lock without
+running package scripts, and syntax-checks both BetterWright bridges. A browser
+deployment must additionally pass the Linux production smoke test documented in
+[Visual rendering](visual-rendering.md).
 
 These are exactly what CI runs (`.github/workflows/ci.yml`).
 

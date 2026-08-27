@@ -201,11 +201,14 @@ has actually loaded.
 - **Executable skills** need Linux with `bubblewrap` + `util-linux` and a
   non-root service account; on a Windows/macOS dev host, use an instruction-only
   or empty skill store (see [setup.md](setup.md)).
-- **Persistent browser** execution also needs the Linux isolation stack and the
-  pinned BetterWright runtime. It's off unless `BROWSER_ENABLED=true`, so a
-  Windows/macOS dev host needs no change. To exercise it, use an isolated Linux
-  test instance and a separate `BROWSER_PROFILES_DIR`; never point development
-  at production profiles. See [browser.md](browser.md).
+- **Persistent browser and visual rendering** also need the Linux isolation
+  stack and pinned BetterWright/Mermaid runtime. They are off unless
+  `BROWSER_ENABLED=true`, so a Windows/macOS dev host needs no change and can
+  still run schema, validation, command-construction, and artifact tests. To
+  exercise Chromium, use an isolated Linux test instance and a separate
+  `BROWSER_PROFILES_DIR`; never point development at production profiles. Run
+  `uv run python -m deploy.betterwright.smoke_test` there. See
+  [browser.md](browser.md) and [visual-rendering.md](visual-rendering.md).
 - **Content moderation** needs its provider key, and **Codex** needs a
   `CODEX_TOKEN_FILE` produced by `scripts/codex_auth.py`.
 
@@ -220,6 +223,10 @@ uv run python -m pytest
 uv run ruff check .
 uv run ruff format --check .   # line length is the formatter's job, not the linter's
 uv run mypy .
+npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
+npm audit --prefix deploy/betterwright --omit=dev
+node --check web_browser/bridge.mjs
+node --check web_browser/visual_bridge.mjs
 ```
 
 `uv run mypy .` is the CI and Linux form. On Windows, uv's script trampoline

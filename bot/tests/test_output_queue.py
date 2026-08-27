@@ -11,6 +11,8 @@ from tools.output_queue import (
     enqueue_output_file,
     enqueue_workspace_file,
     queued_file_paths,
+    requeue_moved_output,
+    unqueue_output_file,
 )
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
@@ -65,6 +67,24 @@ def test_enqueue_output_file_is_idempotent_and_restores_missing_root(
     assert result.added is False
     assert ctx.output_files == [str(output.resolve())]
     assert ctx.allowed_file_roots == [str(root.resolve())]
+
+
+def test_attachment_description_tracks_move_and_unqueue(tmp_path: Path) -> None:
+    ctx = _ctx()
+    root = tmp_path / "root"
+    root.mkdir()
+    output = root / "chart.png"
+    moved = root / "renamed.png"
+    output.write_bytes(b"png")
+
+    enqueue_output_file(ctx, output, root, description="An increasing line chart.")
+    assert ctx.output_file_descriptions == {str(output.resolve()): "An increasing line chart."}
+
+    assert requeue_moved_output(ctx, output.resolve(), moved.resolve()) == 1
+    assert ctx.output_file_descriptions == {str(moved.resolve()): "An increasing line chart."}
+
+    unqueue_output_file(ctx, str(moved.resolve()))
+    assert ctx.output_file_descriptions == {}
 
 
 def test_enqueue_output_file_rejects_files_outside_root(tmp_path: Path) -> None:

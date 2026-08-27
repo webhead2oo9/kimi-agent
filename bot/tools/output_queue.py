@@ -12,6 +12,9 @@ class AttachmentLimitError(ValueError):
     pass
 
 
+MAX_ATTACHMENT_DESCRIPTION_CHARS = 1024
+
+
 @dataclass(frozen=True)
 class QueuedOutput:
     path: Path
@@ -65,9 +68,18 @@ def enqueue_output_file(
     root: Path,
     *,
     max_attachments: int | None = None,
+    description: str | None = None,
 ) -> QueuedOutput:
     resolved = path.resolve(strict=False)
     root_resolved = root.resolve(strict=False)
+    if description is not None:
+        description = description.strip()
+        if len(description) > MAX_ATTACHMENT_DESCRIPTION_CHARS:
+            raise ValueError(
+                f"attachment description exceeds {MAX_ATTACHMENT_DESCRIPTION_CHARS} characters"
+            )
+        if not description:
+            description = None
     if not resolved.is_relative_to(root_resolved):
         raise ValueError("Queued file is outside allowed output root")
 
@@ -75,6 +87,8 @@ def enqueue_output_file(
     resolved_text = str(resolved)
     if resolved_text in ctx.output_files:
         _add_allowed_root(ctx, root_text)
+        if description:
+            ctx.output_file_descriptions[resolved_text] = description
         return QueuedOutput(
             path=resolved,
             root=root_resolved,
@@ -99,6 +113,8 @@ def enqueue_output_file(
         raise AttachmentLimitError(f"attachment limit reached ({max_attachments})")
 
     ctx.output_files.append(resolved_text)
+    if description:
+        ctx.output_file_descriptions[resolved_text] = description
     _add_allowed_root(ctx, root_text)
     return QueuedOutput(
         path=resolved,
@@ -138,6 +154,7 @@ def unqueue_output_file(ctx: MessageContext, output: str) -> None:
     """Remove one reply attachment and retire any selector that pointed to it."""
 
     ctx.output_files.remove(output)
+    ctx.output_file_descriptions.pop(output, None)
     for remove_id, queued in list(ctx.output_file_remove_ids.items()):
         if queued == output:
             del ctx.output_file_remove_ids[remove_id]
@@ -162,6 +179,9 @@ def requeue_moved_output(ctx: MessageContext, old_path: Path, new_path: Path) ->
         else:
             continue
         ctx.output_files[index] = updated
+        description = ctx.output_file_descriptions.pop(entry, None)
+        if description is not None:
+            ctx.output_file_descriptions[updated] = description
         changed += 1
         for remove_id, queued in ctx.output_file_remove_ids.items():
             if queued == entry:

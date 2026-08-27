@@ -516,8 +516,9 @@ async def test_durable_attachment_plan_freezes_limit_and_plain_notice(tmp_path: 
 
     assert plan.files == ()
     assert [item.filename for item in plan.omitted] == ["large.zip"]
-    assert save_plan.await_args is not None
-    frozen = save_plan.await_args.args[1]
+    save_plan_call = save_plan.await_args
+    assert save_plan_call is not None
+    frozen = save_plan_call.args[1]
     notice = frozen["notice_text"]
     assert notice == attachment_delivery_notice(plan)
     assert "**" not in notice
@@ -574,10 +575,11 @@ async def test_durable_delivery_notice_is_persisted_in_assistant_transcript() ->
         channel_id="10",
     )
 
-    assert save_messages.await_args is not None
-    records = save_messages.await_args.args[1]
+    save_messages_call = save_messages.await_args
+    assert save_messages_call is not None
+    records = save_messages_call.args[1]
     assert records[0].content == f"{notice}\n\nReport body."
-    assert save_messages.await_args.kwargs == {"context_channel_id": "10"}
+    assert save_messages_call.kwargs == {"context_channel_id": "10"}
 
 
 def test_build_app_wires_shared_registry(monkeypatch) -> None:

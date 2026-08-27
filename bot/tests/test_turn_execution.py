@@ -1661,6 +1661,38 @@ async def test_execute_turn_excludes_queued_utf8_workspace_files_from_moderation
 
 
 @pytest.mark.asyncio
+async def test_execute_turn_moderates_attachment_descriptions(tmp_path: Path) -> None:
+    context = ConversationContext(key="guild:100:main")
+    output_root = tmp_path / "workspaces" / "u"
+    output_root.mkdir(parents=True)
+    output_file = output_root / "visual.png"
+    output_file.write_bytes(b"image")
+    output_path = str(output_file)
+    context.pending_output_files.append(output_path)
+    context.pending_output_file_descriptions[output_path] = "unsafe attachment description"
+    context.pending_allowed_file_roots.append(str(output_root))
+    run_conversation = RecordingRunConversation(ConversationRunResult(text="see attached"))
+    moderation = RecordingModerationService(blocked_text="unsafe attachment description")
+
+    result = await execute_turn(
+        _turn_request(context),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path,
+            run_conversation=run_conversation,
+            moderation_service=moderation,
+        ),
+        config=_config(),
+    )
+
+    assert result.response_text == "output blocked"
+    assert result.blocked_by_moderation is True
+    assert result.output_files == ()
+    assert result.output_file_descriptions == ()
+    assert context.pending_output_file_descriptions == {}
+    assert "Attachment descriptions:" in moderation.calls[0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_execute_turn_delivers_opaque_binary_workspace_file(
     tmp_path: Path,
 ) -> None:

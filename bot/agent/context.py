@@ -47,6 +47,7 @@ class ConversationContext:
     # source of truth and an edit takes effect next turn (config/fragments/tool_config.py).
     tool_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     pending_output_files: list[str] = field(default_factory=list)
+    pending_output_file_descriptions: dict[str, str] = field(default_factory=dict)
     pending_allowed_file_roots: list[str] = field(default_factory=list)
     pending_embed: EmbedSpec | None = None
     pending_embed_attachment: EmbedAttachment | None = None

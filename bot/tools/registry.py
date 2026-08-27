@@ -59,6 +59,7 @@ class MessageContext:
     internet_search_backend_calls_this_turn: int = 0
     browser_calls_this_turn: int = 0
     browser_screenshots_this_turn: int = 0
+    visual_renders_this_turn: int = 0
     # In netns mode both surfaces draw on one physical VPN namespace lease, and
     # a rooted browser call holds it until the turn's finalizer runs. Without
     # these markers a turn that mixed browser and networked code calls would sit
@@ -96,6 +97,9 @@ class MessageContext:
     # persisted; the fragment stays the source of truth.
     tool_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     output_files: list[str] = field(default_factory=list)
+    # Optional Discord attachment descriptions keyed by the exact queued path.
+    # Kept parallel to output_files so ordinary files pay no metadata cost.
+    output_file_descriptions: dict[str, str] = field(default_factory=dict)
     # Opaque, per-turn selectors for queued outputs whose safe display paths may
     # collide (notably script-backed skill files from separate job directories).
     # Values remain absolute internally; only the short keys are exposed to the

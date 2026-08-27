@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from config.settings import Settings
 from sandbox.runner import SandboxConfig, SandboxNetworkMode, sandbox_available
+from tools.visuals import verify_rendered_png
 from web_browser.service import (
     BrowserNetworkMode,
     BrowserService,
     BrowserServiceConfig,
+)
+from web_browser.visual_service import (
+    ScatterPoint,
+    VisualRenderRequest,
+    VisualSeries,
+    VisualService,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -126,7 +135,64 @@ async def main() -> None:
         if not persisted.get("ok") or persisted.get("result") != "persisted":
             raise RuntimeError(f"browser profile did not persist: {persisted}")
         await service.release_turn(owner_a, "smoke-a-read")
-        print("browser smoke passed: public navigation, persistence, and user isolation")
+        await service.close()
+
+        visual_service = VisualService(
+            replace(
+                service.config,
+                bridge_script=PROJECT_ROOT / "web_browser/visual_bridge.mjs",
+            ),
+            max_output_bytes=settings.browser_max_screenshot_bytes,
+        )
+        with tempfile.TemporaryDirectory(prefix="kimi-visual-smoke-") as temporary:
+            root = Path(temporary)
+            chart_dir = root / "chart"
+            chart_dir.mkdir()
+            chart = await visual_service.render(
+                VisualRenderRequest(
+                    kind="chart",
+                    chart_type="scatter",
+                    title="Deployment smoke scatter chart",
+                    alt_text=(
+                        "Two observations overlap at zero while values span both signs and "
+                        "several orders of magnitude."
+                    ),
+                    x_scale="symlog",
+                    y_scale="symlog",
+                    overlap_mode="count",
+                    series=(
+                        VisualSeries(
+                            name="Values",
+                            points=(
+                                ScatterPoint(0.0, 0.0),
+                                ScatterPoint(0.0, 0.0),
+                                ScatterPoint(-0.001, 0.002),
+                                ScatterPoint(1_000_000.0, -1_000_000.0),
+                            ),
+                        ),
+                    ),
+                ),
+                chart_dir,
+            )
+            verify_rendered_png(chart.output_path, settings.browser_max_screenshot_bytes)
+
+            mermaid_dir = root / "mermaid"
+            mermaid_dir.mkdir()
+            mermaid = await visual_service.render(
+                VisualRenderRequest(
+                    kind="mermaid",
+                    title="Deployment smoke diagram",
+                    alt_text="Start leads to done.",
+                    source="flowchart LR\n  A[Start] --> B[Done]",
+                ),
+                mermaid_dir,
+            )
+            verify_rendered_png(mermaid.output_path, settings.browser_max_screenshot_bytes)
+
+        print(
+            "browser smoke passed: public navigation, persistence, user isolation, "
+            "symlog/count scatter rendering, and Mermaid rendering"
+        )
     finally:
         for owner, turn in (
             (owner_a, "smoke-a-write"),

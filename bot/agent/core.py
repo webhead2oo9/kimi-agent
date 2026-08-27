@@ -432,6 +432,7 @@ class _ConversationRunner:
         activity_reporter = request.activity_reporter
         if not request.resume_output_files:
             context.pending_output_files = []
+            context.pending_output_file_descriptions = {}
             context.pending_allowed_file_roots = []
         context.pending_embed = None
         context.pending_embed_attachment = None
@@ -1178,6 +1179,7 @@ class _ConversationRunner:
         msg_ctx: MessageContext,
     ) -> None:
         context.pending_output_files = list(msg_ctx.output_files)
+        context.pending_output_file_descriptions = dict(msg_ctx.output_file_descriptions)
         context.pending_allowed_file_roots = list(msg_ctx.allowed_file_roots)
         context.pending_embed = msg_ctx.embed
         context.pending_embed_attachment = msg_ctx.embed_attachment

@@ -198,8 +198,8 @@ def test_recorded_call_split_names_every_source_present() -> None:
     # reader is invited to add up.
     assert recorded_call_split({"live": 2, "replay": 0}) == "2 live / 0 replayed"
     assert (
-        recorded_call_split({"live": 2, "replay": 1, "fault": 1, "miss": 3})
-        == "2 live / 1 replayed / 1 faulted / 3 missed"
+        recorded_call_split({"live": 2, "replay": 1, "fault": 1, "miss": 3, "denied": 2})
+        == "2 live / 1 replayed / 1 faulted / 3 missed / 2 denied"
     )
     # An unrecognized source is rendered rather than dropped.
     assert recorded_call_split({"live": 1, "replay": 0, "wat": 2}).endswith("/ 2 wat")
@@ -225,6 +225,13 @@ def test_live_calls_count_only_dispatches_that_reached_a_backend() -> None:
                 [
                     _record("discord_text_search", "hit", calls_before=1, source="live"),
                     _record("discord_text_search", "hit", calls_before=1, source="replay"),
+                    _record(
+                        "discord_text_search",
+                        '{"error": "denied"}',
+                        calls_before=1,
+                        ok=False,
+                        source="denied",
+                    ),
                     _record("plan", "ok", calls_before=1, source="live"),
                 ],
                 provider_calls=2,
@@ -235,7 +242,7 @@ def test_live_calls_count_only_dispatches_that_reached_a_backend() -> None:
 
     by_tool = {entry.tool: entry for entry in tool_costs([run])}
 
-    assert by_tool["discord_text_search"].calls == 2
+    assert by_tool["discord_text_search"].calls == 3
     assert by_tool["discord_text_search"].live_calls == 1
     # Local plan calls are not cassette-eligible and stay out of this split.
-    assert recorded_call_sources([run]) == {"live": 1, "replay": 1}
+    assert recorded_call_sources([run]) == {"live": 1, "replay": 1, "denied": 1}

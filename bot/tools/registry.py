@@ -594,7 +594,12 @@ class ToolRegistry:
             return None
         return entry
 
-    async def dispatch(self, name: str, args: dict, ctx: MessageContext) -> str:
+    def dispatch_gate(self, name: str, ctx: MessageContext) -> str | None:
+        """Return the authoritative dispatch error, or ``None`` when allowed.
+
+        This check has no handler side effects, so wrappers that replay or
+        synthesize a result can apply the exact production boundary first.
+        """
         entry = self._core_tools.get(name) or self._search_tools.get(name)
         if entry is None:
             return tool_error(f"Unknown tool: {name}")
@@ -621,6 +626,15 @@ class ToolRegistry:
                 f"Call browse_tools to see the catalog, then browse_tools with "
                 f'load:["{name}"] to enable it.'
             )
+        return None
+
+    async def dispatch(self, name: str, args: dict, ctx: MessageContext) -> str:
+        gate_error = self.dispatch_gate(name, ctx)
+        if gate_error is not None:
+            return gate_error
+
+        entry = self._core_tools.get(name) or self._search_tools.get(name)
+        assert entry is not None
 
         try:
             return await entry.handler(args, ctx)

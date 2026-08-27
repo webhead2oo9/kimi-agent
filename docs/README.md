@@ -36,6 +36,8 @@ the subsystem it covers.
   progress delivery, steering, recovery, and cancellation.
 - [Persistent browser](browser.md): BetterWright profiles, isolation, host and
   VPN modes, deployment, privacy, and upgrades.
+- [Visual rendering](visual-rendering.md): one-call charts and constrained
+  Mermaid diagrams through the ephemeral offline browser runtime.
 - [Personal skills](personal-skills.md): reusable instructions owned by a user.
 - [Persona overrides](persona.md): per-user compiled response styles.
 - [Discord embeds](embeds.md): building rich replies.

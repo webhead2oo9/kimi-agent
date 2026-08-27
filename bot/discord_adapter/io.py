@@ -5,7 +5,7 @@ import contextlib
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
@@ -46,6 +46,7 @@ class OmittedAttachment:
 @dataclass(frozen=True)
 class AttachmentDeliveryPlan:
     files: tuple[Path, ...]
+    file_descriptions: tuple[tuple[str, str], ...]
     embed: EmbedSpec | None
     omitted: tuple[OmittedAttachment, ...]
     effective_limit_bytes: int
@@ -1006,6 +1007,7 @@ async def send_response(
     content: str,
     reference: discord.Message | None = None,
     output_files: list[str] | None = None,
+    output_file_descriptions: Mapping[str, str] | None = None,
     allowed_file_roots: list[str | Path] | None = None,
     embed: EmbedSpec | None = None,
     mention_author: bool = False,
@@ -1013,6 +1015,7 @@ async def send_response(
     plan = prepare_attachment_delivery(
         channel,
         output_files=output_files or [],
+        output_file_descriptions=output_file_descriptions,
         allowed_file_roots=allowed_file_roots,
         embed=embed,
     )
@@ -1045,13 +1048,19 @@ async def send_prepared_response(
         first_message_files: list[Path] = []
         try:
             files: list[discord.File] = []
+            descriptions = dict(plan.file_descriptions)
             embed_obj: discord.Embed | None = None
             if i == 0:
                 if plan.files:
                     first_message_files = list(plan.files)
                     for path in first_message_files:
                         try:
-                            files.append(discord.File(str(path)))
+                            files.append(
+                                discord.File(
+                                    str(path),
+                                    description=descriptions.get(str(path)),
+                                )
+                            )
                         except OSError as e:
                             log.warning(
                                 "Skipping generated output file before upload: %s (%s)",
@@ -1088,7 +1097,11 @@ async def send_prepared_response(
                     retry_kwargs["mention_author"] = mention_author
                 if first_message_files:
                     retry_kwargs["files"] = [
-                        discord.File(str(path)) for path in first_message_files
+                        discord.File(
+                            str(path),
+                            description=descriptions.get(str(path)),
+                        )
+                        for path in first_message_files
                     ]
                 if embed_obj is not None:
                     retry_kwargs["embeds"] = [embed_obj]
@@ -1111,10 +1124,20 @@ def prepare_attachment_delivery(
     output_files: list[str],
     allowed_file_roots: list[str | Path] | None,
     embed: EmbedSpec | None,
+    output_file_descriptions: Mapping[str, str] | None = None,
     effective_limit_bytes: int | None = None,
     notice_text: str | None = None,
 ) -> AttachmentDeliveryPlan:
     existing_files = _validated_output_files(output_files, allowed_file_roots)
+    descriptions: dict[str, str] = {}
+    for raw_path, raw_description in (output_file_descriptions or {}).items():
+        description = str(raw_description).strip()
+        if not description or len(description) > 1024:
+            continue
+        try:
+            descriptions[str(Path(raw_path).resolve(strict=False))] = description
+        except OSError:
+            continue
     skipped = len(output_files) - len(existing_files)
     if skipped:
         log.warning("Skipping %d missing or invalid generated output file(s)", skipped)
@@ -1162,6 +1185,9 @@ def prepare_attachment_delivery(
 
     return AttachmentDeliveryPlan(
         files=tuple(selected),
+        file_descriptions=tuple(
+            (str(path), descriptions[str(path)]) for path in selected if str(path) in descriptions
+        ),
         embed=prepared_embed,
         omitted=tuple(omitted),
         effective_limit_bytes=effective_limit,

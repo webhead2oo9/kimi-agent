@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,6 +52,7 @@ from tools.threads import (
 )
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from web_browser.service import BrowserService, BrowserServiceConfig
+from web_browser.visual_service import VisualService
 
 log = logging.getLogger(__name__)
 
@@ -277,6 +278,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
     ("code execution", ("run_code",), "CODE_EXEC_ENABLED + Linux sandbox support"),
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
+    (
+        "visual rendering",
+        ("render_visual",),
+        "BROWSER_ENABLED + BetterWright and Mermaid runtime",
+    ),
 )
 
 
@@ -551,6 +557,30 @@ def _register_browser(
         "Persistent browser enabled in %s mode (per-user profiles)",
         settings.browser_network_mode,
     )
+
+    visual_bridge = Path(__file__).resolve().parent.parent / "web_browser/visual_bridge.mjs"
+    visual_service = VisualService(replace(service.config, bridge_script=visual_bridge))
+    visual_unavailable = visual_service.availability_error()
+    if visual_unavailable is not None:
+        log.warning(
+            "Visual rendering unavailable; persistent browser remains enabled: %s",
+            visual_unavailable,
+        )
+        return service
+
+    from tools.visuals import VisualToolConfig, init_visual_tool
+
+    init_visual_tool(
+        registry,
+        visual_service,
+        workspace_manager,
+        VisualToolConfig(
+            max_png_bytes=settings.browser_max_screenshot_bytes,
+            max_attachments=settings.workspace_tool_max_attachments,
+        ),
+        workspace_locks,
+    )
+    log.info("Visual rendering enabled with the pinned Mermaid runtime")
     return service
 
 

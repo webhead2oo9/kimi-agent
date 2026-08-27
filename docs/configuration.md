@@ -446,8 +446,9 @@ screened, and the checked bytes are cached for `import_attachment`; binary,
 non-UTF-8, and oversized inputs stay visible as metadata but their content is
 withheld from tools. On output, moderation covers the assistant's reply, embed
 text and owned embed image, and native model-generated images. Generic workspace
-files queued for Discord delivery are not moderation inputs, regardless of file
-type.
+file bodies queued for Discord delivery are not moderation inputs, regardless
+of file type. Optional Discord attachment descriptions are text sent by the bot,
+so they are screened with the reply; this includes `render_visual` alt text.
 
 Before delivery, each queued file is checked against the target guild's current
 Discord upload limit (`guild.filesize_limit`), with a conservative 10 MiB
@@ -910,8 +911,11 @@ state. The generic helper and sudoers templates live under
 
 ## Persistent browser
 
-The optional [persistent browser](browser.md) is Linux-only and pins
-BetterWright 1.10.0 in an external root-owned runtime. Its network mode is
+The optional [persistent browser](browser.md) and searchable
+[visual renderer](visual-rendering.md) are Linux-only and share an external
+root-owned runtime pinned to BetterWright 1.10.0 and Mermaid 11.17.2. Their
+execution state remains separate: visual jobs are one-shot and offline. The
+persistent browser's network mode is
 chosen independently of code execution, so you can run the browser in `netns`
 while leaving `CODE_EXEC_NETWORK_MODE=none`. The `BROWSER_NETNS_*` and probe
 values are private instance state under the same rule as the code-exec ones
@@ -919,9 +923,9 @@ above.
 
 | Setting | Type | Default | Meaning |
 |---|---|---|---|
-| `BROWSER_ENABLED` | bool | `false` | Request registration of `browser`; missing runtime or a failed sandbox/network probe leaves it unavailable. |
+| `BROWSER_ENABLED` | bool | `false` | Request registration of `browser` and, when the exact Mermaid asset is present, searchable `render_visual`; missing runtime or a failed shared sandbox/network probe leaves both unavailable. There is no separate visual flag. |
 | `BROWSER_NETWORK_MODE` | `host`/`netns` | `host` | Fixed network boundary. `netns` uses the VPN helper and never falls back to host. |
-| `BROWSER_RUNTIME_DIR` | path | `/opt/kimi/betterwright` | Root-owned pinned BetterWright, Node, and BetterChromium runtime. |
+| `BROWSER_RUNTIME_DIR` | path | `/opt/kimi/betterwright` | Root-owned pinned BetterWright, Mermaid, Node, and BetterChromium runtime. |
 | `BROWSER_PROFILES_DIR` | path | `data/browser_profiles` | Private per-user persistent profile root. |
 | `BROWSER_BRIDGE_SCRIPT` | relative path | `web_browser/bridge.mjs` | Application-owned BetterWright JSON bridge under `bot/`. |
 | `BROWSER_BWRAP_BIN` | command | `bwrap` | Bubblewrap executable. |
@@ -932,13 +936,13 @@ above.
 | `BROWSER_NETNS_HELPER_BIN` | path | empty | Netns-only fixed, root-owned namespace helper. |
 | `BROWSER_NETNS_RESOLV_CONF` | path | empty | Netns resolver hard-mounted at `/etc/resolv.conf`. |
 | `BROWSER_NETWORK_PROBE_BLOCKED_IP` | host or host:port | empty | Known-open private target the netns startup probe must find unreachable. |
-| `BROWSER_CALL_TIMEOUT_SECONDS` | positive float | `30` | Deadline for one JavaScript step. |
+| `BROWSER_CALL_TIMEOUT_SECONDS` | positive float | `30` | Deadline for one persistent-browser JavaScript step and the base deadline for one offline visual render. |
 | `BROWSER_START_TIMEOUT_SECONDS` | positive float | `20` | Worker readiness deadline. |
 | `BROWSER_IDLE_TTL_SECONDS` | positive float | `120` | Close an unused browser worker after this interval. |
 | `BROWSER_WORKER_MAX_LIFETIME_SECONDS` | positive int | `3600` | Hard worker lifetime before recycling. |
 | `BROWSER_PROFILE_TTL_SECONDS` | positive int | `604800` | Delete an inactive profile after this interval. |
 | `BROWSER_MAX_PROFILE_MB` | positive int | `512` | Maximum bytes retained in one user's browser profile. |
-| `BROWSER_MAX_SCREENSHOT_BYTES` | positive int | `8388608` | Maximum accepted size for one screenshot artifact. |
+| `BROWSER_MAX_SCREENSHOT_BYTES` | positive int | `8388608` | Maximum accepted size for one screenshot artifact or rendered visual PNG. |
 | `BROWSER_MAX_TOTAL_MEMORY_MB` | positive int | `2048` | Whole-worker-cgroup real-memory cap; swap is disabled. |
 | `BROWSER_MAX_TASKS` | positive int | `256` | Whole-worker-cgroup process/task cap. |
 | `BROWSER_CPU_QUOTA_PERCENT` | positive int | `200` | Aggregate CPU quota; `100` is one full core. |

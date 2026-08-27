@@ -22,6 +22,7 @@ from kimi_agent_module_api.contracts import (
     UndeclaredDiscordAction,
 )
 from modules.actions import DeclaredDiscordActions
+from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
 
 
@@ -205,6 +206,44 @@ async def test_bot_actor_may_act_below_staff_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_uncached_role_staff_target_uses_the_member_already_fetched() -> None:
+    target = _Member(20)
+    target.roles = [SimpleNamespace(id=900)]
+
+    class UncachedGuild(_Guild):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.fetch_count = 0
+
+        async def fetch_member(self, user_id: int) -> _Member:
+            assert user_id == target.id
+            self.fetch_count += 1
+            if self.fetch_count == 1:
+                return target
+            raise discord.HTTPException(
+                SimpleNamespace(status=503, reason="unavailable"), "temporarily unavailable"
+            )
+
+    guild = UncachedGuild()
+    channel = _Channel(guild)
+    bot = _Bot(guild, channel)
+    resolver = TrustResolver(staff_role_ids={"900"}, regular_role_ids=set(), staff_ids=set())
+    trust = TrustLookupImpl(bot, resolver)  # type: ignore[arg-type]
+    impl = DiscordActionsImpl(
+        bot=bot,  # type: ignore[arg-type]
+        trust=trust,
+        module_name="mod",
+        is_guild_active=lambda _guild_id: True,
+    )
+
+    with pytest.raises(TargetProtected):
+        await impl.kick(1, target.id, actor_id=None, reason="role-based staff")
+
+    assert guild.fetch_count == 1
+    assert guild.kicks == []
+
+
+@pytest.mark.asyncio
 async def test_override_lets_a_declared_module_act_on_equal_tier() -> None:
     impl, guild, _ = _actions(staff={10, 20}, override=True)
     await impl.ban(1, 20, actor_id=10, reason="r", delete_message_seconds=10**9)
@@ -274,6 +313,20 @@ async def test_send_and_fetch_use_snapshots_and_safe_mentions() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply_to",
+    [MessageRef(999, 2, 5), MessageRef(1, 999, 5)],
+)
+async def test_send_rejects_reply_refs_outside_the_destination(reply_to: MessageRef) -> None:
+    impl, _, channel = _actions()
+
+    with pytest.raises(DiscordActionError, match="destination channel"):
+        await impl.send_message(2, "reply", reply_to=reply_to)
+
+    assert channel.sent == []
+
+
+@pytest.mark.asyncio
 async def test_history_channel_and_access_reads_return_public_snapshots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -327,6 +380,26 @@ async def test_fetch_and_delete_reject_message_refs_for_another_guild() -> None:
         await impl.delete_message(mismatched)
     assert channel.fetches == []
     assert deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_normalizes_and_caps_the_logged_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    impl, _, channel = _actions()
+
+    async def delete() -> None:
+        return None
+
+    channel.messages[5] = SimpleNamespace(delete=delete)
+
+    with caplog.at_level("INFO", logger="discord_adapter.module_actions"):
+        await impl.delete_message(MessageRef(1, 2, 5), reason=f"line one\nline two {'x' * 600}")
+
+    message = caplog.records[-1].getMessage()
+    assert "\n" not in message
+    assert message.startswith("Deleting message 5: [mod] line one line two ")
+    assert len(message.removeprefix("Deleting message 5: ")) == 512
 
 
 @pytest.mark.asyncio

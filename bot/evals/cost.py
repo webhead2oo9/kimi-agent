@@ -72,7 +72,9 @@ def usage_dict(usage: UsageBreakdown) -> dict[str, int]:
 
 
 def run_cost(run: ScenarioRun, pricing: ModelPricing | None) -> float | None:
-    """USD for one scenario run, or None when the arm is unpriced."""
+    """USD for one run, or ``None`` when pricing or usage is incomplete."""
+    if not run.usage_complete:
+        return None
     return estimate_cost(pricing, run.total_usage)
 
 
@@ -121,7 +123,13 @@ def recorded_call_sources(runs: list[ScenarioRun]) -> dict[str, int]:
 
 
 # `ToolCallRecord.source` -> the word the report prints for it.
-_SOURCE_LABELS = {"live": "live", "replay": "replayed", "fault": "faulted", "miss": "missed"}
+_SOURCE_LABELS = {
+    "live": "live",
+    "replay": "replayed",
+    "fault": "faulted",
+    "miss": "missed",
+    "denied": "denied",
+}
 # Rendered even at zero: "0 replayed" is information (nothing was replayed),
 # where "0 faulted" is noise on the runs that inject no faults.
 _ALWAYS_SHOWN = ("live", "replay")

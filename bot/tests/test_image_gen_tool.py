@@ -25,7 +25,8 @@ from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
 from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
-from workspace import WorkspaceManager
+from usage.normalization import LLMUsageCall
+from workspace import WorkspaceKey, WorkspaceManager
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"generated"
 PNG_BASE64 = base64.b64encode(PNG_BYTES).decode("ascii")
@@ -36,6 +37,7 @@ class StubService:
         self.generate_requests: list[ImageGenRequest] = []
         self.edit_requests: list[ImageEditRequest] = []
         self.failure: Exception | None = None
+        self.usage: dict[str, object] | None = None
 
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         self.generate_requests.append(request)
@@ -45,13 +47,18 @@ class StubService:
             image_base64=PNG_BASE64,
             size="1024x1024",
             background="opaque",
+            usage=self.usage,
         )
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         self.edit_requests.append(request)
         if self.failure is not None:
             raise self.failure
-        return ImageResult(image_base64=PNG_BASE64, size="1024x1536")
+        return ImageResult(
+            image_base64=PNG_BASE64,
+            size="1024x1536",
+            usage=self.usage,
+        )
 
 
 def _context(
@@ -171,9 +178,50 @@ async def test_generation_saves_reusable_workspace_png_and_queues_it(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_generation_records_provider_reported_usage(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.usage = {"input_tokens": 17, "output_tokens": 5}
+    ctx = _context()
+    ctx.usage_sink = []
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result["ok"] is True
+    assert ctx.usage_sink is not None
+    assert len(ctx.usage_sink) == 1
+    call = ctx.usage_sink[0]
+    assert call.model == "gpt-image-2"
+    assert call.role == "image_generation"
+    assert call.usage.input_tokens == 17
+    assert call.usage.output_tokens == 5
+    assert call.usage_present is True
+    assert call.est_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_generation_records_missing_usage_as_unpriced(tmp_path: Path) -> None:
+    registry, _service, _manager = _registered(tmp_path)
+    ctx = _context()
+    ctx.usage_sink = []
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result["ok"] is True
+    assert ctx.usage_sink is not None
+    assert len(ctx.usage_sink) == 1
+    call = ctx.usage_sink[0]
+    assert call.usage_present is False
+    assert call.usage.input_tokens == 0
+    assert call.usage.output_tokens == 0
+    assert call.est_cost_usd is None
+
+
+@pytest.mark.asyncio
 async def test_edit_loads_workspace_references_as_typed_data_urls(tmp_path: Path) -> None:
     registry, service, manager = _registered(tmp_path)
     ctx = _context()
+    ctx.usage_sink = []
+    service.usage = {"input_tokens": 23, "output_tokens": 7}
     png = manager.resolve_user_file_path(ctx.workspace_key, "references/source.png")
     jpg = manager.resolve_user_file_path(ctx.workspace_key, "references/source.jpg")
     png.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +245,42 @@ async def test_edit_loads_workspace_references_as_typed_data_urls(tmp_path: Path
     assert request.model == "gpt-image-2"
     assert request.images[0].data_url.startswith("data:image/png;base64,")
     assert request.images[1].data_url.startswith("data:image/jpeg;base64,")
+    assert ctx.usage_sink is not None
+    assert len(ctx.usage_sink) == 1
+    assert ctx.usage_sink[0].usage.input_tokens == 23
+    assert ctx.usage_sink[0].usage.output_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_cancellation_waits_for_completed_image_usage_recording(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.usage = {"input_tokens": 17, "output_tokens": 5}
+    ctx = _context()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    recorded: list[LLMUsageCall] = []
+
+    async def record_usage(call: LLMUsageCall) -> None:
+        recorded.append(call)
+        started.set()
+        await release.wait()
+
+    ctx.record_usage_call = record_usage
+    turn = asyncio.create_task(registry.dispatch(TOOL_NAME, _args(), ctx))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    turn.cancel()
+    await asyncio.sleep(0)
+    assert not turn.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert len(recorded) == 1
+    assert recorded[0].role == "image_generation"
+    assert recorded[0].usage.input_tokens == 17
+    assert not ctx.output_files
 
 
 @pytest.mark.asyncio
@@ -376,6 +460,57 @@ async def test_cancelled_worker_holds_workspace_lease_until_cleanup(
     await asyncio.wait_for(acquired.wait(), timeout=1)
     await contender_task
     assert not partial.exists()
+    assert not ctx.output_files
+
+
+@pytest.mark.asyncio
+async def test_cancelled_completed_write_removes_only_its_generated_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, _service, manager = _registered(tmp_path)
+    ctx = _context()
+    output_dir = manager.user_files_dir(ctx.workspace_key) / "generated_images"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prior = output_dir / "prior.png"
+    prior.write_bytes(b"prior")
+    started = threading.Event()
+    release = threading.Event()
+    generated: list[Path] = []
+    write_output = image_gen_tool._write_output
+
+    def blocking_write(
+        workspace_manager: WorkspaceManager,
+        workspace_config: WorkspaceToolConfig,
+        workspace_key: WorkspaceKey,
+        image_base64: str,
+    ) -> tuple[Path, str, int]:
+        result = write_output(
+            workspace_manager,
+            workspace_config,
+            workspace_key,
+            image_base64,
+        )
+        generated.append(result[0])
+        started.set()
+        release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(image_gen_tool, "_write_output", blocking_write)
+    turn = asyncio.create_task(registry.dispatch(TOOL_NAME, _args(), ctx))
+    assert await asyncio.to_thread(started.wait, 2)
+    assert generated[0].exists()
+
+    turn.cancel()
+    await asyncio.sleep(0)
+    assert not turn.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert prior.read_bytes() == b"prior"
+    assert not generated[0].exists()
+    assert list(output_dir.iterdir()) == [prior]
     assert not ctx.output_files
 
 

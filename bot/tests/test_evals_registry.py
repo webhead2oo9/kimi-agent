@@ -52,6 +52,19 @@ def test_compose_tools_registers_core_tools_and_installs_safe_stubs(eval_setting
     for name in sorted({*SAFE_STUB_TOOLS, *surface_tools("eval_stub")}):
         if not registry.has_tool(name):
             continue
+        denied_ctx = MessageContext(
+            user_id="u",
+            user_name="n",
+            guild_id="g",
+            channel_id="c",
+            thread_id=None,
+            trust_tier=TrustTier.STAFF,
+            blocked_tools=frozenset({name}),
+        )
+        denied = asyncio.run(registry.dispatch(name, {}, denied_ctx))
+        assert "error" in json.loads(denied)
+        assert registry.sink[-1].source == "denied"
+
         ctx = MessageContext(
             user_id="u",
             user_name="n",

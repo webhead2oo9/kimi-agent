@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
@@ -25,6 +25,7 @@ from video_understanding.service import (
     UploadedVideoSource,
     VideoSessionConfig,
     VideoSessionError,
+    VideoResultCancelled,
     VideoUnderstandingService,
 )
 
@@ -262,6 +263,19 @@ def init_video_tool(
                     question=question,
                     config=config,
                 )
+        except VideoResultCancelled as exc:
+            try:
+                await _finish_after_cancellation(
+                    _record_result_usage(
+                        ctx,
+                        exc.result.model,
+                        exc.result.usage,
+                        pricing_model=config.model,
+                        usage_present=exc.result.usage_present,
+                    )
+                )
+            finally:
+                raise
         except VideoSessionError as exc:
             if exc.result is not None:
                 await _record_result_usage(
@@ -269,6 +283,7 @@ def init_video_tool(
                     exc.result.model,
                     exc.result.usage,
                     pricing_model=config.model,
+                    usage_present=exc.result.usage_present,
                 )
             return tool_error(str(exc))
         except VideoInteractionError as exc:
@@ -278,6 +293,7 @@ def init_video_tool(
                     exc.model or config.model,
                     exc.usage,
                     pricing_model=config.model,
+                    usage_present=exc.usage_present,
                 )
             return tool_error(str(exc))
         await _record_usage(ctx, analysis, pricing_model=config.model)
@@ -484,7 +500,18 @@ async def _record_usage(
         analysis.model,
         analysis.usage,
         pricing_model=pricing_model,
+        usage_present=analysis.usage_present,
     )
+
+
+async def _finish_after_cancellation(operation: Awaitable[None]) -> None:
+    task = asyncio.ensure_future(operation)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    task.result()
 
 
 async def _record_result_usage(
@@ -493,6 +520,7 @@ async def _record_result_usage(
     usage: object,
     *,
     pricing_model: str,
+    usage_present: bool = True,
 ) -> None:
     input_tokens = int(getattr(usage, "input_tokens", 0))
     cached_tokens = int(getattr(usage, "cached_tokens", 0))
@@ -507,7 +535,8 @@ async def _record_result_usage(
         role="video_analysis",
         pricing_model=pricing_model,
         usage=breakdown,
-        est_cost_usd=_estimate_video_cost(pricing_model, breakdown),
+        usage_present=usage_present,
+        est_cost_usd=(_estimate_video_cost(pricing_model, breakdown) if usage_present else None),
     )
     if ctx.record_usage_call is not None:
         await ctx.record_usage_call(call)

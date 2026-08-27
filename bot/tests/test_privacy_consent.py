@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import discord
 import pytest
@@ -314,3 +315,120 @@ async def test_view_rejects_non_author_click() -> None:
     owner = FakeInteraction(123)
     assert await view._is_author(cast(discord.Interaction, owner)) is True
     assert owner.response.sent == []
+
+
+@pytest.mark.asyncio
+async def test_view_atomically_claims_one_concurrent_decision() -> None:
+    accept_started = asyncio.Event()
+    release_accept = asyncio.Event()
+    decisions: list[str] = []
+
+    async def on_accept(_interaction: discord.Interaction) -> None:
+        decisions.append("accept")
+        accept_started.set()
+        await release_accept.wait()
+
+    async def on_decline(_interaction: discord.Interaction) -> None:
+        decisions.append("decline")
+
+    async def on_close() -> None:
+        decisions.append("timeout")
+
+    view = PrivacyConsentView(
+        author_id=123,
+        on_accept=on_accept,
+        on_decline=on_decline,
+        on_close=on_close,
+        timeout=60.0,
+    )
+    accept_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Accept"),
+    )
+    decline_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Decline"),
+    )
+    accept_interaction = FakeInteraction(123)
+    decline_interaction = FakeInteraction(123)
+
+    accepting = asyncio.create_task(
+        accept_button.callback(cast(discord.Interaction, accept_interaction))
+    )
+    await accept_started.wait()
+    await decline_button.callback(cast(discord.Interaction, decline_interaction))
+    release_accept.set()
+    await accepting
+
+    assert decisions == ["accept"]
+    assert decline_interaction.response.sent == [
+        ("This privacy choice has already been handled.", {"ephemeral": True})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_view_rechecks_readiness_when_click_waits_to_claim() -> None:
+    available = True
+    decisions: list[str] = []
+
+    async def on_accept(_interaction: discord.Interaction) -> None:
+        decisions.append("accept")
+
+    async def on_decline(_interaction: discord.Interaction) -> None:
+        decisions.append("decline")
+
+    async def on_close() -> None:
+        decisions.append("timeout")
+
+    view = PrivacyConsentView(
+        author_id=123,
+        on_accept=on_accept,
+        on_decline=on_decline,
+        on_close=on_close,
+        timeout=60.0,
+        is_available=lambda: available,
+    )
+    accept_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Accept"),
+    )
+    interaction = FakeInteraction(123)
+
+    await view._decision_lock.acquire()
+    clicking = asyncio.create_task(accept_button.callback(cast(discord.Interaction, interaction)))
+    await asyncio.sleep(0)
+    available = False
+    view._decision_lock.release()
+    await clicking
+
+    assert decisions == []
+    assert view._resolved is False
+    assert interaction.response.sent == [
+        ("This privacy prompt is no longer available.", {"ephemeral": True})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_view_timeout_still_cleans_up_while_interactions_unavailable() -> None:
+    closed = 0
+
+    async def noop_interaction(_interaction: discord.Interaction) -> None:
+        return None
+
+    async def on_close() -> None:
+        nonlocal closed
+        closed += 1
+
+    view = PrivacyConsentView(
+        author_id=123,
+        on_accept=noop_interaction,
+        on_decline=noop_interaction,
+        on_close=on_close,
+        timeout=60.0,
+        is_available=lambda: False,
+    )
+
+    await view.on_timeout()
+
+    assert closed == 1
+    assert view._resolved is True

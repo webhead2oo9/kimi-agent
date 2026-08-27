@@ -41,6 +41,8 @@ class TurnRecord:
     # provider failure is not a completed eval turn, even when a later turn in
     # the same scenario succeeds.
     termination_reason: str = "completed"
+    # False when any successful provider call omitted usage metadata.
+    usage_complete: bool = True
 
 
 @dataclass
@@ -73,6 +75,10 @@ class ScenarioRun:
         for turn in self.turns:
             total = total + turn.usage
         return total
+
+    @property
+    def usage_complete(self) -> bool:
+        return all(turn.usage_complete for turn in self.turns)
 
     @property
     def provider_calls(self) -> int:
@@ -274,6 +280,7 @@ async def run_scenario_for_model(
                 latency_ms=provider.total_latency_ms,
                 attached_files=[str(p) for p in context.pending_output_files],
                 usage=provider.total_usage,
+                usage_complete=provider.has_complete_usage,
                 provider_calls=len(provider.calls),
                 termination_reason=result.termination_reason,
             )

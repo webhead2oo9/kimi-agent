@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -13,6 +14,19 @@ from video_understanding.client import (
 )
 
 
+class _Content:
+    def __init__(self, response: _Response, body: bytes) -> None:
+        self.response = response
+        self.body = body
+
+    async def iter_chunked(self, size: int):
+        self.response.read_called = True
+        for offset in range(0, len(self.body), size):
+            chunk = self.body[offset : offset + size]
+            self.response.bytes_read += len(chunk)
+            yield chunk
+
+
 class _Response:
     def __init__(
         self,
@@ -20,6 +34,7 @@ class _Response:
         payload: object | None = None,
         *,
         json_error: Exception | None = None,
+        raw_body: bytes | None = None,
         headers: dict[str, str] | None = None,
         enter_error: Exception | None = None,
     ) -> None:
@@ -30,6 +45,15 @@ class _Response:
         self.enter_error = enter_error
         self.json_called = False
         self.read_called = False
+        self.bytes_read = 0
+        self.closed = False
+        if raw_body is not None:
+            body = raw_body
+        elif payload is None:
+            body = b"provider body" if json_error is not None else b""
+        else:
+            body = json.dumps(payload).encode()
+        self.content = _Content(self, body)
 
     async def __aenter__(self) -> _Response:
         if self.enter_error is not None:
@@ -47,7 +71,10 @@ class _Response:
 
     async def read(self) -> bytes:
         self.read_called = True
-        return b"provider body"
+        return self.content.body
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _Session:
@@ -188,6 +215,87 @@ async def test_non_json_http_error_keeps_status_specific_message(
 
     assert response.read_called is True
     assert response.json_called is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_interaction_json_response_is_byte_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _Response(200, raw_body=b"{" + b"x" * 128)
+    session = _Session([response])
+    client = GeminiVideoClient("secret")
+    monkeypatch.setattr(video_client, "_MAX_JSON_RESPONSE_BYTES", 32)
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="invalid response"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="gemini-3.7-flash",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+
+    assert response.bytes_read <= 33
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_interaction_json_response_is_depth_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested: object = "leaf"
+    for _ in range(5):
+        nested = [nested]
+    response = _Response(200, raw_body=json.dumps({"nested": nested}).encode())
+    session = _Session([response])
+    client = GeminiVideoClient("secret")
+    monkeypatch.setattr(video_client, "_MAX_JSON_DEPTH", 3)
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="invalid response"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="gemini-3.7-flash",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_oversized_video_error_body_is_not_fully_buffered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _Response(503, raw_body=b"x" * 128)
+    session = _Session([response])
+    client = GeminiVideoClient("secret")
+    monkeypatch.setattr(video_client, "_MAX_ERROR_RESPONSE_BYTES", 16)
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="temporarily unavailable"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="gemini-3.7-flash",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+
+    assert response.bytes_read <= 17
+    assert response.closed is True
     await client.close()
 
 
@@ -487,6 +595,21 @@ def test_parse_interaction_normalizes_structured_output_and_cached_usage() -> No
     assert result.usage.input_tokens == 200
     assert result.usage.cached_tokens == 800
     assert result.usage.output_tokens == 75
+    assert result.usage_present is True
+
+
+def test_parse_interaction_distinguishes_missing_usage_from_reported_zero() -> None:
+    missing_payload = _response("missing")
+    missing_payload.pop("usage")
+    zero_payload = _response("zero")
+    zero_payload["usage"] = {}
+
+    missing = _parse_interaction(missing_payload)
+    reported_zero = _parse_interaction(zero_payload)
+
+    assert missing.usage == reported_zero.usage
+    assert missing.usage_present is False
+    assert reported_zero.usage_present is True
 
 
 def test_parse_interaction_rejects_noncompleted_or_unstructured_response() -> None:
@@ -512,3 +635,4 @@ def test_parse_interaction_rejects_noncompleted_or_unstructured_response() -> No
     assert malformed.value.model == "gemini-3.7-flash"
     assert malformed.value.usage is not None
     assert malformed.value.usage.input_tokens == 25
+    assert malformed.value.usage_present is True

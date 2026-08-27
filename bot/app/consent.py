@@ -14,6 +14,7 @@ without a live Discord connection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
@@ -23,6 +24,11 @@ import discord
 log = logging.getLogger(__name__)
 
 RedispatchCallback = Callable[[discord.Message], Awaitable[None]]
+InteractionAvailability = Callable[[], bool]
+
+
+def _always_available() -> bool:
+    return True
 
 
 class ConsentPreferenceStore(Protocol):
@@ -65,13 +71,16 @@ class PrivacyConsentView(discord.ui.View):
         on_decline: Callable[[discord.Interaction], Awaitable[None]],
         on_close: Callable[[], Awaitable[None]],
         timeout: float,
+        is_available: InteractionAvailability = _always_available,
     ) -> None:
         super().__init__(timeout=timeout)
         self._author_id = author_id
         self._on_accept = on_accept
         self._on_decline = on_decline
         self._on_close = on_close
+        self._is_available = is_available
         self._resolved = False
+        self._decision_lock = asyncio.Lock()
 
     async def _is_author(self, interaction: discord.Interaction) -> bool:
         if interaction.user is not None and interaction.user.id == self._author_id:
@@ -81,24 +90,45 @@ class PrivacyConsentView(discord.ui.View):
         )
         return False
 
+    async def _claim_decision(
+        self,
+        interaction: discord.Interaction | None = None,
+        *,
+        check_available: bool = True,
+    ) -> bool:
+        rejection: str | None = None
+        async with self._decision_lock:
+            if check_available and not self._is_available():
+                rejection = "This privacy prompt is no longer available."
+            elif self._resolved:
+                rejection = "This privacy choice has already been handled."
+            else:
+                self._resolved = True
+                self.stop()
+        if rejection is not None and interaction is not None:
+            await interaction.response.send_message(rejection, ephemeral=True)
+        return rejection is None
+
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._is_author(interaction):
             return
-        self._resolved = True
-        self.stop()
+        if not await self._claim_decision(interaction):
+            return
         await self._on_accept(interaction)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._is_author(interaction):
             return
-        self._resolved = True
-        self.stop()
+        if not await self._claim_decision(interaction):
+            return
         await self._on_decline(interaction)
 
     async def on_timeout(self) -> None:
-        if self._resolved:
+        # Gateway readiness may be temporarily false during a disconnect, but
+        # timeout cleanup must still release the gate's pending reservation.
+        if not await self._claim_decision(check_available=False):
             return
         await self._on_close()
 
@@ -115,6 +145,7 @@ class PrivacyConsentGate:
         timeout: float,
         preference_store: ConsentPreferenceStore,
         redispatch: RedispatchCallback,
+        is_available: InteractionAvailability = _always_available,
     ) -> None:
         self._enabled = enabled
         self._title = title
@@ -122,6 +153,7 @@ class PrivacyConsentGate:
         self._timeout = timeout
         self._store = preference_store
         self._redispatch = redispatch
+        self._is_available = is_available
         # Users with an open prompt, so a burst of mentions posts only one notice.
         self._pending: set[str] = set()
 
@@ -174,6 +206,7 @@ class PrivacyConsentGate:
             on_decline=on_decline,
             on_close=on_close,
             timeout=self._timeout,
+            is_available=self._is_available,
         )
         sent["message"] = await message.reply(
             embed=build_consent_embed(title=self._title, text=self._text),

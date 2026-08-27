@@ -25,6 +25,7 @@ class AdmissionRejection(StrEnum):
 
     USER_LIMIT = "user_limit"
     GLOBAL_LIMIT = "global_limit"
+    SHUTTING_DOWN = "shutting_down"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +102,18 @@ class TurnAdmissionController:
         self._lock = asyncio.Lock()
         self._active_total = 0
         self._active_by_user: dict[str, int] = {}
+        self._closed = False
 
     async def try_acquire(self, user_id: str) -> AdmissionDecision:
         """Acquire immediately or reject; this method never queues for a slot."""
 
         key = str(user_id)
         async with self._lock:
+            if self._closed:
+                return AdmissionDecision(
+                    lease=None,
+                    rejection=AdmissionRejection.SHUTTING_DOWN,
+                )
             user_active = self._active_by_user.get(key, 0)
             if user_active >= self.max_active_per_user:
                 return AdmissionDecision(
@@ -121,6 +128,11 @@ class TurnAdmissionController:
             self._active_total += 1
             self._active_by_user[key] = user_active + 1
             return AdmissionDecision(lease=TurnAdmissionLease(self, key))
+
+    async def close(self) -> None:
+        """Permanently reject new turn admission while existing leases drain."""
+        async with self._lock:
+            self._closed = True
 
     async def snapshot(self) -> AdmissionSnapshot:
         async with self._lock:

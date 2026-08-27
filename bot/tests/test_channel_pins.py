@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,6 @@ from config.fragments.channel_pins import (
     load_channel_pinned_tools,
     load_channel_thread_auto_respond,
     load_channel_thread_handoff,
-    parse_blocked_tools,
     resolve_tristate,
 )
 from config.fragments.prompt import load_fragment
@@ -50,10 +50,20 @@ def test_load_pins_without_frontmatter_is_empty(tmp_path: Path) -> None:
 
 def test_load_pins_rejects_non_snowflake_ids(tmp_path: Path) -> None:
     _write_fragment(tmp_path, "100", "---\npinned_tools: [move_to_thread]\n---\nbody\n")
+    _write_fragment(tmp_path, "100\n", "---\npinned_tools: [move_to_thread]\n---\nbody\n")
 
     assert load_channel_pinned_tools("", config_dir=tmp_path) == frozenset()
     assert load_channel_pinned_tools("abc", config_dir=tmp_path) == frozenset()
     assert load_channel_pinned_tools("../100", config_dir=tmp_path) == frozenset()
+    assert load_channel_pinned_tools("100\n", config_dir=tmp_path) == frozenset()
+
+
+def test_load_pins_ignores_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "channels" / "100.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff")
+
+    assert load_channel_pinned_tools("100", config_dir=tmp_path) == frozenset()
 
 
 def test_load_pins_ignores_non_list_value(tmp_path: Path) -> None:
@@ -66,7 +76,8 @@ def test_load_pins_drops_invalid_entries(tmp_path: Path) -> None:
     _write_fragment(
         tmp_path,
         "100",
-        "---\npinned_tools: [move_to_thread, 7, '', 'bad name', null]\n---\nbody\n",
+        "---\npinned_tools: [move_to_thread, 7, '', 'bad name', \"trailing\\n\", null]\n"
+        "---\nbody\n",
     )
 
     pins = load_channel_pinned_tools("100", config_dir=tmp_path)
@@ -115,26 +126,39 @@ def test_load_blocked_tools_invalid_first_value_fails_closed(tmp_path: Path) -> 
         load_channel_blocked_tools("101", config_dir=tmp_path)
 
 
-def test_load_blocked_tools_retains_last_known_good_then_clears_on_delete(
-    tmp_path: Path,
+def test_load_blocked_tools_retains_last_good_across_reload_failures_then_clears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_fragment(tmp_path, "102", "---\nblocked_tools: [dangerous_tool]\n---\nbody\n")
+    path = tmp_path / "channels" / "102.md"
     expected = frozenset({"dangerous_tool"})
     assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
 
     _write_fragment(tmp_path, "102", "---\nblocked_tools: not_a_list\n---\nbody\n")
     assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
 
-    (tmp_path / "channels" / "102.md").unlink()
+    path.unlink()
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
+
+    path.write_text("", encoding="utf-8")
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
+
+    path.write_text("body only\n", encoding="utf-8")
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
+
+    path.write_text("---\nblocked_tools: []\n---\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def unreadable(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == path:
+            raise PermissionError("config cannot be read")
+        return original_read_text(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", unreadable)
+        assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
+
     assert load_channel_blocked_tools("102", config_dir=tmp_path) == frozenset()
-
-
-def test_parse_blocked_tools_drops_invalid_and_caps_at_64() -> None:
-    assert parse_blocked_tools([1, "ok", "", "bad name"], source="x") == frozenset({"ok"})
-    names = [f"tool_{i}" for i in range(80)]
-    capped = parse_blocked_tools(names, source="x")
-    assert len(capped) == 64
-    assert capped == frozenset(names[:64])
 
 
 def test_load_auto_thread_reads_both_thresholds(tmp_path: Path) -> None:

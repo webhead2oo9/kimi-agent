@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
 from typing import cast
+
+import pytest
 
 from agent.context import ConversationContext
 from agent.core import ConversationRunRequest, ConversationRunResult, run_conversation
@@ -56,6 +57,45 @@ def test_result_is_str_compatible_and_always_carries_usage() -> None:
 
     assert result == "hi"
     assert result.usage == UsageBreakdown()
+
+
+@pytest.mark.asyncio
+async def test_core_preserves_missing_usage_vs_explicit_zero_usage() -> None:
+    missing = await run_conversation(
+        request=ConversationRunRequest(
+            user_message="first",
+            context=ConversationContext(key="missing"),
+            trust_tier=TrustTier.MEMBER,
+            user_name="Ann",
+            user_id="u1",
+            provider=cast(LLMProvider, ScriptedProvider([ProviderResponse(content="done")])),
+            registry=_registry(),
+        )
+    )
+    reported_zero = await run_conversation(
+        request=ConversationRunRequest(
+            user_message="second",
+            context=ConversationContext(key="reported-zero"),
+            trust_tier=TrustTier.MEMBER,
+            user_name="Ann",
+            user_id="u1",
+            provider=cast(
+                LLMProvider,
+                ScriptedProvider(
+                    [
+                        ProviderResponse(
+                            content="done",
+                            usage={"input_tokens": 0, "output_tokens": 0},
+                        )
+                    ]
+                ),
+            ),
+            registry=_registry(),
+        )
+    )
+
+    assert missing.llm_calls[0].usage_present is False
+    assert reported_zero.llm_calls[0].usage_present is True
 
 
 @pytest.mark.asyncio

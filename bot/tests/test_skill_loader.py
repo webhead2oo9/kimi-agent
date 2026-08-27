@@ -9,6 +9,7 @@ from skills.loader import (
     SkillsIndexCache,
     _parse_skill_file,
     build_skills_index,
+    load_skill,
     scan_skills,
     validate_builtin_skills,
 )
@@ -109,6 +110,41 @@ def test_parse_rejects_falsey_non_mapping_frontmatter(
     path = _write_skill(tmp_path, "invalid-frontmatter", frontmatter)
 
     assert _parse_skill_file(path) is None
+
+
+def test_invalid_yaml_frontmatter_fails_closed_but_plain_markdown_loads(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "guild-skill",
+        "name: guild-skill\nguild_ids: [123]\ndescription: [invalid",
+    )
+    plain_dir = tmp_path / "plain"
+    plain_dir.mkdir()
+    (plain_dir / "SKILL.md").write_text("# Plain instructions", encoding="utf-8")
+
+    scanned = scan_skills(tmp_path)
+    assert "guild-skill" not in scanned
+    assert load_skill("guild-skill", skills_dir=tmp_path) is None
+    assert "plain" in scanned
+    assert load_skill("plain", skills_dir=tmp_path) is not None
+
+
+def test_unclosed_frontmatter_fails_closed_but_headerless_markdown_loads(tmp_path: Path) -> None:
+    unclosed_dir = tmp_path / "unclosed-guild-skill"
+    unclosed_dir.mkdir()
+    (unclosed_dir / "SKILL.md").write_text(
+        "---\nname: unclosed-guild-skill\nguild_ids: [123]\n# missing closing delimiter\n",
+        encoding="utf-8",
+    )
+    plain_dir = tmp_path / "headerless"
+    plain_dir.mkdir()
+    (plain_dir / "SKILL.md").write_text("# Headerless instructions\n", encoding="utf-8")
+
+    scanned = scan_skills(tmp_path)
+    assert "unclosed-guild-skill" not in scanned
+    assert load_skill("unclosed-guild-skill", skills_dir=tmp_path) is None
+    assert "headerless" in scanned
+    assert load_skill("headerless", skills_dir=tmp_path) is not None
 
 
 def test_scan_skills_includes_tool_meta() -> None:

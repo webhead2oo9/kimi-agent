@@ -183,6 +183,7 @@ async def test_generate_oauth_sends_bearer_account_and_originator() -> None:
     assert result.image_base64 == PNG_BASE64
     assert result.size == "1024x1024"
     assert result.background == "opaque"
+    assert result.usage is None
     request = session.requests[0]
     assert request["url"] == f"{OAUTH_BASE_URL}/images/generations"
     headers = request["headers"]
@@ -190,6 +191,23 @@ async def test_generate_oauth_sends_bearer_account_and_originator() -> None:
     assert headers["ChatGPT-Account-Id"] == "acct-123"
     assert headers["originator"] == "codex_cli_rs"
     assert request["json"] == {"prompt": "a red fox", "model": "gpt-image-2", "size": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_generate_preserves_provider_reported_usage() -> None:
+    body = json.loads(_success_body())
+    body["usage"] = {
+        "input_tokens": 17,
+        "output_tokens": 5,
+        "input_tokens_details": {"image_tokens": 12, "text_tokens": 5},
+    }
+    backend, _session = _backend(
+        [FakeResponse(200, json.dumps(body))], auth_manager=StubAuthManager()
+    )
+
+    result = await backend.generate(_request())
+
+    assert result.usage == body["usage"]
 
 
 @pytest.mark.asyncio

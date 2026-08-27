@@ -37,6 +37,7 @@ DEFAULT_WORKERS = 4
 DEFAULT_HANDLER_TIMEOUT = 30.0
 
 type MetricsSink = Callable[[str, Mapping[str, float]], None]
+type GuildPredicate = Callable[[int], bool]
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ class _Subscription:
     pattern: str
     handler: EventHandler
     bus: EventBusImpl
+    is_guild_active: GuildPredicate | None = None
     closed: bool = False
 
     def close(self) -> None:
@@ -108,17 +110,26 @@ class EventBusImpl:
         namespace, _ = split_topic(topic)
         if namespace != CORE_TOPIC_PREFIX:
             raise EventTopicError(f"core may only publish under {CORE_TOPIC_PREFIX!r}.*")
-        self._dispatch(Event(topic, payload, "core", self._clock()))
+        self._dispatch(
+            Event(topic, payload, "core", self._clock()),
+            guild_id=_discord_event_guild_id(payload),
+        )
 
     def publish_from(self, module_name: str, topic: str, payload: object) -> None:
         validate_publish_topic(module_name, topic)
         self._dispatch(Event(topic, payload, module_name, self._clock()))
 
-    def _dispatch(self, event: Event) -> None:
+    def _dispatch(self, event: Event, *, guild_id: int | None = None) -> None:
         if self._closed:
             return
         for subscription in list(self._subscriptions):
             if subscription.closed or not subscription.matches(event.topic):
+                continue
+            if (
+                guild_id is not None
+                and subscription.is_guild_active is not None
+                and not subscription.is_guild_active(guild_id)
+            ):
                 continue
             lane = self._lanes.get(subscription.module_name)
             if lane is None:
@@ -142,6 +153,8 @@ class EventBusImpl:
         permissions: ModulePermissions,
         pattern: str,
         handler: EventHandler,
+        *,
+        is_guild_active: GuildPredicate | None = None,
     ) -> _Subscription:
         validate_subscription(module_name, permissions, pattern)
         lane = self._lanes.get(module_name)
@@ -149,7 +162,13 @@ class EventBusImpl:
             lane = _ModuleLane(module_name, deque(), self._queue_size)
             self._lanes[module_name] = lane
             self._start_workers(lane)
-        subscription = _Subscription(module_name, pattern, handler, self)
+        subscription = _Subscription(
+            module_name,
+            pattern,
+            handler,
+            self,
+            is_guild_active=is_guild_active,
+        )
         self._subscriptions.append(subscription)
         return subscription
 
@@ -189,7 +208,10 @@ class EventBusImpl:
                 continue
             lane.in_flight += 1
             try:
-                await asyncio.wait_for(subscription.handler(event), timeout=self._handler_timeout)
+                handled = await asyncio.wait_for(
+                    self._invoke_if_active(subscription, event),
+                    timeout=self._handler_timeout,
+                )
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -204,10 +226,32 @@ class EventBusImpl:
                 lane.failed += 1
                 log.exception("Module %s handler for %s failed", lane.module_name, event.topic)
             else:
-                lane.handled += 1
+                if handled:
+                    lane.handled += 1
             finally:
                 lane.in_flight -= 1
                 self._report(lane)
+
+    async def _invoke_if_active(self, subscription: _Subscription, event: Event) -> bool:
+        """Recheck queued core events in the same coroutine that invokes the handler."""
+
+        if event.source_module == "core":
+            guild_id = _discord_event_guild_id(event.payload)
+            if guild_id is not None and subscription.is_guild_active is not None:
+                try:
+                    if not subscription.is_guild_active(guild_id):
+                        return False
+                except Exception:
+                    # A broken lifecycle/settings predicate must not kill the
+                    # lane worker or let a core Discord event run unchecked.
+                    log.exception(
+                        "Module %s guild-active predicate failed for %s",
+                        subscription.module_name,
+                        event.topic,
+                    )
+                    return False
+        await subscription.handler(event)
+        return True
 
     def _report(self, lane: _ModuleLane) -> None:
         if self._metrics_sink is not None:
@@ -254,12 +298,39 @@ class ModuleEventView:
     bus: EventBusImpl
     module_name: str
     permissions: ModulePermissions
+    is_guild_active: GuildPredicate | None = None
 
     def publish(self, topic: str, payload: object) -> None:
         self.bus.publish_from(self.module_name, topic, payload)
 
     def subscribe(self, pattern: str, handler: EventHandler) -> _Subscription:
-        return self.bus.subscribe(self.module_name, self.permissions, pattern, handler)
+        return self.bus.subscribe(
+            self.module_name,
+            self.permissions,
+            pattern,
+            handler,
+            is_guild_active=self.is_guild_active,
+        )
+
+
+def _discord_event_guild_id(payload: object) -> int | None:
+    direct = getattr(payload, "guild_id", None)
+    ref = getattr(payload, "ref", None)
+    message = getattr(payload, "message", None)
+    member = getattr(payload, "member", None)
+    candidates = (
+        direct,
+        getattr(ref, "guild_id", None),
+        getattr(getattr(message, "ref", None), "guild_id", None),
+        getattr(member, "guild_id", None),
+    )
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    refs = getattr(payload, "refs", ())
+    first = next(iter(refs), None)
+    value = getattr(first, "guild_id", None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 __all__ = ["EventBusImpl", "ModuleEventView"]

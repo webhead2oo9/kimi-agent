@@ -17,10 +17,7 @@ from tools.internet_search import BUDGET_EXCEEDED_MESSAGE
 from tools.registry import MessageContext, ToolRegistry
 from usage.normalization import UsageBreakdown, normalize_usage
 
-# Result text is sized with this heuristic rather than a real tokenizer; see
-# ToolCallRecord.estimated_tokens. Reporting wants an accurate estimate, so this
-# is the ~4 chars/token English-prose figure; agent/compaction.py deliberately
-# uses a denser 3.5 to over-count and trip compaction early. Not drift.
+# Approximate result tokens for relative eval cost reporting.
 CHARS_PER_TOKEN = 4
 
 
@@ -41,13 +38,13 @@ def sum_tokens(usage: dict[str, Any]) -> int:
 class ProviderCall:
     latency_ms: int
     tokens: int
-    # Per-bucket split, needed because pricing is per bucket: a cached read is
-    # commonly a quarter of the input rate, so a flat total cannot be costed.
+    # Preserve buckets because they can have different rates.
     usage: UsageBreakdown = field(default_factory=UsageBreakdown)
+    usage_present: bool = True
 
 
 class InstrumentedProvider(LLMProvider):
-    """Wraps a provider to record per-call latency + token usage."""
+    """Record latency and token usage for successful provider calls."""
 
     def __init__(
         self,
@@ -93,6 +90,10 @@ class InstrumentedProvider(LLMProvider):
         return total
 
     @property
+    def has_complete_usage(self) -> bool:
+        return all(call.usage_present for call in self.calls)
+
+    @property
     def total_latency_ms(self) -> int:
         return sum(call.latency_ms for call in self.calls)
 
@@ -124,9 +125,9 @@ class InstrumentedProvider(LLMProvider):
             ProviderCall(
                 latency_ms=latency_ms,
                 tokens=sum_tokens(response.usage),
-                # Reuse the production normalizer rather than re-deriving bucket
-                # names per provider shape; eval costs then match /usage costs.
+                # Keep runtime and eval accounting on the same bucket semantics.
                 usage=normalize_usage(response.usage),
+                usage_present=response.has_reported_usage,
             )
         )
         return response
@@ -139,13 +140,9 @@ class ToolCallRecord:
     result: str
     ok: bool
     duration_ms: int
-    # Where the result came from: "live" (real handler), "replay" (cassette),
-    # "fault" (scenario-injected failure), or "miss" (strict-mode cassette miss).
+    # "live", "replay", "fault", "miss", or "denied".
     source: str = "live"
-    # How many provider calls this turn had already completed when the tool was
-    # dispatched. A tool result is not billed once: it joins the context and is
-    # re-sent as input on every later call of the same turn, so this is what
-    # turns a result size into a share of the bill.
+    # Provider calls completed before this result entered the context.
     provider_calls_before: int = 0
 
     @property
@@ -154,12 +151,7 @@ class ToolCallRecord:
 
     @property
     def estimated_tokens(self) -> int:
-        """Rough token size of the result text.
-
-        A heuristic (~4 chars/token), not a tokenizer: the eval harness must not
-        take a tokenizer dependency per model family, and the number is used for
-        *relative* comparison between tools, where a consistent bias cancels.
-        """
+        """Approximate result size at four characters per token."""
         return -(-len(self.result) // CHARS_PER_TOKEN)
 
 
@@ -172,13 +164,9 @@ def _result_ok(result: str) -> bool:
 
 
 class InstrumentedRegistry(ToolRegistry):
-    """A ToolRegistry that records every dispatch into a resettable sink.
+    """Record dispatches with optional cassette replay and fault injection.
 
-    Optionally fronts dispatch with a per-scenario cassette (record/replay) and
-    a fault queue; see evals/cassette.py. Replay hits and faults return without
-    invoking the real handler (and therefore without the live tier/activation
-    gates: recordings were made under the same scenario config, so gating has
-    already shaped what got recorded).
+    The production gate runs before replay, faults, or live execution.
     """
 
     def __init__(self, *, internet_search_max_backend_calls_per_turn: int = 10) -> None:
@@ -193,12 +181,7 @@ class InstrumentedRegistry(ToolRegistry):
         )
 
     def set_provider_call_counter(self, counter: Callable[[], int]) -> None:
-        """Supply "how many provider calls have completed this turn".
-
-        Injected rather than held as a provider reference: the registry needs one
-        integer to place a tool call in the turn's timeline, and taking the
-        provider itself would couple dispatch to the capture wrapper.
-        """
+        """Set the completed-call counter used for tool cost attribution."""
         self._provider_calls = counter
 
     def reset_sink(self) -> None:
@@ -209,7 +192,7 @@ class InstrumentedRegistry(ToolRegistry):
         self._cassette_mode = mode if cassette is not None else "off"
 
     def set_faults(self, faults: list[Fault]) -> None:
-        """Arm scenario faults: the next `times` calls to each tool fail."""
+        """Make the next `times` allowed calls to each tool fail."""
         budget: dict[str, list[Fault]] = {}
         for fault in faults:
             budget.setdefault(fault.tool, []).extend([fault] * max(fault.times, 0))
@@ -222,6 +205,9 @@ class InstrumentedRegistry(ToolRegistry):
         return queue.pop(0)
 
     async def _resolve(self, name: str, args: dict, ctx: MessageContext) -> tuple[str, str]:
+        gate_error = self.dispatch_gate(name, ctx)
+        if gate_error is not None:
+            return gate_error, "denied"
         fault = self._pop_fault(name)
         if fault is not None:
             return json.dumps({"error": fault.message}), "fault"
@@ -263,6 +249,7 @@ class InstrumentedRegistry(ToolRegistry):
 
     async def dispatch(self, name: str, args: dict, ctx: MessageContext) -> str:
         start = time.monotonic()
+        provider_calls_before = self._provider_calls()
         result, source = await self._resolve(name, args, ctx)
         duration_ms = int((time.monotonic() - start) * 1000)
         self.sink.append(
@@ -273,7 +260,7 @@ class InstrumentedRegistry(ToolRegistry):
                 ok=_result_ok(result),
                 duration_ms=duration_ms,
                 source=source,
-                provider_calls_before=self._provider_calls(),
+                provider_calls_before=provider_calls_before,
             )
         )
         return result

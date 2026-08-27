@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+UMask=0077
 # Replace /srv/kimi with the deployment checkout or release path. Install
 # this as a user unit for the same unprivileged account that owns runtime data.
 WorkingDirectory=/srv/kimi/bot
@@ -14,6 +15,12 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/srv/kimi/private/runtime.env
 EnvironmentFile=-/srv/kimi/private/secrets.env
 ExecStart=/srv/kimi/bot/.venv/bin/python bot.py
+# Aggregate cgroup backstop for the bot and all ordinary child processes,
+# including executable skill process trees. Tune these values to the host and
+# lower the per-invocation SCRIPT_SANDBOX_* limits when deploying on less RAM.
+TasksMax=128
+MemoryMax=4G
+CPUQuota=200%
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45

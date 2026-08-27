@@ -56,7 +56,7 @@ class ServiceProxy:
 @dataclass(slots=True)
 class _Registration:
     registry: ServiceRegistryImpl
-    key: tuple[str, int]
+    key: tuple[str, str, int]
     closed: bool = False
 
     def close(self) -> None:
@@ -67,12 +67,12 @@ class _Registration:
 
 @dataclass(slots=True)
 class ServiceRegistryImpl:
-    _provided: dict[tuple[str, int], _Provided] = field(default_factory=dict)
+    _provided: dict[tuple[str, str, int], _Provided] = field(default_factory=dict)
 
     def provide(
         self, provider: str, name: str, version: int, implementation: object
     ) -> _Registration:
-        key = (name, version)
+        key = (provider, name, version)
         existing = self._provided.get(key)
         if existing is not None and existing.alive:
             raise ModuleContractError(
@@ -82,13 +82,15 @@ class ServiceRegistryImpl:
         log.info("Kimi module %s provides service %s@%d", provider, name, version)
         return _Registration(self, key)
 
-    def get(self, name: str, version: int) -> ServiceProxy:
-        provided = self._provided.get((name, version))
+    def get(self, provider: str, name: str, version: int) -> ServiceProxy:
+        provided = self._provided.get((provider, name, version))
         if provided is None or not provided.alive:
-            raise ServiceUnavailable(f"service {name}@{version} is not provided")
+            raise ServiceUnavailable(
+                f"service {name}@{version} from module {provider!r} is not provided"
+            )
         return ServiceProxy(provided, name, version)
 
-    def _retire(self, key: tuple[str, int]) -> None:
+    def _retire(self, key: tuple[str, str, int]) -> None:
         provided = self._provided.get(key)
         if provided is not None:
             provided.alive = False
@@ -100,9 +102,9 @@ class ServiceRegistryImpl:
 
     def provided_by(self, provider: str) -> tuple[tuple[str, int], ...]:
         return tuple(
-            key
-            for key, provided in self._provided.items()
-            if provided.provider == provider and provided.alive
+            (name, version)
+            for (registered_provider, name, version), provided in self._provided.items()
+            if registered_provider == provider and provided.alive
         )
 
 
@@ -123,11 +125,21 @@ class ModuleServiceView:
         return self.registry.provide(self.module_name, name, version, implementation)
 
     def get(self, name: str, version: int) -> object:
-        if not any(r.name == name and r.version == version for r in self.consumes):
+        requirements = tuple(
+            requirement
+            for requirement in self.consumes
+            if requirement.name == name and requirement.version == version
+        )
+        if not requirements:
             raise ModuleContractError(
                 f"module {self.module_name!r} did not declare that it consumes {name}@{version}"
             )
-        return self.registry.get(name, version)
+        providers = {requirement.provider for requirement in requirements}
+        if len(providers) != 1:
+            raise ModuleContractError(
+                f"module {self.module_name!r} has ambiguous providers for {name}@{version}"
+            )
+        return self.registry.get(providers.pop(), name, version)
 
 
 def undeclared_provisions(

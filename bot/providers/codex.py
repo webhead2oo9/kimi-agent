@@ -180,6 +180,7 @@ class CodexProvider(LLMProvider):
             tool_calls=self._parse_tool_calls(output_items),
             finish_reason=str(payload.get("status") or "completed"),
             usage=dict(payload.get("usage") or {}),
+            usage_present=payload.get("usage") is not None,
             model=str(payload.get("model") or ""),
             provider_state=(
                 {"latest_response_id": response_id} if isinstance(response_id, str) else {}

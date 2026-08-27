@@ -11,6 +11,7 @@ owner manifest and enforced through the ports below; they are not a sandbox.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -360,6 +361,7 @@ def validate_services(
         if key in seen:
             raise ModuleContractError(f"module {module_name!r} provides {key!r} twice")
         seen.add(key)
+    required: dict[tuple[str, int], str] = {}
     for requirement in consumes:
         if not _SERVICE_NAME_RE.match(requirement.name) or requirement.version < 1:
             raise ModuleContractError(
@@ -372,6 +374,14 @@ def validate_services(
                 f"module {module_name!r} consumes {requirement.name!r} from "
                 f"{requirement.provider!r} without depending on it"
             )
+        key = (requirement.name, requirement.version)
+        previous = required.get(key)
+        if previous is not None:
+            detail = "twice" if previous == requirement.provider else "from multiple providers"
+            raise ModuleContractError(
+                f"module {module_name!r} consumes {requirement.name}@{requirement.version} {detail}"
+            )
+        required[key] = requirement.provider
 
 
 def validate_guild_settings_schema(module_name: str, schema: GuildSettingsSchema) -> None:
@@ -459,6 +469,23 @@ class Backoff:
     base_seconds: float = 30.0
     max_seconds: float = 3600.0
     multiplier: float = 2.0
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("base_seconds", self.base_seconds),
+            ("max_seconds", self.max_seconds),
+            ("multiplier", self.multiplier),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ModuleContractError(f"backoff {name} must be a finite number")
+            if not math.isfinite(value):
+                raise ModuleContractError(f"backoff {name} must be finite")
+        if self.base_seconds <= 0:
+            raise ModuleContractError("backoff base_seconds must be positive")
+        if self.max_seconds <= 0:
+            raise ModuleContractError("backoff max_seconds must be positive")
+        if self.multiplier < 1:
+            raise ModuleContractError("backoff multiplier must be at least 1")
 
 
 @dataclass(frozen=True, slots=True)

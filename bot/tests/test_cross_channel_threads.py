@@ -53,6 +53,7 @@ class _Thread:
         self._perms = perms or {}
         self.added: list[Any] = []
         self.add_user = AsyncMock(side_effect=self.added.append)
+        self.delete = AsyncMock()
 
     def permissions_for(self, who: Any) -> _Perms:
         return self._perms.get(who.id, _Perms())
@@ -75,7 +76,8 @@ class _Anchor:
 
     async def _create(self, *, name: str, auto_archive_duration: int | None = None) -> _Thread:
         self.channel.created.append((name, auto_archive_duration))
-        return _Thread(9000 + self.id, parent=self.channel)
+        # A public thread created from a message shares its starter's ID.
+        return _Thread(self.id, parent=self.channel)
 
     async def delete(self) -> None:
         self._deleted.append(self.id)
@@ -410,10 +412,30 @@ def _create(app, message, request) -> Any:
 def _enable(app, monkeypatch) -> Any:
     handoff = MagicMock()
     handoff.enroll = AsyncMock()
+    handoff.is_managed.return_value = False
     app.thread_handoff = handoff
     monkeypatch.setattr(app.threads, "_thread_handoff_creation_allowed", lambda message: True)
     monkeypatch.setattr(app.threads, "_thread_auto_respond_default", lambda message: True)
     return handoff
+
+
+@pytest.mark.asyncio
+async def test_definitive_await_preserves_cancellation_over_child_failure() -> None:
+    release_child = asyncio.Event()
+
+    async def fail_after_release() -> None:
+        await release_child.wait()
+        raise RuntimeError("Discord request failed")
+
+    waiting = asyncio.create_task(thread_boundary._await_definitive(fail_after_release()))
+    await asyncio.sleep(0)
+    release_child.set()
+    waiting.cancel()
+
+    with pytest.raises(asyncio.CancelledError) as cancellation:
+        await waiting
+
+    assert isinstance(cancellation.value.__cause__, RuntimeError)
 
 
 def test_cross_channel_creation_posts_an_anchor_and_adds_the_asker(monkeypatch):
@@ -543,6 +565,142 @@ def test_same_channel_creation_adopts_existing_thread(monkeypatch):
         creator_user_id=str(ASKER_ID),
         auto_respond=True,
     )
+
+
+def test_same_channel_creation_reuses_managed_thread(monkeypatch):
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    handoff.is_managed.return_value = True
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    message.thread = thread
+
+    adopted = _create(app, message, ThreadRequest(name="Quest help"))
+
+    assert adopted is thread
+    handoff.enroll.assert_not_awaited()
+    handoff.leave.assert_not_called()
+    thread.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("created_here", [True, False])
+async def test_cancellation_during_enrollment_rolls_back_owned_state(
+    monkeypatch: pytest.MonkeyPatch,
+    created_here: bool,
+) -> None:
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    if created_here:
+        message.create_thread = AsyncMock(return_value=thread)
+    else:
+        message.thread = thread
+        message.create_thread = AsyncMock()
+    enrollment_started = asyncio.Event()
+    release_enrollment = asyncio.Event()
+    enrollment_cancelled = asyncio.Event()
+
+    async def slow_enroll(*_args: Any, **_kwargs: Any) -> None:
+        enrollment_started.set()
+        try:
+            await release_enrollment.wait()
+        except asyncio.CancelledError:
+            enrollment_cancelled.set()
+            raise
+
+    handoff.enroll = AsyncMock(side_effect=slow_enroll)
+    handoff.leave = AsyncMock()
+
+    creating = asyncio.create_task(
+        app.threads._create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
+    )
+    await enrollment_started.wait()
+    creating.cancel()
+    await asyncio.sleep(0)
+    enrollment_was_cancelled = enrollment_cancelled.is_set()
+    release_enrollment.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    assert enrollment_was_cancelled is False
+    handoff.leave.assert_awaited_once_with(thread.id)
+    if created_here:
+        thread.delete.assert_awaited_once_with(reason="Thread handoff did not complete")
+    else:
+        thread.delete.assert_not_awaited()
+
+
+def test_cross_channel_enrollment_failure_deletes_owned_anchor(monkeypatch):
+    target = _TextChannel(200, "bot-spam")
+    app, guild, asker = _app(monkeypatch, targets={"200"}, channels=[target])
+    handoff = _enable(app, monkeypatch)
+    handoff.enroll = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    handoff.leave = AsyncMock()
+
+    thread = _create(
+        app,
+        _message(guild, asker),
+        ThreadRequest(name="Quest help", target_channel_id=200),
+    )
+
+    assert thread is None
+    assert target.deleted == [7001]
+    handoff.leave.assert_awaited_once_with(7001)
+
+
+def test_adopted_unmanaged_thread_enrollment_failure_rolls_back_mapping(monkeypatch):
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    handoff.enroll = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    handoff.leave = AsyncMock()
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    message.thread = thread
+
+    adopted = _create(app, message, ThreadRequest(name="Quest help"))
+
+    assert adopted is None
+    thread.delete.assert_not_awaited()
+    handoff.leave.assert_awaited_once_with(thread.id)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_rollback_is_propagated_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, guild, asker = _app(monkeypatch, targets={"200"})
+    handoff = _enable(app, monkeypatch)
+    message = _message(guild, asker)
+    thread = _Thread(5555)
+    message.create_thread = AsyncMock(return_value=thread)
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    handoff.enroll = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+    async def slow_leave(_thread_id: int) -> None:
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    handoff.leave = AsyncMock(side_effect=slow_leave)
+    creating = asyncio.create_task(
+        app.threads._create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
+    )
+    await cleanup_started.wait()
+
+    creating.cancel()
+    await asyncio.sleep(0)
+    assert not creating.done()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    handoff.leave.assert_awaited_once_with(thread.id)
+    thread.delete.assert_awaited_once_with(reason="Thread handoff did not complete")
 
 
 @pytest.mark.asyncio

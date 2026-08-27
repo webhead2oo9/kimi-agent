@@ -1,16 +1,17 @@
 # Hindsight backend
 
 The bot's long-term memory (Hindsight) runs as a container named
-`kimi-hindsight` on any Docker host reachable from the bot. The bot reaches
-it at `HINDSIGHT_URL=http://<host>:8890`.
+`kimi-hindsight`. When they share a host, the bot reaches it at
+`HINDSIGHT_URL=http://127.0.0.1:8890`. A bot on another host uses the Docker
+host's trusted LAN/VPN address after the API bind is explicitly configured.
 
 | | value |
 |---|---|
 | Stack dir | `~/kimi-hindsight/` |
 | Container | `kimi-hindsight` |
 | Storage | **host bind mount** `./data` → embedded Postgres (`pg0`) |
-| API port | `8890` → 8888 |
-| Control Plane | `9990` → 9999 |
+| API port | `127.0.0.1:8890` → 8888 by default |
+| Control Plane | `127.0.0.1:9990` → 9999 by default |
 | Model route | Ignored `.env` next to the compose file; seed from `.env.example` and replace every placeholder |
 
 Storage is a **bind mount** (not a named volume) so the data is visible
@@ -18,10 +19,11 @@ on the host filesystem and cannot be lost to `docker volume prune` or
 `docker compose down -v`. Back it up by copying `./data`.
 
 This Compose stack does not configure Hindsight's optional authentication
-extension or an authenticating reverse proxy. Its published API and Control
-Plane ports are therefore reachable by anything that can route to the Docker
-host. Bind them to a trusted interface or put the service behind an
-authenticating proxy.
+extension or an authenticating reverse proxy, so both ports bind to loopback
+by default. If the bot runs elsewhere, set `HINDSIGHT_API_BIND_ADDRESS` to the
+Docker host's trusted LAN/VPN address and use the host firewall to allow only
+the bot. Leave `HINDSIGHT_CONTROL_BIND_ADDRESS` on loopback unless the Control
+Plane is behind an authenticating proxy.
 
 ## Bring-up
 
@@ -31,6 +33,8 @@ mkdir -p ~/kimi-hindsight/data
 cp docker-compose.yml ~/kimi-hindsight/
 cp .env.example ~/kimi-hindsight/.env
 # Edit .env: provider mode, base URL, API key, and model ID are required.
+# For a remote bot, also set HINDSIGHT_API_BIND_ADDRESS to this host's trusted
+# LAN/VPN address; keep HINDSIGHT_CONTROL_BIND_ADDRESS on 127.0.0.1.
 cd ~/kimi-hindsight && docker compose up -d
 ```
 
@@ -42,9 +46,10 @@ separately from the public source checkout.
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8890/docs   # 200 on the host
-curl -s -o /dev/null -w "%{http_code}\n" http://<host>:8890/docs      # 200 from the bot's network
-curl -s http://<host>:8890/v1/default/banks | head -c 400             # bank listing
-# Control Plane UI: http://<host>:9990
+curl -s http://localhost:8890/v1/default/banks | head -c 400           # bank listing
+# From a remote bot, after configuring the trusted API bind:
+curl -s -o /dev/null -w "%{http_code}\n" http://<trusted-host>:8890/docs
+# Control Plane UI on the Docker host: http://localhost:9990
 ```
 
 ## Day-2

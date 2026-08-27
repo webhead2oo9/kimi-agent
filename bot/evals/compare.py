@@ -88,7 +88,7 @@ def scenario_pass_rate(entry: dict) -> float | None:
 # Provenance values whose results were served out of a tape *file*. Two runs
 # sharing a `cassette_model_key` read the same file, whether its entries are the
 # arm's own recordings ("model") or copies of the baseline ("promoted"). Any
-# mix is one observation and must trigger the caution guard.
+# such mix is one observation and trips the harness-suspect marker.
 TAPE_FILE_PROVENANCE = ("model", "promoted")
 
 

@@ -237,7 +237,7 @@ def test_declared_edges_still_exist() -> None:
 
 
 def test_forbidden_dependency_edges_are_absent() -> None:
-    """Give high-risk dependency boundaries specific failure diagnostics."""
+    """High-risk dependency boundaries fail with named, specific diagnostics."""
 
     observed = _observed_edges()
     assert "app" not in observed.get("commands", set()), (

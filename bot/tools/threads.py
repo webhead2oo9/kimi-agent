@@ -103,6 +103,7 @@ class ThreadRequest:
     # None opens the thread off the triggering message in the current channel.
     # An id opens it in the referenced channel instead, off an anchor message
     # posted there.
+    #
     # Only ever set from a resolver-checked target, so the boundary can trust it
     # came from the allowlist. It re-checks anyway.
     target_channel_id: int | None = None

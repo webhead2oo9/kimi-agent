@@ -130,6 +130,35 @@ def test_chat_provider_generates_distinct_request_id_headers() -> None:
     assert first != second
 
 
+def test_chat_provider_sends_configured_reasoning_effort_to_non_deepseek_target() -> None:
+    message = SimpleNamespace(content="ok", reasoning_content=None, tool_calls=[])
+    provider = OpenAIChatProvider(
+        api_key="test",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.3-flash",
+        provider_key="openai_compat",
+        reasoning_effort="medium",
+    )
+    completions = FakeCompletions(message)
+    provider._client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+
+    asyncio.run(
+        provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("hello")],
+                tools=[],
+                max_tokens=128,
+            )
+        )
+    )
+
+    assert completions.calls[0]["reasoning_effort"] == "medium"
+    assert "extra_body" not in completions.calls[0]
+
+
 def test_chat_provider_non_object_tool_args_fall_back_to_raw() -> None:
     message = SimpleNamespace(
         content="",

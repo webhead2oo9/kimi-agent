@@ -27,15 +27,30 @@ Keep the key out of `config/models.yaml`. Add the provider there:
 
 ```yaml
 providers:
-  zai-coding:
+  zai-coding-medium:
     type: openai_compat
     base_url: https://api.z.ai/api/coding/paas/v4
     api_key_env: ZAI_API_KEY
+    reasoning_effort: medium
+    failure_adapter: zai
+    circuit_breaker:
+      outage_cooldown_seconds: 1800
+      quota_cooldown_seconds: 18000
+  zai-coding-xhigh:
+    type: openai_compat
+    base_url: https://api.z.ai/api/coding/paas/v4
+    api_key_env: ZAI_API_KEY
+    reasoning_effort: xhigh
     failure_adapter: zai
     circuit_breaker:
       outage_cooldown_seconds: 1800
       quota_cooldown_seconds: 18000
 ```
+
+Separate profiles may share the same served model ID when chat and coding need
+different reasoning defaults. Give their local model entries distinct names,
+such as `zai-glm-medium` and `zai-glm-xhigh`, while keeping the upstream `model`
+value unchanged.
 
 Add the models you want to use under `models:` as described in
 [Providers](providers.md). This guide does not maintain a model catalog because

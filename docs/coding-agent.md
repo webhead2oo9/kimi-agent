@@ -46,10 +46,23 @@ status, acknowledgement, progress, and final report all go to that thread. If
 Discord can't create it, all four fall back to the original channel.
 
 The worker runs on a least-privilege registry: bounded workspace read/write
-tools, `coding_plan`, `coding_progress`, and the managed command-job controls.
-Its command prompt requires `coding_plan` before any edits or jobs. Plan and
+tools, archive and document extraction, `coding_plan`, `coding_progress`,
+`coding_request_input`, and the managed command-job controls. It also borrows
+the assistant's research tools, `fetch_url`, `internet_search`, and `browser`,
+under exactly the foreground's registration gates: a tool the assistant lacks
+(no search key, `BROWSER_ENABLED=false`, an operator denylist) is simply absent
+from the worker too. The per-turn search and browser budgets apply to the whole
+worker run on one context and start over when a task resumes after a restart or
+requested input. Its command prompt requires `coding_plan` before any edits or
+jobs and asks for research before guessing at unfamiliar APIs. Plan and
 progress tool calls are what produce the user-visible milestones; there is no
 separate summarizer polling or interpreting the agent's hidden reasoning.
+
+The worker's browser calls release their turn lease after every call rather
+than at the end of the turn, because the run may last minutes and its own
+managed jobs need the shared VPN namespace in between. Browser screenshots
+queue as final-report attachments; they are shown to the model inline only when
+the coding model accepts image input.
 Before the worker publishes a plan, the status uses a short summary supplied by
 the foreground assistant or derived from the objective. Once a plan exists,
 the plan replaces that summary so members see what the worker is actually doing.
@@ -114,6 +127,16 @@ Without an explicit `wait_seconds`, `coding_job_status` does one event-driven
 wait for up to the configured job lifetime, so a long build doesn't burn
 repeated model iterations; passing `wait_seconds=0` gives a non-blocking status
 read instead.
+
+In `CODE_EXEC_NETWORK_MODE=netns`, a job shares the single VPN namespace with
+the same user's browser. Starting a job asks the browser service to close that
+user's idle worker immediately instead of after its idle TTL, then waits up to
+30 seconds for the lease; if someone else's browser turn or a foreground
+networked run still holds it, the job fails with a retryable error rather than
+blocking. While a job is queued or running the worker's `browser` calls are
+refused, and the flag clears when `coding_job_status` reports a terminal state
+or `coding_job_cancel` returns. Host and `none` modes keep the previous
+fail-fast behavior on the shared execution semaphore.
 
 The application owns every job handle. Cancellation waits for the sandbox to
 tear down, and systemd also gets `RuntimeMaxSec` as a manager-side backstop. A

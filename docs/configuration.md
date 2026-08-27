@@ -1140,7 +1140,7 @@ If you want to know where a setting is actually read, this is the map:
 - `app/consent.py` consumes the privacy consent settings.
 - `memory/`, `tools/user_memory.py`, `tools/community.py`, and
   `commands/memory_cmd.py` consume the Hindsight, user recall, explicit
-  memory-write/source-lookup, and community-memory settings.
+  memory-write, and community-memory settings.
   `discord_adapter/lifecycle.py` owns the workspace and auto-retain sweeper loops.
 - `agent/attachments.py`, `agent/backfill.py`, `workspace/manager.py`, and `tools/workspace/`
   consume the attachment, channel-backfill, and workspace limits.

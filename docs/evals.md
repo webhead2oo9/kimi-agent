@@ -202,7 +202,7 @@ Search entries without this metadata are treated as misses and refreshed
 live in `replay` mode rather than assigned a guessed cost.
 
 Only the read-only source tools `discord_text_search`, `internet_search`, and
-the Hindsight reads (`recall_user`, `reflect_user`, `lookup_memory_source`) are
+the Hindsight reads (`recall_user`, `reflect_user`) are
 recorded by the core allowlist in `evals/cassette.py`; plugins may add
 network-backed read-only tools through the `eval_record` surface in
 `app/tool_surfaces.py`. Every other tool dispatches live, because local handlers
@@ -469,8 +469,6 @@ the isolation provenance used during execution.
 - `block_user` is registered against an in-memory stub store, so safety
   scenarios can present (and grade misuse of) the real tool without blocking
   anyone.
-- `lookup_memory_source` needs a persisted transcript, and seeded history is
-  in-memory only.
 - Cassette replay bypasses the live tier/activation gates in `dispatch`. The
   recording was made under the same scenario config, so gating already shaped
   what got recorded.

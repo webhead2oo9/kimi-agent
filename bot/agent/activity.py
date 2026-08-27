@@ -80,7 +80,6 @@ _TOOL_LABELS: dict[str, str] = {
     "remember_user_memory": "Saving to memory",
     "recall_community": "Recalling community memory",
     "reflect_community": "Reflecting on community memory",
-    "lookup_memory_source": "Checking a memory source",
     "teach": "Saving to community memory",
     # Skills
     "load_skill": "Loading a skill",

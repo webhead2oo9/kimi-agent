@@ -80,7 +80,7 @@ Two families register *after* plugins, and their names are effectively
 reserved. First the skill tools (`skill_list`, `load_skill`, `skill_file`,
 `skill_create`, `skill_edit`, `skill_delete`), then the Hindsight memory tools
 once Hindsight is ready (`recall_user`, `reflect_user`, `remember_user_memory`,
-`lookup_memory_source`, `recall_community`, `reflect_community`, `teach`).
+`recall_community`, `reflect_community`, `teach`).
 If you take one of those names, it is the *core* registration that raises
 later: a boot abort for the skill tools, or a failed memory init for the memory
 ones. It is loud either way, which is the point.

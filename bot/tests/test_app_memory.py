@@ -63,7 +63,7 @@ async def test_memory_manager_registers_tools_after_successful_bank_setup(
     assert registry.has_tool("recall_user")
     assert registry.has_tool("reflect_user")
     assert registry.has_tool("remember_user_memory")
-    assert registry.has_tool("lookup_memory_source")
+    assert not registry.has_tool("lookup_memory_source")
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ async def test_memory_manager_unregisters_tools_after_later_bank_setup_failure(
 
 
 @pytest.mark.asyncio
-async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
+async def test_memory_manager_rebinds_write_tools_on_repeated_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = ToolRegistry()
@@ -110,7 +110,7 @@ async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
     manager = memory_runtime.MemoryManager(_settings(), registry, client=client)
     community_calls = 0
     user_calls = 0
-    source_calls: list[tuple[object, object]] = []
+    write_calls: list[tuple[object, object]] = []
 
     async def fake_ensure_global_banks(memory_client: object) -> bool:
         return True
@@ -138,7 +138,7 @@ async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
         assert recall_types == ["world"]
         user_calls += 1
 
-    def fake_init_user_memory_source_tools(
+    def fake_init_user_memory_write_tools(
         tool_registry: ToolRegistry,
         memory_client: object,
         conversation_store: object,
@@ -148,7 +148,7 @@ async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
     ) -> None:
         assert tool_registry is registry
         assert memory_client is client
-        source_calls.append((conversation_store, preference_store))
+        write_calls.append((conversation_store, preference_store))
 
     monkeypatch.setattr(
         memory_runtime,
@@ -167,8 +167,8 @@ async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
     )
     monkeypatch.setattr(
         memory_runtime,
-        "init_user_memory_source_tools",
-        fake_init_user_memory_source_tools,
+        "init_user_memory_write_tools",
+        fake_init_user_memory_write_tools,
     )
     manager.settings.memory_recall_types = "world"
     store_1 = object()
@@ -187,7 +187,7 @@ async def test_memory_manager_rebinds_source_tools_on_repeated_ready(
 
     assert community_calls == 1
     assert user_calls == 1
-    assert source_calls == [(store_1, preferences_1), (store_2, preferences_2)]
+    assert write_calls == [(store_1, preferences_1), (store_2, preferences_2)]
 
 
 @pytest.mark.asyncio

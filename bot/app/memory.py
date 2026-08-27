@@ -11,7 +11,7 @@ from memory.client import MemoryClient
 from tools.community import init_community_tools
 from tools.learn import LearnHook
 from tools.registry import ToolRegistry
-from tools.user_memory import init_user_memory_source_tools, init_user_memory_tools
+from tools.user_memory import init_user_memory_tools, init_user_memory_write_tools
 
 if TYPE_CHECKING:
     from storage.conversations import ConversationStore
@@ -27,7 +27,6 @@ MEMORY_TOOL_NAMES = frozenset(
         "recall_user",
         "reflect_user",
         "remember_user_memory",
-        "lookup_memory_source",
     }
 )
 
@@ -82,7 +81,7 @@ class MemoryManager:
             )
             self.tools_registered = True
 
-        init_user_memory_source_tools(
+        init_user_memory_write_tools(
             self.registry,
             self.client,
             conversation_store,

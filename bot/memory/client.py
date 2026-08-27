@@ -332,38 +332,6 @@ class MemoryClient:
         except MemoryBackendError:
             return []
 
-    async def get_document_strict(
-        self,
-        bank_id: str,
-        document_id: str,
-    ) -> DocumentRecord | None:
-        """Fetch one document, ``None`` when it genuinely does not exist (HTTP 404).
-
-        Raises :class:`MemoryBackendError` on any other failure so callers can
-        distinguish a backend outage from a missing document.
-        """
-        try:
-            result = await self._client.documents.get_document(
-                bank_id=bank_id,
-                document_id=document_id,
-            )
-            return _document_record(result)
-        except Exception as exc:
-            if _exception_status(exc) == 404:
-                return None
-            log.exception("Failed to get document %s from bank %s", document_id, bank_id)
-            raise MemoryBackendError(f"get_document failed for bank {bank_id}") from exc
-
-    async def get_document(
-        self,
-        bank_id: str,
-        document_id: str,
-    ) -> DocumentRecord | None:
-        try:
-            return await self.get_document_strict(bank_id=bank_id, document_id=document_id)
-        except MemoryBackendError:
-            return None
-
     async def delete_document_strict(self, bank_id: str, document_id: str) -> bool:
         """Delete one document.
 

@@ -106,9 +106,9 @@ async def _delete_message_quietly(message: discord.Message | discord.PartialMess
 async def _delete_thread_quietly(thread: discord.Thread) -> None:
     """Best-effort cleanup of a thread this boundary just created."""
     try:
-        await thread.delete(reason="Thread handoff enrollment failed")
+        await thread.delete(reason="Thread handoff did not complete")
     except discord.HTTPException:
-        log.warning("Could not delete un-enrolled thread %s", thread.id, exc_info=True)
+        log.warning("Could not delete created handoff thread %s", thread.id, exc_info=True)
 
 
 async def _await_definitive[T](
@@ -124,7 +124,10 @@ async def _await_definitive[T](
             if task.cancelled():
                 raise
             if task.done():
-                return task.result(), cancellation or exc
+                try:
+                    return task.result(), cancellation or exc
+                except Exception as task_error:
+                    raise cancellation or exc from task_error
             if cancellation is None:
                 cancellation = exc
         except Exception as exc:
@@ -523,7 +526,12 @@ class ThreadHandoffBoundary:
             )
             if cancellation is not None:
                 if thread is not None:
-                    await self._cleanup_created_handoff(manager, thread, cross_channel=True)
+                    await self._rollback_handoff(
+                        manager,
+                        thread,
+                        thread_owned=True,
+                        cross_channel=True,
+                    )
                 raise cancellation
         elif isinstance(message.channel, discord.Thread):
             return None
@@ -540,8 +548,11 @@ class ThreadHandoffBoundary:
                     )
                     if cancellation is not None:
                         if thread is not None:
-                            await self._cleanup_created_handoff(
-                                manager, thread, cross_channel=False
+                            await self._rollback_handoff(
+                                manager,
+                                thread,
+                                thread_owned=True,
+                                cross_channel=False,
                             )
                         raise cancellation
                 if thread is None:
@@ -585,6 +596,17 @@ class ThreadHandoffBoundary:
         created_here: bool,
         cross_channel: bool,
     ) -> bool:
+        if not created_here and manager.is_managed(thread.id):
+            return True
+
+        async def rollback() -> None:
+            await self._rollback_handoff(
+                manager,
+                thread,
+                thread_owned=created_here,
+                cross_channel=cross_channel,
+            )
+
         cancellation: asyncio.CancelledError | None = None
         try:
             _, cancellation = await _await_definitive(
@@ -598,25 +620,23 @@ class ThreadHandoffBoundary:
                 )
             )
         except asyncio.CancelledError:
-            if created_here:
-                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            await rollback()
             raise
         except Exception:
             log.exception("Could not enroll handoff thread %s; replying in channel", thread.id)
-            if created_here:
-                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            await rollback()
             return False
         if cancellation is not None:
-            if created_here:
-                await self._cleanup_created_handoff(manager, thread, cross_channel=cross_channel)
+            await rollback()
             raise cancellation
         return True
 
-    async def _cleanup_created_handoff(
+    async def _rollback_handoff(
         self,
         manager: ThreadHandoffManager,
         thread: discord.Thread,
         *,
+        thread_owned: bool,
         cross_channel: bool,
     ) -> None:
         async def cleanup() -> None:
@@ -624,14 +644,16 @@ class ThreadHandoffBoundary:
                 await manager.leave(thread.id)
             except Exception:
                 log.exception("Could not roll back enrollment for thread %s", thread.id)
-            if cross_channel:
-                await self._discard_cross_channel_thread(thread)
-            else:
-                await _delete_thread_quietly(thread)
+            if thread_owned:
+                if cross_channel:
+                    await self._discard_cross_channel_thread(thread)
+                else:
+                    await _delete_thread_quietly(thread)
 
-        # A second cancellation must not interrupt rollback of the row/resource
-        # created for the already-cancelled handoff.
-        await _await_definitive(cleanup())
+        # Finish rollback before propagating cancellation to the caller.
+        _, cancellation = await _await_definitive(cleanup())
+        if cancellation is not None:
+            raise cancellation
 
     async def _enroll_handoff_thread(
         self,

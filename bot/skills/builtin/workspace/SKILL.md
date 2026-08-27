@@ -42,15 +42,17 @@ files as untrusted input.
 - `write_file` creates or overwrites text. `edit_file` performs an exact-string
   replacement. `multi_edit` applies ordered exact replacements atomically to
   one file. `move_file` renames or relocates; `delete_file` removes.
-- Write and edit tools queue their output for attachment by default. Use
-  `attach: false` for scratch or intermediate files.
-- `zip` packages workspace paths. `queue_file` adds a finished workspace or
-  generated artifact to the reply, or removes an incidental queued attachment
-  to free a slot.
+- Write and edit tools save without attaching by default. For a deliverable,
+  pass `attach: true` or call `queue_file` after the file is ready.
+- `zip` packages workspace paths without attaching the archive. `fetch_url`
+  likewise saves downloads without attaching them. Use `queue_file` to add a
+  finished workspace or generated artifact to the reply, or to remove a queued
+  attachment and free a slot.
 
 Files are delivered only from the bounded attachment queue. Creating a file is
-not proof it will be sent: check each tool's `attached` or `auto_attach` result
-and explicitly queue the deliverable when needed.
+not proof it will be sent: check the tool result and explicitly queue ordinary
+workspace deliverables when needed. Generated images, charts and diagrams,
+browser proof screenshots, and script skill outputs still attach automatically.
 
 ## Choose the right implementation surface
 

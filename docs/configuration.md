@@ -1064,7 +1064,7 @@ sweeping, and the limits on the file tools in `tools/workspace/`.
 | `WORKSPACE_TOOL_MAX_READ_BYTES` | int | `26214400` (25 MiB) | Max whole-file size `read_file`/`edit_file` will load and cumulative PDF extraction output. `grep_workspace` streams and is not bound by this. |
 | `WORKSPACE_TOOL_MAX_PDF_PAGES` | positive int | `500` | PDFs above this page count are rejected before page text extraction. |
 | `WORKSPACE_TOOL_MAX_TEXT_CHARS` | int | `65536` | Max chars surfaced from a text file (also caps `grep_workspace` total output). |
-| `WORKSPACE_TOOL_MAX_ATTACHMENTS` | int | `5` | Max attachments imported per turn. |
+| `WORKSPACE_TOOL_MAX_ATTACHMENTS` | int | `5` | Max files queued on one outgoing reply. |
 | `WORKSPACE_TOOL_MAX_IMPORT_BYTES` | int | `26214400` (25 MiB) | Max size of an imported attachment. |
 | `WORKSPACE_TOOL_MAX_ZIP_ENTRIES` | int | `10000` | Max entries when zipping/extracting. |
 | `WORKSPACE_TOOL_MAX_EXTRACT_TOTAL_BYTES` | int | `157286400` (150 MiB) | Max total uncompressed extract size (zip-bomb guard). |

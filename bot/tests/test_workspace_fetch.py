@@ -25,7 +25,7 @@ from tests.workspace_tool_helpers import (
 
 
 @pytest.mark.asyncio
-async def test_fetch_url_downloads_to_workspace_and_attaches(
+async def test_fetch_url_downloads_to_workspace_without_attaching(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -60,9 +60,18 @@ async def test_fetch_url_downloads_to_workspace_and_attaches(
         "filename": "report.txt",
         "size_bytes": 10,
         "content_type": "text/plain",
+        "attached": False,
+        "attachment_hint": (
+            "Saved to the workspace but not attached; use queue_file to attach it to the reply."
+        ),
     }
     assert saved.read_bytes() == b"downloaded"
-    assert ctx.output_files[-1] == str(saved.resolve())
+    assert ctx.output_files == []
+    assert ctx.allowed_file_roots == []
+
+    queued = json.loads(await reg.dispatch("queue_file", {"path": "report.txt"}, ctx))
+    assert queued["queued"] is True
+    assert ctx.output_files == [str(saved.resolve())]
     assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
 
 

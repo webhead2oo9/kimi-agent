@@ -8,12 +8,12 @@ turns:
     Download https://example.com/ into my workspace as example.html and attach
     the downloaded file. Do not search the internet or open a browser.
 expect:
-  should_use_tools: [fetch_url]
+  should_use_tools: [fetch_url, queue_file]
   should_not_use_tools: [internet_search, browser]
   attaches_file: true
-  max_tool_calls: 2
+  max_tool_calls: 3
   reply_must_match: ["example\\.html"]
   notes: >-
     Fetch-only coverage against the stable IANA-reserved example host. This
-    grades the real workspace write and attachment rail, so fetch_url is never
-    cassette-replayed.
+    grades the real workspace write plus explicit queue_file handoff, so
+    fetch_url is never cassette-replayed.

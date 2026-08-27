@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import shutil
 import tempfile
@@ -15,11 +14,11 @@ from tools.downloads import (
     safe_filename,
     validate_fetch_url,
 )
-from tools.output_queue import AttachmentLimitError, enqueue_workspace_file
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
 from .common import (
+    ATTACHMENT_HINT,
     UserLocks,
     available_destination,
     ensure_quota,
@@ -97,13 +96,6 @@ def register_fetch_tools(
                     # tempdir, which may be another filesystem; threaded because
                     # a cross-device move copies the bytes.
                     await asyncio.to_thread(shutil.move, str(temp_path), str(destination))
-                    with contextlib.suppress(AttachmentLimitError):
-                        enqueue_workspace_file(
-                            ctx,
-                            workspace_manager,
-                            destination,
-                            max_attachments=config.max_attachments,
-                        )
                     return json.dumps(
                         {
                             "path": workspace_manager.relative_user_file_path(
@@ -113,6 +105,8 @@ def register_fetch_tools(
                             "filename": destination.name,
                             "size_bytes": fetch_result.size_bytes,
                             "content_type": fetch_result.content_type,
+                            "attached": False,
+                            "attachment_hint": ATTACHMENT_HINT,
                         }
                     )
         except Exception as e:
@@ -124,8 +118,8 @@ def register_fetch_tools(
     registry.register(
         name="fetch_url",
         description=(
-            "Download an https URL into your workspace and queue the saved file "
-            "for attachment when limits allow."
+            "Download an https URL into your workspace. The saved file is not attached; "
+            "call queue_file with the returned path to include it with the final reply."
         ),
         parameters={
             "type": "object",

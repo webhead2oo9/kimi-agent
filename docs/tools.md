@@ -133,7 +133,7 @@ output attachments, and cleanup all follow the containment rules documented in
 |------|------------|---------|
 | `import_attachment` | Core | Copy an exactly named attachment from the triggering Discord message into the workspace. |
 | `read_file` | Core | Read a bounded range of a UTF-8 text file with line numbers. |
-| `write_file` | Core | Create or replace a text file and, by default, queue it for the reply. |
+| `write_file` | Core | Create or replace a text file; attachment is opt-in. |
 | `edit_file` | Core | Apply one exact-string replacement to a text file. |
 | `multi_edit` | Core | Apply an ordered, atomic set of exact-string replacements to one file. |
 | `move_file` | Core | Move or rename a workspace file or directory. |
@@ -143,16 +143,16 @@ output attachments, and cleanup all follow the containment rules documented in
 | `glob_workspace` | Core | Find files by case-insensitive name or glob pattern. |
 | `view_image` | Core | Show a bounded PNG, JPEG, GIF, or WebP file to an image-capable model during the turn. |
 | `queue_file` | Core | Add or remove a workspace/generated file from the reply's attachment queue. |
-| `fetch_url` | Core | Download an SSRF-checked HTTPS URL into the workspace and queue the result. |
-| `zip` | Core | Package selected workspace paths into a queued ZIP archive. |
+| `fetch_url` | Core | Download an SSRF-checked HTTPS URL into the workspace without attaching it. |
+| `zip` | Core | Package selected workspace paths into an unattached ZIP archive. |
 | `extract_archive` | Searchable | Safely unpack a ZIP, TAR.GZ, or TGZ already in the workspace. |
 | `extract_document_text` | Searchable | Convert bounded PDF, Office, OpenDocument, RTF, EPUB, or CSV content into readable workspace text. |
 
 `view_image` stays registered on text-only models, but it refuses the call
 cleanly unless the active provider supports image input. Note that a file
-existing in the workspace is not enough to get it sent: tools that auto-queue
-their output and explicit `queue_file` calls share the same bounded attachment
-rail.
+existing in the workspace is not enough to get it sent: explicit attachment
+requests and files attached automatically by generation and rendering tools
+share the same bounded attachment rail.
 
 ## Code execution
 

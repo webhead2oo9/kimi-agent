@@ -46,9 +46,9 @@ workspace's persistent `.venv`. The sandbox receives no bot configuration,
 provider credentials, SSH keys, or repository credentials, so do not promise
 private-repository access.
 
-Files changed by a run stay in the workspace. A small result may auto-attach;
-bulk changes and many build outputs do not. Inspect the report and use
-`queue_file` for the actual deliverable instead of assuming it was attached.
+Files changed by a run stay in the workspace and do not auto-attach. Inspect
+the report and use `queue_file` for the actual deliverable before promising it
+was attached.
 
 ## Import a public repository
 

@@ -46,7 +46,11 @@ async def test_zip_round_trip(tmp_path: Path) -> None:
     body = json.loads(result)
     assert body["path"] == "out.zip"
     assert body["entry_count"] == 2
-    assert body["attached"] is True
+    assert body["attached"] is False
+    assert "queue_file" in body["attachment_hint"]
+    assert ctx.output_files == []
+    queued = json.loads(await reg.dispatch("queue_file", {"path": "out.zip"}, ctx))
+    assert queued["queued"] is True
     with zipfile.ZipFile(root / "out.zip") as zf:
         assert sorted(zf.namelist()) == ["a.txt", "sub/b.txt"]
         assert zf.read("sub/b.txt") == b"beta"

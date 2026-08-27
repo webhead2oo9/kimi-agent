@@ -169,8 +169,8 @@ There are three ways the mode gets set:
 
 The pause tool's result tells the model the resume tool's name **and** the
 `hey <bot> …` wake phrase, with a nudge to pass the latter along: a user cannot guess
-it, and an unmentioned "resume replies" message in a paused thread never reaches
-the bot.
+it, and an unmentioned message such as "you can reply now" in a paused thread never
+reaches the bot.
 
 ### Tool visibility
 

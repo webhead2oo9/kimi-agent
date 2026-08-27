@@ -288,7 +288,7 @@ blank.
 | `provider` | required | Name of the profile in `providers:` that serves this model. |
 | `model` | required | The upstream model id, sent verbatim. |
 | `context_window` | `0` | Conservative token capacity. `0` disables the capacity warning for this model. |
-| `capabilities` | `[]` | Declared abilities. Recognized declarations filter the provider's matching capabilities; an empty list leaves them unfiltered. |
+| `capabilities` | `[]` | Declared abilities. Four recognized strings filter the provider's capabilities (see below); an empty list means no filtering. |
 | `pricing` | unset | Rates per million tokens: `input`, `output`, `cached_read`, `cache_write`. |
 | `reasoning_after_tools` | `{}` | Effort to tool names that escalate the rest of the turn. |
 
@@ -403,7 +403,7 @@ advances. Rate limits with a `Retry-After` and unambiguous account/model failure
 advance immediately. Structured adapters can also advance immediately when the
 provider body identifies a shared account limit or quota. Once a fallback
 succeeds, later tool iterations in that logical turn remain on it rather than
-retrying higher-priority links.
+retrying links earlier in the chain.
 
 The `openai_compat` stall abort falls in this class. A stream silent for
 `PROVIDER_STREAM_STALL_TIMEOUT_SECONDS` raises `TimeoutError`, so a wedged

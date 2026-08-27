@@ -47,7 +47,7 @@ section. The full set (`config/fragments/prompt.py:build_system_prompt`):
 | `<date>` | Today's date. |
 | `<bot_name>` | `BOT_NAME`, sanitized. |
 | `<user>`, `<user_id>`, `<trust_tier>` | The current speaker's display name (sanitized), Discord id, and resolved tier. |
-| `<model>` | The selected chain's primary chat model. It does not change when a request falls back to another backend. |
+| `<model>` | The selected chain's primary chat model. It does not change even when the turn falls back to another model. |
 | `<channel>`, `<server>` | Sanitized Discord channel and guild names. |
 | `<persona>` | `config/persona.md`, or the current user's compiled persona override in a code-owned frame (see below). |
 | `<channel_instructions>` | The first non-empty body of `config/threads/<thread_id>.md` > `config/channel_threads/<parent_channel_id>.md` > `config/channels/<channel_id>.md` inside a thread, else `config/channels/<channel_id>.md`. Thread-scoped bodies render under a `## Thread Instructions` heading; the channel body renders under `## Channel Instructions`. |

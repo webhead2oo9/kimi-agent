@@ -13,7 +13,7 @@ provider error identifies a shared account limit or quota without that header.
 
 Fallback is forward-only and sticky within a logical turn. Tool iterations and
 resumed coding tasks continue from the last serving backend instead of retrying
-higher-priority links.
+links earlier in the chain.
 
 ## Provider cooldowns
 
@@ -37,7 +37,7 @@ never contain secrets or raw provider responses.
 ## Cooldown selection
 
 Profile cooldown settings default to 5 minutes for outages, 30 minutes for
-quota, and 1 minute for rate limits. The generic policy uses the outage setting
+quota failures, and 1 minute for rate limits. The generic policy uses the outage setting
 for availability and missing-model failures, the quota setting for HTTP 401,
 and the rate-limit setting for a bare 429. Structured provider adapters may map
 their own error codes to these settings differently:

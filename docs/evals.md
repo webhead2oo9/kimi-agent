@@ -28,8 +28,14 @@ uv run python -m evals.harness_run --model candidate-example --repeat 3 --dry-ru
 # First run: hybrid cassette mode records live tool results per scenario
 uv run python -m evals.harness_run --model candidate-example --repeat 3
 
+# A small qualification slice before spending on the complete suite
+uv run python -m evals.harness_run --model candidate-example --repeat 1 \
+  --scenario run-code-arithmetic --scenario internet-search-official-docs
+
 # Compare a variant working tree against a reference run
-uv run python -m evals.compare evals/runs/harness/<A>/summary.json evals/runs/harness/<B>/summary.json
+uv run python -m evals.compare \
+  evals/runs/harness/<model-a>/<run-a>/summary.json \
+  evals/runs/harness/<model-b>/<run-b>/summary.json
 ```
 
 You can point the runner elsewhere with `--models` (default
@@ -37,13 +43,26 @@ You can point the runner elsewhere with `--models` (default
 (`evals/cassettes`), `--captions` (`evals/captions`), and `--out`
 (`evals/runs/harness`), which override the catalog, scenario directory, tool
 tape directory, shared image-caption cache, and output root respectively.
+Use repeatable `--scenario <id>` flags to select a qualification subset without
+copying scenario files into a temporary directory.
 
-Each run writes an immutable `evals/runs/harness/<utc>-<git-sha>/` directory
+Experimental gateways can set `timeout_seconds` and
+`min_request_interval_seconds` on their model spec. The latter spaces request
+starts—for example, `6.1` stays below a ten-requests-per-minute limit. Pacing
+waits count toward end-to-end wall time but not provider latency or output
+tokens/second, so reports distinguish queueing from inference speed. The eval
+wrapper enforces `timeout_seconds` as a total wall-clock deadline around each
+model request, in addition to the provider transport's own timeout behavior.
+
+Each run writes an immutable
+`evals/runs/harness/<model-key>/<utc>-<git-sha>/` directory
 containing `summary.json` (a stable schema that `evals.compare` reads),
 `report.md`, and `transcripts.jsonl` (per-rep transcripts, useful when you're
 triaging a failure). The run fails fast if a scenario expects a tool that the
 current `.env` didn't register, and `summary.json` records the registered-tool
-surface so that two runs can be compared on equal footing.
+surface so that two runs can be compared on equal footing. The summary also
+records the roster label, provider type, credential-free endpoint origin, exact model ID, and vision
+mode, so the same model served by two gateways cannot be mistaken for one arm.
 
 Every live run gets an isolated temporary writable-state root. Workspace files,
 attachments, personal skills, the browser profile, and the eval database never
@@ -260,15 +279,22 @@ caption prompt version, captioner model, source labels, and image-byte hashes,
 so later models see exactly the same caption. Delete the ignored cache (or bump
 the prompt version in code) to intentionally regenerate it.
 
-When `image_captioner` is absent, the previous fail-closed behavior remains:
-the harness runs visual scenarios only for an arm declaring `image_input`, and
-the head-to-head runner requires both arms to declare it. Ineligible image
-scenarios are skipped loudly.
+Choose the image path explicitly with `--vision-mode caption` or
+`--vision-mode native`. Caption mode requires `image_captioner` and measures
+reasoning over identical evidence. Native mode sends the fixture images directly
+and runs them only for an arm declaring `image_input`. The default `auto` keeps
+the historical behavior: use the captioner when configured, otherwise use native
+vision. Reports state the resolved mode. Ineligible image scenarios are skipped
+loudly.
 
 ```bash
 # Caption-assisted visual run (when image_captioner is configured)
 uv run python -m evals.harness_run --model vision-example \
-  --scenarios evals/scenarios/vision --repeat 3
+  --scenarios evals/scenarios/vision --vision-mode caption --repeat 3
+
+# Measure the candidate's own image path instead
+uv run python -m evals.harness_run --model vision-example \
+  --scenarios evals/scenarios/vision --vision-mode native --repeat 3
 ```
 
 The caption request uses the same marker, prompt, token ceiling, and image order

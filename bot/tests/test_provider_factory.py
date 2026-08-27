@@ -45,6 +45,20 @@ def test_factory_does_not_send_flex_to_non_openai_compatible_base_url() -> None:
     assert "flex_service_tier" not in {cap.value for cap in provider.capabilities}
 
 
+def test_factory_forwards_timeout_to_openai_compatible_client() -> None:
+    provider = create_provider(
+        ProviderConfig(
+            provider_name="openai_compat",
+            api_key="key",
+            base_url="https://gateway.example/v1",
+            model="test-model",
+            openai_timeout_seconds=123,
+        )
+    )
+
+    assert provider._client.timeout == 123  # type: ignore[attr-defined]
+
+
 def test_factory_does_not_send_flex_to_responses_provider_on_a_gateway() -> None:
     provider = create_provider(
         ProviderConfig(

@@ -5,6 +5,7 @@ import pytest
 from evals.compare import (
     compare_summaries,
     load_summary,
+    model_arm_identity,
     render_comparison,
     scenario_pass_rate,
     shared_tapes,
@@ -47,7 +48,7 @@ def test_render_comparison_marks_regressions_and_model_mismatch():
     comparison = compare_summaries(a, b)
     text = render_comparison(a, b, comparison, epsilon=2.0)
     assert "-10.0 (REGRESSED)" in text
-    assert "WARNING: different models" in text
+    assert "WARNING: different model arms" in text
 
 
 def _rated(run_id, rates, *, model="gpt-5.6-sol", repeat=3, **extra):
@@ -102,7 +103,32 @@ def test_failed_in_both_is_not_harness_suspect_for_one_model():
     assert comparison.failed_both == ["s1"]
     text = render_comparison(a, b, comparison, epsilon=2.0)
     assert "harness-suspect" not in text
-    assert "same model (deepseek) in both arms" in text
+    assert "same model arm (deepseek) in both runs" in text
+
+
+def test_same_model_id_on_distinct_providers_is_a_distinct_arm():
+    common = {"model": "deepseek-v4-flash", "model_label": "deepseek-v4-flash"}
+    a = _rated(
+        "runA",
+        {"s1": 0.0},
+        **common,
+        provider_name="openai_compat",
+        provider_base_url="https://opencode.ai",
+    )
+    b = _rated(
+        "runB",
+        {"s1": 0.0},
+        **common,
+        provider_name="openai_compat",
+        provider_base_url="https://api.runinfra.ai",
+    )
+
+    assert model_arm_identity(a) != model_arm_identity(b)
+    text = render_comparison(a, b, compare_summaries(a, b), epsilon=2.0)
+    assert "harness-suspect across" in text
+    assert "https://opencode.ai" in text
+    assert "https://api.runinfra.ai" in text
+    assert "WARNING: different model arms" in text
 
 
 def test_failed_in_both_marked_low_confidence_for_single_rep_runs():

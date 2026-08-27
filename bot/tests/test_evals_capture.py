@@ -1,6 +1,10 @@
 import asyncio
 import json
+import math
+import time
 from typing import Any, cast
+
+import pytest
 
 from evals.capture import InstrumentedProvider, InstrumentedRegistry, sum_tokens
 from providers.base import LLMProvider
@@ -51,6 +55,47 @@ def test_instrumented_provider_passes_through_and_records_usage():
     assert provider.total_tokens == 42
     assert len(provider.calls) == 1
     assert provider.calls[0].latency_ms >= 0
+
+
+def test_instrumented_provider_paces_request_starts_without_counting_wait_as_latency():
+    starts: list[float] = []
+
+    class _Timed(LLMProvider):
+        model = "paced"
+
+        async def run_turn(self, request):
+            starts.append(time.monotonic())
+            return ProviderResponse(content="ok", usage={"output_tokens": 1})
+
+    async def run() -> InstrumentedProvider:
+        provider = InstrumentedProvider(_Timed(), min_request_interval_seconds=0.02)
+        await provider.run_turn(_req())
+        await provider.run_turn(_req())
+        return provider
+
+    provider = asyncio.run(run())
+    assert starts[1] - starts[0] >= 0.018
+    assert provider.total_latency_ms < 20
+
+
+def test_instrumented_provider_rejects_non_finite_pacing():
+    inner = _Scripted(ProviderResponse(content="ok"))
+    for value in (math.inf, math.nan):
+        with pytest.raises(ValueError, match="min_request_interval_seconds"):
+            InstrumentedProvider(inner, min_request_interval_seconds=value)
+
+
+def test_instrumented_provider_enforces_total_request_timeout():
+    class _Slow(LLMProvider):
+        model = "slow"
+
+        async def run_turn(self, request):
+            await asyncio.sleep(0.05)
+            return ProviderResponse(content="too late")
+
+    provider = InstrumentedProvider(_Slow(), request_timeout_seconds=0.005)
+    with pytest.raises(TimeoutError):
+        asyncio.run(provider.run_turn(_req()))
 
 
 def test_sum_tokens_handles_prompt_completion_split():

@@ -45,13 +45,7 @@ def _init_skill_registry(
 
 
 def _use_skill_store(store: Path, *, builtin_dir: Path | None = None) -> ToolRegistry:
-    """Point the skill tools at `store`, the way the runtime does.
-
-    Production injects the service in `app/tools.py`; tests used to instead
-    monkeypatch `manager.SKILLS_DIR` and rely on `_active_skill_admin` noticing
-    and rebuilding. Injecting here means the tests exercise the same wiring
-    production uses.
-    """
+    """Point skill tools at `store` through the production service boundary."""
 
     catalog = skill_tools.loader.SharedSkillCatalog(
         store,
@@ -133,16 +127,13 @@ async def test_shared_skill_mutations_run_admin_service_off_event_loop(
 
 
 @pytest.mark.asyncio
-async def test_model_facing_skill_tools_use_the_injected_relocated_store(
+async def test_model_facing_skill_tools_use_the_injected_instance_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Production wiring (app/tools.py): the runtime store is the operator
-    # instance directory (SKILLS_DIR, outside the checkout because instance skills
-    # are not repo-committed), injected via SkillAdminService. The model-facing
-    # tools must scan THAT store, not the loader's packaged default; when they
-    # scanned the default, instance-only skills appeared in the prompt index
-    # but load_skill/skill_list reported them "not found" (2026-08-10).
+    # Model-facing tools must scan the operator instance store injected through
+    # SkillAdminService. Scanning packaged defaults makes the prompt index
+    # disagree with load_skill and skill_list for instance-only skills.
     repo_store = tmp_path / "repo-store"
     (repo_store / "generic").mkdir(parents=True)
     (repo_store / "generic" / "SKILL.md").write_text(

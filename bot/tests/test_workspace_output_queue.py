@@ -353,10 +353,9 @@ async def test_queue_file_rejects_unknown_action(tmp_path: Path) -> None:
 async def test_queue_file_noop_when_skill_output_already_attached(
     tmp_path: Path,
 ) -> None:
-    # Reproduces the logged failure: a skill (e.g. matplotlib_chart) writes into its
-    # job-output directory (a sibling of files/) and pre-attaches the result. The model then
-    # tries to queue_file the path it was handed, which is not addressable via the
-    # files/ tree. That used to hard-error; it must now be a no-op success.
+    # Skill outputs live beside files/ and may already be attached. Re-queueing
+    # the reported path is an idempotent success even though ordinary file tools
+    # cannot address that path.
     reg, mgr = _register(tmp_path, WorkspaceToolConfig(max_attachments=3))
     ctx = _make_ctx()
     job_dir = mgr.ensure(WS) / "jobs" / "job-xyz"

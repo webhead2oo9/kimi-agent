@@ -1,7 +1,7 @@
 """Exercises sandbox/runner.py directly: the isolation command it builds
 (systemd-run flags, network namespace, seccomp) rather than any tool that
-calls it. Kept separate from test_code_exec_tool.py so a sandbox flag
-regression is visible without a full tool-registry dispatch.
+calls it. Kept separate from test_code_exec_tool.py so sandbox flags can be
+verified without a full tool-registry dispatch.
 """
 
 from __future__ import annotations
@@ -97,9 +97,9 @@ def test_build_command_contains_isolation_flags(tmp_path: Path) -> None:
     assert cmd[-1] == "/work/run.py"
 
 
-def test_default_path_unchanged_when_network_fields_absent(tmp_path: Path) -> None:
-    # Guards the no-regression contract: a config with no netns_helper builds the
-    # exact scope-mode chain, no sudo/--share-net anywhere.
+def test_default_config_builds_scope_mode_chain(tmp_path: Path) -> None:
+    # A config with no netns_helper builds the scope-mode chain without
+    # sudo or --share-net.
     ws = tmp_path / "work"
     ws.mkdir()
     (ws / "r.py").write_text("", encoding="utf-8")

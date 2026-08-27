@@ -692,8 +692,8 @@ def test_user_files_size_excludes_env_dirs() -> None:
 
 
 def test_ensure_quota_rejects_writes_into_env_dirs() -> None:
-    # Guards the quota-evasion fix: write tools must refuse to write into the
-    # reserved environment dirs (.venv/.pio), which are excluded from user_files_size.
+    # Reserved environment directories are excluded from user_files_size, so
+    # write tools must reject paths beneath them.
     import pytest as _pytest
 
     from tools.workspace.common import ensure_quota

@@ -72,9 +72,8 @@ class SettingSpec:
     """One overlay-eligible Settings field and the rules its value must satisfy.
 
     Every attribute here is load-bearing for validation. Presentation metadata
-    (labels, help text, form grouping) lived here for the retired staff console
-    and was removed with it; a future console should re-derive its own rather
-    than reintroducing it as a second source of truth beside config/settings.py.
+    (labels, help text, form grouping) is deliberately absent: ``SettingSpec``
+    stays validation-only, and a future console should carry its own.
     """
 
     field: str

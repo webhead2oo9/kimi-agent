@@ -413,7 +413,7 @@ def _split_zero_compactor() -> Compactor:
 
 
 def test_split_zero_recompaction_preserves_reminder():
-    # A pass that finds nothing to summarize must not drop a previously appended
+    # A pass that finds nothing to summarize must not drop an existing
     # re-anchor, and must not fabricate an elision fallback note when only the
     # reminder was stripped.
     out = _run(

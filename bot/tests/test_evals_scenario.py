@@ -230,7 +230,7 @@ def test_load_scenario_parses_staff_tier_and_rejects_invalid(tmp_path):
 
 
 def test_split_gated_scenarios_holds_back_only_undeclared_hosts(tmp_path):
-    """requires_tools means "this host cannot", not "regression".
+    """requires_tools means "this host cannot", not a model failure.
 
     The harness hard-fails on an expected-but-unregistered tool, which is right for
     a real gap and wrong for browser/run_code on a box without a Linux sandbox.

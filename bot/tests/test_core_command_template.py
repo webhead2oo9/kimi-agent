@@ -54,12 +54,10 @@ async def test_command_template_reaches_system_prompt(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_thread_scope_reaches_system_prompt(monkeypatch):
-    """The last hop of the thread-instructions chain.
+    """Pin the final field-copy boundary in the thread-instructions chain.
 
-    Everything upstream of ``build_system_prompt`` is plain field copying, so
-    without this the whole feature can be disabled by deleting one kwarg and the
-    suite still passes: the thread simply falls back to the channel branch,
-    which is exactly the bug the scopes exist to fix.
+    Losing ``parent_channel_id`` here silently resolves per-channel instructions
+    against the thread id.
     """
     seen: dict[str, object] = {}
 

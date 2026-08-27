@@ -50,7 +50,7 @@ class MechanicalResult:
     # Non-fixture errors. Scripted fault-injection remains visible in tool_errors
     # but should not make a deliberately recovered scenario look unhealthy.
     live_tool_errors: int = 0
-    # Weighted composite in [0, 100]; the harness-eval regression number.
+    # Weighted composite in [0, 100]; the harness-eval comparison score.
     score: float = 0.0
 
     @property

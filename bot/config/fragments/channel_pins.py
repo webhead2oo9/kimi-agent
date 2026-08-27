@@ -62,10 +62,10 @@ def _read_channel_frontmatter(
     """Return ``(frontmatter, fragment_path)`` for a channel, or ``None``.
 
     ``None`` for a missing/invalid channel id or an unreadable file; the
-    frontmatter dict is empty when the fragment has none. The generic read behind
-    every loader here, mirroring ``config/fragments/guild_config.py:read_guild_frontmatter``
-    so a new channel-scoped key is three lines rather than another copy of the
-    id-check/read/parse sequence.
+    frontmatter dict is empty when the fragment has none. Every channel-scoped
+    loader shares this id-check/read/parse path, mirroring
+    ``config/fragments/guild_config.py:read_guild_frontmatter`` so validation and
+    failure handling stay consistent.
     """
     if not channel_id or not _ID_RE.match(channel_id):
         return None

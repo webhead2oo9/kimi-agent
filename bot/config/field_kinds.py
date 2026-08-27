@@ -1,12 +1,9 @@
-"""The value vocabulary the three operator-config surfaces share.
+"""Shared scalar vocabulary and coercion for operator configuration.
 
 Deployment settings (`config/operator_settings.py`), plugin settings
 (`config/plugin_settings.py`), and per-tool config (`tools/config_spec.py`) all
-let an operator put a typed scalar in YAML frontmatter, and all three had their
-own copy of the same five kind constants and the same ~40-line coercion. The
-copies had already drifted: only the tool surface enforced an upper bound, so a
-spec could declare `maximum` in one place and be silently ignored in the other
-two.
+accept typed scalars in YAML frontmatter. This module keeps their common kinds
+and minimum/maximum enforcement consistent.
 
 This owns the kinds and the coercion. Each surface keeps its own spec dataclass
 (they carry genuinely different extras) and its own kinds beyond these.

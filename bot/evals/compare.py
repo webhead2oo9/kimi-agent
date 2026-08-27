@@ -69,10 +69,10 @@ def load_summary(path: str | Path) -> dict:
 
 
 def scenario_pass_rate(entry: dict) -> float | None:
-    """One scenario's pass rate, or None when the run dir predates the key.
+    """One scenario's pass rate, or None when the summary omits the metric.
 
-    Older summaries carry only `aggregate.score_mean`, so the reps are the
-    fallback and "unknown" is a real answer, because deriving 0.0 from an
+    Summaries with only `aggregate.score_mean` use their reps as the fallback.
+    With neither source, "unknown" is the real answer; deriving 0.0 from an
     absent key would invent a failure.
     """
     aggregate = entry.get("aggregate") or {}
@@ -86,11 +86,9 @@ def scenario_pass_rate(entry: dict) -> float | None:
 
 
 # Provenance values whose results were served out of a tape *file*. Two runs
-# sharing a `cassette_model_key` read the same file, whether its entries were the
-# arm's own recordings ("model") or copies of the baseline ("promoted"), so the
-# mix is one recording just as much as the matching pair is. Requiring "model" on
-# both sides let that mix through unmarked, which for a CAUTION guard is the
-# damaging direction.
+# sharing a `cassette_model_key` read the same file, whether its entries are the
+# arm's own recordings ("model") or copies of the baseline ("promoted"). Any
+# such mix is one observation and trips the harness-suspect marker.
 TAPE_FILE_PROVENANCE = ("model", "promoted")
 
 
@@ -128,15 +126,12 @@ def shared_tapes(a: dict, b: dict, scenario_ids: Sequence[str]) -> list[str]:
 
 
 def unrecorded_tape_provenance(a: dict, b: dict) -> list[str]:
-    """Run ids whose summary predates the per-scenario `cassette_tapes` map.
+    """Run ids whose summary lacks the per-scenario `cassette_tapes` map.
 
-    Absent provenance is unknown, not cleared, and for the run dirs that
-    actually lack the key it is worse than unknown: before tapes were
-    model-keyed every run replayed the one shared flat-tree tape, so an
-    old-vs-new compare is precisely the case where correlated recordings are
-    guaranteed. `shared_tapes` sees two Nones there and stays silent, which for a
-    guard whose whole job is to say "this may be one observation" is the wrong
-    way to fail.
+    Absent provenance is unknown, not cleared. A summary without this map may
+    have replayed the shared flat-tree tape, so comparisons can contain
+    correlated recordings. `shared_tapes` cannot identify that from two missing
+    values; this check marks the run instead.
 
     Key *presence* is the version signal: `build_summary` always writes the key,
     empty map and all.
@@ -179,7 +174,7 @@ def compare_summaries(a: dict, b: dict) -> Comparison:
 
 
 def model_arm_identity(summary: dict) -> tuple[str, str, str, str]:
-    """Provider-aware identity, with old summaries falling back to model id."""
+    """Provider-aware identity; missing provider metadata falls back to model id."""
     model = str(summary.get("model") or "?")
     return (
         str(summary.get("model_label") or model),

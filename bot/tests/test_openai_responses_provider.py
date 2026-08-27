@@ -264,9 +264,8 @@ def _run_and_capture(provider: OpenAIResponsesProvider, request: ProviderRequest
 
 
 def test_responses_provider_omits_reasoning_when_no_effort_is_configured() -> None:
-    # A profile with no reasoning_effort, on a turn that escalates none, must
-    # send the same request shape as before reasoning was wired up: compat
-    # gateways behind this provider reject unknown fields.
+    # Omit reasoning when neither the profile nor the turn selects an effort;
+    # compatibility gateways may reject the unknown field.
     provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
 
     call = _run_and_capture(provider, _reasoning_request())

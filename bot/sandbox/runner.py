@@ -1229,7 +1229,7 @@ def _workspace_usage(config: SandboxConfig, workspace_dir: Path) -> _WorkspaceUs
     entries than a document workspace. Separate ceilings preserve that use case
     without exempting zero-byte files, directories, links, or special entries from
     inode accounting. The walk stops as soon as any configured ceiling is crossed,
-    so a previously abusive tree cannot force every monitor pass to enumerate it
+    so an over-limit tree cannot force every monitor pass to enumerate it
     in full.
     """
     total_bytes = 0

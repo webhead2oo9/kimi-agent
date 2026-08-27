@@ -427,8 +427,7 @@ def test_save_writes_only_own_entries_and_leaves_base_file_untouched(tmp_path):
     cassette.record("discord_text_search", {"x": 2}, "own-result")
     cassette.save()
 
-    # The regression test for the real near-miss: a run must not rewrite the
-    # committed corpus it replayed from.
+    # Saving a per-model cassette must not rewrite the shared corpus it replayed from.
     assert base_path.read_bytes() == before
     own_path = cassette_path(tmp_path, "s", "deepseek-v4-flash")
     entries = json.loads(own_path.read_text())["entries"]

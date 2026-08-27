@@ -337,9 +337,10 @@ class ConversationStore:
     ) -> int:
         """Count messages authored by ``user_id`` across all conversations, optionally
         excluding one Discord message id (the current trigger may already be persisted).
-        Used to detect a user with little/no prior history with the bot. ``limit`` caps the
-        count (and the scan) when the caller only needs a threshold check. The result is
-        ``min(actual, limit)``, so the work per call stays bounded for heavy users."""
+        Callers use this to detect a user with little or no prior history with the bot.
+        ``limit`` caps the count (and the scan) when the caller only needs a threshold
+        check. The result is ``min(actual, limit)``, so work stays bounded for heavy users.
+        """
         conn = self._db.conn
         where = "user_id = ?"
         params: list[Any] = [user_id]

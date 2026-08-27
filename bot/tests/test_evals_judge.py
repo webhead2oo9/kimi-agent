@@ -113,8 +113,8 @@ def test_judge_pair_maps_blind_labels_back_to_models(tmp_path):
     )
     # id="s" has an odd ord-sum -> swap=True -> Model A = baseline, Model B = candidate.
     # So the candidate's scores must come from the "B" block (=2), baseline from "A" (=5),
-    # and winner "A" must map back to "baseline". A direction error here is the worst
-    # possible bug (silent mis-attribution), so assert the mapping concretely.
+    # and winner "A" must map back to "baseline". A direction error silently
+    # misattributes results, so assert each reverse mapping concretely.
     assert set(result.candidate_scores) == set(DIMENSIONS)
     assert result.candidate_scores["helpfulness"] == 2
     assert result.baseline_scores["helpfulness"] == 5

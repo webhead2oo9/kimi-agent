@@ -1,6 +1,6 @@
 # Kimi
 
-> A Discord assistant you actually run yourself: your host, your model, your rules.
+> A Discord assistant built for you and your communities.
 
 ![Python](https://img.shields.io/badge/python-3.14+-blue.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)

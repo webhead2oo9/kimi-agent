@@ -118,8 +118,9 @@ requires a restart.
   those candidates against the live `/v1/models` response at startup. Selection
   is live and global, but catalog edits still need a restart.
 - **Provider resilience.** Provider profiles may set `failure_adapter` (default
-  `generic`) and positive `circuit_breaker.outage_cooldown_seconds` /
-  `quota_cooldown_seconds` values (both default 1800). Exact `Retry-After`
+  `generic`) and positive `circuit_breaker.outage_cooldown_seconds` (default
+  300), `quota_cooldown_seconds` (default 1800), and
+  `rate_limit_cooldown_seconds` (default 60) values. Exact `Retry-After`
   values override these defaults. See
   [Provider resilience](provider-resilience.md).
 - **Feature gating.** Several tools register only when the thing they depend on

@@ -48,8 +48,9 @@ class Scope:
 class CircuitBreakerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    outage_cooldown_seconds: float = Field(default=1800.0, gt=0)
+    outage_cooldown_seconds: float = Field(default=300.0, gt=0)
     quota_cooldown_seconds: float = Field(default=1800.0, gt=0)
+    rate_limit_cooldown_seconds: float = Field(default=60.0, gt=0)
 
 
 class ProviderProfile(BaseModel):

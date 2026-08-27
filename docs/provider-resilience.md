@@ -5,8 +5,9 @@ provider-neutral; optional adapters only translate structured provider errors.
 
 ## Fallback within a turn
 
-New turns begin at the primary. Connection, timeout, and server errors receive
-one retry; rate limits and clear access failures advance immediately.
+New turns begin at the primary. Connection, timeout, server errors, and rate
+limits without a `Retry-After` header receive one retry; rate limits that name
+a `Retry-After` and clear access failures advance immediately.
 
 Fallback is forward-only and sticky within a logical turn. Tool iterations and
 resumed coding tasks continue from the last serving backend instead of retrying
@@ -22,15 +23,18 @@ using fallbacks. Success closes the circuit; failure reopens it.
 
 There are two scopes:
 
-- **Model:** transport, server, missing-model, and model-access failures.
-- **Account:** authentication, shared rate limits, and subscription quotas.
+- **Model:** transport, server, missing-model, model-access, and generic
+  rate-limit failures.
+- **Account:** authentication and, through a structured adapter, shared
+  rate limits and subscription quotas.
 
 Only opaque keys, safe labels, and normalized reasons are stored—never secrets
 or raw provider responses.
 
 ## Cooldown selection
 
-Profiles default to 30 minutes for outages and quota failures:
+Profiles default to 5 minutes for outages, 30 minutes for quota failures, and
+1 minute for rate limits that carry no `Retry-After`:
 
 ```yaml
 providers:
@@ -39,18 +43,22 @@ providers:
     base_url: https://gateway.example.invalid/v1
     api_key_env: MODEL_API_KEY
     circuit_breaker:
-      outage_cooldown_seconds: 1800
+      outage_cooldown_seconds: 300
       quota_cooldown_seconds: 1800
+      rate_limit_cooldown_seconds: 60
 ```
 
-A valid `Retry-After` always wins, even below 30 minutes. Subscription profiles
-can use a longer quota default:
+A valid `Retry-After` always wins, even below these defaults. Subscription
+profiles can use a longer quota default:
 
 ```yaml
     circuit_breaker:
-      outage_cooldown_seconds: 1800
       quota_cooldown_seconds: 18000
 ```
+
+While a probe request is in flight after a cooldown, concurrent requests still
+skip that backend; on a single-model chain they fail with the cooling-down
+message until the probe settles.
 
 Select an optional structured-error adapter with `failure_adapter`; the default
 is `generic`.

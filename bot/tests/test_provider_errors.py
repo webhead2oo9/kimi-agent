@@ -41,7 +41,7 @@ def test_is_context_overflow_ignores_unrelated_errors():
 
 
 def test_provider_failure_disposition_separates_retry_failover_and_stop():
-    assert provider_failure_disposition(_StatusError("busy", 429)) == "failover"
+    assert provider_failure_disposition(_StatusError("busy", 429)) == "retry"
     assert provider_failure_disposition(_StatusError("unauthorized", 401)) == "failover"
     assert provider_failure_disposition(_StatusError("sparse", 403)) == "stop"
     assert provider_failure_disposition(ProviderBackendAccessError("recognized")) == "failover"

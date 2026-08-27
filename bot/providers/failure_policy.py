@@ -37,8 +37,9 @@ FailureDisposition = Literal["stop", "retry", "failover"]
 
 @dataclass(frozen=True, slots=True)
 class CooldownPolicy:
-    outage_seconds: float = 1800.0
+    outage_seconds: float = 300.0
     quota_seconds: float = 1800.0
+    rate_limit_seconds: float = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,12 +170,16 @@ def generic_failure_policy(
     status = provider_status_code(exc)
     retry_at = retry_after_timestamp(exc, now)
     if status == 429:
+        # A bare 429 is usually a burst limit on this endpoint, not an account-wide
+        # quota, so it keeps the same-backend retry and a short model-scope cooldown.
+        # Only an explicit Retry-After justifies advancing immediately; account-scope
+        # decisions are left to adapters that see structured provider evidence.
         return ProviderFailure(
-            "failover",
+            "failover" if retry_at is not None else "retry",
             FailureCategory.RATE_LIMIT,
-            CircuitScopeKind.ACCOUNT,
+            CircuitScopeKind.MODEL,
             status_code=status,
-            retry_at=retry_at or now + policy.outage_seconds,
+            retry_at=retry_at or now + policy.rate_limit_seconds,
         )
     if status == 401:
         return ProviderFailure(

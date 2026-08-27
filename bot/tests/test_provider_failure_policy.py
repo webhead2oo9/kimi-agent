@@ -43,8 +43,22 @@ def test_generic_retry_after_seconds_overrides_default() -> None:
     )
 
     assert failure.disposition == "failover"
-    assert failure.scope is CircuitScopeKind.ACCOUNT
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert failure.scope is CircuitScopeKind.MODEL
     assert failure.retry_at == 1012
+
+
+def test_generic_bare_rate_limit_retries_with_short_model_cooldown() -> None:
+    failure = generic_failure_policy(
+        _ProviderError(429),
+        CooldownPolicy(outage_seconds=300, rate_limit_seconds=45),
+        1000,
+    )
+
+    assert failure.disposition == "retry"
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert failure.scope is CircuitScopeKind.MODEL
+    assert failure.retry_at == 1045
 
 
 def test_generic_retry_after_http_date_overrides_default() -> None:

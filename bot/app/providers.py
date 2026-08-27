@@ -131,6 +131,7 @@ class ProviderManager:
             cooldown=CooldownPolicy(
                 outage_seconds=profile.circuit_breaker.outage_cooldown_seconds,
                 quota_seconds=profile.circuit_breaker.quota_cooldown_seconds,
+                rate_limit_seconds=profile.circuit_breaker.rate_limit_cooldown_seconds,
             ),
         )
 

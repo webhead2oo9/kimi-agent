@@ -1109,8 +1109,8 @@ def test_intermediate_narration_not_duplicated_in_history() -> None:
     assert combined.count("The answer is 42.") == 1
     assert assistant_texts[-1] == "The answer is 42."
 
-    # The user-facing reply now carries only the final answer; the intermediate
-    # narration goes to the separate live "building" message, not message #2.
+    # The user-facing reply contains only the final answer; intermediate
+    # narration goes to the separate live status message.
     assert "Let me look that up." not in result.text
     assert result.text == "The answer is 42."
 
@@ -1600,7 +1600,7 @@ def test_activation_tool_refreshes_schemas_in_same_turn() -> None:
     init_browse_tools(registry)
     registry.register(
         name="searched_tool",
-        description="A searchable tool for the regression test",
+        description="A searchable tool for the lazy-loading test",
         parameters={"type": "object", "properties": {}},
         handler=searched_handler,
         searchable=True,
@@ -2049,9 +2049,8 @@ def test_reply_context_is_ephemeral_continuation_context_each_iteration() -> Non
     seen_reply_images: list[list[ContentPart]] = []
 
     async def lookup(args: dict, ctx: MessageContext) -> str:
-        # A tool that operates on a visible image reads the reply rail. Without
-        # this, deleting the assignment in agent/core.py silently reinstates
-        # "reply to art, ask for similar" failing, with a green suite.
+        # Image-aware tools read the reply rail on every iteration. Losing this
+        # context breaks follow-up requests that refer to replied-to artwork.
         seen_reply_images.append(list(ctx.reply_image_parts))
         return json.dumps({"value": "workspace result"})
 
@@ -2493,9 +2492,8 @@ def _slow_handler_registry(*, name: str) -> ToolRegistry:
 
 
 def test_long_running_tool_is_bounded_by_whole_turn_deadline() -> None:
-    # A tool with its own internal cap no longer extends the outer wall clock:
-    # otherwise that cap could keep a conversation root held beyond the
-    # advertised deadline.
+    # A tool's internal cap must remain bounded by the outer turn deadline;
+    # otherwise it can hold the conversation root past the advertised deadline.
     registry = _slow_handler_registry(name="long_task")
     provider = TypedScriptedProvider(
         responses=[

@@ -47,13 +47,10 @@ from .config import DEFAULT_READ_LINE_LIMIT, WorkspaceToolConfig
 
 @dataclass(frozen=True)
 class FileToolDeps:
-    """What every file tool needs, passed explicitly instead of captured.
+    """Dependencies shared by file-tool handlers.
 
-    These handlers used to be closures inside ``register_file_tools``, which
-    made the module one 968-line function: a handler could not be read, typed,
-    or tested without the registration wrapper around it. The three
-    dependencies they actually shared now travel in this object, bound at
-    registration with ``functools.partial``.
+    Registration binds them with ``functools.partial``, keeping handlers
+    independently typed and testable.
     """
 
     workspace_manager: WorkspaceManager

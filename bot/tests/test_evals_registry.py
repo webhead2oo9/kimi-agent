@@ -99,12 +99,11 @@ def test_compose_tools_returns_a_provider_manager(eval_settings):
 
 
 def test_compose_tools_registers_default_on_thread_and_coding_surfaces(eval_settings):
-    """Both surfaces were unreachable from evals and shipped ungraded.
+    """Eval composition must register thread-handoff and coding controls.
 
-    thread_handoff_enabled defaults to True, but app/tools.py also requires a
-    get_thread_handoff callable, and the chat-side coding controls are installed
-    by app/runtime.py rather than build_runtime_tools. Neither gap was visible as
-    a failure: the scenarios simply could not be written.
+    Thread handoff needs a get_thread_handoff callback, while coding controls
+    are normally installed by app/runtime.py; compose_tools supplies both so
+    scenarios can exercise them.
     """
 
     registry = InstrumentedRegistry()

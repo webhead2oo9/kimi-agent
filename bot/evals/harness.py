@@ -51,8 +51,8 @@ class ScenarioRun:
     # End-to-end scenario time, including model calls, tool execution, memory
     # recall, and every turn. This is informational and never affects scoring.
     wall_time_ms: int = 0
-    # Additive audit metadata; kept after the original positional fields so older
-    # ScenarioRun(scenario, model, turns, wall_time) callers remain compatible.
+    # Optional audit metadata. Its position preserves four-argument
+    # ScenarioRun(scenario, model, turns, wall_time) construction.
     identity: EvalIdentity | None = None
 
     @property

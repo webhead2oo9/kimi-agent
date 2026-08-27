@@ -213,10 +213,8 @@ def _build_test_app(monkeypatch):
         "build_provider_manager",
         lambda settings: StubProviderManager(settings),
     )
-    # Keep tests hermetic and explicitly activate the synthetic guild. Runtime
-    # now passes an empty set to the guild gate when no server setup is saved,
-    # so pending guilds fail closed instead of inheriting the old "all allowed"
-    # behavior.
+    # Keep tests hermetic and explicitly activate the synthetic guild. Guilds
+    # with no saved setup fail closed.
     return app_runtime.build_app(
         Settings(
             _env_file=None,
@@ -321,9 +319,8 @@ def test_handle_message_resolves_the_thread_parent_for_instructions(monkeypatch)
 
     A mention inside a thread must carry the *parent* channel id so operator
     instruction fragments resolve against the channel the thread hangs off.
-    Without this the turn resolves the thread's own id, finds no fragment, and
-    silently runs with an empty <channel_instructions> slot, which is the exact
-    bug the thread scopes were added to fix.
+    Losing that field silently resolves against the thread id and leaves the
+    <channel_instructions> slot empty.
     """
     app = _build_test_app(monkeypatch)
     captured = _capture_conversation_call(
@@ -1605,9 +1602,9 @@ def test_blocked_user_is_ignored_before_status_and_turn(monkeypatch):
 def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
     """A message that queued behind a pausing turn must be dropped, not answered.
 
-    The pre-lock gate ran against the old mode. Answering it would also transcribe
-    it, and "a paused thread is not transcribed" is the property the privacy
-    argument for this design leans on.
+    The pre-lock decision may be stale after a queued turn pauses the thread.
+    Answering would also transcribe the message, violating the paused-thread
+    privacy boundary.
     """
     app = _build_test_app(monkeypatch)
     app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
@@ -2309,11 +2306,10 @@ def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
 
 @pytest.mark.parametrize("target_channel_id", [None, 200])
 def test_moderation_blocked_reply_creates_no_thread(monkeypatch, target_channel_id):
-    """Previously only the automatic backstop checked this.
+    """Do not create an automatic or requested handoff for a blocked reply.
 
-    Same-channel a stray thread was merely untidy; cross-channel it posts an
-    anchor in a channel nobody in the conversation is even looking at, so the
-    check moved to cover the model-requested path too, for both shapes.
+    A cross-channel handoff would post an anchor where no participant is
+    watching; a same-channel handoff would leave an orphaned thread.
     """
     app = _build_test_app(monkeypatch)
     store = ThreadMappingStore()
@@ -2398,11 +2394,7 @@ def test_paused_thread_still_continues_its_mapped_root(monkeypatch):
 
 
 def test_thread_creation_gate_uses_the_shared_blocked_union(monkeypatch):
-    """The creation gate and the turn path resolve the denylist the same way.
-
-    They used to build the global/guild/channel union separately, and the
-    runtime copy was unreachable from tests.
-    """
+    """The creation gate and the turn path resolve the denylist the same way."""
     app = _build_test_app(monkeypatch)
     calls: list[tuple[str, str]] = []
 

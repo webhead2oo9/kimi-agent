@@ -29,7 +29,7 @@ ACTIVITY_LOG_DELETE_DELAY_SECONDS = 3.0
 ACTIVITY_IDLE_NUDGE_SECONDS = 30.0
 # Once the surface is idle ("still thinking…"), re-render this often to tick the
 # elapsed counter so a long single step reads as alive, not hung. 0 disables the
-# heartbeat (single stale flip, the original behavior).
+# heartbeat after the initial stale indicator.
 ACTIVITY_STALE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_TEXT_INVOCATION_NAME = DEFAULT_BOT_NAME
 
@@ -155,8 +155,8 @@ def is_eligible_to_respond(
     """Author/type/guild/channel gates that must hold before ANY response.
 
     Shared by ``on_message`` (an early, cheap reject) and ``should_respond``.
-    Skipping them is what let the bot respond to its own replies (a
-    self-sustaining loop) and answer in channels removed from the allowlist.
+    Sharing these gates prevents self-reply loops and applies guild/channel
+    eligibility consistently across both entry paths.
 
     ``allowed_guilds=None`` disables the guild gate for isolated callers.
     Runtime always supplies a set, including an empty set when no guild has
@@ -276,9 +276,9 @@ def can_send_reply(channel: Any, *, bot_member: Any | None) -> bool:
     to deliver. DMs never reach here.
 
     Fails OPEN: when permissions cannot be resolved (no bot member, an
-    unexpected channel shape, or ``permissions_for`` raising) this returns True
-    so a reply is never wrongly suppressed; the only regression risk versus
-    today's behavior is running a turn we cannot deliver, which is the status quo.
+    unexpected channel shape, or ``permissions_for`` raising) this returns True.
+    A later delivery failure is preferable to suppressing a response the bot may
+    be able to send.
     """
     perms_for = getattr(channel, "permissions_for", None)
     if bot_member is None or not callable(perms_for):

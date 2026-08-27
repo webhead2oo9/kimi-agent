@@ -104,7 +104,7 @@ def test_proposals_is_a_reserved_core_module_name() -> None:
         )
 
 
-def test_old_module_api_is_rejected_clearly() -> None:
+def test_unsupported_module_api_version_is_rejected_clearly() -> None:
     with pytest.raises(RuntimeError, match="requires module API 1; core provides 2"):
         validate_module_selection(
             ("legacy",),

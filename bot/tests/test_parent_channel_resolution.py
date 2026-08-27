@@ -1,10 +1,8 @@
-"""The one helper that decides what "this channel" means inside a thread.
+"""Verify the shared definition of "this channel" inside a thread.
 
 Per-channel operator config (tool pins, the denylist, handoff policy, and the
-instructions fragment) is keyed on the channel a thread hangs off. Four sites
-used to open-code that; two now share ``resolve_parent_channel_id`` and the
-turn's ``parent_channel_id`` is derived from it, so a regression here silently
-re-points every one of those lookups.
+instructions fragment) is keyed on the channel a thread hangs off.
+``resolve_parent_channel_id`` supplies that key to every lookup.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ def test_an_unusable_channel_resolves_to_nothing(channel: object) -> None:
 
 
 def test_a_parentless_thread_falls_back_to_itself() -> None:
-    """Fail-safe: without a parent the old single-scope behavior is the answer."""
+    """Fail safe to the thread id when no parent is available."""
     assert resolve_parent_channel_id(_thread(77, None)) == "77"
 
 

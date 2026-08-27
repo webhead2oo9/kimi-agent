@@ -116,13 +116,13 @@ class OpenAIResponsesProvider(LLMProvider):
         return self._response_from_native(response)
 
     def _effective_reasoning_effort(self, request: ProviderRequest) -> str:
-        # A profile that configures no effort, on a turn that escalates none,
-        # sends no reasoning parameter at all: compat gateways behind this
-        # provider keep seeing the request shape they saw before reasoning was
-        # wired up. Once reasoning is in play, a reasoning-disabled turn
-        # (compaction, finalizers) pins the cheapest effort rather than the
-        # profile baseline, matching codex.py, and the turn's monotonic tool
-        # escalation otherwise wins over that baseline.
+        # When neither the profile nor the turn requests reasoning, send no
+        # reasoning parameter at all, so compat gateways behind this provider
+        # keep seeing the request shape they saw before reasoning was wired up.
+        # Once reasoning is in play, a reasoning-disabled turn (compaction,
+        # finalizers) pins the cheapest effort rather than the profile baseline,
+        # matching codex.py; otherwise the turn's monotonic escalation wins over
+        # that baseline.
         if not self._reasoning_effort and not request.reasoning_effort:
             return ""
         if not request.reasoning_enabled:

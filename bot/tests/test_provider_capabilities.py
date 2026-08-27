@@ -31,7 +31,7 @@ class ImageCapableProvider(LLMProvider):
 
 
 def test_core_does_not_infer_image_output_from_text_for_text_only_provider() -> None:
-    # Image generation is an explicit tool call now; ordinary text never adds a
+    # Image generation requires an explicit tool call. Ordinary text never adds a
     # provider capability requirement, even when it contains a visual verb.
     provider = TextOnlyProvider()
     ctx = ConversationContext(key="k", db_conversation_id=1)

@@ -81,7 +81,8 @@ def test_frontmatter_only_document_has_an_empty_body() -> None:
 
 
 def test_crlf_documents_are_parsed_rather_than_read_as_body() -> None:
-    """A CRLF fragment used to fall through as body-only, reading as "unset"."""
+    """CRLF frontmatter must parse; falling through as body-only reads as unset."""
+
     meta, body = split_frontmatter("---\r\npinned_tools: [a]\r\n---\r\nBody\r\n")
 
     assert meta == {"pinned_tools": ["a"]}

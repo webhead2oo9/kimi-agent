@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS video_interactions (
 -- Provider deletion outbox for Gemini Interaction ids. It deliberately has no
 -- foreign key: deleting a local session must retain enough metadata to finish
 -- deleting Gemini state. session_handle is a content-free local grouping key
--- only, used to order dependent Files API deletion after every Interaction
+-- only; it orders dependent Files API deletion after every Interaction
 -- deletion for the same session has completed.
 CREATE TABLE IF NOT EXISTS video_interaction_deletions (
     interaction_id TEXT PRIMARY KEY,

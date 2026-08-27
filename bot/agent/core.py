@@ -1527,11 +1527,11 @@ def _provider_state_after_client_compaction(
     like Codex that replay the full request while only using PREVIOUS_RESPONSE_ID for
     transport continuity, keep their provider state.
 
-    No shipped provider declares SERVER_SIDE_CONTEXT right now, so the drop branch
-    is currently unreachable. It is deliberately retained rather than inlined to
-    ``return provider_state``: the failure it prevents (a stateful backend
-    answering from a transcript the client already summarized away) is silent and
-    hard to trace, and the correct default for a newly added provider is to drop.
+    SERVER_SIDE_CONTEXT is intentionally fail-safe: a stateful backend must not
+    answer from a transcript the client has already summarized away. No shipped
+    provider declares it today, so the drop branch is unreachable; it is kept
+    because the failure it prevents is silent, and dropping is the correct
+    default for any provider added later.
     """
     if ProviderCapability.SERVER_SIDE_CONTEXT in capabilities:
         return {}

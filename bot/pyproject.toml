@@ -51,8 +51,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = []
 
-# Keep uv's own commands (uv run / uv sync) treating the root as a virtual
-# project despite the build-system above, preserving the current no-build flow.
+# `uv run` and `uv sync` must treat the root as a virtual project even though
+# metadata declares a build backend; package=false prevents source installation.
 [tool.uv]
 package = false
 

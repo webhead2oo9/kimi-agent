@@ -238,8 +238,6 @@ async def test_cancelled_deletion_waiter_does_not_block_future_activity() -> Non
 
 @pytest.mark.asyncio
 async def test_timed_out_worker_keeps_deletion_blocked_until_real_completion() -> None:
-    """Cross-layer regression for timeout detachment plus the privacy barrier."""
-
     barrier = UserPrivacyBarrier()
     surface_entered = asyncio.Event()
     start_guarded_worker = asyncio.Event()

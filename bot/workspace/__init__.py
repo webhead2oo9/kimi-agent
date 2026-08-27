@@ -3,10 +3,11 @@
 The sandbox itself: owner keys, path resolution that refuses traversal and
 symlink escapes, quota and TTL sweeping. Stdlib-only and provider-neutral.
 
-It lived under `agent/` but is not agent code: one `agent/` module used it
-while `tools/`, `skills/`, `commands/` and the lifecycle sweepers all did, so
-it put `agent` on both sides of most import edges. The Discord-facing *tools*
-built on top of it are a separate package, `tools/workspace/`.
+Deliberately not under `agent/`: exactly one `agent/` module uses it while
+`tools/`, `skills/`, `commands/`, `app/`, and the lifecycle sweepers all do, so
+living there would put `agent` on both sides of most import edges. The
+Discord-facing tools built on top of it are a separate package,
+`tools/workspace/`.
 """
 
 from __future__ import annotations

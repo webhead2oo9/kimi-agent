@@ -16,13 +16,11 @@ class ProviderCapability(str, Enum):
     IMAGE_OUTPUT = "image_output"
     TOOL_CALLING = "tool_calling"
     PREVIOUS_RESPONSE_ID = "previous_response_id"
-    # No shipped provider advertises this today (the last one that did was
-    # removed with openai_responses). It is kept because the guard it drives
-    # (agent/core.py:_provider_state_after_client_compaction) is the fail-safe
-    # for a provider that keeps transcript state upstream: without it, such a
-    # provider would silently continue from a pre-compaction transcript after
-    # the local history was rewritten. Declare it on any future stateful
-    # backend; leave it off for replay-style ones like Codex.
+    # Stateful providers declare this so client compaction discards their
+    # upstream continuation from the stale transcript; replay-style transports
+    # such as Codex leave it off. No shipped provider declares it today, but the
+    # guard it drives in agent/core.py is the fail-safe for such a backend, so
+    # the member stays.
     SERVER_SIDE_CONTEXT = "server_side_context"
     FLEX_SERVICE_TIER = "flex_service_tier"
 

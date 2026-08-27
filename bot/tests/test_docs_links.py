@@ -134,11 +134,11 @@ def test_env_vars_named_in_docs_exist() -> None:
     )
 
 
-def test_nothing_references_the_removed_spec_tree() -> None:
-    """`docs/superpowers/` does not exist; nothing may point a reader at it.
+def test_source_and_docs_do_not_reference_missing_spec_tree() -> None:
+    """Nothing may point a reader at the nonexistent `docs/superpowers/` tree.
 
-    Scans source as well as markdown, because the last stale reference lived in a
-    module docstring, which a markdown-only check cannot see.
+    Scan Python sources as well as markdown; the last stale reference lived in
+    a module docstring, which a markdown-only check cannot see.
     """
 
     offenders: list[str] = []
@@ -151,4 +151,4 @@ def test_nothing_references_the_removed_spec_tree() -> None:
             if "docs/superpowers" in path.read_text(encoding="utf-8"):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
 
-    assert not offenders, f"References to the removed docs/superpowers tree: {offenders}"
+    assert not offenders, f"References to the missing docs/superpowers tree: {offenders}"

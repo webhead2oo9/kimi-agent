@@ -71,7 +71,6 @@ def test_recall_types_default_agrees_between_settings_and_the_code_fallback() ->
     empty (`tools/user_memory.py` and `memory/recall.py` both apply it as
     ``recall_types or DEFAULT_USER_RECALL_TYPES``). If the two disagree, which
     layer gets recalled silently depends on whether the operator set the value.
-    That is the exact bug this pins.
     """
     from config.settings import Settings
 

@@ -97,9 +97,10 @@ def test_no_remote_control_surface_is_managed() -> None:
     """The overlay must never be able to configure a remote control surface.
 
     The file wins over the environment, so a managed ``*_enabled`` switch for a
-    network-facing console would let a data file open or close that surface.
-    The console this guarded was removed; the invariant outlives it, because
-    re-adding one and forgetting this exclusion is the regression."""
+    network-facing console would let a data file open or close that surface. No
+    such surface exists today; the invariant outlives it, because re-adding one
+    and forgetting this exclusion is the regression.
+    """
     managed = {spec.field for spec in SETTINGS_SPEC}
     assert sorted(field for field in managed if field.startswith("webui_")) == []
 

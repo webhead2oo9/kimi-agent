@@ -40,12 +40,12 @@ class ToolCost:
     # afterwards: the context tax a tool imposes for the rest of the turn.
     context_tokens: int
     duration_ms: int
-    # Calls that reached the real handler. Defaulted so a summary.json written
-    # before this column existed still round-trips through ToolCost(**entry).
+    # Calls that reached the real handler. The default preserves deserialization
+    # of summaries that omit per-source call counts.
     live_calls: int = 0
     # Calls served from a cassette. Per tool rather than run-wide, because "did a
-    # replay hide spend" is a question about *which* tool replayed. Defaulted for
-    # the same round-trip reason as `live_calls`.
+    # replay hide spend" is a question about *which* tool replayed. Defaulted so
+    # summaries without per-source call counts still deserialize.
     replay_calls: int = 0
 
     def as_dict(self) -> dict[str, Any]:
@@ -130,10 +130,8 @@ _ALWAYS_SHOWN = ("live", "replay")
 def recorded_call_split(counts: Mapping[str, int]) -> str:
     """Render `recorded_call_sources` as the report's denominator phrase.
 
-    Built from the dict rather than from two named keys, because naming them
-    silently dropped the others: a scenario that faults a cassette-recorded tool
-    makes "N live / M replayed" print a denominator short of the total a reader
-    was invited to add up.
+    Build from the dict so fault and miss sources remain in the denominator; two
+    named keys would undercount cassette-recorded calls.
     """
     order = [*_SOURCE_LABELS, *sorted(key for key in counts if key not in _SOURCE_LABELS)]
     return " / ".join(

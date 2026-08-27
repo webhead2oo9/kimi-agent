@@ -15,9 +15,8 @@ because that genuinely differs:
 So the split here is `split_frontmatter` (lenient, returns empty metadata) vs
 `split_frontmatter_strict` (raises `FrontmatterError`), over shared primitives.
 
-The delimiter grammar tolerates CRLF and trailing spaces/tabs on the `---`
-lines. Some callers previously used a stricter regex that silently treated a
-CRLF document as body-only, which read as "this operator set nothing".
+The delimiter grammar accepts CRLF and trailing spaces/tabs on the `---` lines,
+so platform-native line endings cannot turn configured metadata into body text.
 """
 
 from __future__ import annotations

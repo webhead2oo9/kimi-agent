@@ -39,17 +39,16 @@ def compose_tools(
         provider_manager,
         memory_manager,
         get_blocked_user_store=lambda: blocked_user_store,
-        # Thread handoff is ON by default in production, so leaving it unwired here
-        # hid a default-on surface from every run. `move_to_thread` never touches the
-        # manager (it only sets ctx.thread_request), and the three lifecycle tools
-        # fail closed to a tool_error outside a managed thread, so a null manager
-        # registers the surface without simulating a live thread.
+        # Thread handoff is on by default in production. `move_to_thread` only
+        # sets ctx.thread_request, and lifecycle tools fail closed outside a
+        # managed thread, so a null manager registers the surface without
+        # simulating a live thread.
         get_thread_handoff=lambda: None,
         registry=registry,
     )
-    # Chat-side coding controls are registered by app/runtime.py in production and so
-    # were unreachable from evals entirely. The stub keeps `start_coding_task` gradeable
-    # (does the model delegate, or answer inline?) without ever spawning a job.
+    # Chat-side coding controls are normally registered by app/runtime.py. The
+    # stub keeps `start_coding_task` gradeable (delegate or answer inline)
+    # without spawning a job.
     init_coding_control_tools(registry, cast(CodingTaskControls, StubCodingControls()))
     install_safe_stubs(registry)
     return memory_manager, provider_manager, runtime_tools

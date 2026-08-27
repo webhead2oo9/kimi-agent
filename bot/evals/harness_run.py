@@ -129,8 +129,8 @@ def run_data_paths(repo_dir: Path, cassette_dir: Path | str) -> tuple[str, ...]:
 
     Derived from the tape directory the run actually uses rather than hardcoded
     to the default: `--cassettes <some other tracked path>` writes there instead,
-    so a fixed `evals/cassettes` would stop covering the run's own writes (the
-    original self-dirtying bug, back) while excusing a tree the run never touched.
+    so a fixed `evals/cassettes` would miss the run's own writes while excusing a
+    tree the run never touched.
     Returns nothing when the tapes live outside the repo (they cannot dirty it)
     or when git cannot locate the repo root, which leaves the check at its
     cautious setting.
@@ -223,8 +223,8 @@ def make_run_dir(base: Path, *, sha: str, now: datetime | None = None) -> Path:
 def missing_expected_tools(scenarios: list[Scenario], registered: set[str]) -> dict[str, list[str]]:
     """Expected tools that are not registered at all (env gate off, missing key...).
 
-    Without this check a scenario 'fails' because the dev box lacks an API key
-    and the loop optimizes against a phantom regression.
+    This separates host capability gaps from model failures: without it, the
+    optimization loop reacts to a missing capability as if the model had failed.
     """
     problems: dict[str, list[str]] = {}
     for scenario in scenarios:
@@ -431,10 +431,9 @@ def build_summary(
         "cassette_mode": cassette_mode,
         "cassette_dir": cassette_dir,
         "cassette_model_key": cassette_model_key,
-        # Per-scenario tape provenance ("model"/"promoted"/"shared"/"none"). Without it a
-        # reader cannot tell whether a run replayed its own recordings, another
-        # arm's, or none at all. Both motivating runs were ~95% live and the
-        # report said nothing.
+        # Per-scenario tape provenance ("model"/"promoted"/"shared"/"none").
+        # Readers need this to distinguish a run's own recordings, another arm's
+        # recordings, and fully live dispatch.
         "cassette_tapes": cassette_tapes or {},
         "registered_tools": registered_tools,
         # Scenario id -> missing capability/tool. A run that silently dropped

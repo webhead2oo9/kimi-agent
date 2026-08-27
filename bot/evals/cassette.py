@@ -15,9 +15,10 @@ scenarios grade whether the model self-corrects after a tool error.
 
 Tapes are **model-keyed** (`evals/cassettes/<model-key>/<scenario-id>.json`).
 Cassette keys are `(tool, canonical args)` and the args are model-generated, so
-one model's recordings are a poor match for another's calls; worse, default
-`replay` mode records misses and saves them, so a shared file is silently
-rewritten by whichever model ran last. A run only ever writes its own tape.
+one model's recordings are a poor match for another model's calls; worse, the
+default `replay` mode records misses and saves them, so a shared file is
+silently rewritten by whichever model ran last. A run only ever writes its own
+tape.
 
 The flat `evals/cassettes/*.json` tree is kept as a read-only **shared
 baseline** layered underneath a per-model tape. That makes a per-model tape a

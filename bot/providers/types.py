@@ -16,11 +16,11 @@ class ProviderCapability(str, Enum):
     IMAGE_OUTPUT = "image_output"
     TOOL_CALLING = "tool_calling"
     PREVIOUS_RESPONSE_ID = "previous_response_id"
-    # Stateful providers advertise this so client compaction discards upstream
-    # continuation from the stale transcript. No shipped provider does today;
-    # the member is retained because the guard it drives in agent/core.py is the
-    # fail-safe for a backend that keeps transcript state upstream. Declare it on
-    # any future stateful provider; replay-style ones such as Codex leave it off.
+    # Stateful providers declare this so client compaction discards their
+    # upstream continuation from the stale transcript; replay-style transports
+    # such as Codex leave it off. No shipped provider declares it today, but the
+    # guard it drives in agent/core.py is the fail-safe for such a backend, so
+    # the member stays.
     SERVER_SIDE_CONTEXT = "server_side_context"
     FLEX_SERVICE_TIER = "flex_service_tier"
 

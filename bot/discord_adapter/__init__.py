@@ -1,6 +1,6 @@
 """The Discord boundary: everything that speaks the platform's API.
 
-The core boundary modules:
+The core platform modules:
 
 - `io`: reading and writing Discord messages, including the eligibility and
   mention gates, chunking, attachments, embeds, and the live activity surface.

@@ -166,8 +166,7 @@ def test_app_modules_do_not_import_bot_entrypoint() -> None:
 
 
 def test_generic_knowledge_search_surface_has_no_files() -> None:
-    """Companion to the registration guard above: the files stay gone, not just
-    unregistered."""
+    """Companion to the registration guard above: the files stay gone, not merely unregistered."""
 
     assert not (PROJECT_ROOT / "tools/knowledge_search.py").exists()
     assert not (PROJECT_ROOT / "knowledge").exists()

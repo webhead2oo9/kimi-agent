@@ -223,8 +223,8 @@ def make_run_dir(base: Path, *, sha: str, now: datetime | None = None) -> Path:
 def missing_expected_tools(scenarios: list[Scenario], registered: set[str]) -> dict[str, list[str]]:
     """Expected tools that are not registered at all (env gate off, missing key...).
 
-    This separates host capability gaps from model failures so the loop does not
-    optimize against unavailable infrastructure.
+    This separates host capability gaps from model failures: without it, the
+    optimization loop reacts to a missing capability as if the model had failed.
     """
     problems: dict[str, list[str]] = {}
     for scenario in scenarios:

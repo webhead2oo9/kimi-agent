@@ -98,6 +98,9 @@ def install_safe_stubs(registry: ToolRegistry) -> None:
             skill_name=entry.skill_name,
             category=entry.category,
             parameters_builder=entry.parameters_builder,
+            owner_only=entry.owner_only,
+            guild_ids=entry.guild_ids,
+            config_spec=entry.config_spec,
         )
 
 

@@ -140,7 +140,8 @@ class ToolCallRecord:
     ok: bool
     duration_ms: int
     # Where the result came from: "live" (real handler), "replay" (cassette),
-    # "fault" (scenario-injected failure), or "miss" (strict-mode cassette miss).
+    # "fault" (scenario-injected failure), "miss" (strict-mode cassette miss),
+    # or "denied" (the registry's dispatch gate rejected the call).
     source: str = "live"
     # How many provider calls this turn had already completed when the tool was
     # dispatched. A tool result is not billed once: it joins the context and is
@@ -176,9 +177,8 @@ class InstrumentedRegistry(ToolRegistry):
 
     Optionally fronts dispatch with a per-scenario cassette (record/replay) and
     a fault queue; see evals/cassette.py. Replay hits and faults return without
-    invoking the real handler (and therefore without the live tier/activation
-    gates: recordings were made under the same scenario config, so gating has
-    already shaped what got recorded).
+    invoking the real handler, but every source first passes the registry's
+    authoritative side-effect-free dispatch gates.
     """
 
     def __init__(self, *, internet_search_max_backend_calls_per_turn: int = 10) -> None:
@@ -222,6 +222,9 @@ class InstrumentedRegistry(ToolRegistry):
         return queue.pop(0)
 
     async def _resolve(self, name: str, args: dict, ctx: MessageContext) -> tuple[str, str]:
+        gate_error = self.dispatch_gate(name, ctx)
+        if gate_error is not None:
+            return gate_error, "denied"
         fault = self._pop_fault(name)
         if fault is not None:
             return json.dumps({"error": fault.message}), "fault"

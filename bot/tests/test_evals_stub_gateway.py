@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from evals.stub_gateway import StubBlockedUserStore, StubGateway, install_safe_stubs
+from tools.config_spec import KIND_INT, ToolConfigField
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
@@ -91,6 +92,69 @@ def test_install_safe_stubs_preserves_staff_only_visibility():
     assert "teach" in staff_tools
     result = asyncio.run(registry.dispatch("teach", {"content": "x"}, _ctx()))
     assert json.loads(result)["status"] == "stubbed"
+
+
+def test_install_safe_stubs_preserves_owner_and_guild_scope():
+    async def real_memory_write(args, ctx):
+        raise AssertionError("real memory write must not run during eval")
+
+    registry = ToolRegistry(owner_user_id="owner")
+    registry.register(
+        name="remember_user_memory",
+        description="scoped write",
+        parameters={},
+        handler=real_memory_write,
+        owner_only=True,
+        guild_ids=frozenset({"allowed"}),
+    )
+    install_safe_stubs(registry)
+
+    allowed = _ctx()
+    allowed.user_id = "owner"
+    allowed.guild_id = "allowed"
+    wrong_owner = _ctx()
+    wrong_owner.guild_id = "allowed"
+    wrong_guild = _ctx()
+    wrong_guild.user_id = "owner"
+
+    assert (
+        json.loads(asyncio.run(registry.dispatch("remember_user_memory", {}, allowed)))["status"]
+        == "stubbed"
+    )
+    assert json.loads(asyncio.run(registry.dispatch("remember_user_memory", {}, wrong_owner))) == {
+        "error": "Unknown tool: remember_user_memory"
+    }
+    assert json.loads(asyncio.run(registry.dispatch("remember_user_memory", {}, wrong_guild))) == {
+        "error": "Unknown tool: remember_user_memory"
+    }
+
+
+def test_install_safe_stubs_preserves_config_spec():
+    async def real_teach(args, ctx):
+        raise AssertionError("real teach must not run during eval")
+
+    spec = (
+        ToolConfigField(
+            field="limit",
+            label="Limit",
+            kind=KIND_INT,
+            default=2,
+            minimum=1,
+            maximum=5,
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(
+        name="teach",
+        description="configured write",
+        parameters={},
+        handler=real_teach,
+        config_spec=spec,
+    )
+
+    install_safe_stubs(registry)
+
+    assert registry.config_specs() == {"teach": spec}
 
 
 def test_stub_blocked_user_store_records_in_memory_only():

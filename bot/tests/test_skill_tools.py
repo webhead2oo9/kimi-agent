@@ -637,9 +637,7 @@ async def test_skill_edit_rejects_meaningful_mode_conflicts_and_empty_noop(
         },
         _staff_ctx("111"),
     )
-    assert json.loads(conflict) == {
-        "error": "Provide at most one of content, edits, or append"
-    }
+    assert json.loads(conflict) == {"error": "Provide at most one of content, edits, or append"}
     assert skill_path.read_text(encoding="utf-8") == original
 
     noop = await skill_tools._skill_edit(

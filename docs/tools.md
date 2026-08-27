@@ -72,6 +72,7 @@ boundary; prompt text is never an access control.
 | `lookup_member` | Searchable | Member | Resolve a current-guild member by ID or name and return profile/role information. Staff callers also receive the bot's resolved trust tier. |
 | `discord_text_search` | Searchable | Member | Search message text across channels the caller and bot can read, minus operator exclusions. Enabled by default; Message Content intent must also be enabled. |
 | `internet_search` | Core | Member | Search the live web, or read pages the model already has URLs for. Registered when `EXA_API_KEY` or `BRAVE_API_KEY` is set; a search blends the configured providers by default. |
+| `wolfram_alpha` | Searchable | Member | Compute mathematics, science, conversions, statistics, and factual data through the Wolfram|Alpha LLM API. Registered when `WOLFRAM_ALPHA_APP_ID` is set. |
 | `block_user` | Core | Member | Stop the current speaker from using the bot. It cannot target another user, and staff cannot be self-blocked through this tool. |
 
 `get_channel_context` reads the live Discord window without adding any of
@@ -84,6 +85,10 @@ See [configuration](configuration.md#discord-text-search-gated).
 which provider answered. A search that found nothing says so in as many words,
 so the model can tell an empty web from a broken provider. See
 [Internet search](internet-search.md).
+
+`wolfram_alpha` accepts a bounded single-line English query and returns bounded,
+untrusted model-oriented text. Its AppID stays in `.env`; see
+[Wolfram|Alpha](wolfram-alpha.md).
 
 ## Video understanding
 

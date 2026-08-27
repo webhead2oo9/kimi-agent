@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     internet_search_max_output_chars: int = 24_000
     internet_search_safesearch: str = "moderate"
 
+    # Wolfram|Alpha computational knowledge (optional searchable tool). The
+    # AppID is an environment-only secret and its presence gates registration.
+    wolfram_alpha_app_id: SecretStr = SecretStr("")
+    wolfram_alpha_timeout_seconds: float = 30.0
+    wolfram_alpha_max_calls_per_turn: int = Field(default=3, ge=1, le=10)
+    wolfram_alpha_max_output_chars: int = Field(default=6_800, ge=500, le=20_000)
+    wolfram_alpha_call_cost_usd: float | None = None
+
     # Stateful public-YouTube understanding (optional searchable tool). The
     # Gemini key is dedicated to this tool and never participates in chat model
     # routing. Registration requires both the flag and a non-empty key.
@@ -494,6 +502,7 @@ class Settings(BaseSettings):
         "exa_search_cost_usd",
         "exa_contents_cost_usd",
         "brave_search_cost_usd",
+        "wolfram_alpha_call_cost_usd",
         mode="before",
     )
     @classmethod
@@ -751,6 +760,7 @@ class Settings(BaseSettings):
         "provider_stream_stall_timeout_seconds",
         "internet_search_backend_timeout_seconds",
         "internet_search_timeout_seconds",
+        "wolfram_alpha_timeout_seconds",
     )
     @classmethod
     def _require_positive_timeout(cls, value: float, info: ValidationInfo) -> float:
@@ -779,6 +789,7 @@ class Settings(BaseSettings):
         "exa_search_cost_usd",
         "exa_contents_cost_usd",
         "brave_search_cost_usd",
+        "wolfram_alpha_call_cost_usd",
     )
     @classmethod
     def _require_non_negative_search_cost(

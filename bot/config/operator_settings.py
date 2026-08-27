@@ -153,6 +153,10 @@ _MINIMUMS: dict[str, int | float] = {
     "exa_search_cost_usd": 0,
     "exa_contents_cost_usd": 0,
     "brave_search_cost_usd": 0,
+    "wolfram_alpha_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,
+    "wolfram_alpha_max_calls_per_turn": 1,
+    "wolfram_alpha_max_output_chars": 500,
+    "wolfram_alpha_call_cost_usd": 0,
     # ── Providers ────────────────────────────────────────────────────────────
     "provider_stream_stall_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,
     "codex_ws_idle_timeout": 1,

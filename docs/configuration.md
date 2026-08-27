@@ -562,6 +562,32 @@ deduplication, and cost accounting.
 
 ---
 
+## Wolfram|Alpha (gated)
+
+The searchable member-tier `wolfram_alpha` tool registers when its dedicated
+AppID is present. It calls Wolfram|Alpha's LLM API with a bounded single-line
+query and returns bounded text as untrusted context. The AppID is an
+environment-only `SecretStr`; it is excluded from operator settings and tool
+configuration.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `WOLFRAM_ALPHA_APP_ID` | secret | `""` | Dedicated Wolfram|Alpha AppID. A blank value leaves the tool unregistered. |
+| `WOLFRAM_ALPHA_TIMEOUT_SECONDS` | float | `30.0` | Whole logical request deadline. Must be positive. |
+| `WOLFRAM_ALPHA_MAX_CALLS_PER_TURN` | int | `3` | Logical Wolfram|Alpha requests allowed in one user turn, from 1 to 10. |
+| `WOLFRAM_ALPHA_MAX_OUTPUT_CHARS` | int | `6800` | Provider and local result-text cap, from 500 to 20,000 characters. |
+| `WOLFRAM_ALPHA_CALL_COST_USD` | float or null | null | Optional deployment-known price per logical call, including its possible bounded retry, for the local paid-tool ledger. Attempted calls record it even when the provider returns an error. |
+
+The host sends `metric` or `nonmetric` units only when the model explicitly
+selects one. The AppID travels in an HTTPS bearer header rather than the query
+URL. Provider image URLs remain text and are not fetched. Transient transport
+and HTTP failures receive one bounded retry inside the same logical allowance.
+
+See [Wolfram|Alpha](wolfram-alpha.md) for setup, behavior, licensing, and the
+provider-output boundary.
+
+---
+
 ## Video understanding (gated)
 
 The searchable member-tier `video` tool registers only when the feature flag

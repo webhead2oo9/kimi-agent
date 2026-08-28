@@ -37,12 +37,12 @@ def _verify_consumer() -> None:
     matches = [
         point
         for point in entry_points(group=api.MODULE_ENTRYPOINT_GROUP)
-        if point.name == "reference_greeter"
+        if point.name == "reference_kudos"
     ]
     assert len(matches) == 1
     spec = matches[0].load()
     assert isinstance(spec, api.ModuleSpec)
-    assert spec.name == "reference_greeter"
+    assert spec.name == "reference_kudos"
     assert spec.api_version == api.MODULE_API_VERSION
 
 

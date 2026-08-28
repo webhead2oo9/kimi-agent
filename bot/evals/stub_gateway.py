@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from agent.backfill import BackfilledMessage
 from app.tool_surfaces import surface_tools
 from discord_adapter.gateway import MemberLookup, TurnSourceSnapshot
-from tools.registry import MessageContext, ToolEntry, ToolRegistry
+from tools.registry import MessageContext, ToolRegistry
 
 # Tools that perform an external WRITE to a shared production surface. We replace
 # them with canned acks so an eval run cannot write into the shared community
@@ -82,10 +82,8 @@ def install_safe_stubs(registry: ToolRegistry) -> None:
     async def _ack(args: dict, ctx: MessageContext) -> str:
         return json.dumps({"status": "stubbed", "note": "external write suppressed in eval"})
 
-    by_name: dict[str, ToolEntry] = {entry.name: entry for entry in registry.get_all_tools()}
     for name in (*SAFE_STUB_TOOLS, *sorted(surface_tools("eval_stub"))):
-        entry = by_name.get(name)
-        if entry is None:
+        if not registry.is_registered(name):
             continue
         registry.replace_handler(name, _ack)
 

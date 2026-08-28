@@ -114,7 +114,8 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
   module's tools are hidden (masked, like any other gate) until the module
   has started and wherever the module is inactive; with `guild_only` (the
   default) they are hidden from DMs and personal chat as well, so `guild_id`
-  is `None` only for a tool registered with `guild_only=False`.
+  is `None` only for a tool registered with `guild_only=False`, and
+  `channel_id` is `None` only in personal chat.
 
 For repeatable deployments, keep third-party module requirements in
 deployment-owned lock data and install them after the core sync. Private Git

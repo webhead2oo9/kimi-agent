@@ -716,8 +716,46 @@ async def test_cancelling_one_orphan_keeps_the_detail_naming_a_live_job(tmp_path
         assert await second.run_due() == 0
         assert health[-1] == ("mod", "degraded", "scheduled job 'a' has no handler")
         assert await second.view_for("mod").cancel("a")
-        # Still degraded (b is orphaned too), and the stored detail now names b.
+        # Still degraded (b is orphaned too); the detail, stored and live, now names b.
         assert second._paused_reported[("mod", "h")] == "scheduled job 'b' has no handler"
+        assert health[-1] == ("mod", "degraded", "scheduled job 'b' has no handler")
     finally:
         await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_renewing_after_close(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, lease_seconds=0.2, poll_seconds=0.05)
+    started = asyncio.Event()
+
+    async def stubborn(run: JobRun) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            # Ignore the scheduler's cancellation so the job is abandoned; yield
+            # to the loop's own teardown after that.
+            await asyncio.sleep(10)
+
+    scheduler.view_for("mod").register("h", stubborn)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    scheduler.start()
+    await asyncio.wait_for(started.wait(), timeout=2)
+    try:
+        # The stubborn handler is abandoned after the grace period; its
+        # heartbeat must then stop touching the runner lease.
+        await scheduler.close()
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None
+        leased_until = float(row[0])
+        await asyncio.sleep(0.35)
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert float(row[0]) <= leased_until
+    finally:
         await db.close()

@@ -12,6 +12,8 @@ ChatCallback = Callable[
 ]
 ResetCallback = Callable[[discord.Interaction], Awaitable[str]]
 MAX_COMMAND_DESCRIPTION_LENGTH = 100
+CHAT_VISIBILITY_PRIVATE = "private"
+CHAT_VISIBILITY_PUBLIC = "public"
 
 
 def _chat_description(bot_name: str) -> str:
@@ -31,7 +33,13 @@ def register_user_app_chat_commands(
     @app_commands.describe(
         message="What you want to say",
         attachment="Optional image or file to include",
-        public="Post the response publicly instead of only to you",
+        visibility="Who can see the live response and result",
+    )
+    @app_commands.choices(
+        visibility=[
+            app_commands.Choice(name="Only me", value=CHAT_VISIBILITY_PRIVATE),
+            app_commands.Choice(name="Everyone", value=CHAT_VISIBILITY_PUBLIC),
+        ]
     )
     @app_commands.allowed_installs(guilds=False, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -39,9 +47,14 @@ def register_user_app_chat_commands(
         interaction: discord.Interaction,
         message: str,
         attachment: discord.Attachment | None = None,
-        public: bool = False,
+        visibility: str = CHAT_VISIBILITY_PRIVATE,
     ) -> None:
-        await run_chat(interaction, message, attachment, public)
+        await run_chat(
+            interaction,
+            message,
+            attachment,
+            visibility == CHAT_VISIBILITY_PUBLIC,
+        )
 
     @app_commands.command(
         name="chat-reset",

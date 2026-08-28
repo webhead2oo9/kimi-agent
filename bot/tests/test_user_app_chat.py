@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import discord
 import pytest
 from discord.ext import commands
 from pydantic import ValidationError
 
+from agent.activity import ActivityUpdate
+from agent.turn import TurnResult
 from commands.chat_cmd import register_user_app_chat_commands
-from agent.turn import TurnResult, TurnTerminationReason
 from app import runtime as app_runtime
 from config.fragments.prompt import resolve_template_path
 from config.settings import Settings
@@ -142,9 +145,16 @@ def test_chat_commands_are_user_install_only() -> None:
         reset_chat=reset_chat,
         bot_name="Kimi",
     )
-    chat_command = bot.tree.get_command("chat")
+    chat_command = cast(Any, bot.tree.get_command("chat"))
     assert chat_command is not None
     assert chat_command.description == "Chat with Kimi"
+    parameters = {parameter.name: parameter for parameter in chat_command.parameters}
+    assert set(parameters) == {"message", "attachment", "visibility"}
+    assert parameters["visibility"].required is False
+    assert parameters["visibility"].default == "private"
+    assert [
+        (choice.name, choice.value) for choice in parameters["visibility"].choices
+    ] == [("Only me", "private"), ("Everyone", "public")]
     for name in ("chat", "chat-reset"):
         command = bot.tree.get_command(name)
         assert command is not None
@@ -173,10 +183,46 @@ def test_chat_command_description_respects_discord_limit() -> None:
         bot_name="K" * 100,
     )
 
-    command = bot.tree.get_command("chat")
+    command = cast(Any, bot.tree.get_command("chat"))
     assert command is not None
     assert command.description == f"Chat with {'K' * 90}"
     assert len(command.description) == 100
+
+
+@pytest.mark.asyncio
+async def test_chat_visibility_choice_maps_to_internal_public_flag() -> None:
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    calls: list[bool] = []
+
+    async def run_chat(
+        _interaction: discord.Interaction,
+        _message: str,
+        _attachment: discord.Attachment | None,
+        public: bool,
+    ) -> None:
+        calls.append(public)
+
+    async def reset_chat(_interaction: discord.Interaction) -> str:
+        return "ok"
+
+    register_user_app_chat_commands(
+        bot,
+        run_chat=run_chat,
+        reset_chat=reset_chat,
+        bot_name="Kimi",
+    )
+    command = cast(Any, bot.tree.get_command("chat"))
+    assert command is not None
+    interaction = cast(discord.Interaction, object())
+
+    await command.callback(interaction, "private")
+    await command.callback(
+        interaction,
+        "public",
+        visibility="public",
+    )
+
+    assert calls == [False, True]
 
 
 @pytest.mark.asyncio
@@ -293,36 +339,144 @@ async def test_private_status_replaces_public_placeholder_with_followup() -> Non
     assert interaction.followup.messages[0]["ephemeral"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_public", [False, True])
+async def test_user_app_status_keeps_selected_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+    requested_public: bool,
+) -> None:
+    calls: list[tuple[bool, bool]] = []
+
+    async def send_status(
+        _interaction: object,
+        _content: str,
+        *,
+        ephemeral: bool,
+        original_ephemeral: bool,
+    ) -> None:
+        calls.append((ephemeral, original_ephemeral))
+
+    monkeypatch.setattr(app_runtime, "send_interaction_status", send_status)
+
+    await app_runtime._send_user_app_status(
+        cast(discord.Interaction, object()),
+        "Turn failed.",
+        requested_public=requested_public,
+    )
+
+    assert calls == [(not requested_public, not requested_public)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("requested_public", "termination_reason", "blocked", "expected"),
+    ("outcome", "expected", "sends_result"),
     [
-        (True, "completed", False, True),
-        (False, "completed", False, False),
-        (True, "moderation_blocked", True, False),
-        (True, "provider_error", False, False),
-        (True, "timed_out", False, False),
-        (True, "max_iterations", False, False),
-        (True, "completed", True, False),
+        ("result", "The provider failed after I started.", True),
+        ("exception", "I couldn't complete that chat turn. Please try again.", False),
+        ("timeout", "That personal chat turn timed out. Run `/chat` again to retry.", False),
+        ("cancel", "Stopped.", False),
     ],
 )
-def test_only_successful_user_app_results_can_be_public(
-    requested_public: bool,
-    termination_reason: TurnTerminationReason,
-    blocked: bool,
-    expected: bool,
+async def test_public_personal_chat_finishes_activity_before_every_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outcome: str,
+    expected: str,
+    sends_result: bool,
 ) -> None:
-    result = TurnResult(
-        response_text="result",
-        termination_reason=termination_reason,
-        blocked_by_moderation=blocked,
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
     )
-    assert (
-        app_runtime._should_publish_user_app_result(
-            result,
-            requested_public=requested_public,
+    app = app_runtime.build_app(
+        Settings.model_validate(
+            {
+                "discord_bot_token": "token",
+                "model_api_key": "key",
+                "config_dir": str(tmp_path / "config"),
+                "database_path": str(tmp_path / "runtime.db"),
+                "user_app_chat_enabled": True,
+                "user_app_chat_timeout_seconds": 1 if outcome == "timeout" else 840,
+                "owner_user_id": "42",
+            }
         )
-        is expected
     )
+    await app._first_init_core()
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.id = 7
+            self.user = SimpleNamespace(id=42, display_name="Alice")
+            self.channel = SimpleNamespace(guild=None)
+            self.channel_id = 99
+            self.guild = None
+            self.guild_id = None
+            self.created_at = datetime.now(UTC)
+            self.edits: list[str] = []
+
+        async def edit_original_response(self, **kwargs: object) -> None:
+            self.edits.append(str(kwargs.get("content", "")))
+
+    reporters: list[Any] = []
+    turn_started = asyncio.Event()
+
+    async def failed_turn(
+        _turn_input: object,
+        *,
+        dependencies: object,
+        **_kwargs: object,
+    ) -> TurnResult:
+        reporter = dependencies.activity_reporter  # type: ignore[attr-defined]
+        assert reporter is not None
+        reporters.append(reporter)
+        await reporter(ActivityUpdate(label="Thinking..."))
+        turn_started.set()
+        if outcome == "result":
+            return TurnResult(
+                response_text=expected,
+                termination_reason="provider_error",
+            )
+        if outcome == "exception":
+            raise RuntimeError("provider exploded")
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    delivered: list[tuple[bool, bool]] = []
+    real_send_result = app_runtime.send_interaction_result
+
+    async def record_result(*args: object, **kwargs: object) -> None:
+        delivered.append((bool(kwargs["ephemeral"]), bool(kwargs["original_ephemeral"])))
+        await real_send_result(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(app_runtime, "handle_turn", failed_turn)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", record_result)
+    interaction = FakeInteraction()
+
+    try:
+        task = asyncio.create_task(
+            app._execute_user_app_chat(
+                interaction,  # type: ignore[arg-type]
+                message="hello",
+                attachment=None,
+                public=True,
+                request_generation=app._user_app_chat_generation("42"),
+            )
+        )
+        if outcome == "cancel":
+            await turn_started.wait()
+            task.cancel()
+        await task
+        assert reporters
+        await reporters[0](ActivityUpdate(label="Late update"))
+
+        assert interaction.edits == [
+            "Thinking...",
+            expected,
+        ]
+        assert delivered == ([(False, False)] if sends_result else [])
+    finally:
+        await app.database.close()
 
 
 @pytest.mark.asyncio
@@ -480,9 +634,9 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
     await task
 
     assert summary == "Your personal chat thread is already clear."
-    assert interaction.deleted is True
-    assert interaction.edits == []
-    assert interaction.followups == ["Stopped."]
+    assert interaction.deleted is False
+    assert interaction.edits == ["Stopped."]
+    assert interaction.followups == []
     assert calls == 1
 
     stale = FakeInteraction(2)

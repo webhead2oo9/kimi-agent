@@ -8,8 +8,8 @@ This deliberately small module demonstrates the complete supported path:
 - a scoped database migration and persistent counter; and
 - lifecycle startup and shutdown.
 
-It is laid out as a standalone distribution—the directory itself is what a
-module author would copy into another repository:
+It is laid out like a standalone distribution so it shows the shape of a real
+module development effort:
 
 ```text
 reference-module/
@@ -27,7 +27,9 @@ reference-module/
 
 `__init__.py` only exports the entry-point object. Settings, migrations,
 lifecycle behavior, and load-time registration live in the files a real module
-would normally own.
+would normally own. This is a starting point, not a drop-in production module:
+copy the structure, choose a new package and module identity, and replace the
+example behavior, configuration, migrations, tests, and documentation.
 
 From the `bot` directory, install the example:
 
@@ -45,9 +47,8 @@ KIMI_MODULES=reference_greeter
 uv run python bot.py
 ```
 
-Copy this package into another repository, change its distribution/import/module
-names, and depend on `kimi-agent-module-api` from PyPI when publishing it. Once
-the SDK is published, the copied package can install and test itself with:
+After making that copy, depend on `kimi-agent-module-api` from PyPI. Once the
+SDK is published, the new package can install and test itself with:
 
 ```console
 uv sync --extra dev

@@ -36,10 +36,6 @@ class BoundedOutcome:
     cancelled: bool = False
     error: BaseException | None = None
 
-    @property
-    def completed(self) -> bool:
-        return not (self.timed_out or self.cancelled or self.error is not None)
-
 
 async def run_bounded(
     coro: Coroutine[Any, Any, Any],

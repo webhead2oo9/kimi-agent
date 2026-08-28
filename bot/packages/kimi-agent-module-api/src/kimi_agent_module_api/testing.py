@@ -768,32 +768,48 @@ class FakeHttp:
         yield response.body
 
 
+@dataclass(slots=True)
+class _FakeProvided:
+    implementation: object
+    alive: bool = True
+
+
 class _FakeServiceProxy:
-    """Forwards attributes like the host proxy; raises once the provider is gone."""
+    """Forwards attributes like the host proxy; dead for good once its registration closes."""
 
-    __slots__ = ("_key", "_registry")
+    __slots__ = ("_key", "_provided")
 
-    def __init__(self, registry: FakeServiceRegistry, key: tuple[str, int]) -> None:
-        self._registry = registry
+    def __init__(self, provided: _FakeProvided, key: tuple[str, int]) -> None:
+        self._provided = provided
         self._key = key
 
     def __getattr__(self, attribute: str) -> Any:
-        try:
-            implementation = self._registry.provided[self._key]
-        except KeyError as exc:
+        if not self._provided.alive:
             name, version = self._key
-            raise ServiceUnavailable(f"service {name}@{version} closed") from exc
-        return getattr(implementation, attribute)
+            raise ServiceUnavailable(f"service {name}@{version} closed")
+        return getattr(self._provided.implementation, attribute)
 
 
 class FakeServiceRegistry:
     def __init__(self) -> None:
         self.provided: dict[tuple[str, int], object] = {}
+        self._records: dict[tuple[str, int], _FakeProvided] = {}
 
     def provide(self, name: str, version: int, implementation: object) -> _Closable:
         key = (name, version)
+        record = _FakeProvided(implementation)
         self.provided[key] = implementation
-        return _Closable(lambda: self.provided.pop(key, None))
+        self._records[key] = record
+
+        def close() -> None:
+            # Like the host, a re-provided service is a new object; proxies
+            # handed out for this one stay closed.
+            record.alive = False
+            if self._records.get(key) is record:
+                self._records.pop(key, None)
+                self.provided.pop(key, None)
+
+        return _Closable(close)
 
     @overload
     def get(self, name: str, version: int) -> object: ...
@@ -803,13 +819,13 @@ class FakeServiceRegistry:
 
     def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
         try:
-            implementation = self.provided[(name, version)]
+            record = self._records[(name, version)]
         except KeyError as exc:
             raise ServiceUnavailable(f"service {name}@{version} is not provided") from exc
-        if type_ is not None and not isinstance(implementation, type_):
+        if type_ is not None and not isinstance(record.implementation, type_):
             raise TypeError(f"service {name}@{version} is not a {type_.__name__}")
         # A proxy, as in the host: attribute access only, dead after close.
-        return _FakeServiceProxy(self, (name, version))
+        return _FakeServiceProxy(record, (name, version))
 
 
 class FakeTrust:

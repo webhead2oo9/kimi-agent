@@ -126,7 +126,9 @@ class _LoadTimeToolRegistry:
                 return False
             if guild is None:
                 return not guild_only
-            return predicate(int(guild))
+            # A guild id that is not a snowflake matches no module guild; the
+            # visibility path has no error boundary, so it must not raise.
+            return guild.isdecimal() and predicate(int(guild))
 
         async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
             guild_id = _snowflake(ctx.guild_id)
@@ -604,6 +606,10 @@ class ModuleManager:
                     self.health.set(spec.name, "failed", _summarize(outcome.error))
                     raise outcome.error
                 self._settle_health(spec)
+                if self._tool_registry is not None:
+                    # Only now are the module's tools visible; before this line
+                    # a half-started module could be called through them.
+                    self._tool_registry.guild_active[spec.name] = module_ctx.is_guild_active
                 log.info("Kimi module started: %s %s", spec.name, spec.version)
         except BaseException:
             await self.close()
@@ -616,10 +622,6 @@ class ModuleManager:
             if self.guild_settings is None or spec.guild_settings is None:
                 return True
             return self.guild_settings.get(guild_id, spec.name).valid
-
-        if self._tool_registry is not None:
-            # Module tools refuse guilds where the module is inactive, from now on.
-            self._tool_registry.guild_active[spec.name] = is_module_guild_active
 
         return {
             "module_name": spec.name,
@@ -734,6 +736,8 @@ class ModuleManager:
                     self.scheduler.unregister_module(name)
                 self.services.retire_module(name)
                 self.health.forget(name)
+                if self._tool_registry is not None:
+                    self._tool_registry.guild_active.pop(name, None)
                 self._contexts.pop(name, None)
 
 

@@ -216,6 +216,8 @@ class DurableScheduler:
         self._closed = False
         # (module, handler) -> the detail reported when its job was found orphaned.
         self._paused_reported: dict[tuple[str, str], str] = {}
+        # Claim token -> module reserved by an in-flight claim transaction.
+        self._reserving: dict[str, str] = {}
 
     # ---- schema --------------------------------------------------------------
 
@@ -324,12 +326,20 @@ class DurableScheduler:
             removed = bool(cursor.rowcount)
             if removed and row is not None:
                 handler_name = str(row["handler"])
+                marker = (module_name, handler_name)
                 remaining = await conn.execute(
-                    f"SELECT 1 FROM {TABLE} WHERE module_name = ? AND handler = ? LIMIT 1",
+                    f"""SELECT job_key FROM {TABLE} WHERE module_name = ? AND handler = ?
+                        ORDER BY run_at LIMIT 1""",
                     (module_name, handler_name),
                 )
-                if await remaining.fetchone() is None:
-                    self._paused_reported.pop((module_name, handler_name), None)
+                survivor = await remaining.fetchone()
+                if survivor is None:
+                    self._paused_reported.pop(marker, None)
+                elif marker in self._paused_reported:
+                    # The orphan detail must name a job that still exists.
+                    self._paused_reported[marker] = (
+                        f"scheduled job {str(survivor['job_key'])!r} has no handler"
+                    )
         if removed:
             self._clear_paused_health_if_recovered(module_name)
         return removed
@@ -454,6 +464,8 @@ class DurableScheduler:
         return started > 0
 
     async def _run_claimed(self, row: _Row) -> None:
+        if row.lease_token is not None:
+            self._reserving.pop(row.lease_token, None)
         try:
             await self._execute(row)
         except asyncio.CancelledError:
@@ -538,6 +550,15 @@ class DurableScheduler:
         cannot both take a job for one module. ``_run_claimed`` releases it.
         """
         token = f"{now:.6f}:{self._rng.random():.12f}"
+        try:
+            return await self._claim_locked(now, token)
+        except BaseException:
+            # The reservation is made inside the transaction; if the commit (or
+            # anything after the add) fails there is no execution to release it.
+            self._running_modules.discard(self._reserving.pop(token, ""))
+            raise
+
+    async def _claim_locked(self, now: float, token: str) -> _Row | None:
         async with self._database.write_transaction() as conn:
             excluded = sorted(self._running_modules)
             where = "run_at <= ? AND (leased_until IS NULL OR leased_until < ?)"
@@ -578,6 +599,7 @@ class DurableScheduler:
                 row.lease_token = token
                 row.attempt += 1
                 self._running_modules.add(row.module_name)
+                self._reserving[token] = row.module_name
                 return row
 
     def _report_paused(self, row: _Row) -> None:
@@ -623,13 +645,24 @@ class DurableScheduler:
         await self._settle(row, error)
 
     async def _heartbeat(self, row: _Row) -> None:
+        """Keep both the job lease and this process's runner lease alive while a job runs.
+
+        Renewing the runner lease here, not only in ``_tick``, means a long
+        job started from ``run_due`` (which has no loop ticking beside it)
+        still keeps other processes out.
+        """
         interval = max(0.05, self._lease_seconds * HEARTBEAT_FRACTION)
         while True:
             await asyncio.sleep(interval)
+            until = self._clock() + self._lease_seconds
             async with self._database.write_transaction() as conn:
                 await conn.execute(
                     f"UPDATE {TABLE} SET leased_until = ? WHERE job_id = ? AND lease_token = ?",
-                    (self._clock() + self._lease_seconds, row.job_id, row.lease_token),
+                    (until, row.job_id, row.lease_token),
+                )
+                await conn.execute(
+                    f"UPDATE {RUNNER_TABLE} SET leased_until = ? WHERE id = 1 AND token = ?",
+                    (until, self._runner_token),
                 )
 
     async def _settle(self, row: _Row, error: str | None) -> None:

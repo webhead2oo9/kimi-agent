@@ -302,7 +302,7 @@ def test_render_guild_settings_round_trips_through_the_host_parser() -> None:
         "count": -4,
         "flag": True,
         "mode": "b",
-        "note": "Great job: keep it up # true\nsecond line",
+        "note": "Great job: keep it up # true\nsecond line \x7f\x85 \u2028 é",
         "notes": ("yes", "no: maybe", "true"),
         "unset": None,
     }

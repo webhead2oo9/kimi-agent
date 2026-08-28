@@ -525,3 +525,22 @@ async def test_memory_storage_serializes_writers_and_runs_migrations() -> None:
             await conn.execute('INSERT INTO "my_mod_t" (n) VALUES (1)')
         cursor = await storage.connection.execute('SELECT COUNT(*) FROM "my_mod_t"')
         assert (await cursor.fetchone())[0] == 1
+
+
+def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
+    from kimi_agent_module_api.contracts import ServiceUnavailable
+    from kimi_agent_module_api.testing import FakeServiceRegistry
+
+    class Board:
+        def answer(self) -> int:
+            return 1
+
+    registry = FakeServiceRegistry()
+    registration = registry.provide("s", 1, Board())
+    old = registry.get("s", 1, Board)
+    registration.close()
+    registry.provide("s", 1, Board())
+
+    with pytest.raises(ServiceUnavailable):
+        old.answer()
+    assert registry.get("s", 1, Board).answer() == 1

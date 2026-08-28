@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import asyncio
 import concurrent.futures
 import logging
@@ -449,6 +451,21 @@ class ToolRegistry:
         for name in names:
             self._core_tools.pop(name, None)
             self._search_tools.pop(name, None)
+
+    def replace_handler(self, name: str, handler: Callable[..., Coroutine[Any, Any, str]]) -> None:
+        """Swap a registered tool's handler, keeping every other field of its entry.
+
+        The only supported way to stub a tool: re-registering field by field
+        silently drops any gate added to ``ToolEntry`` later.
+        """
+        entry = self._core_tools.get(name) or self._search_tools.get(name)
+        if entry is None:
+            raise KeyError(name)
+        replaced = dataclasses.replace(entry, handler=handler)
+        if entry.searchable:
+            self._search_tools[name] = replaced
+        else:
+            self._core_tools[name] = replaced
 
     def clone_without(self, names: set[str]) -> ToolRegistry:
         """Return an independent registry view sharing entries except ``names``."""

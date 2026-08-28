@@ -129,6 +129,7 @@ _MINIMUMS: dict[str, int | float] = {
     "react_max_iterations": 1,
     "react_max_tokens": 1024,
     "react_turn_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,
+    "user_app_chat_timeout_seconds": 1.0,
     "react_temperature": 0,
     "new_user_onboarding_turns": 0,  # 0 disables the onboarding note
     "thread_handoff_suggest_after_tool_calls": 0,  # 0 disables the suggestion

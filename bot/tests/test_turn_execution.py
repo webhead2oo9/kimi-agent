@@ -335,6 +335,26 @@ async def test_execute_turn_stages_workspace_outputs_before_delivery(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_execute_turn_preserves_non_success_termination_reason(tmp_path: Path) -> None:
+    result = await execute_turn(
+        _turn_request(ConversationContext(key="guild:100:main")),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path,
+            run_conversation=RecordingRunConversation(
+                ConversationRunResult(
+                    text="safe provider failure",
+                    termination_reason="provider_error",
+                )
+            ),
+        ),
+        config=_config(),
+    )
+
+    assert result.response_text == "safe provider failure"
+    assert result.termination_reason == "provider_error"
+
+
+@pytest.mark.asyncio
 async def test_execute_turn_records_partial_usage_from_timed_out_run(
     tmp_path: Path,
 ) -> None:
@@ -382,6 +402,7 @@ async def test_execute_turn_records_partial_usage_from_timed_out_run(
     )
 
     assert result.response_text == "timed out"
+    assert result.termination_reason == "timed_out"
     assert len(store.rows) == 1
     calls = store.rows[0]["calls"]
     assert len(calls) == 2

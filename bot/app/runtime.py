@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -69,6 +69,8 @@ from app.conversation_routing import (
     response_lock_key,
 )
 from app.consent import PrivacyConsentGate
+from app.consent import build_consent_embed
+from app.user_app_consent import UserAppConsentView
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
 from app.modules import ModuleRuntimeBase, module_capabilities
@@ -120,6 +122,7 @@ from modules.http import ModuleHttpRuntime
 from modules.scheduler import DurableScheduler
 from commands.usage_cmd import register_usage_command
 from commands.stop_cmd import register_stop_command
+from commands.chat_cmd import register_user_app_chat_commands
 from config import paths
 from config.model_config import Scope
 from config.operator_settings import apply_operator_settings, settings_values
@@ -137,6 +140,11 @@ from discord_adapter.io import (
     should_respond,
     strip_mention,
     suppress_link_previews,
+)
+from discord_adapter.interaction_io import (
+    PartialPublicDeliveryError,
+    send_interaction_result,
+    send_interaction_status,
 )
 from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
@@ -158,7 +166,7 @@ from storage.coding_tasks import (
 )
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
-from storage.conversations import ChannelMessageRecord, ConversationStore
+from storage.conversations import OWNER_ONLY, ChannelMessageRecord, ConversationStore
 from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
 from storage.preferences import PreferenceStore
@@ -167,11 +175,13 @@ from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
 from tools.embeds import embed_transcript_summary
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
 from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
 from tools.user_memory import set_user_memory_preference_store
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
+from trust.user_app import UserAppAccess
+from workspace import user_app_workspace_key
 
 if TYPE_CHECKING:
     from moderation.service import ModerationService
@@ -205,6 +215,20 @@ READY_EVENT_DRAIN_SECONDS = 5.0
 class _ModeratedCodingText:
     text: str
     blocked: bool = False
+
+
+@dataclass
+class _UserAppMessageSource:
+    """The small discord.Message-shaped surface attachment preparation needs."""
+
+    id: int
+    content: str
+    author: Any
+    channel: Any
+    guild: Any
+    attachments: list[discord.Attachment]
+    created_at: Any
+    reference: Any | None = None
 
 
 class KimiCommandTree(app_commands.CommandTree):
@@ -270,6 +294,66 @@ async def _reject_unready_interaction(interaction: discord.Interaction) -> None:
         pass
 
 
+def _is_user_integration(interaction: discord.Interaction) -> bool:
+    is_user = getattr(interaction, "is_user_integration", None)
+    if not callable(is_user):
+        return False
+    try:
+        return bool(is_user())
+    except Exception:
+        return False
+
+
+def _is_guild_integration(interaction: discord.Interaction) -> bool:
+    is_guild = getattr(interaction, "is_guild_integration", None)
+    if not callable(is_guild):
+        return False
+    try:
+        return bool(is_guild())
+    except Exception:
+        return False
+
+
+def _is_user_only_interaction(interaction: discord.Interaction) -> bool:
+    return _is_user_integration(interaction) and not _is_guild_integration(interaction)
+
+
+def _interaction_can_post_publicly(interaction: discord.Interaction) -> bool:
+    if interaction.guild_id is None:
+        return True
+    permissions = getattr(interaction, "app_permissions", None)
+    if permissions is None:
+        return False
+    channel = interaction.channel
+    if isinstance(channel, discord.Thread):
+        return bool(getattr(permissions, "send_messages_in_threads", False))
+    return bool(getattr(permissions, "send_messages", False))
+
+
+def _should_publish_user_app_result(result: TurnResult, *, requested_public: bool) -> bool:
+    """Only completed model turns may cross the private interaction boundary."""
+
+    return (
+        requested_public
+        and result.termination_reason == "completed"
+        and not result.blocked_by_moderation
+    )
+
+
+async def _send_private_user_app_status(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    requested_public: bool,
+) -> None:
+    await send_interaction_status(
+        interaction,
+        content,
+        ephemeral=True,
+        original_ephemeral=not requested_public,
+    )
+
+
 @dataclass
 class KimiApplication:
     settings: Settings
@@ -321,9 +405,15 @@ class KimiApplication:
     llm_semaphore: asyncio.Semaphore = field(init=False)
     turn_admission: TurnAdmissionController = field(init=False)
     skills_index_cache: SkillsIndexCache = field(init=False)
+    user_app_access: UserAppAccess = field(init=False)
     _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
     _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
     _ready_event_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
+    _user_app_chat_generations: dict[str, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     _closed: bool = False
     _close_complete: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _startup_error: Exception | None = field(default=None, init=False, repr=False)
@@ -342,6 +432,11 @@ class KimiApplication:
             max_active_per_user=self.settings.turn_max_concurrency_per_user,
         )
         self.skills_index_cache = SkillsIndexCache(catalog=self.tools.skill_catalog)
+        self.user_app_access = UserAppAccess(
+            member_ids=frozenset(self.settings.user_app_member_id_set),
+            regular_ids=frozenset(self.settings.user_app_regular_id_set),
+            staff_ids=frozenset(self.settings.user_app_staff_id_set),
+        )
         self._guild_activation_cache = paths.GuildActivationCache(
             Path(self.settings.config_dir).resolve(),
             server_setup_activation,
@@ -936,6 +1031,7 @@ class KimiApplication:
             self.bot,
             self.preference_store,
             privacy_barrier=self.privacy_barrier,
+            user_install_enabled=self.settings.user_app_chat_enabled,
         )
         register_models_command(
             self.bot,
@@ -966,7 +1062,11 @@ class KimiApplication:
             self.usage_store,
             self.trust_resolver,
         )
-        register_stop_command(self.bot, self._handle_stop_interaction)
+        register_stop_command(
+            self.bot,
+            self._handle_stop_interaction,
+            user_install_enabled=self.settings.user_app_chat_enabled,
+        )
         register_learn_command(
             self.bot,
             self.trust_resolver,
@@ -992,7 +1092,15 @@ class KimiApplication:
             video_data_store=self.tools.video_service,
             cancel_user_work=self._cancel_user_for_privacy,
             is_available=self.gateway_interactions_ready,
+            user_install_enabled=self.settings.user_app_chat_enabled,
         )
+        if self.settings.user_app_chat_enabled:
+            register_user_app_chat_commands(
+                self.bot,
+                run_chat=self._handle_user_app_chat_interaction,
+                reset_chat=self._handle_user_app_chat_reset,
+                bot_name=self.settings.bot_name,
+            )
         module_manager = self.tools.module_manager
         module_manager.health.on_change = lambda name, health: emit_module_health(
             module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
@@ -1098,6 +1206,12 @@ class KimiApplication:
         await self._init_coding_tasks()
 
     async def _cancel_user_for_privacy(self, user_id: str) -> None:
+        # Pending consent callbacks are not active asyncio tasks. Invalidate
+        # them before the privacy workflow drains active work and deletes data,
+        # so an older prompt cannot recreate a personal transcript afterward.
+        if self.consent_gate is not None:
+            await self.consent_gate.invalidate_user(user_id)
+        self._invalidate_user_app_chat_requests(user_id)
         await self.active_operations.cancel(
             user_id=user_id,
             root_key=None,
@@ -1920,12 +2034,18 @@ class KimiApplication:
 
     async def _handle_stop_message(self, message: discord.Message) -> None:
         await self.discord_gateway.add_status_reaction(message, "🛑")
-        resolved = await self.resolve_conversation_for_message(message, allow_new_root=False)
-        root_key = resolved.key if resolved is not None else None
+        user_id = str(message.author.id)
+        root_key: str | None
+        if self._dm_personal_chat_tier(message) is not None:
+            channel_id = USER_APP_SCOPE_CHANNEL_ID
+            root_key = f"userchat:{user_id}"
+        else:
+            channel_id = str(message.channel.id)
+            resolved = await self.resolve_conversation_for_message(message, allow_new_root=False)
+            root_key = resolved.key if resolved is not None else None
         summary = await self._cancel_user_work(
-            user_id=str(message.author.id),
-            channel_id=str(message.channel.id),
-            root_key=root_key,
+            user_id=user_id,
+            scopes=[(channel_id, root_key)],
             all_work=False,
         )
         await self.send_response(message.channel, summary, reference=message)
@@ -1967,37 +2087,509 @@ class KimiApplication:
                 f"Stopped coding task `{task.id[:8]}`. {cleanup} "
                 "Partial workspace changes were kept."
             )
+        user_only = _is_user_only_interaction(interaction)
+        if all_work:
+            # all_operations ignores the scope filters, so one entry sweeps everything.
+            return await self._cancel_user_work(
+                user_id=user_id,
+                scopes=[(USER_APP_SCOPE_CHANNEL_ID if user_only else channel_id, None)],
+                all_work=True,
+            )
+        # An app installed both to the user and to the guild reports both
+        # integration owners, so the invoking context is ambiguous. Personal
+        # chat is only reachable through the user install, and a guild channel
+        # conversation only through the guild install; cancel every scope the
+        # caller could have meant rather than silently missing one. Scoping
+        # stays limited to this caller's own operations either way.
+        scopes: list[tuple[str, str | None]] = []
+        if _is_user_integration(interaction):
+            scopes.append((USER_APP_SCOPE_CHANNEL_ID, f"userchat:{user_id}"))
+        if channel_id and not user_only:
+            scopes.append((channel_id, None))
+        if not scopes:
+            scopes.append((channel_id, None))
         return await self._cancel_user_work(
             user_id=user_id,
-            channel_id=channel_id,
-            root_key=None,
-            all_work=all_work,
+            scopes=scopes,
+            all_work=False,
         )
+
+    async def _handle_user_app_chat_interaction(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        attachment: discord.Attachment | None,
+        public: bool,
+    ) -> None:
+        user_id = str(interaction.user.id)
+        # Capture before the first await. A reset/privacy deletion that starts
+        # while access, block, or consent state is being read must invalidate
+        # this already-submitted command rather than let it create a new root.
+        request_generation = self._user_app_chat_generation(user_id)
+        tier = self.user_app_access.resolve(user_id)
+        if tier is None:
+            await interaction.response.send_message(
+                "You don't have access to this app's personal chat.",
+                ephemeral=True,
+            )
+            return
+        if self.blocked_user_store is not None and await self.blocked_user_store.is_blocked(
+            user_id
+        ):
+            await interaction.response.send_message(
+                "You can't use personal chat right now.",
+                ephemeral=True,
+            )
+            return
+        if not message.strip() and attachment is None:
+            await interaction.response.send_message(
+                "Add a message or attachment first.", ephemeral=True
+            )
+            return
+        if public and not _interaction_can_post_publicly(interaction):
+            await interaction.response.send_message(
+                "I can't post publicly in this location. Run `/chat` again with `public` off.",
+                ephemeral=True,
+            )
+            return
+
+        async def execute(resume_interaction: discord.Interaction) -> None:
+            await self._execute_user_app_chat(
+                resume_interaction,
+                message=message,
+                attachment=attachment,
+                public=public,
+                request_generation=request_generation,
+            )
+
+        if (
+            self.settings.privacy_consent_enabled
+            and self.preference_store is not None
+            and not await self.preference_store.has_consented(user_id)
+        ):
+            view = UserAppConsentView(
+                author_id=interaction.user.id,
+                store=self.preference_store,
+                on_accept=execute,
+                timeout=self.settings.privacy_consent_timeout,
+                public_response=public,
+            )
+            await interaction.response.send_message(
+                embed=build_consent_embed(
+                    title=self.settings.privacy_consent_title,
+                    text=self.settings.privacy_consent_text,
+                ),
+                view=view,
+                ephemeral=True,
+            )
+            return
+
+        # A deferred response cannot change visibility later. Public requests
+        # therefore reserve a public original response; unsuccessful turns
+        # delete that placeholder and report their status in a private followup.
+        await interaction.response.defer(ephemeral=not public, thinking=True)
+        await execute(interaction)
+
+    def _user_app_chat_generation(self, user_id: str) -> int:
+        return self._user_app_chat_generations.get(user_id, 0)
+
+    def _invalidate_user_app_chat_requests(self, user_id: str) -> None:
+        self._user_app_chat_generations[user_id] = self._user_app_chat_generation(user_id) + 1
+
+    async def _execute_user_app_chat(
+        self,
+        interaction: discord.Interaction,
+        *,
+        message: str,
+        attachment: discord.Attachment | None,
+        public: bool,
+        request_generation: int,
+    ) -> None:
+        user_id = str(interaction.user.id)
+        root_key = f"userchat:{user_id}"
+        turn_stop_event = asyncio.Event()
+        deadline = asyncio.get_running_loop().time() + self.settings.user_app_chat_timeout_seconds
+        try:
+            # Publish the operation synchronously before the first await and keep
+            # it registered through transcript persistence and Discord delivery.
+            # Reset/privacy can therefore cancel and drain every older request
+            # before reporting that deletion completed.
+            with self.active_operations.register_provisional(
+                user_id=user_id,
+                channel_id=USER_APP_SCOPE_CHANNEL_ID,
+                stop_event=turn_stop_event,
+            ):
+                self.active_operations.bind_current_provisional(root_key)
+                async with self.privacy_barrier.activity(user_id):
+                    if request_generation != self._user_app_chat_generation(user_id):
+                        await _send_private_user_app_status(
+                            interaction,
+                            (
+                                "That chat request expired because your personal thread "
+                                "was reset or deleted. Run `/chat` again if you still want it."
+                            ),
+                            requested_public=public,
+                        )
+                        return
+                    trust_tier = self.user_app_access.resolve(user_id)
+                    if trust_tier is None:
+                        await _send_private_user_app_status(
+                            interaction,
+                            "You no longer have access to this app's personal chat.",
+                            requested_public=public,
+                        )
+                        return
+                    if (
+                        self.blocked_user_store is not None
+                        and await self.blocked_user_store.is_blocked(user_id)
+                    ):
+                        await _send_private_user_app_status(
+                            interaction,
+                            "You can't use personal chat right now.",
+                            requested_public=public,
+                        )
+                        return
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await self._run_user_app_chat_turn(
+                                interaction,
+                                message=message,
+                                attachment=attachment,
+                                public=public,
+                                trust_tier=trust_tier,
+                                turn_stop_event=turn_stop_event,
+                            )
+                    except TimeoutError:
+                        await _send_private_user_app_status(
+                            interaction,
+                            "That personal chat turn timed out. Run `/chat` again to retry.",
+                            requested_public=public,
+                        )
+        except PrivacyDeletionPendingError:
+            await _send_private_user_app_status(
+                interaction,
+                "Your data deletion is still in progress. Try again when it finishes.",
+                requested_public=public,
+            )
+        except asyncio.CancelledError:
+            # Shutdown must stay cancellable: the client is already closing, so
+            # never await another interaction edit here. A user-initiated /stop
+            # is an ordinary outcome and is reported to the caller instead of
+            # propagating as an error, matching the guild message path.
+            if self._closed:
+                raise
+            with suppress(discord.HTTPException):
+                await _send_private_user_app_status(
+                    interaction,
+                    "Stopped.",
+                    requested_public=public,
+                )
+            log.info("Stopped personal chat response for user %s", user_id)
+
+    async def _run_user_app_chat_turn(
+        self,
+        interaction: discord.Interaction,
+        *,
+        message: str,
+        attachment: discord.Attachment | None,
+        public: bool,
+        trust_tier: TrustTier,
+        turn_stop_event: asyncio.Event,
+    ) -> None:
+        assert self.context_manager is not None
+        assert self.conversation_store is not None
+        conversation_store = self.conversation_store
+        user_id = str(interaction.user.id)
+        user_name = interaction.user.display_name
+        root_key = f"userchat:{user_id}"
+        scope_channel_id = USER_APP_SCOPE_CHANNEL_ID
+
+        admission = await self.turn_admission.try_acquire(user_id)
+        if admission.lease is None:
+            await _send_private_user_app_status(
+                interaction,
+                TURN_ADMISSION_BUSY_MESSAGE,
+                requested_public=public,
+            )
+            return
+
+        source_message = _UserAppMessageSource(
+            id=int(interaction.id),
+            content=message,
+            author=interaction.user,
+            channel=interaction.channel,
+            guild=interaction.guild,
+            attachments=[attachment] if attachment is not None else [],
+            created_at=interaction.created_at,
+        )
+        actual_guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        actual_channel_id = str(interaction.channel_id or "")
+        actual_thread_id = (
+            actual_channel_id if isinstance(interaction.channel, discord.Thread) else None
+        )
+        result: TurnResult | None = None
+
+        try:
+            async with admission.lease:
+                async with self._root_lock(root_key):
+                    conversation_id = await conversation_store.get_or_create(
+                        root_key,
+                        "Personal chat",
+                        guild_id=None,
+                        channel_id=scope_channel_id,
+                        thread_id=None,
+                        root_discord_message_id=str(interaction.id),
+                        owner_user_id=user_id,
+                        access_scope=OWNER_ONLY,
+                    )
+
+                    async def persist_user(
+                        source: TurnPreparationInput,
+                        turn: TurnRequest,
+                    ) -> None:
+                        await conversation_store.save_channel_messages(
+                            conversation_id,
+                            [
+                                ChannelMessageRecord(
+                                    discord_message_id=str(source.source_message.id),
+                                    role="user",
+                                    author_id=user_id,
+                                    author_name=sanitize_author_name(user_name),
+                                    content=turn.content,
+                                    source_created_at=message_source_timestamp(
+                                        source.source_message
+                                    ),
+                                    content_parts=[
+                                        ContentPart.from_text(turn.content),
+                                        *list(turn.input_parts),
+                                    ],
+                                )
+                            ],
+                            context_channel_id=scope_channel_id,
+                        )
+
+                    turn_input = TurnPreparationInput(
+                        raw_content=message,
+                        source_message=source_message,
+                        bot_user=self.bot.user,
+                        guild_id=None,
+                        channel_id=scope_channel_id,
+                        thread_id=None,
+                        channel_name="Personal chat",
+                        user_id=user_id,
+                        user_name=user_name,
+                        trust_tier=trust_tier,
+                        conversation_key=root_key,
+                        trigger_discord_message_id=str(interaction.id),
+                        conversation_owner_user_id=user_id,
+                        conversation_access_scope=OWNER_ONLY,
+                        personal_chat=True,
+                        platform_guild_id=actual_guild_id,
+                        platform_channel_id=actual_channel_id,
+                        platform_thread_id=actual_thread_id,
+                        workspace_key=user_app_workspace_key(user_id),
+                    )
+                    dependencies = await build_turn_dependencies(
+                        self,
+                        turn_input,
+                        context_manager=self.context_manager,
+                        registry=self.registry,
+                        preference_store=self.preference_store,
+                        usage_store=self._usage_store(),
+                        hooks=_turn_entry_hooks(),
+                        command_template="chat",
+                        collect_reply_context_func=collect_reply_context,
+                        collect_turn_attachments_func=collect_turn_attachments,
+                        strip_mention_func=lambda content, **_kwargs: content.strip(),
+                        persist_prepared_user_message=persist_user,
+                        count_user_prior_messages=None,
+                    )
+
+                    @asynccontextmanager
+                    async def child_activity(activity_user_id: str) -> AsyncIterator[None]:
+                        async with self.active_operations.register(
+                            user_id=activity_user_id,
+                            root_key=root_key,
+                            channel_id=scope_channel_id,
+                            cancel_on_stop=False,
+                            stop_event=turn_stop_event,
+                        ):
+                            async with self.privacy_barrier.activity(activity_user_id):
+                                yield
+
+                    dependencies = replace(
+                        dependencies,
+                        user_activity=child_activity,
+                        stop_event=turn_stop_event,
+                    )
+                    result = await handle_turn(
+                        turn_input,
+                        dependencies=dependencies,
+                        preparation_config=build_turn_preparation_config(
+                            self.settings,
+                            recent_image_lookback=self.settings.recent_image_lookback,
+                            new_user_onboarding_turns=0,
+                        ),
+                        execution_config=TurnExecutionConfig(
+                            max_iterations=self.settings.react_max_iterations,
+                            max_tokens=self.settings.react_max_tokens,
+                            temperature=self.settings.react_temperature,
+                            bot_name=self.settings.bot_name,
+                            command_template="chat",
+                            timeout_seconds=self.settings.user_app_chat_timeout_seconds,
+                            thread_handoff_suggest_after_tool_calls=0,
+                        ),
+                    )
+                    if result is not None and not result.blocked_by_moderation:
+                        transcript_text = result.response_text
+                        if not transcript_text and result.embed is not None:
+                            transcript_text = embed_transcript_summary(result.embed)
+                        if transcript_text:
+                            await conversation_store.save_channel_messages(
+                                conversation_id,
+                                [
+                                    ChannelMessageRecord(
+                                        discord_message_id=(f"userapp:{interaction.id}:assistant"),
+                                        role="assistant",
+                                        author_id=None,
+                                        author_name=None,
+                                        content=transcript_text,
+                                        source_created_at=interaction.created_at.timestamp(),
+                                    )
+                                ],
+                                context_channel_id=scope_channel_id,
+                            )
+        except PrivacyDeletionPendingError:
+            await _send_private_user_app_status(
+                interaction,
+                "Your data deletion is still in progress. Try again when it finishes.",
+                requested_public=public,
+            )
+            return
+        except Exception:
+            log.exception("Personal user-app chat failed for user %s", user_id)
+            with suppress(discord.HTTPException):
+                await _send_private_user_app_status(
+                    interaction,
+                    "I couldn't complete that chat turn. Please try again.",
+                    requested_public=public,
+                )
+            return
+
+        if result is None:
+            await _send_private_user_app_status(
+                interaction,
+                "There wasn't anything I could process in that request.",
+                requested_public=public,
+            )
+            return
+        try:
+            publish_publicly = _should_publish_user_app_result(
+                result,
+                requested_public=public,
+            )
+            await send_interaction_result(
+                interaction,
+                result.response_text,
+                ephemeral=not publish_publicly,
+                original_ephemeral=not public,
+                output_files=result.output_files,
+                output_file_descriptions=result.output_file_descriptions,
+                allowed_file_roots=result.allowed_file_roots,
+                embed=result.embed,
+            )
+        except PartialPublicDeliveryError:
+            log.warning(
+                "Personal chat public followup delivery was incomplete for user %s",
+                user_id,
+                exc_info=True,
+            )
+            with suppress(discord.HTTPException):
+                await interaction.followup.send(
+                    "I posted the first part, but couldn't deliver the complete response.",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except discord.HTTPException:
+            log.warning("Personal chat result delivery failed for user %s", user_id, exc_info=True)
+            with suppress(discord.HTTPException):
+                await _send_private_user_app_status(
+                    interaction,
+                    (
+                        "I finished the turn but couldn't deliver the response here. "
+                        "Try again privately."
+                    ),
+                    requested_public=public,
+                )
+
+    async def _handle_user_app_chat_reset(self, interaction: discord.Interaction) -> str:
+        assert self.conversation_store is not None
+        user_id = str(interaction.user.id)
+        root_key = f"userchat:{user_id}"
+        # Invalidate requests retained by consent prompts before draining active
+        # operations. Older callbacks then fail closed even though they are not
+        # live tasks yet.
+        if self.consent_gate is not None:
+            await self.consent_gate.invalidate_user(user_id)
+        self._invalidate_user_app_chat_requests(user_id)
+        _count, clean = await self.active_operations.cancel(
+            user_id=user_id,
+            root_key=root_key,
+            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+            all_operations=False,
+            wait_seconds=self.settings.coding_stop_cleanup_wait_seconds,
+        )
+        if self.coding_tasks is not None:
+            _task_ids, coding_clean = await self.coding_tasks.cancel_for_scope(
+                user_id=user_id,
+                root_key=root_key,
+                channel_id=USER_APP_SCOPE_CHANNEL_ID,
+                all_tasks=False,
+            )
+            clean = clean and coding_clean
+        if not clean:
+            return "I couldn't finish stopping active work, so I did not clear the chat. Try again shortly."
+        async with self._root_lock(root_key):
+            deleted = await self.conversation_store.delete_owner_conversation(root_key, user_id)
+        if deleted:
+            return "Your personal chat thread was cleared. Memory and workspace files were kept."
+        return "Your personal chat thread is already clear."
 
     async def _cancel_user_work(
         self,
         *,
         user_id: str,
-        channel_id: str,
-        root_key: str | None,
+        scopes: Sequence[tuple[str, str | None]],
         all_work: bool,
     ) -> str:
-        foreground_count, foreground_clean = await self.active_operations.cancel(
-            user_id=user_id,
-            root_key=root_key,
-            channel_id=channel_id,
-            all_operations=all_work,
-            wait_seconds=self.settings.coding_stop_cleanup_wait_seconds,
-        )
+        foreground_count = 0
+        foreground_clean = True
         coding_ids: list[str] = []
         coding_clean = True
-        if self.coding_tasks is not None:
-            coding_ids, coding_clean = await self.coding_tasks.cancel_for_scope(
+        seen_tasks: set[str] = set()
+        for channel_id, root_key in scopes:
+            scope_count, scope_clean = await self.active_operations.cancel(
                 user_id=user_id,
                 root_key=root_key,
                 channel_id=channel_id,
-                all_tasks=all_work,
+                all_operations=all_work,
+                wait_seconds=self.settings.coding_stop_cleanup_wait_seconds,
             )
+            foreground_count += scope_count
+            foreground_clean = foreground_clean and scope_clean
+            if self.coding_tasks is not None:
+                scope_ids, scope_task_clean = await self.coding_tasks.cancel_for_scope(
+                    user_id=user_id,
+                    root_key=root_key,
+                    channel_id=channel_id,
+                    all_tasks=all_work,
+                )
+                # Scopes can overlap, so report each task once.
+                for task_id in scope_ids:
+                    if task_id not in seen_tasks:
+                        seen_tasks.add(task_id)
+                        coding_ids.append(task_id)
+                coding_clean = coding_clean and scope_task_clean
         total = foreground_count + len(coding_ids)
         if total == 0:
             return "I couldn't find active work to stop here."
@@ -2030,12 +2622,17 @@ class KimiApplication:
             allowed_guilds=active_guilds,
         ):
             return
-        if isinstance(message.channel, discord.DMChannel):
+        personal_dm = self._dm_personal_chat_tier(message) is not None
+        if isinstance(message.channel, discord.DMChannel) and not personal_dm:
+            # DMs are ignored unless this user has personal-chat access. Return
+            # silently: replying would confirm the bot is listening and invite
+            # probing from anyone who shares a guild with it.
             return
 
         # Pure routing check before taking a lease; messages the bot will ignore
-        # have no state to coordinate with /privacy.
-        if not self._should_respond(message, active_guilds=active_guilds):
+        # have no state to coordinate with /privacy. A DM needs no invocation
+        # gate: there is nothing else in the channel for it to be addressed to.
+        if not personal_dm and not self._should_respond(message, active_guilds=active_guilds):
             return
 
         # Hard block gate precedes reactions, transcript writes, every lock or
@@ -2048,7 +2645,9 @@ class KimiApplication:
 
         # Cancellation has its own lane before admission and the response lock;
         # otherwise a STOP message could queue behind the work it needs to end.
-        if self._is_stop_message(message):
+        if self._is_stop_message(message) and (
+            not personal_dm or self.active_operations.has_active_for_user(str(message.author.id))
+        ):
             await self._handle_stop_message(message)
             return
 
@@ -2086,7 +2685,7 @@ class KimiApplication:
         try:
             with self.active_operations.register_provisional(
                 user_id=str(message.author.id),
-                channel_id=str(message.channel.id),
+                channel_id=(USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)),
             ):
                 async with admission.lease:
                     async with self.privacy_barrier.activity(str(message.author.id)):
@@ -2110,10 +2709,13 @@ class KimiApplication:
         if self.consent_gate is not None and await self.consent_gate.maybe_prompt(message):
             return
 
-        resolved = await self.resolve_conversation_for_message(
-            message,
-            allow_new_root=True,
-        )
+        if self._dm_personal_chat_tier(message) is not None:
+            resolved = await self._resolve_personal_dm_conversation(message)
+        else:
+            resolved = await self.resolve_conversation_for_message(
+                message,
+                allow_new_root=True,
+            )
         if resolved is None:
             return
         self.active_operations.bind_current_provisional(resolved.key)
@@ -2132,7 +2734,12 @@ class KimiApplication:
                 # old mode.
                 # Re-read the cheap activation snapshot after waiting for the root
                 # lock so an operator deactivation stops queued work immediately.
-                if not self._should_respond(message):
+                # A DM has no invocation gate; its live equivalent is personal-chat
+                # access, which an operator may have revoked while this queued.
+                if isinstance(message.channel, discord.DMChannel):
+                    if self._dm_personal_chat_tier(message) is None:
+                        return
+                elif not self._should_respond(message):
                     return
                 try:
                     result = await self.handle_message(
@@ -2208,16 +2815,31 @@ class KimiApplication:
     ) -> TurnResult | None:
         assert self.context_manager is not None
 
+        # A DM from an allowlisted user is personal chat arriving as a real
+        # message instead of a slash interaction. It scopes exactly like /chat:
+        # one guild-less root, the shared "userapp" scope channel, the personal
+        # workspace, and the personal prompt template.
+        personal_dm_tier = self._dm_personal_chat_tier(message)
+        personal_dm = personal_dm_tier is not None
+
         target_channel: discord.abc.Messageable = message.channel
-        context_channel_id = str(message.channel.id)
+        context_channel_id = USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)
         context_thread_id = (
-            str(message.channel.id) if isinstance(message.channel, discord.Thread) else None
+            None
+            if personal_dm
+            else (str(message.channel.id) if isinstance(message.channel, discord.Thread) else None)
         )
-        context_channel_name = getattr(message.channel, "name", "DM")
+        context_channel_name = (
+            "Personal chat" if personal_dm else getattr(message.channel, "name", "DM")
+        )
         if resolved_conversation is None:
-            resolved_conversation = await self.resolve_conversation_for_message(
-                message,
-                allow_new_root=True,
+            resolved_conversation = (
+                await self._resolve_personal_dm_conversation(message)
+                if personal_dm
+                else await self.resolve_conversation_for_message(
+                    message,
+                    allow_new_root=True,
+                )
             )
         if resolved_conversation is None:
             return None
@@ -2230,7 +2852,13 @@ class KimiApplication:
         guild_id = str(message.guild.id) if message.guild else None
         guild_name = message.guild.name if message.guild else ""
 
-        trust_tier = self.trust_resolver.resolve(member, user_id, guild_id)
+        # Personal-chat standing comes from the USER_APP_* allowlists, never from
+        # guild roles, and a DM has no guild to resolve against anyway.
+        trust_tier = (
+            personal_dm_tier
+            if personal_dm_tier is not None
+            else self.trust_resolver.resolve(member, user_id, guild_id)
+        )
 
         conv_id = resolved_conversation.db_conversation_id
         if (
@@ -2339,6 +2967,9 @@ class KimiApplication:
             allow_bot_authored_reply_context=(
                 resolved_conversation.allow_bot_authored_reply_context
             ),
+            personal_chat=personal_dm,
+            platform_channel_id=str(message.channel.id) if personal_dm else "",
+            workspace_key=user_app_workspace_key(user_id) if personal_dm else None,
         )
         turn_stop_event = asyncio.Event()
         turn_dependencies = await build_turn_dependencies(
@@ -2349,7 +2980,7 @@ class KimiApplication:
             preference_store=self.preference_store,
             usage_store=self._usage_store(),
             hooks=_turn_entry_hooks(),
-            command_template=None,
+            command_template="chat" if personal_dm else None,
             collect_reply_context_func=collect_reply_context,
             collect_turn_attachments_func=collect_turn_attachments,
             strip_mention_func=self._strip_message_invocation,
@@ -2667,8 +3298,13 @@ class KimiApplication:
                 # thread handoff that is the new thread, and the reply-continuation
                 # lookup filters message_contexts by the incoming message's channel.
                 sent_channel = getattr(sent_messages[0], "channel", None)
+                # Personal chat keeps both sides of the transcript under the one
+                # scope sentinel; a DM channel id would split one root's
+                # message_contexts rows across two channel values.
                 persist_channel_id = (
-                    str(sent_channel.id) if sent_channel is not None else context_channel_id
+                    context_channel_id
+                    if personal_dm or sent_channel is None
+                    else str(sent_channel.id)
                 )
                 await self.conversation_store.save_channel_messages(
                     conv_id,
@@ -2743,6 +3379,38 @@ class KimiApplication:
                 return await send()
         return await send()
 
+    async def _resolve_personal_dm_conversation(
+        self,
+        message: discord.Message,
+    ) -> ResolvedConversation | None:
+        """Continue this user's one personal root instead of opening a new one.
+
+        The scope must be stated explicitly. `/chat` creates the row as
+        OWNER_ONLY, and ConversationStore rejects resolving an owner-only root
+        under any other scope or owner, so defaulting to channel-shared here
+        would fail every DM that follows a `/chat` turn.
+        """
+        if self.conversation_store is None:
+            return None
+        user_id = str(message.author.id)
+        root_key = f"userchat:{user_id}"
+        conversation_id = await self.conversation_store.get_or_create(
+            root_key,
+            "Personal chat",
+            guild_id=None,
+            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+            thread_id=None,
+            root_discord_message_id=str(message.id),
+            owner_user_id=user_id,
+            access_scope=OWNER_ONLY,
+        )
+        return ResolvedConversation(
+            key=root_key,
+            db_conversation_id=conversation_id,
+            owner_user_id=user_id,
+            access_scope=OWNER_ONLY,
+        )
+
     async def resolve_conversation_for_message(
         self,
         message: discord.Message,
@@ -2755,6 +3423,19 @@ class KimiApplication:
             conversation_store=self.conversation_store,
             thread_handoff=self.thread_handoff,
         )
+
+    def _dm_personal_chat_tier(self, message: discord.Message) -> TrustTier | None:
+        """Access tier for an ambient DM entering personal chat, else None.
+
+        Pure and cheap, so the gate, the under-lock re-check, and the turn wiring
+        can each ask independently. Guild messages and every non-allowlisted DM
+        answer None, so this is also the "is this a personal DM turn" predicate.
+        """
+        if not self.settings.user_app_dm_enabled:
+            return None
+        if not isinstance(message.channel, discord.DMChannel):
+            return None
+        return self.user_app_access.resolve(str(message.author.id))
 
     def _should_respond(
         self,
@@ -2931,6 +3612,12 @@ def build_app(settings: Settings) -> KimiApplication:
         command_prefix="!",
         intents=intents,
         tree_cls=KimiCommandTree,
+        allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
+        allowed_contexts=app_commands.AppCommandContext(
+            guild=True,
+            dm_channel=False,
+            private_channel=False,
+        ),
         allowed_mentions=discord.AllowedMentions(
             everyone=False,
             roles=False,

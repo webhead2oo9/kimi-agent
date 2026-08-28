@@ -1595,8 +1595,7 @@ async def test_stop_cancels_turn_between_admission_and_root_registration(
     await admitted.wait()
     summary = await app._cancel_user_work(
         user_id="123",
-        channel_id=str(message.channel.id),
-        root_key="resolved-root",
+        scopes=[(str(message.channel.id), "resolved-root")],
         all_work=False,
     )
     await turn
@@ -1654,8 +1653,7 @@ async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
 
     summary = await app._cancel_user_work(
         user_id="123",
-        channel_id=str(first_message.channel.id),
-        root_key="root-1",
+        scopes=[(str(first_message.channel.id), "root-1")],
         all_work=False,
     )
 

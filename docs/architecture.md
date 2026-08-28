@@ -12,8 +12,16 @@ a seam for optional application modules:
 **Mention-triggered conversational agent.** This is the community's chat
 surface. A guild message that mentions the bot (or lands in a handoff thread)
 enters a provider-neutral ReAct loop with transcript-backed context, trust-gated
-tool dispatch, and Hindsight memory. There is no conversational *slash*
-command; the staff and moderation commands are ordinary app commands.
+tool dispatch, and Hindsight memory. It does not expose a general guild
+conversational slash command.
+
+**User-installed personal chat (optional).** When explicitly enabled, `/chat`
+enters the same ReAct and tool stack through an owner-only `userchat:<user_id>`
+root. Prompt/model/memory/workspace scope is personal and global, and
+the surface is guild-less for every trust, policy, and data-scope decision, so
+guild-scoped tools and guild artifacts stay out of reach. The actual invocation
+location is carried separately for permission-sensitive Discord tools and
+confers no authority. See [Discord user-app personal chat](user-app.md).
 
 **"Teach Kimi" message context menu** (the name follows `BOT_NAME`;
 `commands/learn_cmd.py` → `app/learn_turn.py`). This is a staff-only scoped
@@ -64,8 +72,9 @@ workspace/              per-user sandboxed file workspaces (stdlib-only; the
                         runtime data tree at workspaces/ is created on demand)
 sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
                         seccomp policy, network-namespace lease, resource limits
-commands/               staff/user app commands (/privacy, /memory, /usage,
-                        /models, ...) and the "Teach Kimi" context menu
+commands/               staff/user app commands (/privacy, /memory, optional
+                        /chat + /chat-reset, /usage, /models, ...) and the
+                        "Teach Kimi" context menu
 memory/                 Hindsight client, bank scoping, auto-retain, opt-out
 storage/                SQLite WAL core schema v4, module schema ledger,
                         conversation + video session/deletion + coding task/event/job
@@ -103,7 +112,9 @@ A few decisions shape everything above, so they're worth stating explicitly.
   `config/servers/<id>.md`; workspaces are keyed per (user, guild); community
   memory banks are per guild; and tools and skills can be guild-scoped. The
   result is that one deployment can serve several communities without sharing
-  their data surfaces.
+  their data surfaces. The opt-in personal user-app root is the explicit
+  exception: it uses separate prompt/policy and workspace scope so invoking it
+  from a guild cannot import that guild's private configuration.
 - **File-based operator config.** `config/models.yaml` and the `settings.md`
   overlay are validated once at startup. Prompt and policy frontmatter
   fragments are read fresh for each turn, so those targeted edits need neither
@@ -119,6 +130,7 @@ Once you have the map, these are the places to go next:
 
 - `../bot/README.md`: bot-level feature/architecture summary.
 - `configuration.md`: complete configuration reference.
+- `user-app.md`: optional Discord user-install `/chat` surface and data scopes.
 - `tools.md`: complete built-in tool catalog and availability gates.
 - `code-exec.md`: code-execution modes, threat model, deployment, and verification.
 - `visual-rendering.md`: one-call charts/Mermaid, offline rendering, and deployment.

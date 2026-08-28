@@ -24,6 +24,7 @@ from workspace.manager import (
     WorkspacePathSymlinkError,
     path_contains_symlink,
     safe_generated_segment,
+    user_app_workspace_key,
     workspace_owner_key,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     "WorkspacePathSymlinkError",
     "path_contains_symlink",
     "safe_generated_segment",
+    "user_app_workspace_key",
     "workspace_owner_key",
 ]

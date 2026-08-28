@@ -25,6 +25,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Personal chat is not in any Discord channel: `/chat` is a slash interaction and
+# a DM channel id is per-recipient. Conversation scope, cancellation scope, and
+# the usage ledger all key on this sentinel instead, so the two entry points land
+# in one place. Never a real Discord snowflake, which are numeric.
+USER_APP_SCOPE_CHANNEL_ID = "userapp"
+
+
 @dataclass(frozen=True)
 class TurnHandoff:
     """A tool-owned successful boundary that ends the foreground ReAct turn."""
@@ -39,6 +46,12 @@ class TurnHandoff:
 class MessageContext:
     user_id: str
     user_name: str
+    # Logical data scope, NOT where the interaction physically happened. This is
+    # the value every trust, policy, and data-scope decision must use: tool
+    # dispatch scoping, community banks, skill scoping, catalogs. Personal chat
+    # (`/chat`) is a guild-less surface, so this is None there even when the
+    # slash command was invoked from inside a server; see platform_guild_id for
+    # the physical location.
     guild_id: str | None
     channel_id: str
     thread_id: str | None
@@ -160,6 +173,13 @@ class MessageContext:
     embed_attachment: EmbedAttachment | None = None
     thread_request: ThreadRequest | None = None
     thread_close_request: ThreadCloseRequest | None = None
+    workspace_key_override: WorkspaceKey | None = None
+    personal_chat: bool = False
+    # Where the interaction physically happened, independent of the logical
+    # scope above. Only genuinely location-bound Discord work may read this
+    # (a guild member lookup, a jump URL); it confers no authority, and a
+    # boundary test keeps it out of tools/. Equal to guild_id off personal chat.
+    platform_guild_id: str | None = None
     # Resource leases that must span the complete outer ReAct turn (rather than
     # one tool dispatch) register here. The core drains them exactly once in a
     # finally block, including provider errors, timeouts, max-iteration exits,
@@ -215,7 +235,7 @@ class MessageContext:
             await self.usage_store.record_paid_usage(
                 user_id=self.user_id,
                 user_name=self.user_name,
-                channel_id=self.channel_id,
+                channel_id=self.conversation_channel_id,
                 guild_id=self.guild_id,
                 calls=[call],
                 turn_id=self.tool_event_turn_id or None,
@@ -231,7 +251,11 @@ class MessageContext:
         memory banks, blocking, owner_only, and usage): only workspace-bound
         reads use this composite so files are isolated per community.
         """
-        return workspace_owner_key(self.user_id, self.guild_id)
+        return self.workspace_key_override or workspace_owner_key(self.user_id, self.guild_id)
+
+    @property
+    def conversation_channel_id(self) -> str:
+        return USER_APP_SCOPE_CHANNEL_ID if self.personal_chat else self.channel_id
 
 
 @dataclass

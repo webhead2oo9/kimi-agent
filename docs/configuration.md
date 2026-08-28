@@ -239,6 +239,12 @@ dotenv file, since it is the thing that selects which file to read.
 | `BOT_NAME` | str | `Kimi` | Runtime/persona name, substituted into `config/persona.md` via `<bot_name>` and used for startup logs, text invocation, the `Teach <name>` context menu, and provider identity unless a model profile overrides `app_name`. It does not rename the visible Discord account; update the existing application/bot identity in the Developer Portal for a complete rename. Runtime instructions live in `config/prompt.md`. |
 | `MESSAGE_CONTENT_INTENT` | bool | `true` | Whether to request the privileged Message Content intent at connect. `false` runs degraded: @mentions and pinged replies still work; the "hey <bot_name>" text trigger, thread auto-reply, and `discord_text_search` do not (keep `THREAD_HANDOFF_ENABLED` off while degraded). |
 | `MEMBERS_INTENT` | bool | `false` | Whether to request the privileged Server Members intent at connect. Ordinary operation does not need it: roles come from the message author and member lookups use on-demand fetch/query. Optional modules may require member lifecycle events. Turning it on also requires enabling Server Members in the Discord Developer Portal, or the gateway rejects the identify. |
+| `USER_APP_CHAT_ENABLED` | bool | `false` | Explicitly register the Discord User Install `/chat` and `/chat-reset` surface and promote `/privacy`, `/memory`, and `/stop` to both install types. Off means no personal chat commands are exposed. |
+| `USER_APP_MEMBER_IDS` | csv(int) | `""` | Discord user IDs granted Member-tier `/chat` access, independent from guild roles. |
+| `USER_APP_REGULAR_IDS` | csv(int) | `""` | Discord user IDs granted Regular-tier `/chat` access. Highest tier wins on overlap. |
+| `USER_APP_STAFF_IDS` | csv(int) | `""` | Discord user IDs granted Staff-tier `/chat` access. `OWNER_USER_ID` is added automatically. |
+| `USER_APP_CHAT_TIMEOUT_SECONDS` | float | `840.0` | Whole personal-chat turn deadline, validated from 1 through 840 seconds so delivery remains below Discord's 15-minute interaction-token lifetime. |
+| `USER_APP_DM_ENABLED` | bool | `false` | Also answer ordinary direct messages, as a second entry point onto the same `userchat:<user_id>` conversation, workspace, and root lock as `/chat`. Requires `USER_APP_CHAT_ENABLED` (which owns the self-service `/privacy`, `/chat-reset`, `/memory`, and `/stop` commands) and uses the same `USER_APP_*` access lists; a DM from anyone not on them is ignored without a reply. Guild messages are unaffected. |
 
 **Derived:** `staff_role_id_set`/`regular_role_id_set` (sets of numeric strings), `staff_ids` (set),
 `allowed_channels`, and the environment-backed `allowed_guilds` (sets of ints). At runtime,
@@ -248,6 +254,11 @@ plus the staff-ID allowlist. That resolved tier is treated as sensitive: the `lo
 tool includes a member's `trust_tier` only when the requesting user is `STAFF`, because
 otherwise it would reveal `STAFF_USER_IDS` allowlist membership (staff who hold no role) to
 any member. Roles are public in Discord anyway and stay visible to everyone.
+
+The user-app allowlists are a separate trust surface and require a restart when
+changed. Enabling user-app chat without at least one listed ID or
+`OWNER_USER_ID` fails startup. See [Discord user-app personal chat](user-app.md)
+for installation, scope, prompt customization, visibility, and reset behavior.
 
 The `STAFF_*`/`REGULAR_*` env settings above are **global**: they apply in every guild. If
 you run the bot in several guilds, a guild can add its own staff and regular lists in the

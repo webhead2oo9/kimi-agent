@@ -194,8 +194,11 @@ def init_video_tool(
                 max_chars=_MAX_QUESTION_CHARS,
                 message="question is required",
             )
-            if ctx.conversation_id is None or ctx.guild_id is None:
-                raise ValueError("Video sessions require a rooted server conversation")
+            # Rootedness is what this actually requires: the session is keyed by
+            # conversation and actor, and the guild scope below tolerates "".
+            # Personal chat is rooted but guild-less, so do not demand a guild.
+            if ctx.conversation_id is None:
+                raise ValueError("Video sessions require a rooted conversation")
 
             raw_url = get_string(args, "url", max_chars=_MAX_URL_CHARS)
             attachment_name = get_string(
@@ -234,12 +237,16 @@ def init_video_tool(
             return tool_error(str(exc))
 
         ctx.video_calls_this_turn += 1
+        # The video-session store uses an empty string for the global scope;
+        # personal user-app conversations must not inherit the physical guild
+        # where Discord happened to deliver the interaction.
+        session_guild_id = ctx.guild_id or ""
         try:
             if action == "start" and uploaded_source is None:
                 analysis = await service.start(
                     conversation_id=ctx.conversation_id,
                     actor_user_id=ctx.user_id,
-                    guild_id=ctx.guild_id,
+                    guild_id=session_guild_id,
                     youtube_url=canonical_url,
                     youtube_video_id=video_id,
                     question=question,
@@ -250,7 +257,7 @@ def init_video_tool(
                 analysis = await service.start_uploaded(
                     conversation_id=ctx.conversation_id,
                     actor_user_id=ctx.user_id,
-                    guild_id=ctx.guild_id,
+                    guild_id=session_guild_id,
                     source=uploaded_source,
                     question=question,
                     config=config,
@@ -259,7 +266,7 @@ def init_video_tool(
                 analysis = await service.ask(
                     conversation_id=ctx.conversation_id,
                     actor_user_id=ctx.user_id,
-                    guild_id=ctx.guild_id,
+                    guild_id=session_guild_id,
                     session=session,
                     question=question,
                     config=config,

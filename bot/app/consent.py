@@ -156,6 +156,30 @@ class PrivacyConsentGate:
         self._is_available = is_available
         # Users with an open prompt, so a burst of mentions posts only one notice.
         self._pending: set[str] = set()
+        self._generations: dict[str, int] = {}
+        self._accept_tasks: dict[str, set[asyncio.Task[object]]] = {}
+
+    def _generation(self, user_id: str) -> int:
+        return self._generations.get(user_id, 0)
+
+    def _release_pending(self, user_id: str, generation: int) -> None:
+        # An invalidated, older prompt must not release the reservation held by
+        # a newer prompt for the same user.
+        if generation == self._generation(user_id):
+            self._pending.discard(user_id)
+
+    async def invalidate_user(self, user_id: str) -> None:
+        """Expire retained prompts and drain any accept callback already running."""
+
+        self._generations[user_id] = self._generation(user_id) + 1
+        self._pending.discard(user_id)
+        tasks = tuple(self._accept_tasks.pop(user_id, ()))
+        current = asyncio.current_task()
+        draining = [task for task in tasks if task is not current and not task.done()]
+        for task in draining:
+            task.cancel()
+        if draining:
+            await asyncio.gather(*draining, return_exceptions=True)
 
     async def maybe_prompt(self, message: discord.Message) -> bool:
         """Return True when the message is gated and the caller must stop.
@@ -170,29 +194,30 @@ class PrivacyConsentGate:
             return True
         # Reserve synchronously so two near-simultaneous messages can't both prompt.
         self._pending.add(user_id)
+        generation = self._generation(user_id)
         try:
             if await self._store.has_consented(user_id):
-                self._pending.discard(user_id)
+                self._release_pending(user_id, generation)
                 return False
-            await self._post(message, user_id)
+            await self._post(message, user_id, generation)
             return True
         except Exception:
-            self._pending.discard(user_id)
+            self._release_pending(user_id, generation)
             log.exception("Privacy consent gate failed for user %s", user_id)
             # Fail closed: never fall through to the provider when we couldn't gate.
             return True
 
-    async def _post(self, message: discord.Message, user_id: str) -> None:
+    async def _post(self, message: discord.Message, user_id: str, generation: int) -> None:
         sent: dict[str, discord.Message] = {}
 
         async def on_accept(interaction: discord.Interaction) -> None:
-            await self._accept(message, user_id, interaction)
+            await self._accept(message, user_id, interaction, generation)
 
         async def on_decline(interaction: discord.Interaction) -> None:
-            await self._decline(user_id, interaction)
+            await self._decline(user_id, interaction, generation)
 
         async def on_close() -> None:
-            self._pending.discard(user_id)
+            self._release_pending(user_id, generation)
             prompt = sent.get("message")
             if prompt is not None:
                 try:
@@ -206,7 +231,7 @@ class PrivacyConsentGate:
             on_decline=on_decline,
             on_close=on_close,
             timeout=self._timeout,
-            is_available=self._is_available,
+            is_available=lambda: self._is_available() and generation == self._generation(user_id),
         )
         sent["message"] = await message.reply(
             embed=build_consent_embed(title=self._title, text=self._text),
@@ -214,27 +239,60 @@ class PrivacyConsentGate:
         )
 
     async def _accept(
-        self, message: discord.Message, user_id: str, interaction: discord.Interaction
+        self,
+        message: discord.Message,
+        user_id: str,
+        interaction: discord.Interaction,
+        generation: int | None = None,
     ) -> None:
+        generation = self._generation(user_id) if generation is None else generation
+        if generation != self._generation(user_id):
+            await interaction.response.send_message(
+                "This privacy prompt is no longer available.", ephemeral=True
+            )
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._accept_tasks.setdefault(user_id, set()).add(task)
         try:
-            await self._store.set_consent(user_id, True)
+            try:
+                await self._store.set_consent(user_id, True)
+            finally:
+                # Always release the reservation: a failed consent write must not
+                # leave the user stuck in _pending, silently dropping every later
+                # message until restart. The gate simply reappears on next mention.
+                self._release_pending(user_id, generation)
+            if generation != self._generation(user_id):
+                return
+            try:
+                await interaction.response.edit_message(
+                    embed=_accepted_embed(self._title), view=None
+                )
+            except discord.HTTPException:
+                # Cosmetic only (e.g. expired interaction token); consent is
+                # recorded, so still answer the original message below.
+                log.warning("Could not edit consent prompt after accept", exc_info=True)
+            if generation != self._generation(user_id):
+                return
+            # Consent is now recorded, so re-running the normal path answers the
+            # original message instead of re-prompting.
+            await self._redispatch(message)
         finally:
-            # Always release the reservation: a failed consent write must not
-            # leave the user stuck in _pending, silently dropping every later
-            # message until restart. The gate simply reappears on next mention.
-            self._pending.discard(user_id)
-        try:
-            await interaction.response.edit_message(embed=_accepted_embed(self._title), view=None)
-        except discord.HTTPException:
-            # Cosmetic only (e.g. expired interaction token); consent is
-            # recorded, so still answer the original message below.
-            log.warning("Could not edit consent prompt after accept", exc_info=True)
-        # Consent is now recorded, so re-running the normal path answers the
-        # original message instead of re-prompting.
-        await self._redispatch(message)
+            if task is not None:
+                active = self._accept_tasks.get(user_id)
+                if active is not None:
+                    active.discard(task)
+                    if not active:
+                        self._accept_tasks.pop(user_id, None)
 
-    async def _decline(self, user_id: str, interaction: discord.Interaction) -> None:
+    async def _decline(
+        self,
+        user_id: str,
+        interaction: discord.Interaction,
+        generation: int | None = None,
+    ) -> None:
+        generation = self._generation(user_id) if generation is None else generation
         # Decline is not a permanent block: leave consent unset so the gate
         # reappears on the user's next mention.
-        self._pending.discard(user_id)
+        self._release_pending(user_id, generation)
         await interaction.response.edit_message(embed=_declined_embed(self._title), view=None)

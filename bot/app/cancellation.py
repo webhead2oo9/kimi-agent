@@ -38,6 +38,7 @@ class ActiveOperationRegistry:
         *,
         user_id: str,
         channel_id: str,
+        stop_event: asyncio.Event | None = None,
     ) -> Iterator[None]:
         """Register an admitted turn before its conversation root is known."""
         task = asyncio.current_task()
@@ -50,7 +51,7 @@ class ActiveOperationRegistry:
             channel_id=channel_id,
             task=task,
             cancel_on_stop=True,
-            stop_event=asyncio.Event(),
+            stop_event=stop_event or asyncio.Event(),
             provisional=True,
         )
         # Publish the turn before its next await so STOP cannot miss work that
@@ -106,6 +107,18 @@ class ActiveOperationRegistry:
         finally:
             async with self._lock:
                 self._operations.pop(operation.id, None)
+
+    def has_active_for_user(self, user_id: str) -> bool:
+        """Whether this user has work in flight, ignoring the caller's own task.
+
+        Read without the lock: this only steers a best-effort UX decision (does a
+        bare "stop" mean cancel, or is it ordinary chat), never a privilege one.
+        """
+        current = asyncio.current_task()
+        return any(
+            operation.user_id == user_id and operation.task is not current
+            for operation in tuple(self._operations.values())
+        )
 
     async def cancel(
         self,

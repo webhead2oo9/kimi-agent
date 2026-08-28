@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from agent.activity import (
     ActivityReporter,
@@ -36,6 +36,7 @@ from agent.attachments import (
 )
 from agent.context import ConversationContext
 from agent.core import (
+    ConversationTerminationReason,
     ConversationRunRequest,
     ConversationRunResult,
     ConversationTurnTimeoutError,
@@ -323,6 +324,13 @@ class TurnPreparationInput:
     conversation_owner_user_id: str | None = None
     conversation_access_scope: ConversationAccessScope = "channel_shared"
     allow_bot_authored_reply_context: bool = False
+    # Personal user-app turns keep provider/prompt/memory/usage scope synthetic
+    # while exposing the real invocation location to Discord-aware tools.
+    personal_chat: bool = False
+    platform_guild_id: str | None = None
+    platform_channel_id: str = ""
+    platform_thread_id: str | None = None
+    workspace_key: WorkspaceKey | None = None
 
 
 @dataclass(frozen=True)
@@ -379,6 +387,11 @@ class TurnRequest:
     attachments: tuple[AttachmentRef, ...] = ()
     reply_context: ReplyContext | None = None
     moderation_cleanup_paths: tuple[Path, ...] = ()
+    platform_guild_id: str | None = None
+    platform_channel_id: str = ""
+    platform_thread_id: str | None = None
+    workspace_key: WorkspaceKey | None = None
+    personal_chat: bool = False
 
 
 @dataclass(frozen=True)
@@ -393,9 +406,17 @@ class TurnResult:
     thread_close_request: ThreadCloseRequest | None = None
     terminal_handoff: TurnHandoff | None = None
     blocked_by_moderation: bool = False
+    termination_reason: TurnTerminationReason = "completed"
     # Set by the Discord boundary when the turn produced a reply but no chunk
     # could be delivered (send_response swallows per-chunk HTTP failures).
     delivery_failed: bool = False
+
+
+type TurnTerminationReason = ConversationTerminationReason | Literal["moderation_blocked"]
+
+
+def _workspace_key_for_turn(turn: TurnRequest) -> WorkspaceKey:
+    return turn.workspace_key or workspace_owner_key(turn.user_id, turn.guild_id)
 
 
 @dataclass(frozen=True)
@@ -499,6 +520,7 @@ async def handle_turn(
                         Direction.INPUT, error=_blocked_by_error(decision)
                     ),
                     blocked_by_moderation=True,
+                    termination_reason="moderation_blocked",
                 )
             prepared_turn = _filter_turn_images_after_moderation(
                 prepared_turn,
@@ -519,6 +541,7 @@ async def handle_turn(
                         Direction.INPUT, error=attachment_error
                     ),
                     blocked_by_moderation=True,
+                    termination_reason="moderation_blocked",
                 )
 
         prepared_turn = await _await_guarded_with_deadline(
@@ -580,6 +603,7 @@ async def handle_turn(
         )
         return TurnResult(
             response_text=turn_timeout_response(execution_config.timeout_seconds),
+            termination_reason="timed_out",
         )
     finally:
         # The image payloads travel in-memory as base64 content parts; the files
@@ -745,6 +769,11 @@ async def prepare_turn(
             attachments=tuple(turn_attachments),
             reply_context=reply_context,
             moderation_cleanup_paths=tuple(turn_images.cleanup_paths),
+            platform_guild_id=source.platform_guild_id,
+            platform_channel_id=source.platform_channel_id,
+            platform_thread_id=source.platform_thread_id,
+            workspace_key=source.workspace_key,
+            personal_chat=source.personal_chat,
         )
     except BaseException:
         if turn_images is not None:
@@ -1061,6 +1090,11 @@ async def execute_turn(
                     turn_id=turn_id,
                     user_activity=run_dependencies.user_activity,
                     stop_event=run_dependencies.stop_event,
+                    platform_guild_id=turn.platform_guild_id,
+                    platform_channel_id=turn.platform_channel_id,
+                    platform_thread_id=turn.platform_thread_id,
+                    workspace_key=turn.workspace_key,
+                    personal_chat=turn.personal_chat,
                 )
             ),
             deadline,
@@ -1096,7 +1130,10 @@ async def execute_turn(
         # turn deadline must not discard that already-incurred usage.
         await usage_recorder.flush()
         _clear_pending_response_artifacts(turn.context)
-        return TurnResult(response_text=run_result.text)
+        return TurnResult(
+            response_text=run_result.text,
+            termination_reason="timed_out",
+        )
 
     # Ledger persistence is not response work. Keep it outside the delivery
     # budget without allowing its latency to consume whatever response budget
@@ -1111,9 +1148,10 @@ async def execute_turn(
         _clear_pending_response_artifacts(turn.context)
         return TurnResult(
             response_text=run_result.text,
-            workspace_key=workspace_owner_key(turn.user_id, turn.guild_id),
+            workspace_key=_workspace_key_for_turn(turn),
             thread_request=thread_request,
             terminal_handoff=run_result.terminal_handoff,
+            termination_reason=run_result.termination_reason,
         )
 
     await _stage_pending_response_files(
@@ -1154,6 +1192,7 @@ async def execute_turn(
                     Direction.OUTPUT, error=_blocked_by_error(decision)
                 ),
                 blocked_by_moderation=True,
+                termination_reason="moderation_blocked",
             )
 
     # Explicit browse_tools loads are unioned in because the baseline already
@@ -1178,7 +1217,7 @@ async def execute_turn(
 
         async def write_assets() -> tuple[Path, list[Path]]:
             locks = dependencies.workspace_locks
-            async with locks.activity(workspace_owner_key(turn.user_id, turn.guild_id)):
+            async with locks.activity(_workspace_key_for_turn(turn)):
                 root = dependencies.workspace_manager.generated_job_dir(
                     turn.context.key,
                     f"native-{uuid.uuid4().hex}",
@@ -1248,11 +1287,12 @@ async def execute_turn(
             if path in pending_descriptions
         ),
         allowed_file_roots=tuple(pending_roots),
-        workspace_key=workspace_owner_key(turn.user_id, turn.guild_id),
+        workspace_key=_workspace_key_for_turn(turn),
         embed=embed,
         thread_request=thread_request,
         thread_close_request=thread_close_request,
         terminal_handoff=run_result.terminal_handoff,
+        termination_reason=run_result.termination_reason,
     )
 
 
@@ -1284,7 +1324,7 @@ async def _stage_pending_response_files(
         allowed_roots = list(context.pending_allowed_file_roots)
         if embed_attachment is not None and embed_attachment.root not in allowed_roots:
             allowed_roots.append(embed_attachment.root)
-        async with locks.activity(workspace_owner_key(turn.user_id, turn.guild_id)):
+        async with locks.activity(_workspace_key_for_turn(turn)):
             return await asyncio.to_thread(
                 _stage_response_files_sync,
                 manager,

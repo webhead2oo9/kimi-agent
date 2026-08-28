@@ -15,6 +15,8 @@ The rest is reference material.
 - [Architecture](architecture.md): the shape of the system and its package map.
 - [Configuration](configuration.md): every deployment setting and every live
   fragment surface.
+- [Discord user-app personal chat](user-app.md): optional `/chat` installation,
+  access tiers, scopes, prompt override, and reset behavior.
 - [Development](development.md): running isolated local and test instances.
 - [Public source and private instance data](instance-data.md): what belongs in
   Git and what stays deployment-owned.

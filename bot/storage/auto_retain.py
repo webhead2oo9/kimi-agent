@@ -31,6 +31,7 @@ class ConversationMeta:
     guild_id: str | None
     channel_id: str | None
     channel_name: str
+    key: str = ""
 
 
 class AutoRetainStore:
@@ -151,7 +152,7 @@ class AutoRetainStore:
     async def conversation_meta(self, conversation_id: int) -> ConversationMeta:
         conn = self._db.conn
         async with conn.execute(
-            "SELECT guild_id, channel_id, channel_name FROM conversations WHERE id = ?",
+            "SELECT key, guild_id, channel_id, channel_name FROM conversations WHERE id = ?",
             (conversation_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -161,6 +162,7 @@ class AutoRetainStore:
             guild_id=row["guild_id"],
             channel_id=row["channel_id"],
             channel_name=row["channel_name"] or "",
+            key=row["key"] or "",
         )
 
     async def set_watermark(self, conversation_id: int, user_id: str, message_id: int) -> None:

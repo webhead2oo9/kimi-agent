@@ -414,6 +414,12 @@ def workspace_owner_key(user_id: str, guild_id: str | None) -> WorkspaceKey:
     return WorkspaceKey(f"{safe_generated_segment(user_id)}__{guild_token}")
 
 
+def user_app_workspace_key(user_id: str) -> WorkspaceKey:
+    """Stable personal workspace shared by all /chat invocation locations."""
+
+    return WorkspaceKey(f"{safe_generated_segment(user_id)}__userapp")
+
+
 class WorkspacePathSymlinkError(ValueError):
     """A workspace path includes a symlink component.
 

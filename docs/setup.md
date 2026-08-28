@@ -72,6 +72,14 @@ must remain outside both repositories.
   set `MESSAGE_CONTENT_INTENT=false` and `THREAD_HANDOFF_ENABLED=false` while
   it's unapproved.
 
+### Optional user-installed personal chat
+
+`/chat` is not part of minimal boot and is off by default. To offer it, enable
+User Install with the `applications.commands` scope in the Discord Developer
+Portal, configure `USER_APP_CHAT_ENABLED=true` plus the numeric user-tier ID
+lists, and restart. Follow [Discord user-app personal chat](user-app.md) for the
+complete portal, access, prompt, visibility, and reset setup.
+
 ### Not needed for boot
 
 Everything else either degrades gracefully or simply stays off: Hindsight

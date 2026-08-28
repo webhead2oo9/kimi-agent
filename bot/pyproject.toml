@@ -61,13 +61,13 @@ package = false
 kimi-agent-module-api = { workspace = true }
 
 [tool.uv.workspace]
-members = ["packages/kimi-agent-module-api", "examples/reference-module"]
+members = ["packages/kimi-agent-module-api", "modules/example"]
 
 [tool.mypy]
 # Skill scripts run as subprocesses against the bot's environment, so their
 # runtime-only imports are not type-checked here. Workspaces may use the default
 # root or a deployment's data/<instance>/workspaces layout.
-exclude = "^(?:(?:data/(?:[^/]+/)*)?workspaces|skills/store/.*/scripts)/"
+exclude = "^(?:modules/example|(?:data/(?:[^/]+/)*)?workspaces|skills/store/.*/scripts)/"
 # Production runs on Linux and sqlcipher3-binary is a Linux-only dependency;
 # keep type checking deterministic on non-Linux dev hosts.
 platform = "linux"
@@ -140,7 +140,7 @@ ignore = [
 "evals/**" = ["ASYNC240", "RUF012", "RUF043", "RUF059"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "examples/reference-module/tests"]
+testpaths = ["tests", "modules/example/tests"]
 pythonpath = ["."]
 # Pin the fixture loop scope rather than inheriting pytest-asyncio's default,
 # which it warns about on every run and intends to change.

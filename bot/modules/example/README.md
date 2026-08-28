@@ -12,7 +12,7 @@ It is laid out like a standalone distribution so it shows the shape of a real
 module development effort:
 
 ```text
-reference-module/
+example/
 ├── pyproject.toml
 ├── README.md
 ├── LICENSE
@@ -21,6 +21,7 @@ reference-module/
 │   ├── settings.py
 │   ├── migrations.py
 │   ├── module.py
+│   ├── py.typed
 │   └── spec.py
 └── tests/test_reference_module.py
 ```
@@ -52,5 +53,7 @@ SDK is published, the new package can install and test itself with:
 
 ```console
 uv sync --extra dev
+uv run ruff check .
+uv run mypy .
 uv run pytest
 ```

@@ -1,4 +1,10 @@
-"""End-to-end proof that an independently packaged module attaches by entry point."""
+"""End-to-end proof that the packaged reference module attaches by entry point.
+
+The module's own suite (``modules/example/tests``) covers behavior on the API
+fakes. This test is the host's half: entry-point discovery, settings overlay
+from ``config/modules``, real migrations on a real SQLite file, dispatch through
+the real ``ToolRegistry`` privilege boundary, and persistence across a restart.
+"""
 
 from __future__ import annotations
 
@@ -10,40 +16,63 @@ from modules.testing import build_test_runtime
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
 
+MODULE = "reference_kudos"
+GUILD = 4242
 
-def _tool_context() -> MessageContext:
+
+def _tool_context(user_id: str, guild_id: str | None = str(GUILD)) -> MessageContext:
     return MessageContext(
-        user_id="user-1",
+        user_id=user_id,
         user_name="Ada",
-        guild_id=None,
+        guild_id=guild_id,
         channel_id="channel-1",
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
+        # kudos_leaderboard is searchable: hidden until browse_tools activates it.
+        activated_tools={"kudos_leaderboard"},
     )
 
 
 @pytest.mark.asyncio
-async def test_installed_reference_module_migrates_invokes_and_persists(tmp_path: Path) -> None:
+async def test_installed_reference_module_migrates_dispatches_and_persists(
+    tmp_path: Path,
+) -> None:
     settings_dir = tmp_path / "config" / "modules"
     settings_dir.mkdir(parents=True)
-    (settings_dir / "reference_greeter.md").write_text(
-        "---\ngreeting: Welcome\n---\n", encoding="utf-8"
-    )
+    # Operator override of an exposed field, read through config/modules.
+    (settings_dir / f"{MODULE}.md").write_text("---\ndaily_limit: 1\n---\n", encoding="utf-8")
 
-    runtime = await build_test_runtime(tmp_path, ["reference_greeter"])
+    runtime = await build_test_runtime(tmp_path, [MODULE], guild_config={GUILD: {}})
     try:
-        assert runtime.manager.load_state.loaded == ("reference_greeter",)
-        assert runtime.registry.is_registered("reference_greet")
-        first = await runtime.registry.dispatch("reference_greet", {"name": "Ada"}, _tool_context())
-        assert first == "Welcome, Ada! I have greeted someone 1 time(s)."
+        assert runtime.manager.load_state.loaded == (MODULE,)
+        assert runtime.registry.is_registered("give_kudos")
+        assert runtime.registry.is_registered("kudos_leaderboard")
+        ports = runtime.ports[MODULE]
+        assert "digest" in ports.scheduler.jobs
+        assert set(ports.interactions.commands) == {"kudos.give", "kudos.top", "kudos.setup"}
+
+        first = await runtime.registry.dispatch(
+            "give_kudos", {"user": "<@7>", "reason": "shipped it"}, _tool_context("1")
+        )
+        assert first == "Kudos to <@7>: shipped it"
+        # The operator's daily_limit override of 1 is in force.
+        second = await runtime.registry.dispatch(
+            "give_kudos", {"user": "<@8>", "reason": "again"}, _tool_context("1")
+        )
+        assert "last 24 hours" in second
+        # A guild-less caller (DM or personal chat) is refused at the handler.
+        refused = await runtime.registry.dispatch(
+            "give_kudos", {"user": "<@7>", "reason": "x"}, _tool_context("1", guild_id=None)
+        )
+        assert "inside a server" in refused
     finally:
         await runtime.close()
 
-    restarted = await build_test_runtime(tmp_path, ["reference_greeter"])
+    restarted = await build_test_runtime(tmp_path, [MODULE], guild_config={GUILD: {}})
     try:
-        second = await restarted.registry.dispatch(
-            "reference_greet", {"name": "Grace"}, _tool_context()
+        board = await restarted.registry.dispatch(
+            "kudos_leaderboard", {"days": 1}, _tool_context("2")
         )
-        assert second == "Welcome, Grace! I have greeted someone 2 time(s)."
+        assert board.splitlines()[1:] == ["1. <@7> — 1"]
     finally:
         await restarted.close()

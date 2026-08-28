@@ -1,17 +1,24 @@
 [project]
 name = "community-agent-reference-module"
 version = "1.0.0"
-description = "Reference implementation of a community agent module"
+description = "Reference implementation of a Kimi application module"
 requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
+readme = "README.md"
+# The only runtime dependency a module needs. Pin to the major version: the
+# API's MODULE_API_VERSION changes with it.
 dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
 
 [project.optional-dependencies]
-dev = ["mypy", "pytest", "ruff"]
+# aiosqlite backs the in-memory storage fake in tests/conftest.py; it is not a
+# runtime dependency because the host owns the real database.
+dev = ["aiosqlite", "mypy", "pytest", "pytest-asyncio", "ruff"]
 
+# This is the whole discovery contract: the host looks up this group and
+# activates the names listed in KIMI_MODULES.
 [project.entry-points."kimi_agent.modules"]
-reference_greeter = "community_agent_reference_module:SPEC"
+reference_kudos = "community_agent_reference_module:SPEC"
 
 [build-system]
 requires = ["setuptools>=84"]
@@ -24,6 +31,15 @@ where = ["src"]
 community_agent_reference_module = ["py.typed"]
 
 [tool.mypy]
-mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src:$MYPY_CONFIG_FILE_DIR/tests"
 explicit_package_bases = true
 check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100

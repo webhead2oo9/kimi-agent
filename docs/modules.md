@@ -20,8 +20,9 @@ smaller interface.
 
 ## Try the reference module
 
-This repository maintains one example at `bot/modules/example`. It
-is executable documentation and a CI fixture, not a production dependency or a
+This repository maintains one example at
+[`bot/modules/example`](../bot/modules/example/README.md). It is executable
+documentation and a CI fixture, not a production dependency or a
 default-enabled feature.
 
 From `bot/`:
@@ -33,14 +34,18 @@ uv sync --all-packages --extra dev
 Then set the installed entry-point name and start normally:
 
 ```dotenv
-KIMI_MODULES=reference_greeter
+KIMI_MODULES=reference_kudos
 ```
 
-The example owns one exposed greeting setting, one `reference_greet` LLM tool,
-one scoped migration with a persistent invocation count, and normal
-`start()`/`close()` lifecycle hooks. Copy its package structure to begin a
-module of your own; it is intentionally small enough to replace rather than
-inherit.
+The example is a small "kudos" feature chosen because it touches every port
+in a natural way: deployment and per-guild settings, two ordered migrations,
+scoped storage, a core and a searchable LLM tool, a `/kudos` command group
+with a staff-only subcommand, a persistent button, a durable digest job, a
+`discord.member_remove` subscription and its own published topic, a provided
+service, a configuration proposal, trust lookup, and health metrics. Its
+README maps each surface to the file that demonstrates it. Copy its package
+structure to begin a module of your own; it is intentionally small enough to
+replace rather than inherit.
 
 ## Attach any module package
 

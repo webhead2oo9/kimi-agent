@@ -151,8 +151,6 @@ _MINIMUMS: dict[str, int | float] = {
     "video_understanding_max_concurrency": 1,
     "image_gen_max_concurrency": 1,
     "image_gen_timeout_seconds": 30.0,
-    "tinyfish_search_cost_usd": 0,
-    "tinyfish_contents_cost_usd": 0,
     "exa_search_cost_usd": 0,
     "exa_contents_cost_usd": 0,
     "brave_search_cost_usd": 0,

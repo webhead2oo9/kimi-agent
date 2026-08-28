@@ -188,7 +188,7 @@ def init_code_exec_tool(
             usage_store=ctx.usage_store,
             user_id=ctx.user_id,
             user_name=ctx.user_name,
-            channel_id=ctx.channel_id,
+            channel_id=ctx.conversation_channel_id,
             guild_id=ctx.guild_id,
             trust_tier=ctx.trust_tier,
             operation=operation,

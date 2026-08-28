@@ -165,6 +165,7 @@ def _recall_scope_tags(ctx: MessageContext) -> list[str]:
     """Tags that scope a recall/reflect to the user's global facts plus this
     guild's memory, excluding other guilds' conversation-derived memory."""
     tags = ["scope:global"]
+    # ctx.guild_id is already the logical scope: None in guild-less personal chat.
     if ctx.guild_id:
         tags.append(f"guild:{ctx.guild_id}")
     return tags

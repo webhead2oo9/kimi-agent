@@ -14,7 +14,8 @@ order, sections removed, or a different persona/tone.
 ```
 prompts/commands/<name>/<guild_id>.md
                                       (guild-specific command template)
-  > prompts/commands/<name>.md        (shared command template)
+  > prompts/commands/<name>.local.md  (ignored deployment-local override)
+  > prompts/commands/<name>.md        (tracked/shared command template)
   > prompts/channels/<thread_id>.md   (inside a thread, when present)
   > prompts/channels/<channel_id>.md  (the channel, inherited by its threads)
   > prompts/servers/<guild_id>.md
@@ -85,6 +86,18 @@ any full overrides under the private tree selected by `CONFIG_DIR`; the public
 files here are generic starting points. The private tree layout, the deploy and
 restart boundary, and the list of files that must never be committed are in
 [`docs/instance-data.md`](../../../docs/instance-data.md).
+
+For a small in-checkout deployment that only needs to customize a shared
+command prompt, use `<name>.local.md`. These files are gitignored and runtime
+prefers them over the tracked `<name>.md` default. In particular, personal
+user-app chat uses `commands/chat.local.md`; see
+[`docs/user-app.md`](../../../docs/user-app.md).
+
+The tracked `commands/chat.md` intentionally contains `<persona>`. It therefore
+uses `persona.md` by default and the compiled per-user persona when one exists,
+including that persona renderer's rating and safety boundaries. To give only
+`/chat` a different persona, replace or remove `<persona>` in the complete
+`commands/chat.local.md` layout.
 
 ## Fragment frontmatter
 

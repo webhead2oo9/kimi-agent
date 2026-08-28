@@ -9,7 +9,12 @@ from discord.ext import commands
 StopCallback = Callable[[discord.Interaction, bool, str | None], Awaitable[str]]
 
 
-def register_stop_command(bot: commands.Bot, callback: StopCallback) -> None:
+def register_stop_command(
+    bot: commands.Bot,
+    callback: StopCallback,
+    *,
+    user_install_enabled: bool = False,
+) -> None:
     @app_commands.command(name="stop", description="Stop an active response or coding task")
     @app_commands.describe(
         scope="Use all to stop all of your active work; current is the default",
@@ -26,7 +31,8 @@ def register_stop_command(bot: commands.Bot, callback: StopCallback) -> None:
         scope: app_commands.Choice[str] | None = None,
         task_id: str | None = None,
     ) -> None:
-        if interaction.guild_id is None or interaction.channel_id is None:
+        is_user_install = _is_user_only_install(interaction)
+        if not is_user_install and (interaction.guild_id is None or interaction.channel_id is None):
             await interaction.response.send_message(
                 "Stop is only available in a server channel.", ephemeral=True
             )
@@ -39,4 +45,23 @@ def register_stop_command(bot: commands.Bot, callback: StopCallback) -> None:
         )
         await interaction.followup.send(summary, ephemeral=True)
 
+    if user_install_enabled:
+        app_commands.allowed_installs(guilds=True, users=True)(stop)
+        app_commands.allowed_contexts(
+            guilds=True,
+            dms=True,
+            private_channels=True,
+        )(stop)
+
     bot.tree.add_command(stop, override=True)
+
+
+def _is_user_only_install(interaction: discord.Interaction) -> bool:
+    is_user = getattr(interaction, "is_user_integration", None)
+    is_guild = getattr(interaction, "is_guild_integration", None)
+    if not callable(is_user) or not callable(is_guild):
+        return False
+    try:
+        return bool(is_user()) and not bool(is_guild())
+    except Exception:
+        return False

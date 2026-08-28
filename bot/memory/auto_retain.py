@@ -180,12 +180,15 @@ class AutoRetainFlusher:
         bank_id = await self._ensure_user_bank(self._memory, user_id, user_name)
         if bank_id is None:
             return "failed"
-        # Conversation-derived memory is scoped to its originating guild so recall
-        # in another community never surfaces it; a guild-less slice stays unscoped
-        # (no ``guild:`` tag) and is therefore never recalled, which fails closed.
+        # Conversation-derived memory is scoped to its originating guild. The
+        # explicit personal user-app root is the one guild-less exception: it is
+        # intentionally global for that user and is tagged accordingly. Other
+        # guild-less slices stay unscoped and therefore fail closed on recall.
         retain_tags = ["source:auto_retain", "scope:user"]
         if meta.guild_id:
             retain_tags.append(f"guild:{meta.guild_id}")
+        elif meta.key.startswith("userchat:"):
+            retain_tags.append("scope:global")
         for part_index, part in enumerate(_split_parts(lines, self._max_content_chars)):
             document_id = f"auto-retain:{user_id}:{conversation_id}:{after_id + 1}"
             if part_index:

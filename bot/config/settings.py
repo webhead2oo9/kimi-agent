@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     allowed_guild_ids: str = ""
     bot_name: str = DEFAULT_BOT_NAME
 
+    # Optional Discord user-install surface. It is deliberately off by default;
+    # enabling it registers the personal /chat commands globally. Access is
+    # granted by stable Discord user ID, independently from guild roles/trust.
+    user_app_chat_enabled: bool = False
+    user_app_member_ids: str = ""
+    user_app_regular_ids: str = ""
+    user_app_staff_ids: str = ""
+    # Discord interaction tokens live for 15 minutes. Keep the complete turn
+    # below that boundary so delivery and cleanup retain a valid token.
+    user_app_chat_timeout_seconds: float = Field(default=840.0, ge=1.0, le=840.0)
+
     # Privileged gateway intents. As of Discord's 2026 policy, apps over 10,000
     # users must apply for these in the Developer Portal and reauthorize yearly
     # (https://support-dev.discord.com/hc/en-us/articles/6207308062871).
@@ -890,6 +901,21 @@ class Settings(BaseSettings):
     def staff_ids(self) -> set[str]:
         return {uid.strip() for uid in self.staff_user_ids.split(",") if uid.strip()}
 
+    @property
+    def user_app_member_id_set(self) -> set[str]:
+        return {uid.strip() for uid in self.user_app_member_ids.split(",") if uid.strip()}
+
+    @property
+    def user_app_regular_id_set(self) -> set[str]:
+        return {uid.strip() for uid in self.user_app_regular_ids.split(",") if uid.strip()}
+
+    @property
+    def user_app_staff_id_set(self) -> set[str]:
+        ids = {uid.strip() for uid in self.user_app_staff_ids.split(",") if uid.strip()}
+        if self.owner_user_id.strip():
+            ids.add(self.owner_user_id.strip())
+        return ids
+
     @field_validator("staff_role_ids", "regular_role_ids")
     @classmethod
     def _validate_role_ids(cls, value: str, info: ValidationInfo) -> str:
@@ -901,6 +927,35 @@ class Settings(BaseSettings):
                 label = (info.field_name or "role_ids").upper()
                 raise ValueError(f"{label} entry {token!r} is not a numeric Discord role ID")
         return value
+
+    @field_validator(
+        "staff_user_ids",
+        "user_app_member_ids",
+        "user_app_regular_ids",
+        "user_app_staff_ids",
+        "owner_user_id",
+    )
+    @classmethod
+    def _validate_user_ids(cls, value: str, info: ValidationInfo) -> str:
+        for token in value.split(","):
+            token = token.strip()
+            if token and not token.isdigit():
+                label = (info.field_name or "user_ids").upper()
+                raise ValueError(f"{label} entry {token!r} is not a numeric Discord user ID")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_user_app_chat_access(self) -> Settings:
+        if self.user_app_chat_enabled and not (
+            self.user_app_member_id_set
+            or self.user_app_regular_id_set
+            or self.user_app_staff_id_set
+        ):
+            raise ValueError(
+                "USER_APP_CHAT_ENABLED requires OWNER_USER_ID or at least one "
+                "USER_APP_MEMBER_IDS/USER_APP_REGULAR_IDS/USER_APP_STAFF_IDS entry"
+            )
+        return self
 
     @field_validator("allowed_channel_ids")
     @classmethod

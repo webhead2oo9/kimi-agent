@@ -138,6 +138,30 @@ def _tool_config_channel_id(source: TurnPreparationInput) -> str:
     return resolve_parent_channel_id(channel) or source.channel_id
 
 
+# Personal chat (`/chat`) is a guild-less surface invoked from an arbitrary
+# location, so a tool whose meaning is bound to one guild has no coherent target
+# there. Structurally message-rooted thread actions are simply absent. Community
+# memory and shared skills are guild/deployment artifacts: writing to them from a
+# personal turn would apply a tier granted outside that guild, and reading them
+# would pull guild-private knowledge into a private transcript. Blocking is
+# re-checked at the dispatch privilege boundary, and it keeps the model's tool
+# list honest rather than offering tools that can only refuse.
+_PERSONAL_CHAT_BLOCKED_TOOLS = frozenset(
+    {
+        "move_to_thread",
+        "leave_thread",
+        "pause_thread_replies",
+        "resume_thread_replies",
+        "teach",
+        "recall_community",
+        "reflect_community",
+        "skill_create",
+        "skill_edit",
+        "skill_delete",
+    }
+)
+
+
 def _platform_scope_blocked_tools(guild_id: str | None) -> frozenset[str]:
     """Hide platform actions that cannot exist in the current conversation scope."""
     return frozenset() if guild_id else frozenset({"move_to_thread"})
@@ -164,8 +188,8 @@ async def build_turn_dependencies(
     hooks = hooks or TurnEntryHooks()
     collect_turn_attachments_func = collect_turn_attachments_func or hooks.collect_turn_attachments
     chat_scope = Scope(
-        guild_id=source.guild_id,
-        channel_id=source.channel_id,
+        guild_id=None if source.personal_chat else source.guild_id,
+        channel_id="" if source.personal_chat else source.channel_id,
         user_id=source.user_id,
         command=command_template,
     )
@@ -194,7 +218,7 @@ async def build_turn_dependencies(
     tool_config_channel_id = _tool_config_channel_id(source)
 
     def skills_index_builder() -> str:
-        return app.skills_index_cache.index(source.guild_id)
+        return app.skills_index_cache.index(None if source.personal_chat else source.guild_id)
 
     def personal_skills_index_builder() -> str:
         return app.tools.personal_skill_manager.index(source.user_id)
@@ -205,6 +229,8 @@ async def build_turn_dependencies(
         return await preference_store.get_persona(user_id)
 
     def channel_pinned_tools() -> frozenset[str]:
+        if source.personal_chat:
+            return frozenset()
         pins = hooks.load_channel_pinned_tools(
             tool_config_channel_id
         ) | hooks.load_guild_pinned_tools(source.guild_id or "")
@@ -222,6 +248,15 @@ async def build_turn_dependencies(
         # (the caller's extra_blocked_tools; see thread_state_blocked_tools).
         # The three fragment scopes are read fresh each turn, so an operator
         # un-blocking a tool takes effect on the next message.
+        if source.personal_chat:
+            # Personal chat obeys deployment-wide policy, but never silently
+            # inherits the guild/channel policy of wherever the command happened
+            # to be invoked.
+            return (
+                hooks.load_global_blocked_tools()
+                | extra_blocked_tools
+                | _PERSONAL_CHAT_BLOCKED_TOOLS
+            )
         blocked = (
             load_blocked_tools(
                 source.guild_id or "",

@@ -22,8 +22,27 @@ class MemoryGroup(app_commands.Group):
         self,
         preferences: PreferenceStore,
         privacy_barrier: UserPrivacyBarrier | None = None,
+        *,
+        user_install_enabled: bool = False,
     ) -> None:
-        super().__init__(name="memory", description="Manage your bot memory settings")
+        super().__init__(
+            name="memory",
+            description="Manage your bot memory settings",
+            allowed_installs=(
+                app_commands.AppInstallationType(guild=True, user=True)
+                if user_install_enabled
+                else None
+            ),
+            allowed_contexts=(
+                app_commands.AppCommandContext(
+                    guild=True,
+                    dm_channel=True,
+                    private_channel=True,
+                )
+                if user_install_enabled
+                else None
+            ),
+        )
         self._preferences = preferences
         self._privacy_barrier = privacy_barrier
 
@@ -86,8 +105,13 @@ def register_memory_command(
     preferences: PreferenceStore,
     *,
     privacy_barrier: UserPrivacyBarrier | None = None,
+    user_install_enabled: bool = False,
 ) -> None:
     bot.tree.add_command(
-        MemoryGroup(preferences, privacy_barrier=privacy_barrier),
+        MemoryGroup(
+            preferences,
+            privacy_barrier=privacy_barrier,
+            user_install_enabled=user_install_enabled,
+        ),
         override=True,
     )

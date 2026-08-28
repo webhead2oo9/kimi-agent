@@ -244,6 +244,7 @@ dotenv file, since it is the thing that selects which file to read.
 | `USER_APP_REGULAR_IDS` | csv(int) | `""` | Discord user IDs granted Regular-tier `/chat` access. Highest tier wins on overlap. |
 | `USER_APP_STAFF_IDS` | csv(int) | `""` | Discord user IDs granted Staff-tier `/chat` access. `OWNER_USER_ID` is added automatically. |
 | `USER_APP_CHAT_TIMEOUT_SECONDS` | float | `840.0` | Whole personal-chat turn deadline, validated from 1 through 840 seconds so delivery remains below Discord's 15-minute interaction-token lifetime. |
+| `USER_APP_DM_ENABLED` | bool | `false` | Also answer ordinary direct messages, as a second entry point onto the same `userchat:<user_id>` conversation, workspace, and root lock as `/chat`. Requires `USER_APP_CHAT_ENABLED` (which owns the self-service `/privacy`, `/chat-reset`, `/memory`, and `/stop` commands) and uses the same `USER_APP_*` access lists; a DM from anyone not on them is ignored without a reply. Guild messages are unaffected. |
 
 **Derived:** `staff_role_id_set`/`regular_role_id_set` (sets of numeric strings), `staff_ids` (set),
 `allowed_channels`, and the environment-backed `allowed_guilds` (sets of ints). At runtime,

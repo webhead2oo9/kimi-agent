@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # Discord interaction tokens live for 15 minutes. Keep the complete turn
     # below that boundary so delivery and cleanup retain a valid token.
     user_app_chat_timeout_seconds: float = Field(default=840.0, ge=1.0, le=840.0)
+    # Ambient direct messages as a second entry point onto the same personal
+    # root. Off by default and separately switchable, but it shares the
+    # USER_APP_* access lists and requires the /chat surface, which owns the
+    # self-service /privacy, /chat-reset, /memory, and /stop commands the DM
+    # transcript depends on.
+    user_app_dm_enabled: bool = False
 
     # Privileged gateway intents. As of Discord's 2026 policy, apps over 10,000
     # users must apply for these in the Developer Portal and reauthorize yearly
@@ -955,6 +961,11 @@ class Settings(BaseSettings):
                 "USER_APP_CHAT_ENABLED requires OWNER_USER_ID or at least one "
                 "USER_APP_MEMBER_IDS/USER_APP_REGULAR_IDS/USER_APP_STAFF_IDS entry"
             )
+        # A DM-only deployment would hand out a personal transcript with no way
+        # to clear, cancel, or delete it: /privacy, /chat-reset, /memory, and
+        # /stop reach user installs only through the /chat surface.
+        if self.user_app_dm_enabled and not self.user_app_chat_enabled:
+            raise ValueError("USER_APP_DM_ENABLED requires USER_APP_CHAT_ENABLED")
         return self
 
     @field_validator("allowed_channel_ids")

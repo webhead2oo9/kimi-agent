@@ -171,7 +171,7 @@ from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
 from tools.embeds import embed_transcript_summary
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
 from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
 from tools.user_memory import set_user_memory_preference_store
 from trust.resolver import TrustResolver
@@ -2079,7 +2079,7 @@ class KimiApplication:
             # all_operations ignores the scope filters, so one entry sweeps everything.
             return await self._cancel_user_work(
                 user_id=user_id,
-                scopes=[("userapp" if user_only else channel_id, None)],
+                scopes=[(USER_APP_SCOPE_CHANNEL_ID if user_only else channel_id, None)],
                 all_work=True,
             )
         # An app installed both to the user and to the guild reports both
@@ -2090,7 +2090,7 @@ class KimiApplication:
         # stays limited to this caller's own operations either way.
         scopes: list[tuple[str, str | None]] = []
         if _is_user_integration(interaction):
-            scopes.append(("userapp", f"userchat:{user_id}"))
+            scopes.append((USER_APP_SCOPE_CHANNEL_ID, f"userchat:{user_id}"))
         if channel_id and not user_only:
             scopes.append((channel_id, None))
         if not scopes:
@@ -2202,7 +2202,7 @@ class KimiApplication:
             # before reporting that deletion completed.
             with self.active_operations.register_provisional(
                 user_id=user_id,
-                channel_id="userapp",
+                channel_id=USER_APP_SCOPE_CHANNEL_ID,
                 stop_event=turn_stop_event,
             ):
                 self.active_operations.bind_current_provisional(root_key)
@@ -2280,7 +2280,7 @@ class KimiApplication:
         user_id = str(interaction.user.id)
         user_name = interaction.user.display_name
         root_key = f"userchat:{user_id}"
-        scope_channel_id = "userapp"
+        scope_channel_id = USER_APP_SCOPE_CHANNEL_ID
 
         admission = await self.turn_admission.try_acquire(user_id)
         if admission.lease is None:
@@ -2499,7 +2499,7 @@ class KimiApplication:
         _count, clean = await self.active_operations.cancel(
             user_id=user_id,
             root_key=root_key,
-            channel_id="userapp",
+            channel_id=USER_APP_SCOPE_CHANNEL_ID,
             all_operations=False,
             wait_seconds=self.settings.coding_stop_cleanup_wait_seconds,
         )
@@ -2507,7 +2507,7 @@ class KimiApplication:
             _task_ids, coding_clean = await self.coding_tasks.cancel_for_scope(
                 user_id=user_id,
                 root_key=root_key,
-                channel_id="userapp",
+                channel_id=USER_APP_SCOPE_CHANNEL_ID,
                 all_tasks=False,
             )
             clean = clean and coding_clean
@@ -2586,12 +2586,17 @@ class KimiApplication:
             allowed_guilds=active_guilds,
         ):
             return
-        if isinstance(message.channel, discord.DMChannel):
+        personal_dm = self._dm_personal_chat_tier(message) is not None
+        if isinstance(message.channel, discord.DMChannel) and not personal_dm:
+            # DMs are ignored unless this user has personal-chat access. Return
+            # silently: replying would confirm the bot is listening and invite
+            # probing from anyone who shares a guild with it.
             return
 
         # Pure routing check before taking a lease; messages the bot will ignore
-        # have no state to coordinate with /privacy.
-        if not self._should_respond(message, active_guilds=active_guilds):
+        # have no state to coordinate with /privacy. A DM needs no invocation
+        # gate: there is nothing else in the channel for it to be addressed to.
+        if not personal_dm and not self._should_respond(message, active_guilds=active_guilds):
             return
 
         # Hard block gate precedes reactions, transcript writes, every lock or
@@ -2604,7 +2609,9 @@ class KimiApplication:
 
         # Cancellation has its own lane before admission and the response lock;
         # otherwise a STOP message could queue behind the work it needs to end.
-        if self._is_stop_message(message):
+        if self._is_stop_message(message) and (
+            not personal_dm or self.active_operations.has_active_for_user(str(message.author.id))
+        ):
             await self._handle_stop_message(message)
             return
 
@@ -2666,10 +2673,13 @@ class KimiApplication:
         if self.consent_gate is not None and await self.consent_gate.maybe_prompt(message):
             return
 
-        resolved = await self.resolve_conversation_for_message(
-            message,
-            allow_new_root=True,
-        )
+        if self._dm_personal_chat_tier(message) is not None:
+            resolved = await self._resolve_personal_dm_conversation(message)
+        else:
+            resolved = await self.resolve_conversation_for_message(
+                message,
+                allow_new_root=True,
+            )
         if resolved is None:
             return
         self.active_operations.bind_current_provisional(resolved.key)
@@ -2688,7 +2698,12 @@ class KimiApplication:
                 # old mode.
                 # Re-read the cheap activation snapshot after waiting for the root
                 # lock so an operator deactivation stops queued work immediately.
-                if not self._should_respond(message):
+                # A DM has no invocation gate; its live equivalent is personal-chat
+                # access, which an operator may have revoked while this queued.
+                if isinstance(message.channel, discord.DMChannel):
+                    if self._dm_personal_chat_tier(message) is None:
+                        return
+                elif not self._should_respond(message):
                     return
                 try:
                     result = await self.handle_message(
@@ -2764,16 +2779,31 @@ class KimiApplication:
     ) -> TurnResult | None:
         assert self.context_manager is not None
 
+        # A DM from an allowlisted user is personal chat arriving as a real
+        # message instead of a slash interaction. It scopes exactly like /chat:
+        # one guild-less root, the shared "userapp" scope channel, the personal
+        # workspace, and the personal prompt template.
+        personal_dm_tier = self._dm_personal_chat_tier(message)
+        personal_dm = personal_dm_tier is not None
+
         target_channel: discord.abc.Messageable = message.channel
-        context_channel_id = str(message.channel.id)
+        context_channel_id = USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)
         context_thread_id = (
-            str(message.channel.id) if isinstance(message.channel, discord.Thread) else None
+            None
+            if personal_dm
+            else (str(message.channel.id) if isinstance(message.channel, discord.Thread) else None)
         )
-        context_channel_name = getattr(message.channel, "name", "DM")
+        context_channel_name = (
+            "Personal chat" if personal_dm else getattr(message.channel, "name", "DM")
+        )
         if resolved_conversation is None:
-            resolved_conversation = await self.resolve_conversation_for_message(
-                message,
-                allow_new_root=True,
+            resolved_conversation = (
+                await self._resolve_personal_dm_conversation(message)
+                if personal_dm
+                else await self.resolve_conversation_for_message(
+                    message,
+                    allow_new_root=True,
+                )
             )
         if resolved_conversation is None:
             return None
@@ -2786,7 +2816,13 @@ class KimiApplication:
         guild_id = str(message.guild.id) if message.guild else None
         guild_name = message.guild.name if message.guild else ""
 
-        trust_tier = self.trust_resolver.resolve(member, user_id, guild_id)
+        # Personal-chat standing comes from the USER_APP_* allowlists, never from
+        # guild roles, and a DM has no guild to resolve against anyway.
+        trust_tier = (
+            personal_dm_tier
+            if personal_dm_tier is not None
+            else self.trust_resolver.resolve(member, user_id, guild_id)
+        )
 
         conv_id = resolved_conversation.db_conversation_id
         if (
@@ -2895,6 +2931,9 @@ class KimiApplication:
             allow_bot_authored_reply_context=(
                 resolved_conversation.allow_bot_authored_reply_context
             ),
+            personal_chat=personal_dm,
+            platform_channel_id=str(message.channel.id) if personal_dm else "",
+            workspace_key=user_app_workspace_key(user_id) if personal_dm else None,
         )
         turn_stop_event = asyncio.Event()
         turn_dependencies = await build_turn_dependencies(
@@ -2905,7 +2944,7 @@ class KimiApplication:
             preference_store=self.preference_store,
             usage_store=self._usage_store(),
             hooks=_turn_entry_hooks(),
-            command_template=None,
+            command_template="chat" if personal_dm else None,
             collect_reply_context_func=collect_reply_context,
             collect_turn_attachments_func=collect_turn_attachments,
             strip_mention_func=self._strip_message_invocation,
@@ -3223,8 +3262,13 @@ class KimiApplication:
                 # thread handoff that is the new thread, and the reply-continuation
                 # lookup filters message_contexts by the incoming message's channel.
                 sent_channel = getattr(sent_messages[0], "channel", None)
+                # Personal chat keeps both sides of the transcript under the one
+                # scope sentinel; a DM channel id would split one root's
+                # message_contexts rows across two channel values.
                 persist_channel_id = (
-                    str(sent_channel.id) if sent_channel is not None else context_channel_id
+                    context_channel_id
+                    if personal_dm or sent_channel is None
+                    else str(sent_channel.id)
                 )
                 await self.conversation_store.save_channel_messages(
                     conv_id,
@@ -3299,6 +3343,38 @@ class KimiApplication:
                 return await send()
         return await send()
 
+    async def _resolve_personal_dm_conversation(
+        self,
+        message: discord.Message,
+    ) -> ResolvedConversation | None:
+        """Continue this user's one personal root instead of opening a new one.
+
+        The scope must be stated explicitly. `/chat` creates the row as
+        OWNER_ONLY, and ConversationStore rejects resolving an owner-only root
+        under any other scope or owner, so defaulting to channel-shared here
+        would fail every DM that follows a `/chat` turn.
+        """
+        if self.conversation_store is None:
+            return None
+        user_id = str(message.author.id)
+        root_key = f"userchat:{user_id}"
+        conversation_id = await self.conversation_store.get_or_create(
+            root_key,
+            "Personal chat",
+            guild_id=None,
+            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+            thread_id=None,
+            root_discord_message_id=str(message.id),
+            owner_user_id=user_id,
+            access_scope=OWNER_ONLY,
+        )
+        return ResolvedConversation(
+            key=root_key,
+            db_conversation_id=conversation_id,
+            owner_user_id=user_id,
+            access_scope=OWNER_ONLY,
+        )
+
     async def resolve_conversation_for_message(
         self,
         message: discord.Message,
@@ -3311,6 +3387,19 @@ class KimiApplication:
             conversation_store=self.conversation_store,
             thread_handoff=self.thread_handoff,
         )
+
+    def _dm_personal_chat_tier(self, message: discord.Message) -> TrustTier | None:
+        """Access tier for an ambient DM entering personal chat, else None.
+
+        Pure and cheap, so the gate, the under-lock re-check, and the turn wiring
+        can each ask independently. Guild messages and every non-allowlisted DM
+        answer None, so this is also the "is this a personal DM turn" predicate.
+        """
+        if not self.settings.user_app_dm_enabled:
+            return None
+        if not isinstance(message.channel, discord.DMChannel):
+            return None
+        return self.user_app_access.resolve(str(message.author.id))
 
     def _should_respond(
         self,

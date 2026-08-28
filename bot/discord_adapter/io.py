@@ -273,7 +273,7 @@ def can_send_reply(channel: Any, *, bot_member: Any | None) -> bool:
     A cheap gate the mention path runs BEFORE the (paid) model turn: when the
     bot is @mentioned in a channel it can read but not send to, running the turn
     burns an LLM call (and tool calls) on a reply ``send_response`` can only fail
-    to deliver. DMs never reach here.
+    to deliver. For a DM there is no bot member to resolve, so this is a no-op.
 
     Fails OPEN: when permissions cannot be resolved (no bot member, an
     unexpected channel shape, or ``permissions_for`` raising) this returns True.

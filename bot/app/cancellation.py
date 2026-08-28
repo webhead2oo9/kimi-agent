@@ -108,6 +108,18 @@ class ActiveOperationRegistry:
             async with self._lock:
                 self._operations.pop(operation.id, None)
 
+    def has_active_for_user(self, user_id: str) -> bool:
+        """Whether this user has work in flight, ignoring the caller's own task.
+
+        Read without the lock: this only steers a best-effort UX decision (does a
+        bare "stop" mean cancel, or is it ordinary chat), never a privilege one.
+        """
+        current = asyncio.current_task()
+        return any(
+            operation.user_id == user_id and operation.task is not current
+            for operation in tuple(self._operations.values())
+        )
+
     async def cancel(
         self,
         *,

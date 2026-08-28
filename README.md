@@ -13,7 +13,7 @@ own persona and rules in plain Markdown, and it takes it from there.
 
 It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
 `Kimi help`, or a message inside a thread it's running. Ordinary DMs are
-ignored. Deployments can optionally grant selected Discord users a command-only
+ignored unless the deployment turns them on for allowlisted users. Deployments can optionally grant selected Discord users a command-only
 personal `/chat` app. Under the hood, every invocation runs a
 [ReAct](https://arxiv.org/abs/2210.03629) tool loop and comes back with a
 properly chunked Discord reply, embeds and attachments included.

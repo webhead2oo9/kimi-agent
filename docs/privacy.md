@@ -8,11 +8,14 @@ sync.
 
 Two facts frame everything below:
 
-- **The bot ignores DMs entirely.** `KimiApplication.on_message`
-  (`app/runtime.py`) rejects `discord.DMChannel` before any reaction, transcript
-  write, consent prompt, or provider call. The image-fingerprint hook runs first
-  and also drops anything without a guild. DM content is never read, stored, or
-  logged.
+- **The bot ignores DMs unless personal chat explicitly opts in.**
+  `KimiApplication.on_message` (`app/runtime.py`) rejects `discord.DMChannel`
+  before any reaction, transcript write, consent prompt, or provider call. The
+  image-fingerprint hook runs first and also drops anything without a guild. The
+  one exception is `USER_APP_DM_ENABLED`, off by default: with it on, a DM from a
+  user on the `USER_APP_*` access lists enters that user's own personal chat
+  conversation, retained and deleted exactly like a `/chat` turn. A DM from
+  anyone else is still dropped at the same point, unread and unlogged.
 - **Conversation handling is invocation-gated.** A turn starts only on an
   @mention, a reply with the reply-ping toggle on, an explicit `hey/hi
   <bot_name>` or `<bot_name> help`, or an unmentioned message in an

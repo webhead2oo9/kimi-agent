@@ -653,3 +653,125 @@ async def test_skill_create_refuses_personal_chat_instead_of_going_global() -> N
         _personal_context(),
     )
     assert "only be managed from a server conversation" in result
+
+
+def test_dm_surface_requires_the_chat_commands() -> None:
+    """A DM-only deployment would hand out a personal transcript with no way to
+    clear, cancel, or delete it: those commands ride on the /chat surface."""
+    with pytest.raises(ValidationError, match="USER_APP_DM_ENABLED requires"):
+        Settings(
+            user_app_chat_enabled=False,
+            user_app_dm_enabled=True,
+            owner_user_id="42",
+            user_app_member_ids="",
+            user_app_regular_ids="",
+            user_app_staff_ids="",
+        )
+    ok = Settings(
+        user_app_chat_enabled=True,
+        user_app_dm_enabled=True,
+        owner_user_id="42",
+        user_app_member_ids="",
+        user_app_regular_ids="",
+        user_app_staff_ids="",
+    )
+    assert ok.user_app_dm_enabled is True
+
+
+def _dm_message(user_id: int, *, content: str = "hello", message_id: int = 7) -> object:
+    channel = discord.DMChannel.__new__(discord.DMChannel)
+    channel.id = 4242
+
+    class _DMMessage:
+        def __init__(self) -> None:
+            self.id = message_id
+            self.content = content
+            self.channel = channel
+            self.guild = None
+            self.author = type("User", (), {"id": user_id, "display_name": "Alice"})()
+
+    return _DMMessage()
+
+
+async def _dm_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: object):
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
+    )
+    config: dict[str, object] = {
+        "discord_bot_token": "token",
+        "model_api_key": "key",
+        "config_dir": str(tmp_path / "config"),
+        "database_path": str(tmp_path / "runtime.db"),
+        "user_app_chat_enabled": True,
+        "user_app_dm_enabled": True,
+        "owner_user_id": "42",
+    }
+    config.update(overrides)
+    app = app_runtime.build_app(Settings.model_validate(config))
+    await app._first_init_core()
+    return app
+
+
+@pytest.mark.asyncio
+async def test_dm_personal_chat_tier_gates_on_setting_and_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _dm_app(tmp_path, monkeypatch)
+    # Owner is automatically user-app staff; nobody else is allowlisted here.
+    assert app._dm_personal_chat_tier(_dm_message(42)) is TrustTier.STAFF
+    assert app._dm_personal_chat_tier(_dm_message(999)) is None
+    await app.database.close()
+
+    off = await _dm_app(tmp_path / "off", monkeypatch, user_app_dm_enabled=False)
+    assert off._dm_personal_chat_tier(_dm_message(42)) is None
+    await off.database.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_continues_the_owner_only_chat_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A DM after a /chat turn must resolve the existing owner-only root.
+
+    ConversationStore rejects resolving an owner-only conversation under any
+    other scope, so a DM that let access_scope default to channel-shared would
+    raise PermissionError on every message after the first /chat turn.
+    """
+    app = await _dm_app(tmp_path, monkeypatch)
+    store = app.conversation_store
+    assert store is not None
+
+    # Stand in for a prior /chat turn creating the personal root.
+    await store.get_or_create(
+        "userchat:42",
+        "Personal chat",
+        guild_id=None,
+        channel_id="userapp",
+        thread_id=None,
+        root_discord_message_id="1",
+        owner_user_id="42",
+        access_scope=OWNER_ONLY,
+    )
+
+    resolved = await app._resolve_personal_dm_conversation(_dm_message(42))
+    assert resolved is not None
+    assert resolved.key == "userchat:42"
+    assert resolved.access_scope == OWNER_ONLY
+    assert resolved.owner_user_id == "42"
+
+    # The default scope is exactly what the resolver must not fall back to.
+    with pytest.raises(PermissionError):
+        await store.get_or_create(
+            "userchat:42",
+            "Personal chat",
+            guild_id=None,
+            channel_id="userapp",
+            thread_id=None,
+            root_discord_message_id="2",
+            owner_user_id="42",
+        )
+    await app.database.close()

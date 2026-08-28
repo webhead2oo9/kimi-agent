@@ -25,6 +25,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Personal chat is not in any Discord channel: `/chat` is a slash interaction and
+# a DM channel id is per-recipient. Conversation scope, cancellation scope, and
+# the usage ledger all key on this sentinel instead, so the two entry points land
+# in one place. Never a real Discord snowflake, which are numeric.
+USER_APP_SCOPE_CHANNEL_ID = "userapp"
+
+
 @dataclass(frozen=True)
 class TurnHandoff:
     """A tool-owned successful boundary that ends the foreground ReAct turn."""
@@ -248,7 +255,7 @@ class MessageContext:
 
     @property
     def conversation_channel_id(self) -> str:
-        return "userapp" if self.personal_chat else self.channel_id
+        return USER_APP_SCOPE_CHANNEL_ID if self.personal_chat else self.channel_id
 
 
 @dataclass

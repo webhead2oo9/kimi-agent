@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from pathlib import Path
 
 import discord
@@ -688,7 +689,12 @@ def _dm_message(user_id: int, *, content: str = "hello", message_id: int = 7) ->
             self.content = content
             self.channel = channel
             self.guild = None
-            self.author = type("User", (), {"id": user_id, "display_name": "Alice"})()
+            self.author = type(
+                "User",
+                (),
+                {"id": user_id, "display_name": "Alice", "bot": False},
+            )()
+            self.type = discord.MessageType.default
 
     return _DMMessage()
 
@@ -774,4 +780,64 @@ async def test_dm_continues_the_owner_only_chat_root(
             root_discord_message_id="2",
             owner_user_id="42",
         )
+    await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_stop_targets_shared_personal_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _dm_app(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def add_status_reaction(_message: object, _emoji: str) -> None:
+        return None
+
+    async def cancel_user_work(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "Stopped."
+
+    async def send_response(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(app.discord_gateway, "add_status_reaction", add_status_reaction)
+    monkeypatch.setattr(app, "_cancel_user_work", cancel_user_work)
+    monkeypatch.setattr(app, "send_response", send_response)
+
+    await app._handle_stop_message(_dm_message(42, content="stop"))  # type: ignore[arg-type]
+
+    assert captured == {
+        "user_id": "42",
+        "scopes": [("userapp", "userchat:42")],
+        "all_work": False,
+    }
+    await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_registers_provisional_work_in_personal_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _dm_app(tmp_path, monkeypatch)
+    app.gateway_ready = True
+    channels: list[str] = []
+    original_register = app.active_operations.register_provisional
+
+    @contextmanager
+    def record_registration(**kwargs: object):
+        channels.append(str(kwargs["channel_id"]))
+        with original_register(**kwargs):  # type: ignore[arg-type]
+            yield
+
+    async def stop_after_registration(_message: object) -> None:
+        return None
+
+    monkeypatch.setattr(app.active_operations, "register_provisional", record_registration)
+    monkeypatch.setattr(app, "_on_message_for_user", stop_after_registration)
+
+    await app.on_message(_dm_message(42))  # type: ignore[arg-type]
+
+    assert channels == ["userapp"]
     await app.database.close()

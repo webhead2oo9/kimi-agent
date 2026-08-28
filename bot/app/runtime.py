@@ -1205,6 +1205,8 @@ class KimiApplication:
         # Pending consent callbacks are not active asyncio tasks. Invalidate
         # them before the privacy workflow drains active work and deletes data,
         # so an older prompt cannot recreate a personal transcript afterward.
+        if self.consent_gate is not None:
+            await self.consent_gate.invalidate_user(user_id)
         self._invalidate_user_app_chat_requests(user_id)
         await self.active_operations.cancel(
             user_id=user_id,
@@ -2028,11 +2030,18 @@ class KimiApplication:
 
     async def _handle_stop_message(self, message: discord.Message) -> None:
         await self.discord_gateway.add_status_reaction(message, "🛑")
-        resolved = await self.resolve_conversation_for_message(message, allow_new_root=False)
-        root_key = resolved.key if resolved is not None else None
+        user_id = str(message.author.id)
+        root_key: str | None
+        if self._dm_personal_chat_tier(message) is not None:
+            channel_id = USER_APP_SCOPE_CHANNEL_ID
+            root_key = f"userchat:{user_id}"
+        else:
+            channel_id = str(message.channel.id)
+            resolved = await self.resolve_conversation_for_message(message, allow_new_root=False)
+            root_key = resolved.key if resolved is not None else None
         summary = await self._cancel_user_work(
-            user_id=str(message.author.id),
-            scopes=[(str(message.channel.id), root_key)],
+            user_id=user_id,
+            scopes=[(channel_id, root_key)],
             all_work=False,
         )
         await self.send_response(message.channel, summary, reference=message)
@@ -2495,6 +2504,8 @@ class KimiApplication:
         # Invalidate requests retained by consent prompts before draining active
         # operations. Older callbacks then fail closed even though they are not
         # live tasks yet.
+        if self.consent_gate is not None:
+            await self.consent_gate.invalidate_user(user_id)
         self._invalidate_user_app_chat_requests(user_id)
         _count, clean = await self.active_operations.cancel(
             user_id=user_id,
@@ -2649,7 +2660,7 @@ class KimiApplication:
         try:
             with self.active_operations.register_provisional(
                 user_id=str(message.author.id),
-                channel_id=str(message.channel.id),
+                channel_id=(USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)),
             ):
                 async with admission.lease:
                     async with self.privacy_barrier.activity(str(message.author.id)):

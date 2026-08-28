@@ -24,18 +24,19 @@ does **not** let it receive arbitrary channel messages, replies, or an ambient
 
 ## Direct messages
 
-`USER_APP_DM_ENABLED` (off by default, and requires `USER_APP_CHAT_ENABLED`)
-adds ordinary DMs as a second entry point onto the **same** personal
-conversation. It is not a second surface: a DM and a `/chat` turn share one
-`userchat:<user_id>` root, one transcript, one `<user_id>__userapp` workspace,
-one root lock, and one `/chat-reset` and `/privacy` deletion. You can start a
-thread with `/chat` in a server and continue it by DM.
+Want to continue the conversation without running `/chat` each time? Turn on
+`USER_APP_DM_ENABLED`. An approved user can then message the bot directly and
+pick up exactly where `/chat` left off. The setting is off by default and
+requires `USER_APP_CHAT_ENABLED`.
 
-This is a gateway path rather than an install context, so it applies to DMs the
-bot itself can receive. A DM from anyone not on the `USER_APP_*` access lists is
-ignored without a reply: answering would confirm the bot is listening and invite
-probing from anyone who shares a server with it. Access is re-checked after the
-root lock, so revoking it stops work that was already queued.
+Both entry points share one transcript, workspace, reset, privacy deletion, and
+conversation lock. A conversation started with `/chat` in a server therefore
+continues naturally in DM, and switching back to `/chat` keeps the same context.
+
+Only users on the `USER_APP_*` access lists can use personal DMs. Messages from
+everyone else are ignored without a reply. Access is checked again before a
+queued turn starts, so removing a user from the list also stops queued messages
+from running.
 
 Two differences from `/chat` follow from being a real message rather than a
 slash interaction. There is no invocation gate, because a DM has nothing else to
@@ -43,9 +44,12 @@ be addressed to, and no `public:` option, because a DM is already private. There
 is also no interaction token, so `USER_APP_CHAT_TIMEOUT_SECONDS` does not bound
 a DM turn and replies are delivered as ordinary chunked messages.
 
-A bare `stop`, `cancel`, or `abort` cancels a running turn, as it does in a
-server. In a DM that shortcut applies only while something is actually running,
-so those words stay usable as ordinary conversation the rest of the time.
+While a response is running, send `stop`, `cancel`, or `abort` by itself to end
+it. At other times those words remain ordinary chat messages.
+
+Under the hood, DMs and `/chat` use the same `userchat:<user_id>` root,
+`<user_id>__userapp` workspace, and `userapp` cancellation scope. This keeps
+transcripts and cleanup caller-scoped across both Discord entry points.
 
 ## Developer Portal setup
 

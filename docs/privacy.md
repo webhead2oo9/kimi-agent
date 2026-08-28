@@ -8,22 +8,22 @@ sync.
 
 Two facts frame everything below:
 
-- **The bot ignores DMs unless personal chat explicitly opts in.**
+- **The bot ignores DMs unless personal chat explicitly opts in.** By default,
   `KimiApplication.on_message` (`app/runtime.py`) rejects `discord.DMChannel`
-  before any reaction, transcript write, consent prompt, or provider call. The
-  image-fingerprint hook runs first and also drops anything without a guild. The
-  one exception is `USER_APP_DM_ENABLED`, off by default: with it on, a DM from a
-  user on the `USER_APP_*` access lists enters that user's own personal chat
-  conversation, retained and deleted exactly like a `/chat` turn. A DM from
-  anyone else is still dropped at the same point, unread and unlogged.
-- **Conversation handling is invocation-gated.** A turn starts only on an
-  @mention, a reply with the reply-ping toggle on, an explicit `hey/hi
-  <bot_name>` or `<bot_name> help`, or an unmentioned message in an
+  before any reaction, transcript write, consent prompt, or provider call. When
+  `USER_APP_DM_ENABLED` is on, an approved user's DM enters the same personal
+  conversation as `/chat`, with the same retention and deletion behavior. DMs
+  from everyone else are still dropped at the initial gate without a reply,
+  transcript write, or provider call.
+- **Server conversation handling is invocation-gated.** A server turn starts
+  only on an @mention, a reply with the reply-ping toggle on, an explicit
+  `hey/hi <bot_name>` or `<bot_name> help`, or an unmentioned message in an
   auto-responding managed thread. Paused managed threads use ordinary invocation
-  rules. Other channel chatter is not persisted as conversation history. Three
-  live, non-transcript exceptions are documented below: the context tools,
-  opt-in known-bad image fingerprint enforcement, and the optional staff
-  moderation event feed.
+  rules. An enabled personal DM needs no extra trigger: sending the message is
+  the invocation. Other channel chatter is not persisted as conversation
+  history. Three live, non-transcript exceptions are documented below: the
+  context tools, opt-in known-bad image fingerprint enforcement, and the
+  optional staff moderation event feed.
 
 ## What the bot stores, and where
 

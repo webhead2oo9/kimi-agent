@@ -197,6 +197,62 @@ async def test_maybe_prompt_posts_once_and_dedupes_while_pending() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalidated_prompt_cannot_accept_or_redispatch() -> None:
+    msg = FakeMessage(123)
+    store = FakeStore(consented=False)
+    redispatched: list = []
+
+    async def redispatch(message) -> None:  # pragma: no cover - must not run
+        redispatched.append(message)
+
+    gate = _make_gate(store, redispatch)
+    assert await gate.maybe_prompt(cast(discord.Message, msg)) is True
+    view = cast(PrivacyConsentView, msg.reply_calls[0]["view"])
+    accept_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Accept"),
+    )
+
+    await gate.invalidate_user("123")
+    interaction = FakeInteraction(123)
+    await accept_button.callback(cast(discord.Interaction, interaction))
+
+    assert store.set_calls == []
+    assert redispatched == []
+    assert interaction.response.sent == [
+        ("This privacy prompt is no longer available.", {"ephemeral": True})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalidation_drains_accept_already_redispatching() -> None:
+    msg = FakeMessage(123)
+    store = FakeStore(consented=False)
+    redispatch_started = asyncio.Event()
+
+    async def redispatch(_message) -> None:
+        redispatch_started.set()
+        await asyncio.Event().wait()
+
+    gate = _make_gate(store, redispatch)
+    assert await gate.maybe_prompt(cast(discord.Message, msg)) is True
+    view = cast(PrivacyConsentView, msg.reply_calls[0]["view"])
+    accept_button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Accept"),
+    )
+    interaction = FakeInteraction(123)
+    accepting = asyncio.create_task(accept_button.callback(cast(discord.Interaction, interaction)))
+    await redispatch_started.wait()
+
+    await gate.invalidate_user("123")
+
+    assert accepting.cancelled()
+    assert gate._accept_tasks == {}
+    assert "123" not in gate._pending
+
+
+@pytest.mark.asyncio
 async def test_accept_records_consent_and_redispatches() -> None:
     msg = FakeMessage(123)
     store = FakeStore(consented=False)

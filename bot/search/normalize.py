@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 import html
+import ipaddress
 import re
+import socket
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from search.types import SearchResult
@@ -75,6 +77,45 @@ def canonical_url(value: str) -> str:
     ]
     query.sort()
     return urlunsplit(("https", host, path, urlencode(query, doseq=True), ""))
+
+
+def is_safe_fetch_url(url: str) -> bool:
+    """Reject URLs a backend must never dereference on the model's behalf."""
+    if "\\" in url or any(ord(char) < 0x20 or ord(char) == 0x7F for char in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return False
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    address = _parse_ip_literal(host)
+    if address is None:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_global
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    # inet_aton recognizes legacy forms such as 2130706433 and 127.1.
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return ipaddress.IPv4Address(packed)
 
 
 def filter_results(

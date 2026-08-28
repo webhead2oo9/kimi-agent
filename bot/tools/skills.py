@@ -517,6 +517,14 @@ async def _skill_create(args: dict, ctx: MessageContext) -> str:
     # Scoped to the creating guild, transparently: the model gets no scoping
     # argument and stays unaware that other guilds exist. Created from a DM
     # there is no guild to scope to, so the skill stays global.
+    #
+    # Personal chat is guild-less by design, so it would fall into that global
+    # branch and let a tier granted outside every guild publish a skill into all
+    # of them. Refuse instead of widening scope. _PERSONAL_CHAT_BLOCKED_TOOLS
+    # already hides this tool there; this is the fail-closed second layer, since
+    # a shared skill is persistent injection if it is ever created wrongly.
+    if ctx.personal_chat:
+        return tool_error("Shared skills can only be managed from a server conversation.")
     guild_ids = [ctx.guild_id] if ctx.guild_id else None
 
     if _active_skill_catalog().is_builtin(name):

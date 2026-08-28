@@ -8,19 +8,22 @@ sync.
 
 Two facts frame everything below:
 
-- **The bot ignores DMs entirely.** `KimiApplication.on_message`
-  (`app/runtime.py`) rejects `discord.DMChannel` before any reaction, transcript
-  write, consent prompt, or provider call. The image-fingerprint hook runs first
-  and also drops anything without a guild. DM content is never read, stored, or
-  logged.
-- **Conversation handling is invocation-gated.** A turn starts only on an
-  @mention, a reply with the reply-ping toggle on, an explicit `hey/hi
-  <bot_name>` or `<bot_name> help`, or an unmentioned message in an
+- **The bot ignores DMs unless personal chat explicitly opts in.** By default,
+  `KimiApplication.on_message` (`app/runtime.py`) rejects `discord.DMChannel`
+  before any reaction, transcript write, consent prompt, or provider call. When
+  `USER_APP_DM_ENABLED` is on, an approved user's DM enters the same personal
+  conversation as `/chat`, with the same retention and deletion behavior. DMs
+  from everyone else are still dropped at the initial gate without a reply,
+  transcript write, or provider call.
+- **Server conversation handling is invocation-gated.** A server turn starts
+  only on an @mention, a reply with the reply-ping toggle on, an explicit
+  `hey/hi <bot_name>` or `<bot_name> help`, or an unmentioned message in an
   auto-responding managed thread. Paused managed threads use ordinary invocation
-  rules. Other channel chatter is not persisted as conversation history. Three
-  live, non-transcript exceptions are documented below: the context tools,
-  opt-in known-bad image fingerprint enforcement, and the optional staff
-  moderation event feed.
+  rules. An enabled personal DM needs no extra trigger: sending the message is
+  the invocation. Other channel chatter is not persisted as conversation
+  history. Three live, non-transcript exceptions are documented below: the
+  context tools, opt-in known-bad image fingerprint enforcement, and the
+  optional staff moderation event feed.
 
 ## What the bot stores, and where
 
@@ -49,6 +52,14 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 | `config_proposals` | Module configuration proposals and their exact baselines, summaries, guild and Discord message ids, staff proposer/decider ids, decision reasons, and timestamps. These operational records have no automatic TTL and `/privacy` does not scrub them. |
+
+The optional user-app surface stores one owner-only conversation per user under
+`userchat:<user_id>`. It deliberately has no guild scope even when invoked from
+a guild. Its long-term auto-retained facts are tagged global for that user, and
+its workspace is `<user_id>__userapp`. `/chat-reset` deletes only this transcript
+and its cascading conversation-owned rows; it keeps preferences, long-term
+memory, and workspace files. Full `/privacy` deletion removes all of those
+user-scoped stores, including the user-app workspace. See [user-app.md](user-app.md).
 
 **Encryption at rest (optional).** When `DATABASE_ENCRYPTION_KEY` is set, this
 database, including the WAL sidecar, is encrypted on disk with SQLCipher

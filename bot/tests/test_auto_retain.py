@@ -264,6 +264,35 @@ async def test_auto_retain_guildless_conversation_is_left_unscoped(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_auto_retain_user_app_conversation_is_global(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        await seed_conversation(
+            db,
+            key="userchat:alice",
+            last_active_at=NOW - IDLE - 60,
+            messages=[
+                ("user", "alice", "Alice", "my quest 3 keeps disconnecting from my pc tower"),
+                ("assistant", None, None, "Try a different USB port for the link cable."),
+            ],
+            guild_id=None,
+        )
+        memory = FakeMemoryClient()
+        flusher = make_flusher(db, memory, FakePreferences())
+
+        await flusher.flush_once(NOW)
+
+        assert memory.retains[0]["tags"] == [
+            "source:auto_retain",
+            "scope:user",
+            "scope:global",
+        ]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_active_conversation_is_not_flushed(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()

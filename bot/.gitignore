@@ -132,6 +132,8 @@ config/prompts/commands/*/*
 !config/persona.md
 !config/prompts/README.md
 !config/prompts/commands/*.md
+# Deployment-local command prompt overrides win over tracked defaults at runtime.
+config/prompts/commands/*.local.md
 
 # Scratch operator directories for dev instances (CONFIG_DIR=config.dev), so a
 # dev-only prompt or model swap is not a working-tree change. See

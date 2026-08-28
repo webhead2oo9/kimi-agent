@@ -125,6 +125,11 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
         return values
 
     async def start(args: dict, ctx: MessageContext) -> str:
+        if ctx.context_key.startswith("userchat:"):
+            return rejected_start(
+                "background Discord delivery is unavailable from personal /chat",
+                reason="unsupported_surface",
+            )
         if ctx.stop_event is not None and ctx.stop_event.is_set():
             return rejected_start(
                 "the response was stopped before delegation began",
@@ -216,6 +221,8 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
         return json.dumps(result) if result is not None else tool_error("Coding task not found")
 
     async def retry_delivery(args: dict, ctx: MessageContext) -> str:
+        if ctx.context_key.startswith("userchat:"):
+            return tool_error("Coding-task Discord delivery is unavailable from personal /chat")
         task_id = str(args.get("task_id", "")).strip()
         if not task_id:
             return tool_error("task_id is required")

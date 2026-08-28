@@ -155,8 +155,12 @@ class Settings(BaseSettings):
     discord_search_channels: str = ""
     discord_search_timeout_seconds: float = 30.0
 
-    # Live internet search. The tool registers when either provider key is set;
-    # Exa is ordered first and is the only page-reading backend.
+    # Live internet search. The tool registers when any provider key is set.
+    # TinyFish is ordered first because its search and fetch endpoints are free;
+    # Exa and TinyFish both read pages, Brave searches only.
+    tinyfish_api_key: SecretStr = SecretStr("")
+    tinyfish_search_url: str = "https://api.search.tinyfish.ai"
+    tinyfish_fetch_url: str = "https://api.fetch.tinyfish.ai"
     exa_api_key: SecretStr = SecretStr("")
     exa_api_base: str = "https://api.exa.ai"
     exa_search_cost_usd: float | None = None

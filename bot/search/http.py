@@ -22,12 +22,39 @@ async def post_json(
     timeout_seconds: float,
 ) -> HttpResponse:
     """POST JSON with one bounded retry for transient failures."""
+    return await _request_json("POST", url, headers, timeout_seconds, payload=payload)
+
+
+async def get_json(
+    url: str,
+    headers: dict[str, str],
+    params: dict[str, str],
+    timeout_seconds: float,
+) -> HttpResponse:
+    """GET JSON with one bounded retry for transient failures."""
+    return await _request_json("GET", url, headers, timeout_seconds, params=params)
+
+
+async def _request_json(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    *,
+    payload: dict[str, Any] | None = None,
+    params: dict[str, str] | None = None,
+) -> HttpResponse:
     last_error: Exception | None = None
     for attempt in range(2):
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                async with session.post(url, headers=headers, json=payload) as response:
+                call = (
+                    session.post(url, headers=headers, json=payload)
+                    if method == "POST"
+                    else session.get(url, headers=headers, params=params)
+                )
+                async with call as response:
                     try:
                         data = await _response_json(response)
                     except SearchProviderError:

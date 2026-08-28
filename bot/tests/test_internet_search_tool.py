@@ -24,6 +24,7 @@ class FakeBackend:
     cost: float | None = None
     supports_contents: bool = True
     supports_text: bool = True
+    supports_contents_text: bool = True
     search_requests: list[SearchRequest] = field(default_factory=list)
 
     async def search(self, request: SearchRequest) -> BackendResponse:

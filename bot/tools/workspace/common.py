@@ -17,7 +17,8 @@ from .config import WorkspaceToolConfig
 
 
 ATTACHMENT_HINT = (
-    "Saved to the workspace but not attached; use queue_file to attach it to the reply."
+    "Not attached. Before saying the file is attached or available to download, call "
+    "queue_file with its path and confirm it returns queued: true."
 )
 
 

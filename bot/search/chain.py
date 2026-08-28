@@ -55,7 +55,7 @@ class SearchChain:
             backend
             for backend in self._backends
             if backend.supports_contents
-            and (request.content_mode != "text" or backend.supports_text)
+            and (request.content_mode != "text" or backend.supports_contents_text)
         )
         if not eligible:
             raise SearchProviderError("No page-reading provider is configured.")

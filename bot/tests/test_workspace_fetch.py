@@ -62,7 +62,8 @@ async def test_fetch_url_downloads_to_workspace_without_attaching(
         "content_type": "text/plain",
         "attached": False,
         "attachment_hint": (
-            "Saved to the workspace but not attached; use queue_file to attach it to the reply."
+            "Not attached. Before saying the file is attached or available to download, call "
+            "queue_file with its path and confirm it returns queued: true."
         ),
     }
     assert saved.read_bytes() == b"downloaded"

@@ -96,11 +96,10 @@ Bear in mind that the local numbers can undercount. If a request fails before
 its cost is reported, or the ledger write itself fails, only the provider's own
 dashboard has the full picture.
 
-TinyFish is free and reports no cost, so `TINYFISH_SEARCH_COST_USD` and
-`TINYFISH_CONTENTS_COST_USD` ship unset and TinyFish calls write no ledger rows
-at all. That is accurate today and silent if it stops being true: were TinyFish
-to start metering these endpoints, `/usage` would keep reporting zero until an
-operator set those prices.
+TinyFish is free and reports no cost, so TinyFish calls write no ledger rows and
+the bot exposes no TinyFish cost settings. If TinyFish starts metering these
+endpoints, cost reporting and configuration must be added before `/usage` can
+attribute that spend.
 
 See [Configuration](configuration.md#internet-search-gated), [Tool Catalog](tools.md),
 and [Database](database.md#model-paid-tool-and-bounded-tool-usage).

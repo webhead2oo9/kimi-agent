@@ -561,11 +561,12 @@ internal batching TinyFish does when reading more than ten pages at once.
 | `INTERNET_SEARCH_MAX_BACKEND_CALLS_PER_TURN` | int | `10` | Provider calls the tool may make in one user turn. The bounded retry inside a call does not count again. |
 | `INTERNET_SEARCH_MAX_OUTPUT_CHARS` | int | `24000` | Combined content budget, split evenly across the returned results; longer content is truncated. |
 | `INTERNET_SEARCH_SAFESEARCH` | choice | `moderate` | Brave filtering: `off`, `moderate`, or `strict`. Brave is the only provider with a safesearch parameter. |
-| `TINYFISH_SEARCH_COST_USD` | nullable float | unset | Per-call fallback for TinyFish search. Leave unset while TinyFish search is free. |
-| `TINYFISH_CONTENTS_COST_USD` | nullable float | unset | Per-call fallback for TinyFish page reading. Leave unset while TinyFish fetch is free. |
 | `EXA_SEARCH_COST_USD` | nullable float | unset | Per-call fallback when Exa search does not report cost. |
 | `EXA_CONTENTS_COST_USD` | nullable float | unset | Per-call fallback when Exa page reading does not report cost. |
 | `BRAVE_SEARCH_COST_USD` | nullable float | unset | Per-call fallback when Brave does not report cost. |
+
+TinyFish search and page reads are free and unmetered, so they have no fallback
+price settings and write no paid-usage ledger rows.
 
 `BRAVE_API_KEY` has to belong to a Brave plan that includes the LLM Context
 endpoint. A key without it still authenticates, but every search fails with

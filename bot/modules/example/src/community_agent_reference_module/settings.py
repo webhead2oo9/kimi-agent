@@ -10,7 +10,7 @@ Two rules the host enforces when it validates this definition at startup:
 
 1. Every field on the model must be classified: either in ``exposed`` or in
    ``environment_only``. An unclassified field fails startup, so a new secret
-   can never leak into the operator-editable file by omission.
+   cannot end up in the operator-editable file by omission.
 2. Exposed fields may not look like credentials, endpoints, or paths, and an
    exposed numeric field must declare a ``minimum``.
 """

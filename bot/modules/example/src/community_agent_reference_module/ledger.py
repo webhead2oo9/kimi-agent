@@ -11,8 +11,7 @@ Conventions worth copying:
   host shares one connection between core and all modules; the context
   manager serializes writers and scopes commit/rollback to this unit of work.
   A write outside it can be committed or rolled back by a bystander.
-- Table names always come from ``storage.table(...)``; never spell the
-  physical name.
+- Table names always come from ``storage.table(...)``.
 """
 
 from __future__ import annotations

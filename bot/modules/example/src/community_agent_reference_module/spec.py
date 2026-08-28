@@ -11,7 +11,7 @@ host reads it in two phases:
    object is started later, once the database is migrated.
 
 Declaring less than you use fails at runtime (``UndeclaredDiscordAction``,
-``EventTopicError``); declaring more than you use is merely misleading in
+``EventTopicError``); declaring more than you use shows up as noise in
 ``/modules manifest``. Keep the two in step.
 """
 
@@ -39,7 +39,7 @@ from community_agent_reference_module.module import (
 from community_agent_reference_module.settings import SETTINGS, KudosSettings
 
 # What the LLM sees. Parameters are JSON Schema; keep ``additionalProperties``
-# false so a hallucinated argument is rejected instead of silently ignored.
+# false so an unexpected argument is rejected.
 GIVE_PARAMETERS = {
     "type": "object",
     "properties": {

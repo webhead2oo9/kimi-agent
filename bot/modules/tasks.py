@@ -23,11 +23,22 @@ DEFAULT_CANCEL_GRACE_SECONDS = 5.0
 
 @dataclass(frozen=True, slots=True)
 class BoundedOutcome:
-    """How a bounded run ended: finished (with or without error), or timed out."""
+    """How a bounded run ended.
 
-    timed_out: bool
-    abandoned: bool
+    Exactly one of these holds: it finished (``error`` is None), it raised
+    (``error`` set), it was cancelled from elsewhere (``cancelled``), or it hit
+    the deadline (``timed_out``; ``abandoned`` says whether it also ignored
+    cancellation and was left running).
+    """
+
+    timed_out: bool = False
+    abandoned: bool = False
+    cancelled: bool = False
     error: BaseException | None = None
+
+    @property
+    def completed(self) -> bool:
+        return not (self.timed_out or self.cancelled or self.error is not None)
 
 
 async def run_bounded(
@@ -43,12 +54,19 @@ async def run_bounded(
     of its own, is reported in ``error`` and never mistaken for the deadline.
     """
     task = asyncio.ensure_future(coro)
-    done, _pending = await asyncio.wait({task}, timeout=timeout)
-    if done:
-        error = task.exception() if not task.cancelled() else None
-        return BoundedOutcome(timed_out=False, abandoned=False, error=error)
-    abandoned = not await cancel_with_grace((task,), grace=grace, what=what)
-    return BoundedOutcome(timed_out=True, abandoned=abandoned)
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+    except BaseException:
+        # The caller was cancelled (shutdown, Ctrl-C): the coroutine must not
+        # keep running against a torn-down application.
+        await cancel_with_grace((task,), grace=grace, what=what)
+        raise
+    if not done:
+        abandoned = not await cancel_with_grace((task,), grace=grace, what=what)
+        return BoundedOutcome(timed_out=True, abandoned=abandoned)
+    if task.cancelled():
+        return BoundedOutcome(cancelled=True)
+    return BoundedOutcome(error=task.exception())
 
 
 async def cancel_with_grace(tasks: Iterable[asyncio.Task[Any]], *, grace: float, what: str) -> bool:

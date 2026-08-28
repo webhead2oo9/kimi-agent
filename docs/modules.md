@@ -110,9 +110,11 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
   provides commands or listeners need not expose anything to the LLM. A tool
-  handler receives a `ModuleToolContext` whose ids are `int` snowflakes
-  (`guild_id` is `None` in DMs and personal chat); the host refuses the call
-  before the handler runs when the module is inactive in that guild.
+  handler receives a `ModuleToolContext` whose ids are `int` snowflakes. A
+  module's tools are hidden (masked, like any other gate) until the module
+  has started and wherever the module is inactive; with `guild_only` (the
+  default) they are hidden from DMs and personal chat as well, so `guild_id`
+  is `None` only for a tool registered with `guild_only=False`.
 
 For repeatable deployments, keep third-party module requirements in
 deployment-owned lock data and install them after the core sync. Private Git
@@ -169,7 +171,9 @@ Core drives every configured module through the same phases, in this order:
    releases the module's commands, components, event lane, scheduler
    handlers, and services regardless. Cancellation is cooperative: a module
    should let `CancelledError` propagate rather than catch it, since a
-   coroutine that refuses to stop is leaked, not killed.
+   coroutine that refuses to stop is leaked, not killed. After a start
+   timeout the abandoned `start()` may still be running when `close()` is
+   called on the same instance, so `close()` must tolerate that.
 
 ## Declarations
 
@@ -275,7 +279,9 @@ the ports are a contract and an audit surface, not a sandbox.
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
   `render_guild_settings(values)` renders a document in this format for a
-  proposal. `guild_ids()` lists the active guilds known to this module, and
+  proposal (pass the snapshot's `values` with your change applied: unset
+  fields are omitted and strings are quoted). `guild_ids()` lists the active
+  guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
   `revision`), refreshed on the guild-activation cadence and immediately after
   an approved proposal; `is_enabled(guild_id)` is the guild being active and

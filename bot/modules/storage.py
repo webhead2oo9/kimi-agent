@@ -9,18 +9,18 @@ existing installation keeps its data until the physical rename ships.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from kimi_agent_module_api.contracts import (
+    TABLE_NAME_RE,
     MigrationContext,
     ModuleContractError,
     table_prefix,
 )
 
-_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_IDENTIFIER_RE = TABLE_NAME_RE
 
 
 def _quote(identifier: str) -> str:

@@ -552,6 +552,7 @@ async def test_run_due_shares_one_job_per_module_with_the_runner(tmp_path: Path)
         scheduler.start()
         await asyncio.sleep(0.1)
         assert in_flight == 1, "the runner must not start b while run_due runs a"
+        assert len(scheduler._running) == 1 and scheduler._running_modules == {"mod"}
         release.set()
         await inline
         for _ in range(100):
@@ -568,3 +569,66 @@ async def test_run_due_shares_one_job_per_module_with_the_runner(tmp_path: Path)
 def test_max_concurrent_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(ModuleContractError):
         DurableScheduler(object(), max_concurrent=0)
+
+
+@pytest.mark.asyncio
+async def test_run_due_also_needs_the_runner_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    scheduler.view_for("mod").register("h", handler)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    async with db.write_transaction() as conn:
+        await conn.execute(
+            f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
+        )
+    try:
+        assert await scheduler.run_due() == 0
+        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
+        # A module registering during the pause is told, too.
+        scheduler.view_for("late").register("h", handler)
+        assert health[-1] == ("late", "degraded", FOREIGN_RUNNER_DETAIL)
+        clock.now += 31
+        assert await scheduler.run_due() == 1
+        assert ("mod", "healthy", "") in health and ("late", "healthy", "") in health
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_the_same_orphan_detail(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    first = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    first.view_for("mod").register("h", handler)
+    await first.view_for("mod").run_at("orphan", clock.now, "h")
+    await first.close()
+    second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+    second.view_for("mod").register("other", handler)
+    try:
+        assert await second.run_due() == 0
+        orphan_detail = health[-1]
+        assert orphan_detail == ("mod", "degraded", "scheduled job 'orphan' has no handler")
+        # Foreign pause and resume must restore exactly that detail.
+        async with db.write_transaction() as conn:
+            await conn.execute(
+                f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
+            )
+        assert await second.run_due() == 0
+        clock.now += 31
+        assert await second.run_due() == 0
+        assert health[-1] == orphan_detail
+    finally:
+        await second.close()
+        await db.close()

@@ -14,10 +14,10 @@ class ModuleToolContext:
     """Who is calling a module tool, and from where.
 
     Ids are Discord snowflakes as ``int``, matching every other SDK type.
-    ``guild_id`` is ``None`` in DMs and in personal chat; a tool whose target
-    is a guild artifact must refuse such a caller rather than guess a guild.
-    The host has already confirmed the module is active in ``guild_id`` before
-    the handler runs.
+    ``guild_id`` is ``None`` only for a tool registered with
+    ``guild_only=False`` and called from a DM or personal chat; the host hides
+    guild-only tools there. When ``guild_id`` is set, the host has already
+    confirmed the module is active in that guild.
     """
 
     user_id: int
@@ -38,8 +38,10 @@ class ModuleToolRegistry(Protocol):
 
     Valid only inside ``ModuleSpec.create``; the host seals it afterwards.
     ``searchable`` tools stay hidden until the model activates them with
-    ``browse_tools``. ``guild_ids`` scopes a tool to specific guilds (``None``
-    is everywhere; an empty set is nowhere).
+    ``browse_tools``. A tool is visible only where its module is active; with
+    ``guild_only`` (the default) it is also hidden from DMs and personal chat,
+    so its handler always sees a guild. ``guild_ids`` further scopes a tool to
+    specific guilds (``None`` is everywhere; an empty set is nowhere).
     """
 
     def register(
@@ -52,6 +54,7 @@ class ModuleToolRegistry(Protocol):
         min_tier: TrustTier = TrustTier.MEMBER,
         searchable: bool = False,
         owner_only: bool = False,
+        guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
     ) -> None: ...
 

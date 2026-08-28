@@ -11,6 +11,7 @@ owner manifest and enforced through the ports below; they are not a sandbox.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -176,23 +177,38 @@ _GUILD_SETTING_LIST_MAX = 512
 _GUILD_SETTING_STRING_MAX = 2_000
 
 
+def _render_scalar(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        # JSON string syntax is valid YAML double-quoted syntax, so every
+        # character (colons, hashes, quotes, newlines, "true") round-trips.
+        return json.dumps(value, ensure_ascii=False)
+    raise TypeError(f"guild setting {key!r} has unrenderable value {value!r}")
+
+
 def render_guild_settings(values: Mapping[str, Any]) -> str:
     """Render guild settings as the frontmatter-only document the host stores.
 
     This is the format of ``<CONFIG_DIR>/guild-modules/<guild_id>/<module>.md``
     and the content a module passes to ``ProposalService.propose`` for a
-    ``guild:<id>:<module>`` target. Keys are emitted sorted; booleans as
-    ``true``/``false``; lists in flow style; everything else through ``str``.
+    ``guild:<id>:<module>`` target. Pass the snapshot's ``values`` with your
+    change applied: keys are emitted sorted, ``None`` (an unset optional
+    field) is omitted, booleans become ``true``/``false``, ids and ints are
+    bare, strings are always quoted, and lists use flow style. Anything else
+    raises ``TypeError``; the schema kinds cover every value a snapshot holds.
     """
     lines = ["---"]
     for key in sorted(values):
         value = values[key]
-        if isinstance(value, bool):
-            rendered = "true" if value else "false"
-        elif isinstance(value, (list, tuple)):
-            rendered = "[" + ", ".join(str(item) for item in value) + "]"
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            rendered = "[" + ", ".join(_render_scalar(key, item) for item in value) + "]"
         else:
-            rendered = str(value)
+            rendered = _render_scalar(key, value)
         lines.append(f"{key}: {rendered}")
     lines.append("---")
     return "\n".join(lines) + "\n"
@@ -264,6 +280,8 @@ def coerce_guild_setting_value(field_spec: GuildSettingField, raw: Any) -> tuple
 # --------------------------------------------------------------------------
 
 _MODULE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+# Logical table names a module may ask ``storage.table()`` for.
+TABLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _TOPIC_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 _SETTING_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -1032,8 +1050,13 @@ class ServiceRegistry(Protocol):
     def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
         """Resolve a consumed service; with ``type_`` the result is checked and typed.
 
-        The host hands back a proxy that raises ``ServiceUnavailable`` once the
-        provider closes. ``type_`` is checked against the provided object, so a
-        provider that changed its class fails here instead of at the first call.
+        The result is always a proxy that forwards attribute access and raises
+        ``ServiceUnavailable`` once the provider closes. ``type_`` is checked
+        against the provided object at resolution time, so a provider that
+        changed its class fails here instead of at the first call, and the
+        proxy is then typed as ``type_`` for method calls. Because it is a
+        proxy, ``isinstance`` on the result is false and special methods
+        (``__call__``, ``__getitem__``, ...) are not forwarded: a service is an
+        object with ordinary methods, nothing more.
         """
         ...

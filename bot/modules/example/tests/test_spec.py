@@ -64,6 +64,7 @@ def test_create_registers_tools_and_labels() -> None:
     registry, labels = recorder.registry, recorder.labels
     assert isinstance(module, KudosModule)
     assert registry.tools[TOOL_GIVE].min_tier is TrustTier.MEMBER
+    assert registry.tools[TOOL_GIVE].guild_only and registry.tools[TOOL_LEADERBOARD].guild_only
     assert registry.tools[TOOL_GIVE].searchable is False
     assert registry.tools[TOOL_LEADERBOARD].searchable is True
     assert set(labels) == {TOOL_GIVE, TOOL_LEADERBOARD}

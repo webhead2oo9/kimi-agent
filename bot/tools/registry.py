@@ -288,6 +288,11 @@ class ToolEntry:
     # time and immutable, so clone_without/replace_skill_tools carry it without
     # special handling.
     config_spec: tuple[ToolConfigField, ...] = ()
+    # Optional runtime availability predicate over the caller's guild id (None
+    # in DMs), AND-ed with every other gate. Application modules use it to mask
+    # their tools where the module is inactive; like guild_ids, a False here
+    # hides the tool from lists and masks it at dispatch.
+    available: Callable[[str | None], bool] | None = None
 
 
 class ToolRegistry:
@@ -321,6 +326,8 @@ class ToolRegistry:
         # Fail closed: a guild-scoped tool needs a concrete guild_id that is in
         # its allowlist. A global tool (guild_ids is None) is allowed anywhere,
         # including DMs where guild_id is None.
+        if entry.available is not None and not entry.available(guild_id):
+            return False
         if entry.guild_ids is None:
             return True
         return guild_id is not None and guild_id in entry.guild_ids
@@ -376,6 +383,7 @@ class ToolRegistry:
         owner_only: bool = False,
         guild_ids: frozenset[str] | None = None,
         config_spec: Sequence[ToolConfigField] = (),
+        available: Callable[[str | None], bool] | None = None,
     ) -> None:
         if name in self._core_tools or name in self._search_tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -397,6 +405,7 @@ class ToolRegistry:
             owner_only=owner_only,
             guild_ids=guild_ids,
             config_spec=validated_config_spec,
+            available=available,
         )
         if searchable:
             self._search_tools[name] = entry

@@ -14,7 +14,7 @@ point, and replace the behavior.
 |---|---|---|
 | Entry point + `ModuleSpec` | `pyproject.toml`, `spec.py` | Discovery, preflight-validated declarations |
 | Deployment settings | `settings.py` | `pydantic-settings` model, operator-exposed subset, env prefix |
-| Per-guild settings | `guild_settings.py` | Typed schema, enum + bool + id fields, cross-field validator, `invalid_policy`; every entry point checks `ctx.is_guild_active` |
+| Per-guild settings | `guild_settings.py` | Typed schema, enum + bool + id fields, cross-field validator, `invalid_policy`; the host hides tools, commands, and buttons wherever the module is inactive |
 | Migrations | `migrations.py` | Two ordered forward-only migrations on prefixed tables |
 | Storage | `ledger.py` | `storage.table()`, reads on the shared connection, `write_transaction()`; the daily limit is a check-and-insert inside one transaction |
 | LLM tools | `spec.py`, `module.py` | One core tool (`give_kudos`), one searchable (`kudos_leaderboard`), activity labels, guild-less refusal |

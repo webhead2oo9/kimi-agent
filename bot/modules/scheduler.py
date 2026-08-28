@@ -34,7 +34,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace
+from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace, run_bounded
 
 from kimi_agent_module_api.contracts import (
     Backoff,
@@ -214,7 +214,8 @@ class DurableScheduler:
         self._foreign_paused = False
         self._wake = asyncio.Event()
         self._closed = False
-        self._paused_reported: set[tuple[str, str]] = set()
+        # (module, handler) -> the detail reported when its job was found orphaned.
+        self._paused_reported: dict[tuple[str, str], str] = {}
 
     # ---- schema --------------------------------------------------------------
 
@@ -231,10 +232,12 @@ class DurableScheduler:
         _validate("x", handler_name)
         self._handlers[(module_name, handler_name)] = handler
         marker = (module_name, handler_name)
-        was_paused = marker in self._paused_reported
-        self._paused_reported.discard(marker)
+        was_paused = self._paused_reported.pop(marker, None) is not None
         if was_paused:
             self._clear_paused_health_if_recovered(module_name)
+        if self._foreign_paused and self._on_health is not None:
+            # Joined during a pause: say so, or its jobs silently never run.
+            self._on_health(module_name, "degraded", FOREIGN_RUNNER_DETAIL)
         self._wake.set()
 
     def unregister_module(self, module_name: str) -> None:
@@ -326,7 +329,7 @@ class DurableScheduler:
                     (module_name, handler_name),
                 )
                 if await remaining.fetchone() is None:
-                    self._paused_reported.discard((module_name, handler_name))
+                    self._paused_reported.pop((module_name, handler_name), None)
         if removed:
             self._clear_paused_health_if_recovered(module_name)
         return removed
@@ -374,7 +377,20 @@ class DurableScheduler:
         )
         self._running.clear()
         self._running_modules.clear()
-        await self._release_runner_lease()
+        # An abandoned job may still hold the database write lock; releasing
+        # the lease must not wait on it. An unreleased lease expires on its own.
+        outcome = await run_bounded(
+            self._release_runner_lease(),
+            timeout=DEFAULT_CANCEL_GRACE_SECONDS,
+            what="module scheduler lease release",
+        )
+        if outcome.timed_out:
+            log.error(
+                "Module scheduler could not release its runner lease; it expires in %gs",
+                self._lease_seconds,
+            )
+        elif outcome.error is not None:
+            raise outcome.error
 
     @property
     def paused_for_foreign_runner(self) -> bool:
@@ -384,20 +400,24 @@ class DurableScheduler:
         """Claim and run due jobs one at a time, inline; returns how many ran.
 
         This is the serial path used by tests and by callers that want a
-        deterministic tick. It shares the one-job-per-module bookkeeping with
-        the runner loop, so it never overlaps a job the loop is running.
+        deterministic tick. It holds the same runner lease and shares the
+        one-job-per-module bookkeeping with the runner loop, so it never runs
+        while another process owns the scheduler or overlaps a running job.
         """
         now = self._clock() if now is None else now
+        if not await self._acquire_runner_lease(now):
+            self._enter_foreign_pause()
+            return 0
+        self._exit_foreign_pause()
         ran = 0
         for _ in range(limit):
-            row = await self._claim_next(now, exclude_modules=self._running_modules)
+            row = await self._claim_next(now)
             if row is None:
                 break
-            self._running_modules.add(row.module_name)
-            try:
-                await self._execute(row)
-            finally:
-                self._running_modules.discard(row.module_name)
+            # Tracked like a runner-started job so close() can cancel it.
+            task = asyncio.create_task(self._run_claimed(row), name=f"module-job:{row.job_id}")
+            self._running[row.job_id] = task
+            await task
             ran += 1
         return ran
 
@@ -425,10 +445,9 @@ class DurableScheduler:
         self._exit_foreign_pause()
         started = 0
         while len(self._running) < self._max_concurrent:
-            row = await self._claim_next(now, exclude_modules=self._running_modules)
+            row = await self._claim_next(now)
             if row is None:
                 break
-            self._running_modules.add(row.module_name)
             task = asyncio.create_task(self._run_claimed(row), name=f"module-job:{row.job_id}")
             self._running[row.job_id] = task
             started += 1
@@ -501,25 +520,31 @@ class DurableScheduler:
         if self._on_health is None:
             return
         for module in sorted(self._module_names()):
-            paused = sorted(handler for name, handler in self._paused_reported if name == module)
-            if paused:
-                self._on_health(
-                    module, "degraded", f"scheduled job handler {paused[0]!r} is not registered"
-                )
+            details = sorted(
+                detail
+                for (name, _handler), detail in self._paused_reported.items()
+                if name == module
+            )
+            if details:
+                self._on_health(module, "degraded", details[0])
             else:
                 self._on_health(module, "healthy", "")
 
-    async def _claim_next(
-        self, now: float, *, exclude_modules: set[str] | None = None
-    ) -> _Row | None:
+    async def _claim_next(self, now: float) -> _Row | None:
+        """Lease the next due job whose module has nothing running; reserve its module.
+
+        The reservation in ``_running_modules`` is made under the same write
+        lock as the lease, so two claimants (the runner loop and ``run_due``)
+        cannot both take a job for one module. ``_run_claimed`` releases it.
+        """
         token = f"{now:.6f}:{self._rng.random():.12f}"
-        excluded = sorted(exclude_modules or ())
-        where = "run_at <= ? AND (leased_until IS NULL OR leased_until < ?)"
-        params: list[Any] = [now, now]
-        if excluded:
-            where += " AND module_name NOT IN (" + ",".join("?" for _ in excluded) + ")"
-            params.extend(excluded)
         async with self._database.write_transaction() as conn:
+            excluded = sorted(self._running_modules)
+            where = "run_at <= ? AND (leased_until IS NULL OR leased_until < ?)"
+            params: list[Any] = [now, now]
+            if excluded:
+                where += " AND module_name NOT IN (" + ",".join("?" for _ in excluded) + ")"
+                params.extend(excluded)
             while True:
                 cursor = await conn.execute(
                     f"SELECT * FROM {TABLE} WHERE {where} ORDER BY run_at LIMIT 1", params
@@ -552,13 +577,15 @@ class DurableScheduler:
                 row.leased_until = leased_until
                 row.lease_token = token
                 row.attempt += 1
+                self._running_modules.add(row.module_name)
                 return row
 
     def _report_paused(self, row: _Row) -> None:
         marker = (row.module_name, row.handler)
         if marker in self._paused_reported:
             return
-        self._paused_reported.add(marker)
+        detail = f"scheduled job {row.job_key!r} has no handler"
+        self._paused_reported[marker] = detail
         log.warning(
             "Module %s job %s has no registered handler %r; paused",
             row.module_name,
@@ -566,9 +593,7 @@ class DurableScheduler:
             row.handler,
         )
         if self._on_health is not None:
-            self._on_health(
-                row.module_name, "degraded", f"scheduled job {row.job_key!r} has no handler"
-            )
+            self._on_health(row.module_name, "degraded", detail)
 
     async def _execute(self, row: _Row) -> None:
         handler = self._handlers[(row.module_name, row.handler)]

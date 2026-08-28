@@ -44,6 +44,8 @@ from kimi_agent_module_api.trust import TrustTier
 
 MODULE_API_VERSION = 1
 MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
+# Capabilities every compatible host advertises regardless of configuration.
+BASELINE_CAPABILITIES: frozenset[str] = frozenset({"discord.history.v1", "proposals.v2"})
 
 _SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
 
@@ -141,6 +143,7 @@ class ModuleRuntimeContext:
 
 
 __all__ = [
+    "BASELINE_CAPABILITIES",
     "MODULE_API_VERSION",
     "MODULE_ENTRYPOINT_GROUP",
     "AppModule",

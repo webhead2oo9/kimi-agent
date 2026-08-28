@@ -94,22 +94,6 @@ behind, so a bounded orphan sweeper removes expired stages on startup and at the
 configured interval. Persistent image storage is the inline-base64 cap in the
 `messages` transcript, not this directory.
 
-The optional known-bad image enforcement path separately reads supported image
-attachments (plus, if budget remains, the first Discord-proxied embed image)
-into bounded process memory for local pHash comparison. It runs only in
-explicitly configured guild channels, and there it covers messages that did not
-invoke Kimi. The bytes and the locally computed hash are discarded after the
-comparison; they never enter SQLite, workspace storage, transcripts, Hindsight,
-diagnostics, or FingerprintHub.
-
-When an ordinary member's image matches, the bot deletes the message, attempts
-the configured timeout, and opens a retained moderation case holding the
-message/user ids and fingerprint metadata. A staff match opens a review case but
-is not punished, and bot messages are skipped. This community-moderation gate
-runs before conversational consent, so declining AI-provider consent stops chat
-processing but does not exempt messages in an enrolled channel from local
-fingerprint enforcement. The scan itself sends no user data to any third party.
-
 ### Browser profiles (`data/browser_profiles/`)
 
 When the optional BetterWright browser is enabled, each Discord user gets one
@@ -391,9 +375,7 @@ logs, configuration, and Hindsight backend as the infrastructure administrator.
 Discord commands expose only their bounded operational views. `/usage` shows a
 member their own token and cost windows (viewing another user or the server
 totals is staff-only), the staff-only `/moderation` manages blocks and reasons,
-and the companion `community_moderation` module adds the staff-only `/mod` group
-for moderation cases (reasons, staff notes, and message links, not transcript
-content). `/models` is bot-owner-only. None of these commands expose
+and `/models` is bot-owner-only. None of these commands expose
 conversation transcripts or private memory. Staff with access to configured
 moderation or learning log channels can also read the event cards posted there.
 The privilege gate is the trust check at the command boundary, not prompt text.

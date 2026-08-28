@@ -16,7 +16,7 @@ from typing import Any, cast
 import uuid
 
 from config.fragments.guild_config import server_setup_activation
-from kimi_agent_module_api import (
+from community_agent_module_api import (
     ConfigSnapshot,
     ProposalActor,
     ProposalError,
@@ -24,7 +24,7 @@ from kimi_agent_module_api import (
     ProposalService,
     ProposalState,
 )
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ButtonSpec,
     InteractionRouter,
     MessageRef,

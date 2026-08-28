@@ -15,7 +15,7 @@ from discord_adapter.module_actions import (
     TargetProtected,
     TrustLookupImpl,
 )
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ButtonSpec,
     MessageRef,
     OutgoingEmbed,

@@ -24,13 +24,7 @@ them:
 | `/models` | Owner | Inspect or change the global chat-model override. |
 | `/modules status`, `/modules manifest` | Owner | Inspect configured application-module health and declarations. |
 | `/moderation block`, `unblock`, `status` | Staff | Manage bot-level user blocks. |
-| `/mod note`, `warn`, `timeout`, `kick`, `ban`, `history`, `case` | Staff; optional module | Create Discord moderation actions/cases and inspect case history when the companion `community_moderation` module is active. |
 | **Teach Kimi** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
-
-The optional `config_admin` module lets staff inspect guild-scoped fragments
-and draft full-content replacements. Core posts each proposal as a persistent
-Discord card; a staff member in that guild approves or rejects it with the
-card's buttons.
 
 ## Visibility and access
 

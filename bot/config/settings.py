@@ -456,7 +456,7 @@ class Settings(BaseSettings):
     # registers; a failing plugin is logged and skipped, never a boot abort.
     plugin_modules: str = ""
     # Required lifecycle-aware application modules discovered from installed
-    # ``kimi_agent.modules`` entry points. A configured module that cannot load
+    # ``community_agent.modules`` entry points. A configured module that cannot load
     # aborts startup rather than silently removing a deployment capability.
     kimi_modules: str = ""
 

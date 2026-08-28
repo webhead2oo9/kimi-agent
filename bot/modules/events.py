@@ -19,7 +19,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     CORE_TOPIC_PREFIX,
     Event,
     EventHandler,

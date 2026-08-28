@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ModuleContractError,
     ServiceDeclaration,
     ServiceRequirement,

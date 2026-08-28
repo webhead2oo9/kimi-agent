@@ -1,0 +1,21 @@
+[project]
+name = "community-agent-reference-module"
+version = "1.0.0"
+description = "Reference implementation of a community agent module"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["community-agent-module-api>=1.0.0,<2"]
+
+[project.entry-points."community_agent.modules"]
+reference_greeter = "community_agent_reference_module:SPEC"
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+community-agent-module-api = { workspace = true }

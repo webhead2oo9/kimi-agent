@@ -1,25 +1,84 @@
 # Application modules
 
-Kimi Agent is a complete LLM bot on its own; application modules are optional.
-A module is a separately installed Python package for a capability that owns
-more than a single tool: Discord commands and listeners, database tables,
-background work, guild configuration, and optionally model-callable tools.
+Application modules are separately installed Python packages. Core does not
+ship a catalog of them, download them at runtime, or test repositories that
+happen to contain them. An operator chooses which distributions to install and
+which installed entry points to activate.
 
-An installed package advertises a `ModuleSpec` through the
-`kimi_agent.modules` entry-point group, but installing it does nothing by
-itself. You activate packages explicitly with a comma-separated list:
+Use a module when an extension needs lifecycle hooks, migrations, durable data,
+events, background jobs, Discord interactions, or host services. If it only
+registers LLM tools for one deployment, an [operator plugin](plugins.md) is the
+smaller interface.
 
-```dotenv
-KIMI_MODULES=community_moderation,image_fingerprints
+| | Operator plugin | Application module |
+|---|---|---|
+| Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `KIMI_MODULES` |
+| Discovery | Direct Python import | Installed `community_agent.modules` entry point |
+| Failure | Logged and skipped | Aborts startup |
+| Best for | A few deployment-owned tools | A versioned application capability with state/lifecycle |
+| Packaging | Any importable code | Installable Python distribution |
+
+## Try the reference module
+
+This repository maintains one example at `bot/examples/reference-module`. It
+is executable documentation and a CI fixture, not a production dependency or a
+default-enabled feature.
+
+From `bot/`:
+
+```console
+uv sync --all-packages --extra dev
 ```
 
-Once a module is on that list it is part of the deployment contract, so
-startup fails if it is missing, has an incompatible module API, has a
-dependency that is not active, has invalid settings, or fails to start.
-Dependencies start first, and modules close in reverse order. An empty
-`KIMI_MODULES` loads no module code and runs no module migrations. Existing
-module tables remain in the shared database while their modules are disabled or
-absent; disabling a module is not data deletion.
+Then set the installed entry-point name and start normally:
+
+```dotenv
+KIMI_MODULES=reference_greeter
+```
+
+The example owns one exposed greeting setting, one `reference_greet` LLM tool,
+one scoped migration with a persistent invocation count, and normal
+`start()`/`close()` lifecycle hooks. Copy its package structure to begin a
+module of your own; it is intentionally small enough to replace rather than
+inherit.
+
+## Attach any module package
+
+A module distribution depends on the standalone
+`community-agent-module-api` package, exposes a `ModuleSpec`, and advertises it
+in `pyproject.toml`:
+
+```toml
+[project]
+name = "my-assistant-module"
+version = "0.1.0"
+dependencies = ["community-agent-module-api>=1,<2"]
+
+[project.entry-points."community_agent.modules"]
+my_module = "my_assistant_module:SPEC"
+```
+
+Install it using whatever source your deployment controls—a local path, wheel,
+private Git repository, or package index—then add `my_module` to
+`KIMI_MODULES`. A local checkout does not need publishing:
+
+```console
+uv pip install -e ../my-assistant-module
+```
+
+```dotenv
+KIMI_MODULES=my_module
+```
+
+Installing a distribution alone never activates it. Core does not scan a
+folder and never auto-installs a configured name. Once a name is active it is
+part of the deployment contract, so startup fails if it is missing, has an
+incompatible API, has an inactive dependency, has invalid settings, or fails
+to start. Dependencies start first and modules close in reverse order.
+
+An empty `KIMI_MODULES` does not import module entry points or run module
+migrations. Existing module tables remain in the shared database while their
+modules are disabled or absent; disabling is not data deletion.
 
 A module may separately declare `activation_capabilities` for an optional
 feature that is meaningful only when core is configured to expose it. Missing
@@ -29,8 +88,9 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
 
 ## Package and schema contract
 
-- Pin module distributions in deployment-owned requirements or lock data. Do
-  not add optional packages to the core lock file.
+- Pin third-party module distributions in deployment-owned requirements or
+  lock data. Do not add them to the core lock file; the in-repository reference
+  module is a workspace-only CI fixture.
 - Each module has its own version and independent, ordered, forward-only
   migrations. Core records applied versions in `module_schema_versions`.
   Migrations create or update tables when the module starts; those tables remain
@@ -42,35 +102,39 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
   non-secret operator overrides live under
   `<CONFIG_DIR>/modules/<module_name>.md`.
 - A module's runtime context is the only thing it needs from core; the
-  `kimi_agent_module_api` package exports contracts, event dataclasses,
+  `community_agent_module_api` package exports contracts, event dataclasses,
   image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
   provides commands or listeners need not expose anything to the LLM.
 
-For a tagged Git deployment, keep the module requirements outside the core
-lock:
+For repeatable deployments, keep third-party module requirements in
+deployment-owned lock data and install them after the core sync. Private Git
+access or a local wheelhouse works without involving core CI. Each module owns
+its release process, tests, configuration docs, and privacy disclosures.
+Before activating a module, the operator must make those disclosures reachable
+from the deployment's public privacy notice. A module that observes events or
+content not addressed to the bot must say so explicitly, including what it
+processes, why, where it sends data, and how long it retains the result.
 
-```text
-kimi-agent-community-moderation @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@community-moderation-v0.2.0#subdirectory=packages/community-moderation
-kimi-agent-image-fingerprints @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@image-fingerprints-v0.2.0#subdirectory=packages/image-fingerprints
-```
+## Publishing the API
 
-Install that deployment-owned file after each core sync, or layer it on at
-launch with `uv run --with-requirements modules.lock python bot.py`. Private
-Git access has to be provisioned on the host; local versioned wheels are an
-equivalent source if you prefer an offline deployment.
+Publishing the API lets module authors depend on a small, neutral wheel instead
+of cloning this application. Publishing example modules is unnecessary: they
+are templates, while real modules belong to their own maintainers.
 
-The modules Kimi ships with live in the companion repository,
-[`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules):
-`community_moderation` (staff cases, `/mod`, and the moderation log),
-`image_fingerprints` (known-bad image enforcement backed by a read-only sync
-from a self-hostable
-[FingerPrint Hub](https://github.com/webhead2oo9/FingerPrint-Hub); it depends on
-`community_moderation`), and `config_admin` (staff-facing, guild-scoped
-configuration proposal tools). Each package documents its own configuration, privacy
-posture, and any external service it talks to, so this page stays about the
-contract they share.
+The SDK source is `bot/packages/community-agent-module-api`, versioned from
+`1.0.0` with `MODULE_API_VERSION = 1`. Tags named
+`community-agent-api-v<version>` run the tag-only release workflow. It verifies
+the tag/version match, tests the workspace, builds with workspace sources
+disabled, imports the wheel in an isolated environment, and publishes using a
+PyPI Trusted Publisher—there is no long-lived PyPI token in GitHub.
+
+Before the first tag, reserve the `community-agent-module-api` project through
+PyPI's pending-publisher flow and configure this repository, workflow
+`release-community-agent-api.yml`, environment `pypi`. A name lookup is not a
+reservation, so confirm availability again immediately before the first
+release.
 
 ## Declarations
 
@@ -94,7 +158,7 @@ a malformed declaration aborts startup with a named reason:
   `disable_guild`, so an enforcement module with a broken guild document fails
   closed.
 
-The rules live in `kimi_agent_module_api.contracts`, which imports only the
+The rules live in `community_agent_module_api.contracts`, which imports only the
 standard library so a package can validate its own declarations in tests.
 Every declaration is enforced by the matching runtime service below.
 
@@ -136,7 +200,7 @@ the ports are a contract and an audit surface, not a sandbox.
   Core publishes normalized `discord.message`, `discord.message_edit`,
   `discord.message_delete`, `discord.member_join`, `discord.member_remove`,
   `discord.member_update`, and `discord.audit_log_entry` events
-  (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
+  (`community_agent_module_api.events`) carrying IDs and whatever cannot be
   re-fetched, never SDK objects. `publish` returns immediately; each
   subscriber module has a bounded queue and a small worker pool with a
   per-handler timeout, failures are logged and counted in that module's
@@ -230,7 +294,7 @@ hatches such as `raw_bot`).
 
 ## Testing a module
 
-`kimi_agent_module_api.testing` ships protocol-level fakes for every service
+`community_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
 `FakeHttp`, `FakeProposals`, and friends). They import nothing beyond the standard library and
 the contracts, so a module can unit-test its logic with only the API package
@@ -246,7 +310,7 @@ whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
 context, `runtime.ports[name]` its fakes, and `runtime.registry` the composed
 tool registry for assertions. Module test suites
 may import that harness; module production source may import only
-`kimi_agent_module_api`.
+`community_agent_module_api`.
 
 ## Configuration proposals
 

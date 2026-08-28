@@ -11,8 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from commands._shared import send_message
-from kimi_agent_module_api import ModuleSpec
-from kimi_agent_module_api.contracts import ModuleHealth
+from community_agent_module_api import ModuleSpec
+from community_agent_module_api.contracts import ModuleHealth
 
 _STATE_ICON = {"healthy": "✅", "starting": "⏳", "degraded": "⚠️", "failed": "❌"}
 

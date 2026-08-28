@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord import app_commands
 from discord.ext import commands
-from kimi_agent_module_api import ModuleSpec
+from community_agent_module_api import ModuleSpec
 from pydantic import SecretStr
 
 from agent.attachments import (

@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 
 from commands.modules_cmd import render_manifest, render_status
-from kimi_agent_module_api import (
+from community_agent_module_api import (
     ModuleLoadContext,
     ModulePermissions,
     ModuleRuntimeContext,
     ModuleSpec,
     ServiceDeclaration,
 )
-from kimi_agent_module_api.contracts import ModuleHealth
+from community_agent_module_api.contracts import ModuleHealth
 from modules.health import HealthRegistry
 from modules.testing import build_test_runtime
 

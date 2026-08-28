@@ -55,22 +55,6 @@ transcript write, or provider call. `/chat-reset` clears that transcript but
 keeps long-term memory and workspace files; `/privacy` remains the full deletion
 control.
 
-**Known-bad image exception, if your server turns it on.** Staff can enroll
-specific channels in local image-fingerprint enforcement. In those channels,
-supported image attachments (and an embedded image preview) are compared with a
-list of known-bad pHashes even when the message was not addressed to Kimi. If
-an ordinary member's image matches, the message is deleted, the configured
-timeout is applied (24 hours by default), and a staff-visible moderation case
-is created. Bot messages are skipped, and a match on a staff member's message
-creates a review case but is not deleted or timed out.
-
-The image bytes and the hash computed from your message exist only in memory
-for the comparison and are then discarded. FingerprintHub receives no image,
-computed message hash, Discord id, match, case, or punishment result. This
-local community-moderation check does not send anything to an AI provider, and
-declining Kimi's conversational privacy prompt does not switch it off. Ask
-staff which channels, if any, are enrolled.
-
 **Staff log exception, if your server turns it on.** A server can send edited
 or deleted message text and attachment names to a staff-only Discord log
 channel. It can also log member joins, departures, role changes, and moderation
@@ -175,10 +159,12 @@ close a managed thread.
 - **Operator-added tools.** The server operator may install plugins or scripted
   tools that contact additional services when used. The operator is responsible
   for documenting those services and limiting the data each tool sends.
-- **Known-bad image enforcement.** In staff-enrolled channels the comparison
-  happens locally. FingerprintHub supplies the remote known-bad list through a
-  read-only sync and receives no member content or Discord identifiers.
-
+- **Operator-installed modules.** The server operator may install application
+  modules that receive Discord events or content, including content not
+  addressed to Kimi when the module's function requires it. Before enabling
+  such a module, the operator is responsible for making its privacy disclosure
+  available to affected users, including what it processes, where it sends
+  data, and how long it retains the result.
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
 
@@ -269,18 +255,15 @@ cleanup rows remain queued for later retry.
 - **Block Kimi**: ask Kimi to block you, and it will stop responding to you.
 - **Privacy prompt**: if the consent prompt is enabled on your server, you can
   tap **Decline** the first time, and nothing you said is sent to the AI
-  provider or stored as a conversation. This does not exempt images posted in a
-  staff-enrolled safety channel from the local fingerprint check described
-  above.
+  provider or stored as a conversation.
 
 ## Who can see your data
 
 The bot operator can access the database, workspace files, diagnostic logs, and
 Hindsight backend as the infrastructure administrator. Anyone can check their
 own usage totals with `/usage`. Discord staff can use `/moderation` and view
-other users' usage totals. If the server enables the companion moderation
-module, staff can also read and annotate case records with `/mod`. Staff with
-access to configured moderation or learning log channels can see the event
+other users' usage totals. Staff with access to configured moderation or
+learning log channels can see the event
 cards posted there. None of these commands expose private transcripts or
 personal memory.
 

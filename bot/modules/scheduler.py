@@ -465,16 +465,16 @@ class DurableScheduler:
             return bool(cursor.rowcount)
 
     async def _release_runner_lease(self) -> None:
-        try:
-            async with self._database.write_transaction() as conn:
-                await conn.execute(
-                    f"UPDATE {RUNNER_TABLE} SET token = NULL, leased_until = 0 WHERE token = ?",
-                    (self._runner_token,),
-                )
-        except Exception:
-            # The database may already be closed during shutdown; the lease
-            # then simply expires.
-            log.debug("Module scheduler runner lease was not released", exc_info=True)
+        """Hand the lease back so a restart does not wait for it to expire.
+
+        The scheduler closes before the database, so a failure here is a real
+        error and surfaces as one.
+        """
+        async with self._database.write_transaction() as conn:
+            await conn.execute(
+                f"UPDATE {RUNNER_TABLE} SET token = NULL, leased_until = 0 WHERE token = ?",
+                (self._runner_token,),
+            )
 
     def _module_names(self) -> set[str]:
         return {module for module, _handler in self._handlers}

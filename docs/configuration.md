@@ -533,19 +533,24 @@ guidance instead of silently reversing the deployment's policy.
 ## Internet search (gated)
 
 The member-tier core `internet_search` tool registers at startup when at least
-one provider key is present. Exa is the higher-ranked provider and does both
-search and page reads; Brave searches through its LLM Context endpoint and
-can't read pages at all. With both keys set, a search calls both providers and
-merges the results by default.
+one provider key is present. TinyFish is the highest-ranked provider because
+its search and fetch endpoints are free at any wallet balance; Exa ranks next
+and also does both search and page reads; Brave searches through its LLM
+Context endpoint and can't read pages at all. With several keys set, a search
+calls every configured provider and merges the results by default.
 
 Think of the per-turn allowance in provider calls rather than tool calls. One
 blended search across two providers spends two of the ten, so a turn gets five
 of them before `internet_search` starts refusing, while a single-provider or
 failover call spends one per provider it actually reaches. The bounded retry
-inside one provider call doesn't count a second time.
+inside one provider call doesn't count a second time, and neither does the
+internal batching TinyFish does when reading more than ten pages at once.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
+| `TINYFISH_API_KEY` | secret | "" | Enables TinyFish search and page reads. Free at any balance, but the key is still required. |
+| `TINYFISH_SEARCH_URL` | URL | `https://api.search.tinyfish.ai` | TinyFish Search endpoint; normally leave unchanged. |
+| `TINYFISH_FETCH_URL` | URL | `https://api.fetch.tinyfish.ai` | TinyFish Fetch endpoint; normally leave unchanged. |
 | `EXA_API_KEY` | secret | "" | Enables Exa search and page reads. |
 | `EXA_API_BASE` | URL | `https://api.exa.ai` | Exa API base; normally leave unchanged. |
 | `BRAVE_API_KEY` | secret | "" | Enables Brave LLM Context search. |
@@ -555,7 +560,9 @@ inside one provider call doesn't count a second time.
 | `INTERNET_SEARCH_MAX_RESULTS` | int | `10` | Hard maximum and default combined result count. |
 | `INTERNET_SEARCH_MAX_BACKEND_CALLS_PER_TURN` | int | `10` | Provider calls the tool may make in one user turn. The bounded retry inside a call does not count again. |
 | `INTERNET_SEARCH_MAX_OUTPUT_CHARS` | int | `24000` | Combined content budget, split evenly across the returned results; longer content is truncated. |
-| `INTERNET_SEARCH_SAFESEARCH` | choice | `moderate` | Brave filtering: `off`, `moderate`, or `strict`. |
+| `INTERNET_SEARCH_SAFESEARCH` | choice | `moderate` | Brave filtering: `off`, `moderate`, or `strict`. Brave is the only provider with a safesearch parameter. |
+| `TINYFISH_SEARCH_COST_USD` | nullable float | unset | Per-call fallback for TinyFish search. Leave unset while TinyFish search is free. |
+| `TINYFISH_CONTENTS_COST_USD` | nullable float | unset | Per-call fallback for TinyFish page reading. Leave unset while TinyFish fetch is free. |
 | `EXA_SEARCH_COST_USD` | nullable float | unset | Per-call fallback when Exa search does not report cost. |
 | `EXA_CONTENTS_COST_USD` | nullable float | unset | Per-call fallback when Exa page reading does not report cost. |
 | `BRAVE_SEARCH_COST_USD` | nullable float | unset | Per-call fallback when Brave does not report cost. |
@@ -569,8 +576,14 @@ chain. Check a new Brave key against one real search before you trust it.
 
 Routing is live tool config. Edit `strategy` in
 `config/tools/internet_search.md`: `blend` (the default) calls every eligible
-provider concurrently, while `failover` tries Exa, then Brave, and stops at the
-first successful response. Keys and endpoints stay environment-only.
+provider concurrently, while `failover` tries TinyFish, then Exa, then Brave,
+and stops at the first successful response. Keys and endpoints stay
+environment-only.
+
+Ranking TinyFish first does not by itself avoid spending: under `blend` every
+configured provider is called on every search, paid ones included. A deployment
+that wants the free provider to actually displace the paid ones has to set
+`strategy` to `failover` as well.
 
 See [Internet search](internet-search.md) for request behavior, output shape,
 deduplication, and cost accounting.

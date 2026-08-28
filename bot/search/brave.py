@@ -18,6 +18,7 @@ class BraveSearchBackend:
     name = "brave"
     supports_contents = False
     supports_text = False
+    supports_contents_text = False
 
     def __init__(
         self,

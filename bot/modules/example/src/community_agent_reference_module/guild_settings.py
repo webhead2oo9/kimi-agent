@@ -21,7 +21,7 @@ from kimi_agent_module_api.contracts import GuildSettingField
 # so they are constants.
 FIELD_DIGEST_CHANNEL = "digest_channel_id"
 FIELD_GIVER_TIER = "giver_min_tier"
-FIELD_ALLOW_SELF_THANKS = "allow_self_thanks"
+FIELD_ALLOW_THANK_BACK = "allow_thank_back"
 
 
 def _validate(values: Mapping[str, Any]) -> Sequence[str]:
@@ -53,10 +53,10 @@ GUILD_SETTINGS = GuildSettingsSchema(
             help="Lowest trust tier that may give kudos in this guild.",
         ),
         GuildSettingField(
-            name=FIELD_ALLOW_SELF_THANKS,
+            name=FIELD_ALLOW_THANK_BACK,
             kind="bool",
-            default=False,
-            help="Whether the 'Thank back' button may be used by the original giver.",
+            default=True,
+            help="Whether kudos replies carry a 'Thank back' button.",
         ),
     ),
     # The default policy, ``disable_guild``, takes the whole guild out of the
@@ -68,7 +68,7 @@ GUILD_SETTINGS = GuildSettingsSchema(
 )
 
 __all__ = [
-    "FIELD_ALLOW_SELF_THANKS",
+    "FIELD_ALLOW_THANK_BACK",
     "FIELD_DIGEST_CHANNEL",
     "FIELD_GIVER_TIER",
     "GUILD_SETTINGS",

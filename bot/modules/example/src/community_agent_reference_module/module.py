@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +48,7 @@ from kimi_agent_module_api.contracts import (
 from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE, MemberRemoveEvent
 
 from community_agent_reference_module.guild_settings import (
-    FIELD_ALLOW_SELF_THANKS,
+    FIELD_ALLOW_THANK_BACK,
     FIELD_DIGEST_CHANNEL,
     FIELD_GIVER_TIER,
 )
@@ -247,10 +247,10 @@ class KudosModule:
     ) -> Kudos:
         """Record one kudos or raise ``KudosRefused`` with a user-facing reason."""
         ctx, ledger = self._require_started()
-        if ctx.guild_settings is not None and not ctx.guild_settings.is_enabled(guild_id):
+        if not self._enabled_in(guild_id):
             raise KudosRefused("Kudos are not enabled in this server.")
 
-        values = ctx.guild_settings.get(guild_id).values if ctx.guild_settings else {}
+        values = self._guild_values(guild_id)
         required = TrustTier(str(values.get(FIELD_GIVER_TIER) or "member"))
         if TrustTier(giver_tier) < required:
             raise KudosRefused(f"Only {required.value} members and above may give kudos here.")
@@ -263,14 +263,18 @@ class KudosModule:
         if len(reason) > MAX_REASON_LENGTH:
             raise KudosRefused(f"Keep the reason under {MAX_REASON_LENGTH} characters.")
 
-        now = self._clock()
-        given = await ledger.given_recently(guild_id, giver_id, now)
-        if given >= self._settings.daily_limit:
+        kudos = await ledger.give(
+            guild_id,
+            giver_id,
+            receiver_id,
+            reason,
+            self._clock(),
+            daily_limit=self._settings.daily_limit,
+        )
+        if kudos is None:
             raise KudosRefused(
                 f"You have given {self._settings.daily_limit} kudos in the last 24 hours."
             )
-
-        kudos = await ledger.give(guild_id, giver_id, receiver_id, reason, now)
         # Fire-and-forget: delivery is asynchronous and events are not durable.
         ctx.events.publish(
             TOPIC_GIVEN, KudosGivenEvent(guild_id, giver_id, receiver_id, reason, kudos.id)
@@ -306,6 +310,10 @@ class KudosModule:
         """``kudos_leaderboard``: a read-only view the model can quote."""
         if tool_ctx.guild_id is None:
             return "The kudos leaderboard is only available inside a server."
+        # Tools are registered deployment-wide, so a guild where this module is
+        # disabled (or its settings document is invalid) must be refused here.
+        if not self._enabled_in(int(tool_ctx.guild_id)):
+            return "Kudos are not enabled in this server."
         days = _clamp_days(arguments.get("days"))
         entries = await self._leaderboard(int(tool_ctx.guild_id), days)
         if not entries:
@@ -334,9 +342,9 @@ class KudosModule:
         except KudosRefused as refused:
             await interaction.respond(str(refused), ephemeral=True)
             return
-        await interaction.respond(
-            _summary(kudos),
-            components=(
+        components: tuple[ButtonSpec, ...] = ()
+        if self._guild_values(interaction.guild_id).get(FIELD_ALLOW_THANK_BACK, True):
+            components = (
                 ButtonSpec(
                     key=BUTTON_THANK_BACK,
                     label="Thank back",
@@ -345,8 +353,8 @@ class KudosModule:
                     # find the original kudos after a restart with no memory.
                     parts=(str(kudos.id),),
                 ),
-            ),
-        )
+            )
+        await interaction.respond(_summary(kudos), components=components)
 
     async def _command_top(self, interaction: ModuleInteraction) -> None:
         days = _clamp_days(interaction.options.get("days"))
@@ -403,11 +411,10 @@ class KudosModule:
         if original is None or original.guild_id != interaction.guild_id:
             await interaction.respond("That kudos is no longer available.", ephemeral=True)
             return
-        values = ctx.guild_settings.get(interaction.guild_id).values if ctx.guild_settings else {}
-        allow_self = bool(values.get(FIELD_ALLOW_SELF_THANKS, False))
-        if interaction.user_id != original.receiver_id and not (
-            allow_self and interaction.user_id == original.giver_id
-        ):
+        if not self._guild_values(interaction.guild_id).get(FIELD_ALLOW_THANK_BACK, True):
+            await interaction.respond("Thanking back is turned off here.", ephemeral=True)
+            return
+        if interaction.user_id != original.receiver_id:
             await interaction.respond("Only the person thanked can thank back.", ephemeral=True)
             return
         tier = await ctx.trust.tier(interaction.guild_id, interaction.user_id)
@@ -444,7 +451,7 @@ class KudosModule:
         posted = 0
         failed = 0
         for guild_id in ctx.guild_settings.guild_ids():
-            if not ctx.guild_settings.is_enabled(guild_id):
+            if not self._enabled_in(guild_id):
                 continue
             channel_id = ctx.guild_settings.get(guild_id).values.get(FIELD_DIGEST_CHANNEL)
             if not channel_id:
@@ -497,6 +504,17 @@ class KudosModule:
         if self._ctx is None or self._ledger is None:
             raise RuntimeError(f"{MODULE_NAME} is not started")
         return self._ctx, self._ledger
+
+    def _enabled_in(self, guild_id: int) -> bool:
+        """The host's activation predicate plus this module's guild document being valid."""
+        ctx, _ = self._require_started()
+        if not ctx.is_guild_active(guild_id):
+            return False
+        return ctx.guild_settings is None or ctx.guild_settings.is_enabled(guild_id)
+
+    def _guild_values(self, guild_id: int) -> Mapping[str, Any]:
+        ctx, _ = self._require_started()
+        return ctx.guild_settings.get(guild_id).values if ctx.guild_settings else {}
 
     async def _leaderboard(self, guild_id: int, days: int) -> list[BoardEntry]:
         _, ledger = self._require_started()

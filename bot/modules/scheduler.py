@@ -11,10 +11,12 @@ handler is no longer registered stays paused and degrades the module's health.
 
 The runner executes up to ``max_concurrent`` jobs at once, at most one per
 module, so one module's long job cannot delay another module's due work while
-a module's own handlers still never overlap. Kimi is a single process: if the
-runner sees live leases it did not issue, another process is running jobs
-against the same database, and the runner pauses (degrading every module with
-registered handlers) until those leases expire or are released.
+a module's own handlers still never overlap. Kimi is a single process: before
+claiming anything, the runner must hold the singleton lease in
+``module_scheduler_runner``, renewed every tick. A second process against the
+same database cannot take it while it is live, so it pauses (degrading every
+module with registered handlers) until the holder releases it on close or
+lets it expire.
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace
+
 from kimi_agent_module_api.contracts import (
     Backoff,
     HealthState,
@@ -44,10 +48,11 @@ from kimi_agent_module_api.contracts import (
 log = logging.getLogger(__name__)
 
 TABLE = "module_scheduler_jobs"
+RUNNER_TABLE = "module_scheduler_runner"
 DEFAULT_LEASE_SECONDS = 60.0
 DEFAULT_POLL_SECONDS = 1.0
 DEFAULT_MAX_CONCURRENT = 4
-FOREIGN_LEASE_DETAIL = "another scheduler runner holds live leases; jobs paused"
+FOREIGN_RUNNER_DETAIL = "another scheduler runner holds the lease; jobs paused"
 HEARTBEAT_FRACTION = 0.5
 MAX_ERROR_CHARS = 300
 _KEY_MAX = 128
@@ -74,6 +79,14 @@ SCHEMA_SQL = f"""CREATE TABLE IF NOT EXISTS {TABLE} (
     UNIQUE (module_name, job_key)
 )"""
 INDEX_SQL = f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_due ON {TABLE}(run_at, leased_until)"
+RUNNER_SCHEMA_SQL = f"""CREATE TABLE IF NOT EXISTS {RUNNER_TABLE} (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    token        TEXT,
+    leased_until REAL NOT NULL DEFAULT 0
+)"""
+RUNNER_SEED_SQL = (
+    f"INSERT OR IGNORE INTO {RUNNER_TABLE} (id, token, leased_until) VALUES (1, NULL, 0)"
+)
 
 
 def _dumps(value: Any) -> str:
@@ -196,8 +209,8 @@ class DurableScheduler:
         # the modules they belong to (one job per module at a time).
         self._running: dict[str, asyncio.Task[None]] = {}
         self._running_modules: set[str] = set()
-        # Lease tokens this process issued; anything else live is foreign.
-        self._own_tokens: set[str] = set()
+        # This process's runner identity; the singleton lease row carries it.
+        self._runner_token = uuid.uuid4().hex
         self._foreign_paused = False
         self._wake = asyncio.Event()
         self._closed = False
@@ -209,6 +222,8 @@ class DurableScheduler:
     async def ensure_schema(conn: Any) -> None:
         await conn.execute(SCHEMA_SQL)
         await conn.execute(INDEX_SQL)
+        await conn.execute(RUNNER_SCHEMA_SQL)
+        await conn.execute(RUNNER_SEED_SQL)
 
     # ---- registration --------------------------------------------------------
 
@@ -352,23 +367,25 @@ class DurableScheduler:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._runner
             self._runner = None
-        for task in list(self._running.values()):
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_with_grace(
+            list(self._running.values()),
+            grace=DEFAULT_CANCEL_GRACE_SECONDS,
+            what="module scheduler job",
+        )
         self._running.clear()
         self._running_modules.clear()
+        await self._release_runner_lease()
 
     @property
-    def paused_for_foreign_leases(self) -> bool:
+    def paused_for_foreign_runner(self) -> bool:
         return self._foreign_paused
 
     async def run_due(self, *, now: float | None = None, limit: int = 50) -> int:
         """Claim and run due jobs one at a time, inline; returns how many ran.
 
         This is the serial path used by tests and by callers that want a
-        deterministic tick. The runner loop uses ``_tick`` instead, which runs
-        claimed jobs concurrently.
+        deterministic tick. It shares the one-job-per-module bookkeeping with
+        the runner loop, so it never overlaps a job the loop is running.
         """
         now = self._clock() if now is None else now
         ran = 0
@@ -376,7 +393,11 @@ class DurableScheduler:
             row = await self._claim_next(now, exclude_modules=self._running_modules)
             if row is None:
                 break
-            await self._execute(row)
+            self._running_modules.add(row.module_name)
+            try:
+                await self._execute(row)
+            finally:
+                self._running_modules.discard(row.module_name)
             ran += 1
         return ran
 
@@ -396,9 +417,9 @@ class DurableScheduler:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._poll_seconds)
 
     async def _tick(self) -> bool:
-        """Start as many due jobs as capacity allows; True if any were started."""
+        """Renew the runner lease, then start as many due jobs as capacity allows."""
         now = self._clock()
-        if await self._foreign_leases_live(now):
+        if not await self._acquire_runner_lease(now):
             self._enter_foreign_pause()
             return False
         self._exit_foreign_pause()
@@ -416,22 +437,44 @@ class DurableScheduler:
     async def _run_claimed(self, row: _Row) -> None:
         try:
             await self._execute(row)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # _execute already contains handler failures; this is settlement
+            # itself failing (database error). Never let it vanish with the task.
+            log.exception("Module %s job %s could not be settled", row.module_name, row.job_key)
         finally:
             self._running.pop(row.job_id, None)
             self._running_modules.discard(row.module_name)
             # Capacity freed: let the loop claim the next due job immediately.
             self._wake.set()
 
-    async def _foreign_leases_live(self, now: float) -> bool:
-        own = sorted(self._own_tokens)
-        sql = f"SELECT COUNT(*) FROM {TABLE} WHERE leased_until > ?"
-        params: list[Any] = [now]
-        if own:
-            sql += " AND lease_token NOT IN (" + ",".join("?" for _ in own) + ")"
-            params.extend(own)
-        cursor = await self._database.conn.execute(sql, params)
-        row = await cursor.fetchone()
-        return bool(row and row[0])
+    async def _acquire_runner_lease(self, now: float) -> bool:
+        """Take or renew the singleton runner lease atomically.
+
+        The conditional UPDATE is the whole protocol: it succeeds only when the
+        row is unleased, expired, or already ours, and SQLite evaluates it under
+        the write lock, so two processes cannot both win.
+        """
+        async with self._database.write_transaction() as conn:
+            cursor = await conn.execute(
+                f"""UPDATE {RUNNER_TABLE} SET token = ?, leased_until = ?
+                    WHERE id = 1 AND (token IS NULL OR token = ? OR leased_until <= ?)""",
+                (self._runner_token, now + self._lease_seconds, self._runner_token, now),
+            )
+            return bool(cursor.rowcount)
+
+    async def _release_runner_lease(self) -> None:
+        try:
+            async with self._database.write_transaction() as conn:
+                await conn.execute(
+                    f"UPDATE {RUNNER_TABLE} SET token = NULL, leased_until = 0 WHERE token = ?",
+                    (self._runner_token,),
+                )
+        except Exception:
+            # The database may already be closed during shutdown; the lease
+            # then simply expires.
+            log.debug("Module scheduler runner lease was not released", exc_info=True)
 
     def _module_names(self) -> set[str]:
         return {module for module, _handler in self._handlers}
@@ -442,19 +485,19 @@ class DurableScheduler:
         self._foreign_paused = True
         log.error(
             "Module scheduler paused: %s. Another Kimi process is running jobs against "
-            "this database; stop it, or wait for its leases (%gs) to expire.",
-            FOREIGN_LEASE_DETAIL,
+            "this database; stop it, or wait for its lease (%gs) to expire.",
+            FOREIGN_RUNNER_DETAIL,
             self._lease_seconds,
         )
         if self._on_health is not None:
             for module in sorted(self._module_names()):
-                self._on_health(module, "degraded", FOREIGN_LEASE_DETAIL)
+                self._on_health(module, "degraded", FOREIGN_RUNNER_DETAIL)
 
     def _exit_foreign_pause(self) -> None:
         if not self._foreign_paused:
             return
         self._foreign_paused = False
-        log.info("Module scheduler resumed: foreign leases are gone")
+        log.info("Module scheduler resumed: runner lease acquired")
         if self._on_health is None:
             return
         for module in sorted(self._module_names()):
@@ -509,7 +552,6 @@ class DurableScheduler:
                 row.leased_until = leased_until
                 row.lease_token = token
                 row.attempt += 1
-                self._own_tokens.add(token)
                 return row
 
     def _report_paused(self, row: _Row) -> None:
@@ -553,11 +595,7 @@ class DurableScheduler:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
-        try:
-            await self._settle(row, error)
-        finally:
-            if row.lease_token is not None:
-                self._own_tokens.discard(row.lease_token)
+        await self._settle(row, error)
 
     async def _heartbeat(self, row: _Row) -> None:
         interval = max(0.05, self._lease_seconds * HEARTBEAT_FRACTION)
@@ -670,6 +708,15 @@ class ModuleSchedulerView:
         return await self.scheduler.list_jobs(self.module_name)
 
 
-__all__ = ["INDEX_SQL", "SCHEMA_SQL", "TABLE", "DurableScheduler", "ModuleSchedulerView"]
+__all__ = [
+    "INDEX_SQL",
+    "RUNNER_SCHEMA_SQL",
+    "RUNNER_SEED_SQL",
+    "RUNNER_TABLE",
+    "SCHEMA_SQL",
+    "TABLE",
+    "DurableScheduler",
+    "ModuleSchedulerView",
+]
 
 _ = field  # dataclasses.field retained for future per-view state

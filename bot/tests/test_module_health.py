@@ -210,3 +210,16 @@ def test_keyed_reports_cannot_clear_core_constraints() -> None:
 
     health = registry.get("m")
     assert health is not None and health.state == "degraded"
+
+
+def test_fake_health_state_is_the_worst_across_keys() -> None:
+    from kimi_agent_module_api.testing import FakeHealth
+
+    fake = FakeHealth()
+    fake.report("healthy", "", {"guilds": 1})
+    fake.report("degraded", "digest failed", key="digest")
+
+    assert fake.state == "degraded"
+    assert [key for key, _ in fake.history] == [None, "digest"]
+    fake.report("healthy", key="digest")
+    assert fake.state == "healthy"

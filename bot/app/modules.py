@@ -10,7 +10,6 @@ removing the capability.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -59,6 +58,7 @@ from modules.http import ModuleHttpRuntime, ResolvedHostRule, resolve_host_rules
 from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl, validate_table_aliases
+from modules.tasks import run_bounded
 
 log = logging.getLogger(__name__)
 
@@ -356,7 +356,6 @@ class ModuleManager:
         )
         if not names:
             return manager
-        tool_registry = _LoadTimeToolRegistry(registry)
         specs = validate_module_selection(
             names,
             core_settings=core_settings,
@@ -365,6 +364,39 @@ class ModuleManager:
         capabilities = module_capabilities(core_settings)
         disabled = _activation_disabled(specs, capabilities)
         active_specs = tuple(spec for spec in specs if spec.name not in disabled)
+        tool_registry = _LoadTimeToolRegistry(registry)
+        try:
+            cls._create_all(
+                manager, active_specs, tool_registry, settings_registry, capabilities, registry
+            )
+        finally:
+            # Sealed even when a later create() fails, so a module that stashed
+            # the registry cannot register into a half-loaded application.
+            tool_registry.seal()
+        for spec in specs:
+            if reason := disabled.get(spec.name):
+                log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
+        manager._specs = active_specs
+        manager.load_state = ModuleLoadState(
+            requested=tuple(names),
+            loaded=tuple(spec.name for spec in active_specs),
+            disabled=tuple(
+                (spec.name, spec.version, disabled[spec.name])
+                for spec in specs
+                if spec.name in disabled
+            ),
+        )
+        return manager
+
+    @staticmethod
+    def _create_all(
+        manager: ModuleManager,
+        active_specs: Sequence[ModuleSpec],
+        tool_registry: _LoadTimeToolRegistry,
+        settings_registry: ModuleSettingsRegistry,
+        capabilities: ModuleCapabilities,
+        registry: ToolRegistry,
+    ) -> None:
         for spec in active_specs:
             before = registry.registered_names()
             try:
@@ -390,21 +422,6 @@ class ModuleManager:
                 raise
             manager._modules[spec.name] = instance
             log.info("Kimi module composed: %s %s", spec.name, spec.version)
-        tool_registry.seal()
-        for spec in specs:
-            if reason := disabled.get(spec.name):
-                log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
-        manager._specs = active_specs
-        manager.load_state = ModuleLoadState(
-            requested=tuple(names),
-            loaded=tuple(spec.name for spec in active_specs),
-            disabled=tuple(
-                (spec.name, spec.version, disabled[spec.name])
-                for spec in specs
-                if spec.name in disabled
-            ),
-        )
-        return manager
 
     @property
     def specs(self) -> Mapping[str, ModuleSpec]:
@@ -447,7 +464,9 @@ class ModuleManager:
         from ``base`` plus the per-module ports. ``customize`` lets a test
         harness replace ports with fakes before the context is frozen; missing
         required ports abort startup. A ``start()`` that exceeds
-        ``start_timeout_seconds`` is treated like one that raised.
+        ``start_timeout_seconds`` is cancelled, given a short grace period,
+        then abandoned if it ignores cancellation; either way it counts as a
+        failed start.
         """
         try:
             for spec in self._specs:
@@ -471,17 +490,18 @@ class ModuleManager:
                 self._contexts[spec.name] = module_ctx
                 self._started.append(spec.name)
                 self.health.set(spec.name, "starting")
-                try:
-                    await asyncio.wait_for(
-                        instance.start(module_ctx), timeout=self.start_timeout_seconds
-                    )
-                except TimeoutError as exc:
+                outcome = await run_bounded(
+                    instance.start(module_ctx),
+                    timeout=self.start_timeout_seconds,
+                    what=f"Kimi module {spec.name} start()",
+                )
+                if outcome.timed_out:
                     detail = f"start() exceeded {self.start_timeout_seconds:g}s"
                     self.health.set(spec.name, "failed", detail)
-                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}") from exc
-                except BaseException as exc:
-                    self.health.set(spec.name, "failed", _summarize(exc))
-                    raise
+                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                if outcome.error is not None:
+                    self.health.set(spec.name, "failed", _summarize(outcome.error))
+                    raise outcome.error
                 self._settle_health(spec)
                 log.info("Kimi module started: %s %s", spec.name, spec.version)
         except BaseException:
@@ -570,21 +590,26 @@ class ModuleManager:
     async def close(self) -> None:
         """Close started modules newest-first, then release their core-side registrations.
 
-        A ``close()`` that exceeds ``close_timeout_seconds`` is cancelled and
-        logged; shutdown never waits on one module.
+        A ``close()`` that exceeds ``close_timeout_seconds`` is cancelled,
+        given a short grace period, then abandoned; shutdown never waits on
+        one module.
         """
         while self._started:
             name = self._started.pop()
             try:
-                await asyncio.wait_for(
-                    self._modules[name].close(), timeout=self.close_timeout_seconds
+                outcome = await run_bounded(
+                    self._modules[name].close(),
+                    timeout=self.close_timeout_seconds,
+                    what=f"Kimi module {name} close()",
                 )
-            except TimeoutError:
-                log.error(
-                    "Kimi module %s close() exceeded %gs; continuing shutdown",
-                    name,
-                    self.close_timeout_seconds,
-                )
+                if outcome.timed_out:
+                    log.error(
+                        "Kimi module %s close() exceeded %gs; continuing shutdown",
+                        name,
+                        self.close_timeout_seconds,
+                    )
+                elif outcome.error is not None:
+                    log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
             finally:

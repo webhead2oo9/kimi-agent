@@ -46,9 +46,30 @@ class KudosLedger:
         self._kudos = storage.table("kudos")
 
     async def give(
-        self, guild_id: int, giver_id: int, receiver_id: int, reason: str, now: float
-    ) -> Kudos:
+        self,
+        guild_id: int,
+        giver_id: int,
+        receiver_id: int,
+        reason: str,
+        now: float,
+        *,
+        daily_limit: int,
+    ) -> Kudos | None:
+        """Insert one kudos unless the giver already hit ``daily_limit``; None if refused.
+
+        The count and the insert share one write transaction. Writers are
+        serialized by the host, so two concurrent gives cannot both see a
+        count below the limit; a check outside the transaction would.
+        """
         async with self._storage.write_transaction() as connection:
+            cursor = await connection.execute(
+                f"SELECT COUNT(*) FROM {self._kudos} "
+                "WHERE guild_id = ? AND giver_id = ? AND given_at > ?",
+                (guild_id, giver_id, now - DAY_SECONDS),
+            )
+            row = await cursor.fetchone()
+            if row is not None and int(row[0]) >= daily_limit:
+                return None
             cursor = await connection.execute(
                 f"INSERT INTO {self._kudos} (guild_id, giver_id, receiver_id, reason, given_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -65,16 +86,6 @@ class KudosLedger:
         )
         row = await cursor.fetchone()
         return None if row is None else Kudos(*row)
-
-    async def given_recently(self, guild_id: int, giver_id: int, now: float) -> int:
-        """Kudos ``giver_id`` gave in this guild during the trailing 24 hours."""
-        cursor = await self._storage.connection.execute(
-            f"SELECT COUNT(*) FROM {self._kudos} "
-            "WHERE guild_id = ? AND giver_id = ? AND given_at > ?",
-            (guild_id, giver_id, now - DAY_SECONDS),
-        )
-        row = await cursor.fetchone()
-        return int(row[0]) if row is not None else 0
 
     async def top(self, guild_id: int, *, since: float, limit: int) -> list[BoardEntry]:
         """Receivers ranked by kudos received after ``since``; ties break by user id."""

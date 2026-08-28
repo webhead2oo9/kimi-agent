@@ -207,12 +207,25 @@ class _FakeJob:
     run_at: float
     interval: float | None
     payload: Mapping[str, Any]
+    backoff: Backoff = field(default_factory=Backoff)
     attempt: int = 0
     last_error: str | None = None
 
 
+def _retry_delay(backoff: Backoff, attempt: int) -> float:
+    return min(
+        backoff.max_seconds, backoff.base_seconds * backoff.multiplier ** max(0, attempt - 1)
+    )
+
+
 class FakeScheduler:
-    """Jobs run only when the test advances time with ``run_due``."""
+    """Jobs run only when the test advances time with ``run_due``.
+
+    Settlement follows the host: a successful one-shot job is deleted, a
+    successful periodic job reschedules from completion, and a failed job of
+    either kind is kept and retried after its ``Backoff`` delay with the
+    attempt count preserved. Jitter is ignored so reschedules are exact.
+    """
 
     def __init__(self) -> None:
         self.handlers: dict[str, JobHandler] = {}
@@ -237,7 +250,14 @@ class FakeScheduler:
         jitter_seconds: float = 0.0,
         backoff: Backoff | None = None,
     ) -> None:
-        self.jobs[key] = _FakeJob(key, handler_name, 0.0, interval_seconds, dict(payload or {}))
+        self.jobs[key] = _FakeJob(
+            key,
+            handler_name,
+            0.0,
+            interval_seconds,
+            dict(payload or {}),
+            backoff=backoff or Backoff(),
+        )
 
     async def cancel(self, key: str) -> bool:
         return self.jobs.pop(key, None) is not None
@@ -265,20 +285,31 @@ class FakeScheduler:
                 await handler(run)
             except Exception as exc:
                 job.last_error = repr(exc)
+                job.run_at = now + _retry_delay(job.backoff, job.attempt)
             else:
                 job.last_error = None
+                job.attempt = 0
+                if job.interval is None:
+                    self.jobs.pop(job.key, None)
+                else:
+                    job.run_at = now + job.interval
             ran += 1
-            if job.interval is None:
-                self.jobs.pop(job.key, None)
-            else:
-                job.run_at = now + job.interval
         return ran
 
 
+_HEALTH_ORDER: dict[str, int] = {"healthy": 0, "starting": 1, "degraded": 2, "failed": 3}
+
+
 class FakeHealth:
-    """Records every report; ``current`` is the latest unkeyed one, ``keyed`` the latest per key."""
+    """Records every report.
+
+    ``history`` holds every call as ``(key, health)``. ``current`` is the latest
+    unkeyed report, ``keyed`` the latest live report per key, and ``state`` the
+    worst across both, which is what the host would show for the module.
+    """
 
     def __init__(self) -> None:
+        self.history: list[tuple[str | None, ModuleHealth]] = []
         self.reports: list[ModuleHealth] = []
         self.keyed: dict[str, ModuleHealth] = {}
 
@@ -290,7 +321,8 @@ class FakeHealth:
         *,
         key: str | None = None,
     ) -> None:
-        health = ModuleHealth(state, detail, dict(metrics or {}), float(len(self.reports)))
+        health = ModuleHealth(state, detail, dict(metrics or {}), float(len(self.history)))
+        self.history.append((key, health))
         if key is not None:
             if state == "healthy" and not detail and not metrics:
                 self.keyed.pop(key, None)
@@ -302,6 +334,13 @@ class FakeHealth:
     @property
     def current(self) -> ModuleHealth | None:
         return self.reports[-1] if self.reports else None
+
+    @property
+    def state(self) -> HealthState:
+        candidates = [*self.keyed.values(), *([self.current] if self.current else [])]
+        if not candidates:
+            return "healthy"
+        return max((health.state for health in candidates), key=_HEALTH_ORDER.__getitem__)
 
 
 @dataclass(frozen=True, slots=True)

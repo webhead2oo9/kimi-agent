@@ -156,13 +156,17 @@ Core drives every configured module through the same phases, in this order:
    before any module starts.
 5. **Start.** `start(ctx)` runs in dependency order with the full
    `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A
-   `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled and
-   treated as a failure.
+   `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled,
+   given five seconds to unwind, then abandoned if it ignores cancellation;
+   all three count as a failed start.
 6. **Close.** On shutdown, modules close newest-first. `close()` should be
    idempotent and release what `start()` acquired. A `close()` that exceeds
-   `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled and logged; shutdown moves
-   on to the next module. Core then releases the module's commands,
-   components, event lane, scheduler handlers, and services regardless.
+   `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled, given five seconds to
+   unwind, then abandoned; shutdown moves on to the next module. Core then
+   releases the module's commands, components, event lane, scheduler
+   handlers, and services regardless. Cancellation is cooperative: a module
+   should let `CancelledError` propagate rather than catch it, since a
+   coroutine that refuses to stop is leaked, not killed.
 
 ## Declarations
 
@@ -288,11 +292,12 @@ the ports are a contract and an audit surface, not a sandbox.
   `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (4) jobs at once, at most one per
   module, so a module's handlers never overlap each other while one module's
   long job does not delay another's. Kimi runs one process; there is no
-  multi-node coordination. If the runner finds live leases it did not issue,
-  a second process is running jobs against the same database: the runner
-  pauses, logs an error, and marks every module with registered handlers
-  `degraded` until those leases expire (within the 60-second lease) or are
-  released.
+  multi-node coordination. The runner holds a singleton lease in
+  `module_scheduler_runner`, renewed every tick and released on close. A
+  second process against the same database cannot take that lease while it
+  is live: it pauses, logs an error, and marks every module with registered
+  handlers `degraded` until the holder stops or its 60-second lease
+  expires.
 - `ctx.interactions`: slash commands and persistent components without the
   Discord SDK. `add_command(CommandSpec, handler)` builds the app command
   (top-level or one group level; `string`/`integer`/`boolean`/`user`/

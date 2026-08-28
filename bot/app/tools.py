@@ -438,8 +438,6 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
             max_output_chars=settings.internet_search_max_output_chars,
             timeout_seconds=settings.internet_search_timeout_seconds,
             fallback_cost_usd={
-                ("tinyfish", "search"): settings.tinyfish_search_cost_usd,
-                ("tinyfish", "contents"): settings.tinyfish_contents_cost_usd,
                 ("exa", "search"): settings.exa_search_cost_usd,
                 ("exa", "contents"): settings.exa_contents_cost_usd,
                 ("brave", "search"): settings.brave_search_cost_usd,

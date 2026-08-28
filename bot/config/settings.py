@@ -161,8 +161,6 @@ class Settings(BaseSettings):
     tinyfish_api_key: SecretStr = SecretStr("")
     tinyfish_search_url: str = "https://api.search.tinyfish.ai"
     tinyfish_fetch_url: str = "https://api.fetch.tinyfish.ai"
-    tinyfish_search_cost_usd: float | None = None
-    tinyfish_contents_cost_usd: float | None = None
     exa_api_key: SecretStr = SecretStr("")
     exa_api_base: str = "https://api.exa.ai"
     exa_search_cost_usd: float | None = None
@@ -517,8 +515,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "react_temperature",
-        "tinyfish_search_cost_usd",
-        "tinyfish_contents_cost_usd",
         "exa_search_cost_usd",
         "exa_contents_cost_usd",
         "brave_search_cost_usd",
@@ -822,8 +818,6 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "tinyfish_search_cost_usd",
-        "tinyfish_contents_cost_usd",
         "exa_search_cost_usd",
         "exa_contents_cost_usd",
         "brave_search_cost_usd",

@@ -15,7 +15,9 @@ import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeVar, overload
+
+_T = TypeVar("_T")
 
 # --------------------------------------------------------------------------
 # Errors
@@ -67,7 +69,8 @@ type DiscordAction = Literal[
     "fetch_messages",
     "fetch_pins",
     "fetch_public_threads",
-    "check_channel_access",
+    "fetch_roles",
+    "can_view_channel",
 ]
 ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
     {
@@ -84,7 +87,8 @@ ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
         "fetch_messages",
         "fetch_pins",
         "fetch_public_threads",
-        "check_channel_access",
+        "fetch_roles",
+        "can_view_channel",
     }
 )
 # Actions that act on a member and therefore run the core target policy.
@@ -170,6 +174,28 @@ class GuildSettingsSchema:
 _GUILD_ID_RE = re.compile(r"^\d{1,25}$")
 _GUILD_SETTING_LIST_MAX = 512
 _GUILD_SETTING_STRING_MAX = 2_000
+
+
+def render_guild_settings(values: Mapping[str, Any]) -> str:
+    """Render guild settings as the frontmatter-only document the host stores.
+
+    This is the format of ``<CONFIG_DIR>/guild-modules/<guild_id>/<module>.md``
+    and the content a module passes to ``ProposalService.propose`` for a
+    ``guild:<id>:<module>`` target. Keys are emitted sorted; booleans as
+    ``true``/``false``; lists in flow style; everything else through ``str``.
+    """
+    lines = ["---"]
+    for key in sorted(values):
+        value = values[key]
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (list, tuple)):
+            rendered = "[" + ", ".join(str(item) for item in value) + "]"
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {rendered}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
 
 
 def coerce_guild_setting_value(field_spec: GuildSettingField, raw: Any) -> tuple[Any, str | None]:
@@ -688,6 +714,17 @@ class MemberSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RoleSnapshot:
+    guild_id: int
+    role_id: int
+    name: str
+    # Higher positions sit above lower ones in the guild's role list.
+    position: int
+    # Managed roles belong to an integration or bot and cannot be assigned by hand.
+    managed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class OutgoingEmbed:
     title: str | None = None
     description: str | None = None
@@ -772,6 +809,8 @@ class DiscordActions(Protocol):
         self, guild_id: int, parent_channel_id: int
     ) -> tuple[ChannelSnapshot, ...]: ...
 
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]: ...
+
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool: ...
 
 
@@ -830,6 +869,11 @@ class ModuleInteraction(Protocol):
 
     @property
     def values(self) -> tuple[str, ...]: ...
+
+    @property
+    def message(self) -> MessageRef | None:
+        """The message a button or select lives on; ``None`` for slash commands."""
+        ...
 
     async def respond(
         self,
@@ -979,4 +1023,17 @@ class ModuleHttp(Protocol):
 class ServiceRegistry(Protocol):
     def provide(self, name: str, version: int, implementation: object) -> Registration: ...
 
+    @overload
     def get(self, name: str, version: int) -> object: ...
+
+    @overload
+    def get(self, name: str, version: int, type_: type[_T]) -> _T: ...
+
+    def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
+        """Resolve a consumed service; with ``type_`` the result is checked and typed.
+
+        The host hands back a proxy that raises ``ServiceUnavailable`` once the
+        provider closes. ``type_`` is checked against the provided object, so a
+        provider that changed its class fails here instead of at the first call.
+        """
+        ...

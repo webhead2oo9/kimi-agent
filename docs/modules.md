@@ -109,7 +109,10 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
   image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
-  provides commands or listeners need not expose anything to the LLM.
+  provides commands or listeners need not expose anything to the LLM. A tool
+  handler receives a `ModuleToolContext` whose ids are `int` snowflakes
+  (`guild_id` is `None` in DMs and personal chat); the host refuses the call
+  before the handler runs when the module is inactive in that guild.
 
 For repeatable deployments, keep third-party module requirements in
 deployment-owned lock data and install them after the core sync. Private Git
@@ -177,7 +180,7 @@ a malformed declaration aborts startup with a named reason:
 - `permissions.discord_actions`: the Discord operations the module will call
   (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
   `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`,
-  `fetch_pins`, `fetch_public_threads`, `check_channel_access`).
+  `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `can_view_channel`).
 - `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
   module subscribes to. A module never declares its own namespace; it may
   publish only under `<module_name>.*`.
@@ -227,18 +230,20 @@ the ports are a contract and an audit surface, not a sandbox.
   keys dropped. Each change is emitted as a best-effort `module_health`
   event when the event log is enabled.
 - `ctx.services.provide(name, version, impl)` / `ctx.services.get(name,
-  version)`: exact-version services between modules. Both must match the
-  spec's `provides` / `consumes`; a consumer must depend on the provider so
-  it starts later. `get` returns a proxy that raises `ServiceUnavailable`
-  once the provider closes.
+  version, type_)`: exact-version services between modules. Both must match
+  the spec's `provides` / `consumes`; a consumer must depend on the provider
+  so it starts later. `get` returns a proxy that raises `ServiceUnavailable`
+  once the provider closes; passing `type_` checks the provided object and
+  types the result.
 
 - `ctx.events.publish(topic, payload)` / `ctx.events.subscribe(pattern,
   handler)`: an in-process bus. A module publishes only under
   `<module_name>.*`; subscribing to `discord.*` or a sibling's topics
   requires the topic (or `<namespace>.*`) in `permissions.event_topics`.
   Core publishes normalized `discord.message`, `discord.message_edit`,
-  `discord.message_delete`, `discord.member_join`, `discord.member_remove`,
-  `discord.member_update`, and `discord.audit_log_entry` events
+  `discord.message_delete`, `discord.message_bulk_delete`,
+  `discord.member_join`, `discord.member_remove`, `discord.member_update`,
+  and `discord.audit_log_entry` events
   (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
   re-fetched, never SDK objects. `publish` returns immediately; each
   subscriber module has a bounded queue and a small worker pool with a
@@ -248,8 +253,8 @@ the ports are a contract and an audit surface, not a sandbox.
 - `ctx.discord`: the declared Discord operations (`send_message`,
   `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`,
   `fetch_message`, `fetch_member`, `fetch_channel`, paginated
-  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, and
-  `check_channel_access`) on stable IDs, returning public
+  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`, and
+  `can_view_channel`) on stable IDs, returning public
   snapshots. Calling an undeclared action raises
   `UndeclaredDiscordAction`. `ban`, `kick`, and `timeout` refuse the bot,
   the acting user, other bots, and any member whose trust tier is not
@@ -269,7 +274,8 @@ the ports are a contract and an audit surface, not a sandbox.
   empty settings. Until a guild has that document, the schema's field names are
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
-  `guild_ids()` lists the active guilds known to this module, and
+  `render_guild_settings(values)` renders a document in this format for a
+  proposal. `guild_ids()` lists the active guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
   `revision`), refreshed on the guild-activation cadence and immediately after
   an approved proposal; `is_enabled(guild_id)` is the guild being active and
@@ -344,9 +350,11 @@ hatches such as `raw_bot`).
 
 `kimi_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
-`FakeHttp`, `FakeProposals`, and friends). They import nothing beyond the standard library and
-the contracts, so a module can unit-test its logic with only the API package
-installed. `FakeDiscordActions` enforces the module's declared actions,
+`FakeHttp`, `FakeProposals`, and friends), `load_context()` for calling
+`create()` with a recording tool registry, and `MemoryStorage` (real SQL over
+in-memory SQLite, behind the `testing` extra). The fakes import nothing beyond
+the standard library and the contracts, so a module can unit-test its logic
+with only the API package installed. `FakeDiscordActions` enforces the module's declared actions,
 `FakeInteractions.component_min_tiers[(kind, key)]` lets tests check a
 component's access tier, and `FakeScheduler.run_due(now)` runs jobs only when
 the test advances time.

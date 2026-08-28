@@ -408,6 +408,9 @@ def test_entire_sdk_has_no_core_runtime_imports() -> None:
         "kimi_agent_module_api",
         "pydantic_settings",
     }
+    # testing.MemoryStorage imports aiosqlite lazily behind the ``testing`` extra;
+    # it is a test convenience, not a core runtime package.
+    per_file_allowed = {"testing.py": {"aiosqlite"}}
     outside: dict[str, set[str]] = {}
     for path in SDK_ROOT.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -417,7 +420,7 @@ def test_entire_sdk_has_no_core_runtime_imports() -> None:
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
-        if unexpected := imported - allowed:
+        if unexpected := imported - allowed - per_file_allowed.get(path.name, set()):
             outside[path.name] = unexpected
     assert outside == {}
 
@@ -452,3 +455,66 @@ async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> N
     assert scheduler.jobs["often"].run_at == 200.0 + 60.0
     assert scheduler.jobs["often"].attempt == 0
     assert attempts == [1, 1, 2, 2, 3, 3]
+
+
+def test_render_guild_settings_matches_the_host_document_format() -> None:
+    from kimi_agent_module_api import render_guild_settings
+
+    rendered = render_guild_settings({"b": True, "a": [1, 2], "c": "x", "d": 3})
+
+    assert rendered == "---\na: [1, 2]\nb: true\nc: x\nd: 3\n---\n"
+
+
+def test_fake_service_registry_typed_get() -> None:
+    from kimi_agent_module_api.contracts import ServiceUnavailable
+    from kimi_agent_module_api.testing import FakeServiceRegistry
+
+    class Board: ...
+
+    registry = FakeServiceRegistry()
+    registry.provide("kudos.board", 1, Board())
+
+    assert isinstance(registry.get("kudos.board", 1, Board), Board)
+    with pytest.raises(TypeError):
+        registry.get("kudos.board", 1, int)
+    with pytest.raises(ServiceUnavailable):
+        registry.get("missing", 1)
+
+
+@pytest.mark.asyncio
+async def test_fake_discord_actions_gate_fetch_roles_and_can_view_channel() -> None:
+    from kimi_agent_module_api.contracts import RoleSnapshot, UndeclaredDiscordAction
+    from kimi_agent_module_api.testing import FakeDiscordActions
+
+    actions = FakeDiscordActions("m", frozenset({"fetch_roles"}))
+    actions.roles[1] = (RoleSnapshot(1, 10, "mod", 5),)
+
+    assert await actions.fetch_roles(1) == (RoleSnapshot(1, 10, "mod", 5),)
+    with pytest.raises(UndeclaredDiscordAction):
+        await actions.can_view_channel(1, 2, 3)
+
+
+def test_fake_interaction_exposes_the_component_message() -> None:
+    from kimi_agent_module_api.contracts import MessageRef
+    from kimi_agent_module_api.testing import FakeInteraction
+
+    ref = MessageRef(1, 2, 3)
+    assert FakeInteraction(message=ref).message == ref
+    assert FakeInteraction().message is None
+
+
+@pytest.mark.asyncio
+async def test_memory_storage_serializes_writers_and_runs_migrations() -> None:
+    from kimi_agent_module_api.contracts import MigrationContext
+    from kimi_agent_module_api.testing import MemoryStorage
+
+    async def create(ctx: MigrationContext) -> None:
+        await ctx.connection.execute(f"CREATE TABLE {ctx.table('t')} (n INTEGER)")
+
+    async with MemoryStorage.open("my-mod") as storage:
+        assert storage.table("t") == '"my_mod_t"'
+        await storage.migrate((("001", create),))
+        async with storage.write_transaction() as conn:
+            await conn.execute('INSERT INTO "my_mod_t" (n) VALUES (1)')
+        cursor = await storage.connection.execute('SELECT COUNT(*) FROM "my_mod_t"')
+        assert (await cursor.fetchone())[0] == 1

@@ -9,6 +9,10 @@ license-files = ["LICENSE"]
 readme = "README.md"
 dependencies = ["pydantic-settings>=2.14.2"]
 
+[project.optional-dependencies]
+# kimi_agent_module_api.testing.MemoryStorage runs real SQL in unit tests.
+testing = ["aiosqlite"]
+
 [build-system]
 requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"

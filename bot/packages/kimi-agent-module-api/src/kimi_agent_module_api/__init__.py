@@ -11,6 +11,8 @@ from pydantic_settings import BaseSettings
 
 from kimi_agent_module_api.contracts import (
     ConfigSnapshot,
+    RoleSnapshot,
+    render_guild_settings,
     DiscordActions,
     EventBus,
     GuildSettings,
@@ -96,8 +98,10 @@ class ModuleLoadContext:
     capabilities: ModuleCapabilities
     registry: ModuleToolRegistry
     module_settings: BaseSettings | None
-    _register_tool_labels: Callable[[Mapping[str, str]], None]
-    _declare_surface_tools: Callable[[str, Sequence[str]], None]
+    # Host sinks behind the two convenience methods below. Tests build a
+    # context with ``kimi_agent_module_api.testing.load_context``.
+    label_sink: Callable[[Mapping[str, str]], None]
+    surface_sink: Callable[[str, Sequence[str]], None]
 
     def settings_for(self, settings_type: type[_SettingsT]) -> _SettingsT:
         if self.module_settings is None or not isinstance(self.module_settings, settings_type):
@@ -105,10 +109,12 @@ class ModuleLoadContext:
         return self.module_settings
 
     def register_tool_labels(self, labels: Mapping[str, str]) -> None:
-        self._register_tool_labels(labels)
+        """Gerund phrases shown while a tool runs, e.g. ``{"give_kudos": "Giving kudos"}``."""
+        self.label_sink(labels)
 
     def declare_surface_tools(self, surface: str, names: Sequence[str]) -> None:
-        self._declare_surface_tools(surface, names)
+        """Declare which tools belong to a named evaluation surface."""
+        self.surface_sink(surface, names)
 
 
 @dataclass(frozen=True)
@@ -155,8 +161,10 @@ __all__ = [
     "ProposalRef",
     "ProposalService",
     "ProposalState",
+    "RoleSnapshot",
     "ScopedModuleMigration",
     "ServiceDeclaration",
     "ServiceRequirement",
     "TrustTier",
+    "render_guild_settings",
 ]

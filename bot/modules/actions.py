@@ -14,6 +14,7 @@ from kimi_agent_module_api.contracts import (
     MessagePage,
     MessageSnapshot,
     OutgoingEmbed,
+    RoleSnapshot,
     UndeclaredDiscordAction,
 )
 
@@ -139,8 +140,12 @@ class DeclaredDiscordActions:
         self._gate("fetch_public_threads")
         return await self._inner.fetch_public_threads(guild_id, parent_channel_id)
 
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
+        self._gate("fetch_roles")
+        return await self._inner.fetch_roles(guild_id)
+
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
-        self._gate("check_channel_access")
+        self._gate("can_view_channel")
         return await self._inner.can_view_channel(guild_id, user_id, channel_id)
 
 

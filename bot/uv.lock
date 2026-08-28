@@ -293,7 +293,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "aiosqlite" },
+    { name = "kimi-agent-module-api", extra = ["testing"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -302,8 +302,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", marker = "extra == 'dev'" },
     { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
+    { name = "kimi-agent-module-api", extras = ["testing"], marker = "extra == 'dev'", editable = "packages/kimi-agent-module-api" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
@@ -608,8 +608,17 @@ dependencies = [
     { name = "pydantic-settings" },
 ]
 
+[package.optional-dependencies]
+testing = [
+    { name = "aiosqlite" },
+]
+
 [package.metadata]
-requires-dist = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
+requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'testing'" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
+]
+provides-extras = ["testing"]
 
 [[package]]
 name = "librt"

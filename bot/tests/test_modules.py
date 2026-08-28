@@ -647,3 +647,109 @@ def test_tool_registry_is_sealed_even_when_a_later_create_fails(tmp_path: Path) 
 
     with pytest.raises(RuntimeError, match="after module loading"):
         captured[0].registry.register("late", "no", {"type": "object"}, _noop_tool)
+
+
+@pytest.mark.asyncio
+async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path: Path) -> None:
+    seen: list[Any] = []
+
+    async def echo(_arguments: dict[str, Any], ctx: Any) -> str:
+        seen.append(ctx)
+        return "ok"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("echo", "echo", {"type": "object"}, echo, guild_ids=frozenset({7}))
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    base = ModuleRuntimeBase(
+        database=database,
+        bot=object(),
+        is_guild_active=lambda guild_id: guild_id == 7,
+        current_config_dir=lambda: manager.config_dir,
+        capabilities=ModuleCapabilities(frozenset(), False, False),
+        trust=FakeTrust(),
+    )
+    await manager.start(base, customize=fake_ports)
+    try:
+        from tools.registry import MessageContext
+        from trust.tiers import TrustTier as CoreTier
+
+        def ctx(guild: str | None) -> MessageContext:
+            return MessageContext(
+                user_id="12",
+                user_name="u",
+                guild_id=guild,
+                channel_id="34",
+                thread_id="56",
+                trust_tier=CoreTier.REGULAR,
+            )
+
+        assert await registry.dispatch("echo", {}, ctx("7")) == "ok"
+        sdk_ctx = seen[-1]
+        assert (sdk_ctx.user_id, sdk_ctx.guild_id, sdk_ctx.channel_id, sdk_ctx.thread_id) == (
+            12,
+            7,
+            34,
+            56,
+        )
+        assert sdk_ctx.trust_tier.value == "regular"
+        # Scoped to guild 7 at the registry, so 8 is masked as unknown before the handler.
+        assert "Unknown tool" in str(await registry.dispatch("echo", {}, ctx("8")))
+        assert len(seen) == 1
+    finally:
+        await manager.close()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_module_tools_refuse_guilds_where_the_module_is_inactive(tmp_path: Path) -> None:
+    calls = 0
+
+    async def count(_arguments: dict[str, Any], _ctx: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return "ran"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("count", "count", {"type": "object"}, count)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    base = ModuleRuntimeBase(
+        database=database,
+        bot=object(),
+        is_guild_active=lambda guild_id: guild_id == 7,
+        current_config_dir=lambda: manager.config_dir,
+        capabilities=ModuleCapabilities(frozenset(), False, False),
+        trust=FakeTrust(),
+    )
+    await manager.start(base, customize=fake_ports)
+    try:
+        from tools.registry import MessageContext
+        from trust.tiers import TrustTier as CoreTier
+
+        def ctx(guild: str | None) -> MessageContext:
+            return MessageContext(
+                user_id="1",
+                user_name="u",
+                guild_id=guild,
+                channel_id="2",
+                thread_id=None,
+                trust_tier=CoreTier.MEMBER,
+            )
+
+        assert await registry.dispatch("count", {}, ctx("7")) == "ran"
+        assert "not available in this server" in str(await registry.dispatch("count", {}, ctx("8")))
+        # Guild-less callers are the module's decision, not the host's.
+        assert await registry.dispatch("count", {}, ctx(None)) == "ran"
+        assert calls == 2
+    finally:
+        await manager.close()
+        await database.close()

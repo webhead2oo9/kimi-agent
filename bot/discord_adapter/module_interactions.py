@@ -25,6 +25,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from kimi_agent_module_api.contracts import (
+    MessageRef,
     CUSTOM_ID_PREFIX,
     AutocompleteHandler,
     ButtonSpec,
@@ -159,6 +160,20 @@ class ModuleInteractionAdapter:
         data = getattr(self._interaction, "data", None) or {}
         values = data.get("values") if isinstance(data, dict) else None
         return tuple(str(v) for v in values) if values else ()
+
+    @property
+    def message(self) -> MessageRef | None:
+        message = getattr(self._interaction, "message", None)
+        if message is None or self._interaction.guild_id is None:
+            return None
+        channel = getattr(message, "channel", None)
+        parent_id = getattr(channel, "parent_id", None) if channel is not None else None
+        return MessageRef(
+            guild_id=int(self._interaction.guild_id),
+            channel_id=int(getattr(message, "channel_id", None) or self.channel_id),
+            message_id=int(message.id),
+            parent_channel_id=int(parent_id) if parent_id else None,
+        )
 
     def _kwargs(
         self,

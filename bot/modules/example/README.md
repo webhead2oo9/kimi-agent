@@ -50,7 +50,7 @@ example/
 │   ├── module.py                           # KudosModule: start/close and every handler
 │   └── py.typed
 └── tests/
-    ├── conftest.py                         # in-memory storage + a started-module fixture
+    ├── conftest.py                         # a started-module fixture over the SDK fakes
     ├── test_spec.py                        # declarations pass host preflight; create() wiring
     └── test_module.py                      # tools, commands, button, digest, events, service
 ```

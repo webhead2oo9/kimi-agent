@@ -316,6 +316,7 @@ supplied public HTTPS target and sends no stored transcript or memory.
 | Coding LLM provider | The objective, acceptance criteria, bounded conversation context, and workspace files or tool results the worker reads | `CODING_TASKS_ENABLED` + a `roles.coding` model | off |
 | OpenAI moderation (`moderation/backends/openai_omni.py`, driven by `moderation/service.py`; `app/moderation.py` is the factory) | The user's message and the bot's drafted response (text/images) for policy scoring | `MODERATION_ENABLED` + key | off |
 | Persona compiler | A user's raw persona request + display name when they set a persona | a `persona` role in `config/models.yaml` | off |
+| TinyFish internet search | Search queries and filters; for page reading, the requested public URLs | `TINYFISH_API_KEY` | off |
 | Exa internet search | Search queries and filters; for page reading, the requested public URLs | `EXA_API_KEY` | off |
 | Brave internet search | Search queries and filters | `BRAVE_API_KEY` | off |
 | OpenAI image generation | The image prompt, requested output settings, and any selected PNG/JPEG/WebP workspace reference bytes | `IMAGE_GEN_ENABLED` + Codex OAuth or `IMAGE_GEN_API_KEY` | off |

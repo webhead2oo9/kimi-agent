@@ -21,6 +21,7 @@ class FakeBackend:
     search_response: BackendResponse | Exception
     supports_contents: bool = False
     supports_text: bool = False
+    supports_contents_text: bool = False
     calls: int = 0
 
     async def search(self, request: SearchRequest) -> BackendResponse:
@@ -113,3 +114,31 @@ async def test_backend_budget_failure_is_distinct_from_provider_failure() -> Non
             strategy="blend",
             consume_call=exhausted,
         )
+
+
+@pytest.mark.asyncio
+async def test_text_mode_splits_search_and_page_read_eligibility() -> None:
+    # TinyFish's shape: snippets from search, whole pages from fetch.
+    backend = FakeBackend(
+        "tinyfish",
+        _response("tinyfish", "https://example.com/a"),
+        supports_contents=True,
+        supports_text=False,
+        supports_contents_text=True,
+    )
+    chain = SearchChain([backend], timeout_seconds=1)
+
+    with pytest.raises(SearchProviderError, match="No configured search backend"):
+        await chain.search(
+            SearchRequest(query="anything", num_results=5, content_mode="text"),
+            strategy="blend",
+            consume_call=lambda: None,
+        )
+    assert backend.calls == 0
+
+    response = await chain.contents(
+        ContentsRequest(urls=("https://example.com/a",), content_mode="text"),
+        consume_call=lambda: None,
+    )
+    assert backend.calls == 1
+    assert [item.url for item in response.results] == ["https://example.com/a"]

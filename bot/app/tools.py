@@ -27,6 +27,7 @@ from skills.secrets import load_secrets
 from search.brave import BraveSearchBackend
 from search.chain import SearchChain
 from search.exa import ExaSearchBackend
+from search.tinyfish import TinyFishSearchBackend
 from search.types import SearchBackend
 from sandbox.runner import SandboxConfig, SandboxNetworkMode, sandbox_available
 from sandbox.netns_lease import NetnsLease
@@ -310,7 +311,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
         ("discord_text_search",),
         "DISCORD_TEXT_SEARCH_ENABLED + MESSAGE_CONTENT_INTENT",
     ),
-    ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
+    (
+        "internet search",
+        ("internet_search",),
+        "TINYFISH_API_KEY or EXA_API_KEY or BRAVE_API_KEY",
+    ),
     ("Wolfram|Alpha", ("wolfram_alpha",), "WOLFRAM_ALPHA_APP_ID"),
     (
         "image generation",
@@ -383,9 +388,20 @@ def _register_discord_text_search(
 
 
 def _register_internet_search(settings: Settings, registry: ToolRegistry) -> None:
+    tinyfish_key = settings.tinyfish_api_key.get_secret_value()
     exa_key = settings.exa_api_key.get_secret_value()
     brave_key = settings.brave_api_key.get_secret_value()
     backends: list[SearchBackend] = []
+    # TinyFish leads: its search and fetch endpoints are free at any balance.
+    if tinyfish_key:
+        backends.append(
+            TinyFishSearchBackend(
+                tinyfish_key,
+                search_url=settings.tinyfish_search_url,
+                fetch_url=settings.tinyfish_fetch_url,
+                timeout_seconds=settings.internet_search_backend_timeout_seconds,
+            )
+        )
     if exa_key:
         backends.append(
             ExaSearchBackend(
@@ -404,7 +420,9 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
             )
         )
     if not backends:
-        log.info("Internet search disabled; EXA_API_KEY and BRAVE_API_KEY are not set")
+        log.info(
+            "Internet search disabled; TINYFISH_API_KEY, EXA_API_KEY and BRAVE_API_KEY are not set"
+        )
         return
 
     chain = SearchChain(

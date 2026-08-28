@@ -41,13 +41,15 @@ from kimi_agent_module_api import (
     ModuleSetting,
     ModuleSettingsDefinition,
     ModuleSpec,
-    ModuleToolRegistry,
+    ModuleToolContext,
+    ModuleToolHandler,
     ProposalService,
+    TrustTier,
 )
 
 if TYPE_CHECKING:
     from config.settings import Settings
-    from tools.registry import ToolRegistry
+    from tools.registry import MessageContext, ToolRegistry
 
 from modules.actions import DeclaredDiscordActions
 from storage.db import Database
@@ -63,43 +65,121 @@ from modules.tasks import run_bounded
 log = logging.getLogger(__name__)
 
 
+def _snowflake(value: str | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text.isdecimal():
+        raise ValueError(f"module tools require numeric Discord ids, got {value!r}")
+    return int(text)
+
+
 class _LoadTimeToolRegistry:
-    """The ``ModuleToolRegistry`` port, valid only while modules are being created.
+    """Shared state behind every module's ``ModuleToolRegistry`` port.
 
     ``create()`` is the one place a module may register tools. Sealing after
     the load loop turns a stashed registry used from ``start()`` into a clear
     error instead of a tool that silently appears after tool surfaces settled.
+    ``guild_active`` is filled at ``start()`` with each module's activation
+    predicate; the registered handlers consult it on every call.
     """
 
     def __init__(self, registry: ToolRegistry) -> None:
-        self._registry: ModuleToolRegistry = registry
+        self._registry = registry
         self._sealed = False
+        self.guild_active: dict[str, Callable[[int], bool]] = {}
 
     def seal(self) -> None:
         self._sealed = True
 
+    def for_module(self, module_name: str) -> _ModuleToolRegistrar:
+        return _ModuleToolRegistrar(self, module_name)
+
     def register(
         self,
+        module_name: str,
         name: str,
         description: str,
         parameters: dict[str, Any],
-        handler: Any,
-        min_tier: Any = None,
-        searchable: bool = False,
+        handler: ModuleToolHandler,
         *,
-        owner_only: bool = False,
-        guild_ids: frozenset[str] | None = None,
+        min_tier: Any,
+        searchable: bool,
+        owner_only: bool,
+        guild_ids: frozenset[int] | None,
     ) -> None:
         if self._sealed:
             raise RuntimeError(
                 f"tool {name!r} cannot be registered after module loading; "
                 "register tools from ModuleSpec.create(), not start()"
             )
-        kwargs: dict[str, Any] = {"owner_only": owner_only, "guild_ids": guild_ids}
-        if min_tier is not None:
-            kwargs["min_tier"] = min_tier
+        active = self.guild_active
+
+        async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
+            guild_id = _snowflake(ctx.guild_id)
+            predicate = active.get(module_name)
+            if guild_id is not None and predicate is not None and not predicate(guild_id):
+                return "This tool is not available in this server."
+            channel_id = _snowflake(ctx.channel_id)
+            user_id = _snowflake(ctx.user_id)
+            if channel_id is None or user_id is None:
+                raise ValueError("module tools require a user and channel id")
+            return await handler(
+                arguments,
+                ModuleToolContext(
+                    user_id=user_id,
+                    user_name=ctx.user_name,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    thread_id=_snowflake(ctx.thread_id),
+                    trust_tier=ctx.trust_tier,
+                    tool_configs=ctx.tool_configs,
+                ),
+            )
+
         self._registry.register(
-            name, description, parameters, handler, searchable=searchable, **kwargs
+            name,
+            description,
+            parameters,
+            dispatch,
+            min_tier=min_tier,
+            searchable=searchable,
+            owner_only=owner_only,
+            guild_ids=(
+                frozenset(str(guild) for guild in guild_ids) if guild_ids is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleToolRegistrar:
+    """The ``ModuleToolRegistry`` port handed to one module's ``create()``."""
+
+    shared: _LoadTimeToolRegistry
+    module_name: str
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: ModuleToolHandler,
+        *,
+        min_tier: TrustTier = TrustTier.MEMBER,
+        searchable: bool = False,
+        owner_only: bool = False,
+        guild_ids: frozenset[int] | None = None,
+    ) -> None:
+        self.shared.register(
+            self.module_name,
+            name,
+            description,
+            parameters,
+            handler,
+            min_tier=min_tier,
+            searchable=searchable,
+            owner_only=owner_only,
+            guild_ids=guild_ids,
         )
 
 
@@ -328,6 +408,7 @@ class ModuleManager:
     scheduler: DurableScheduler | None = None
     guild_settings: GuildSettingsService | None = None
     http: ModuleHttpRuntime | None = None
+    _tool_registry: _LoadTimeToolRegistry | None = None
     start_timeout_seconds: float = 60.0
     close_timeout_seconds: float = 15.0
     _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
@@ -365,6 +446,7 @@ class ModuleManager:
         disabled = _activation_disabled(specs, capabilities)
         active_specs = tuple(spec for spec in specs if spec.name not in disabled)
         tool_registry = _LoadTimeToolRegistry(registry)
+        manager._tool_registry = tool_registry
         try:
             cls._create_all(
                 manager, active_specs, tool_registry, settings_registry, capabilities, registry
@@ -407,10 +489,10 @@ class ModuleManager:
                     raise ModuleSettingsError(prepared.load_error or "invalid module settings")
                 ctx = ModuleLoadContext(
                     capabilities=capabilities,
-                    registry=tool_registry,
+                    registry=tool_registry.for_module(spec.name),
                     module_settings=prepared.active if prepared is not None else None,
-                    _register_tool_labels=register_tool_labels,
-                    _declare_surface_tools=declare_surface_tools,
+                    label_sink=register_tool_labels,
+                    surface_sink=declare_surface_tools,
                 )
                 settings_values = prepared.active.model_dump() if prepared is not None else None
                 manager._host_rules[spec.name] = resolve_host_rules(
@@ -515,6 +597,10 @@ class ModuleManager:
             if self.guild_settings is None or spec.guild_settings is None:
                 return True
             return self.guild_settings.get(guild_id, spec.name).valid
+
+        if self._tool_registry is not None:
+            # Module tools refuse guilds where the module is inactive, from now on.
+            self._tool_registry.guild_active[spec.name] = is_module_guild_active
 
         return {
             "module_name": spec.name,

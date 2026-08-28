@@ -11,9 +11,9 @@ readme = "README.md"
 dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
 
 [project.optional-dependencies]
-# aiosqlite backs the in-memory storage fake in tests/conftest.py; it is not a
-# runtime dependency because the host owns the real database.
-dev = ["aiosqlite", "mypy", "pytest", "pytest-asyncio", "ruff"]
+# The SDK's ``testing`` extra brings MemoryStorage (real SQL in unit tests);
+# it is not a runtime dependency because the host owns the real database.
+dev = ["kimi-agent-module-api[testing]", "mypy", "pytest", "pytest-asyncio", "ruff"]
 
 # This is the whole discovery contract: the host looks up this group and
 # activates the names listed in KIMI_MODULES.

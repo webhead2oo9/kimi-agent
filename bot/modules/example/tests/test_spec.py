@@ -7,7 +7,6 @@ declaration fails here, before the first bot start.
 from __future__ import annotations
 
 import pytest
-from conftest import RecordingRegistry, load_context
 from kimi_agent_module_api import MODULE_API_VERSION, TrustTier
 from kimi_agent_module_api.contracts import (
     validate_guild_settings_schema,
@@ -17,6 +16,7 @@ from kimi_agent_module_api.contracts import (
     validate_subscription,
 )
 from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE
+from kimi_agent_module_api.testing import load_context
 
 from community_agent_reference_module import SPEC
 from community_agent_reference_module.guild_settings import FIELD_DIGEST_CHANNEL, FIELD_GIVER_TIER
@@ -57,11 +57,11 @@ def test_settings_definition_classifies_every_field() -> None:
 
 
 def test_create_registers_tools_and_labels() -> None:
-    registry = RecordingRegistry()
-    labels: dict[str, str] = {}
+    context, recorder = load_context(KudosSettings())
 
-    module = create(load_context(registry, KudosSettings(), labels))
+    module = create(context)
 
+    registry, labels = recorder.registry, recorder.labels
     assert isinstance(module, KudosModule)
     assert registry.tools[TOOL_GIVE].min_tier is TrustTier.MEMBER
     assert registry.tools[TOOL_GIVE].searchable is False

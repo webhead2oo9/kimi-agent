@@ -13,8 +13,9 @@ implementation, or module loader. It exports:
   (storage, scheduler, events, Discord actions, interactions, HTTP, services,
   trust, proposals, health) plus the validators the host runs at preflight.
 - `kimi_agent_module_api.events`: the normalized `discord.*` event payloads.
-- `kimi_agent_module_api.testing`: a fake for every port so a module can unit
-  test itself with only this package installed.
+- `kimi_agent_module_api.testing`: a fake for every port, `load_context()` for
+  exercising `create()`, and `MemoryStorage` (install the `testing` extra) so a
+  module can unit test itself with only this package installed.
 
 A module exposes a `ModuleSpec` through the `kimi_agent.modules` entry-point
 group:

@@ -72,7 +72,7 @@ async def test_give_tool_records_and_publishes(started: Harness, member_ctx: Too
 
 @pytest.mark.asyncio
 async def test_give_tool_refuses_outside_a_guild(started: Harness) -> None:
-    personal = ToolContext(user_id=str(ALICE), guild_id=None)
+    personal = ToolContext(user_id=ALICE, guild_id=None)
 
     reply = await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "x"}, personal)
 
@@ -112,7 +112,7 @@ async def test_guild_minimum_tier_is_enforced(started: Harness, member_ctx: Tool
     reply = await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "x"}, member_ctx)
     assert "regular members and above" in reply
 
-    regular = ToolContext(user_id=str(ALICE), trust_tier=TrustTier.REGULAR)
+    regular = ToolContext(user_id=ALICE, trust_tier=TrustTier.REGULAR)
     assert (await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "x"}, regular)).startswith(
         "Kudos"
     )
@@ -155,14 +155,14 @@ async def test_daily_limit_holds_under_concurrent_gives(
 async def test_leaderboard_tool_ranks_receivers(started: Harness, member_ctx: ToolContext) -> None:
     await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "a"}, member_ctx)
     await started.tool(TOOL_GIVE, {"user": str(STAFF), "reason": "b"}, member_ctx)
-    bob = ToolContext(user_id=str(BOB))
+    bob = ToolContext(user_id=BOB)
     await started.tool(TOOL_GIVE, {"user": str(STAFF), "reason": "c"}, bob)
 
     board = await started.tool(TOOL_LEADERBOARD, {"days": 7}, member_ctx)
 
     assert board.splitlines()[1:] == [f"1. <@{STAFF}> — 2", f"2. <@{BOB}> — 1"]
     assert "Nobody" in await started.tool(
-        TOOL_LEADERBOARD, {}, ToolContext(user_id="1", guild_id="999")
+        TOOL_LEADERBOARD, {}, ToolContext(user_id=1, guild_id=999)
     )
 
 

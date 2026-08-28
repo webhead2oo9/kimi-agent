@@ -32,6 +32,7 @@ from kimi_agent_module_api import (
     ProposalError,
     ScopedModuleMigration,
     TrustTier,
+    render_guild_settings,
 )
 from kimi_agent_module_api.contracts import (
     ButtonSpec,
@@ -288,7 +289,8 @@ class KudosModule:
     async def tool_give(self, arguments: dict[str, Any], tool_ctx: ModuleToolContext) -> str:
         """``give_kudos``: the model gives kudos on behalf of the person talking to it."""
         # ``guild_id`` is None in DMs and in personal chat. Kudos belong to a
-        # guild, so a guild-less caller is refused.
+        # guild, so a guild-less caller is refused. (The host has already
+        # refused guilds where this module is inactive.)
         if tool_ctx.guild_id is None:
             return "Kudos can only be given inside a server."
         receiver_id = _parse_user_id(arguments.get("user"))
@@ -296,8 +298,8 @@ class KudosModule:
             return "Provide the recipient as a numeric Discord user id or an @mention."
         try:
             kudos = await self._give(
-                int(tool_ctx.guild_id),
-                int(tool_ctx.user_id),
+                tool_ctx.guild_id,
+                tool_ctx.user_id,
                 receiver_id,
                 str(arguments.get("reason") or ""),
                 giver_tier=tool_ctx.trust_tier.value,
@@ -310,12 +312,12 @@ class KudosModule:
         """``kudos_leaderboard``: a read-only view the model can quote."""
         if tool_ctx.guild_id is None:
             return "The kudos leaderboard is only available inside a server."
-        # Tools are registered deployment-wide, so a guild where this module is
-        # disabled (or its settings document is invalid) must be refused here.
-        if not self._enabled_in(int(tool_ctx.guild_id)):
+        # The host refuses inactive guilds before the handler; this covers the
+        # module's own guild document being invalid.
+        if not self._enabled_in(tool_ctx.guild_id):
             return "Kudos are not enabled in this server."
         days = _clamp_days(arguments.get("days"))
-        entries = await self._leaderboard(int(tool_ctx.guild_id), days)
+        entries = await self._leaderboard(tool_ctx.guild_id, days)
         if not entries:
             return f"Nobody has received kudos in the last {days} day(s)."
         lines = [f"{rank}. <@{e.user_id}> — {e.count}" for rank, e in enumerate(entries, 1)]
@@ -386,7 +388,7 @@ class KudosModule:
             snapshot = await ctx.proposals.snapshot(target, actor=actor)
             ref = await ctx.proposals.propose(
                 target=target,
-                content=_render_guild_document(proposed),
+                content=render_guild_settings(proposed),
                 summary=f"Post the kudos digest in <#{proposed[FIELD_DIGEST_CHANNEL]}>",
                 actor=actor,
                 # Refuse to clobber an edit made between the snapshot and the proposal.
@@ -579,17 +581,6 @@ def _clamp_days(raw: Any, *, default: int = 30) -> int:
     except TypeError, ValueError:
         return default
     return min(max(days, 1), 365)
-
-
-def _render_guild_document(values: dict[str, Any]) -> str:
-    """Frontmatter-only document in the shape the host stores under ``guild-modules/``."""
-    lines = ["---"]
-    for key in sorted(values):
-        value = values[key]
-        rendered = str(value).lower() if isinstance(value, bool) else str(value)
-        lines.append(f"{key}: {rendered}")
-    lines.append("---")
-    return "\n".join(lines) + "\n"
 
 
 __all__ = [

@@ -25,7 +25,7 @@ def _tool_context(user_id: str, guild_id: str | None = str(GUILD)) -> MessageCon
         user_id=user_id,
         user_name="Ada",
         guild_id=guild_id,
-        channel_id="channel-1",
+        channel_id="5150",  # module tools receive ids as ints, so they must be numeric
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
         # kudos_leaderboard is searchable: hidden until browse_tools activates it.

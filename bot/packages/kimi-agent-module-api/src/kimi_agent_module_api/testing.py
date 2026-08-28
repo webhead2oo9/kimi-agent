@@ -9,12 +9,18 @@ that composes real core services lives in core's ``modules.testing``.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import fnmatch
 import hashlib
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, overload
+
+from pydantic_settings import BaseSettings
+
+from kimi_agent_module_api.trust import TrustTier
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
@@ -35,18 +41,28 @@ from kimi_agent_module_api.contracts import (
     MessagePage,
     MessageRef,
     MessageSnapshot,
+    MigrationContext,
+    ModuleContractError,
     ModuleHealth,
     OutgoingEmbed,
     ProposalActor,
     ProposalError,
     ProposalRef,
     ProposalState,
+    RoleSnapshot,
+    ScopedModuleMigration,
     ServiceUnavailable,
     TrustTierName,
     UndeclaredDiscordAction,
     build_custom_id,
     validate_publish_topic,
 )
+from kimi_agent_module_api.tools import ModuleToolHandler
+
+if True:  # imported after the contracts to keep the package root import acyclic
+    from kimi_agent_module_api import ModuleCapabilities, ModuleLoadContext
+
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True)
@@ -363,6 +379,7 @@ class FakeDiscordActions:
         self.histories: dict[tuple[int, int], list[MessageSnapshot]] = {}
         self.pins: dict[tuple[int, int], tuple[MessageSnapshot, ...]] = {}
         self.public_threads: dict[tuple[int, int], tuple[ChannelSnapshot, ...]] = {}
+        self.roles: dict[int, tuple[RoleSnapshot, ...]] = {}
         self.channel_access: dict[tuple[int, int, int], bool] = {}
         self._next_message_id = 1000
 
@@ -507,8 +524,12 @@ class FakeDiscordActions:
         self._record("fetch_public_threads", guild_id, parent_channel_id)
         return self.public_threads.get((guild_id, parent_channel_id), ())
 
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
+        self._record("fetch_roles", guild_id)
+        return self.roles.get(guild_id, ())
+
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
-        self._record("check_channel_access", guild_id, user_id, channel_id)
+        self._record("can_view_channel", guild_id, user_id, channel_id)
         return self.channel_access.get((guild_id, user_id, channel_id), False)
 
 
@@ -532,7 +553,9 @@ class FakeInteraction:
         custom_id: str | None = None,
         values: Sequence[str] = (),
         guild_name: str | None = "Test Guild",
+        message: MessageRef | None = None,
     ) -> None:
+        self._message = message
         self._guild_name = guild_name
         self._guild_id = guild_id
         self._channel_id = channel_id
@@ -570,6 +593,10 @@ class FakeInteraction:
     @property
     def values(self) -> tuple[str, ...]:
         return self._values
+
+    @property
+    def message(self) -> MessageRef | None:
+        return self._message
 
     async def respond(
         self,
@@ -747,11 +774,20 @@ class FakeServiceRegistry:
         self.provided[key] = implementation
         return _Closable(lambda: self.provided.pop(key, None))
 
-    def get(self, name: str, version: int) -> object:
+    @overload
+    def get(self, name: str, version: int) -> object: ...
+
+    @overload
+    def get(self, name: str, version: int, type_: type[_T]) -> _T: ...
+
+    def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
         try:
-            return self.provided[(name, version)]
+            implementation = self.provided[(name, version)]
         except KeyError as exc:
             raise ServiceUnavailable(f"service {name}@{version} is not provided") from exc
+        if type_ is not None and not isinstance(implementation, type_):
+            raise TypeError(f"service {name}@{version} is not a {type_.__name__}")
+        return implementation
 
 
 class FakeTrust:
@@ -770,7 +806,7 @@ class FakeTrust:
 
 @dataclass(slots=True)
 class FakeStorageTables:
-    """Only the naming half of ``ModuleStorage``; real SQL needs the core harness."""
+    """Only the naming half of ``ModuleStorage``; ``MemoryStorage`` runs real SQL."""
 
     module_name: str
     used: set[str] = field(default_factory=set)
@@ -778,6 +814,128 @@ class FakeStorageTables:
     def table(self, name: str) -> str:
         self.used.add(name)
         return f"{self.module_name.replace('-', '_')}_{name}"
+
+
+class MemoryStorage:
+    """``ModuleStorage`` over one in-memory SQLite connection.
+
+    Requires the ``testing`` extra (``kimi-agent-module-api[testing]``), which
+    brings ``aiosqlite``. Mirrors the host's guarantees: ``table()`` returns
+    the quoted ``"<module>_<name>"``, reads go through ``connection``, and
+    ``write_transaction()`` serializes writers, commits on success, and rolls
+    back on error. Use ``migrate()`` to apply a module's ``scoped_migrations``.
+
+    Typical use::
+
+        async with MemoryStorage.open("my_module") as storage:
+            await storage.migrate(MyModule.scoped_migrations)
+            ...
+    """
+
+    def __init__(self, connection: Any, module_name: str) -> None:
+        self._connection = connection
+        self._prefix = module_name.replace("-", "_")
+        self._write_lock = asyncio.Lock()
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def open(cls, module_name: str) -> AsyncIterator[MemoryStorage]:
+        import aiosqlite  # optional dependency: the ``testing`` extra
+
+        async with aiosqlite.connect(":memory:") as connection:
+            yield cls(connection, module_name)
+
+    @property
+    def connection(self) -> Any:
+        return self._connection
+
+    def table(self, name: str) -> str:
+        if not name.isidentifier():
+            raise ModuleContractError(f"bad table name {name!r}")
+        return f'"{self._prefix}_{name}"'
+
+    @contextlib.asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[Any]:
+        async with self._write_lock:
+            try:
+                yield self._connection
+            except BaseException:
+                await self._connection.rollback()
+                raise
+            await self._connection.commit()
+
+    def write_transaction(self) -> Any:
+        return self._transaction()
+
+    async def migrate(self, migrations: Sequence[ScopedModuleMigration]) -> None:
+        for _name, migration in migrations:
+            await migration(MigrationContext(connection=self._connection, table=self.table))
+        await self._connection.commit()
+
+
+@dataclass(slots=True)
+class RecordedTool:
+    description: str
+    parameters: dict[str, Any]
+    handler: ModuleToolHandler
+    min_tier: TrustTier
+    searchable: bool
+    owner_only: bool
+    guild_ids: frozenset[int] | None
+
+
+class RecordingToolRegistry:
+    """Satisfies ``ModuleToolRegistry`` and remembers every registration."""
+
+    def __init__(self) -> None:
+        self.tools: dict[str, RecordedTool] = {}
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: ModuleToolHandler,
+        *,
+        min_tier: TrustTier = TrustTier.MEMBER,
+        searchable: bool = False,
+        owner_only: bool = False,
+        guild_ids: frozenset[int] | None = None,
+    ) -> None:
+        self.tools[name] = RecordedTool(
+            description, parameters, handler, min_tier, searchable, owner_only, guild_ids
+        )
+
+
+@dataclass(slots=True)
+class LoadContextRecorder:
+    """What a ``load_context`` captured from ``create()``."""
+
+    registry: RecordingToolRegistry
+    labels: dict[str, str]
+    surfaces: dict[str, tuple[str, ...]]
+
+
+def load_context(
+    settings: BaseSettings | None,
+    *,
+    capabilities: ModuleCapabilities | None = None,
+    registry: RecordingToolRegistry | None = None,
+) -> tuple[ModuleLoadContext, LoadContextRecorder]:
+    """Build a ``ModuleLoadContext`` for calling ``ModuleSpec.create`` in a test."""
+    recorder = LoadContextRecorder(registry or RecordingToolRegistry(), {}, {})
+
+    def declare(surface: str, names: Sequence[str]) -> None:
+        recorder.surfaces[surface] = tuple(names)
+
+    context = ModuleLoadContext(
+        capabilities=capabilities or ModuleCapabilities(frozenset({"proposals.v2"}), False, False),
+        registry=recorder.registry,
+        module_settings=settings,
+        label_sink=recorder.labels.update,
+        surface_sink=declare,
+    )
+    return context, recorder
 
 
 __all__ = [
@@ -795,5 +953,10 @@ __all__ = [
     "FakeServiceRegistry",
     "FakeStorageTables",
     "FakeTrust",
+    "LoadContextRecorder",
+    "MemoryStorage",
     "ProposedChange",
+    "RecordedTool",
+    "RecordingToolRegistry",
+    "load_context",
 ]

@@ -26,8 +26,9 @@ guild installations, and permissions stay intact.
 - **Invocation-gated chat.** Replies to an @mention, a pinged reply, a
   `hey/hi <bot name>` / `<bot name> help` text invocation, or an unmentioned
   message in an auto-responding managed thread. Paused managed threads use the
-  ordinary invocation rules. Ordinary DMs are ignored unless personal chat DMs are enabled, and conversations stay
-  rooted in SQLite so replies continue the same transcript across restarts.
+  ordinary invocation rules. Ordinary DMs are ignored by default; operators can
+  let approved users continue their personal chat there. Conversations stay
+  rooted in SQLite, so replies continue the same transcript across restarts.
 - **User-installed personal chat (optional).** Explicitly approved Discord user
   IDs can carry `/chat` across locations with one private personal transcript
   and workspace. It is off by default. See

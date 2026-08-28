@@ -60,7 +60,7 @@ def test_load_guild_blocked_tools_missing_or_invalid_is_empty(tmp_path: Path) ->
     assert load_guild_blocked_tools("100", config_dir=tmp_path) == frozenset()
 
 
-def test_guild_blocked_tools_retain_last_good_across_reload_failures_then_clear(
+def test_guild_blocked_tools_retain_invalid_reload_but_missing_or_omitted_clears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_guild(tmp_path, "101", "---\nblocked_tools: [dangerous_tool]\n---\n")
@@ -71,16 +71,6 @@ def test_guild_blocked_tools_retain_last_good_across_reload_failures_then_clear(
     path.write_text("---\nblocked_tools: not_a_list\n---\n", encoding="utf-8")
     assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
 
-    path.unlink()
-    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
-
-    path.write_text("", encoding="utf-8")
-    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
-
-    path.write_text("body only\n", encoding="utf-8")
-    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
-
-    path.write_text("---\nblocked_tools: []\n---\n", encoding="utf-8")
     original_read_text = Path.read_text
 
     def unreadable(self: Path, *args: Any, **kwargs: Any) -> str:
@@ -92,6 +82,15 @@ def test_guild_blocked_tools_retain_last_good_across_reload_failures_then_clear(
         patch.setattr(Path, "read_text", unreadable)
         assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
 
+    path.unlink()
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == frozenset()
+
+    path.write_text("", encoding="utf-8")
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == frozenset()
+
+    _write_guild(tmp_path, "101", "---\nblocked_tools: [dangerous_tool]\n---\n")
+    assert load_guild_blocked_tools("101", config_dir=tmp_path) == expected
+    path.write_text("body only\n", encoding="utf-8")
     assert load_guild_blocked_tools("101", config_dir=tmp_path) == frozenset()
     assert load_guild_blocked_tools("", config_dir=tmp_path) == frozenset()
     assert load_guild_blocked_tools("../100", config_dir=tmp_path) == frozenset()

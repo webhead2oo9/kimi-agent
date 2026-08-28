@@ -800,8 +800,6 @@ def _changed_files_payload(
             "size_bytes": item["size_bytes"],
             "queued": queued,
         }
-        if queued:
-            entry["already_queued"] = True
         payload.append(entry)
     return payload
 

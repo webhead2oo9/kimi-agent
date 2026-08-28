@@ -972,7 +972,7 @@ async def test_run_code_preserves_previously_queued_changed_file(
     assert body["changed_file_count"] == 2
     by_path = {item["path"]: item for item in body["changed_files"]}
     assert by_path["existing.txt"]["queued"] is True
-    assert by_path["existing.txt"]["already_queued"] is True
+    assert "already_queued" not in by_path["existing.txt"]
     assert by_path["new.txt"]["queued"] is False
     assert body["attached_files"] == ["existing.txt"]
     assert "queue_file" in body["attachment_hint"]

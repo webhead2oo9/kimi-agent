@@ -197,6 +197,24 @@ tools:
         assert "```yaml" in skill.content
 
 
+def test_create_allows_body_starting_with_thematic_break() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Path(tmp)
+        content = "---\nThis starts with a Markdown thematic break.\n"
+
+        err = manager.create_skill(
+            "thematic-break",
+            description="A valid Markdown body",
+            content=content,
+            skills_dir=store,
+        )
+
+        assert err is None
+        skill = load_skill("thematic-break", skills_dir=store)
+        assert skill is not None
+        assert content.rstrip() in skill.content
+
+
 def test_create_skill_with_guild_id_scopes_to_that_guild() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = Path(tmp)

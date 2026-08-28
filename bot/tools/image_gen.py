@@ -34,6 +34,7 @@ from tools.workspace.common import (
 from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, normalize_usage
+from utils.asyncio import await_uncancellable
 from workspace import WorkspaceKey, WorkspaceManager
 
 TOOL_NAME = "generate_image"
@@ -174,6 +175,7 @@ def init_image_gen_tool(
                     workspace_config,
                     ctx.workspace_key,
                     result.image_base64,
+                    result.image_bytes,
                     on_cancelled_result=_remove_cancelled_output,
                 )
                 enqueue_workspace_file(
@@ -326,17 +328,8 @@ async def _record_image_usage(
 
     task: asyncio.Future[None] = asyncio.ensure_future(ctx.record_usage_call(call))
     try:
-        await asyncio.shield(task)
+        await await_uncancellable(task)
     except asyncio.CancelledError:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-        try:
-            task.result()
-        except Exception:
-            log.warning("image generation usage recording failed", exc_info=True)
         raise
     except Exception:
         log.warning("image generation usage recording failed", exc_info=True)
@@ -427,11 +420,15 @@ def _write_output(
     workspace_config: WorkspaceToolConfig,
     workspace_key: WorkspaceKey,
     image_base64: str,
+    image_bytes: bytes | None,
 ) -> tuple[Path, str, int]:
-    try:
-        raw = base64.b64decode(image_base64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("generated image is not valid base64") from exc
+    raw = image_bytes
+    if raw is None:
+        # Test doubles and alternate services may not return verified bytes.
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("generated image is not valid base64") from exc
     relative_path = f"generated_images/image-{uuid4().hex}.png"
     destination = workspace_manager.resolve_user_file_path(workspace_key, relative_path)
     ensure_quota(

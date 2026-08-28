@@ -1955,6 +1955,32 @@ async def test_cancel_all_cancels_each_task_only_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_all_bounds_non_cancellable_cleanup_wait() -> None:
+    registry = ActiveOperationRegistry()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cleanup() -> None:
+        async with registry.register(
+            user_id="u1",
+            root_key="r1",
+            channel_id="c1",
+            cancel_on_stop=False,
+        ):
+            entered.set()
+            await release.wait()
+
+    task = asyncio.create_task(cleanup())
+    await entered.wait()
+
+    assert await registry.cancel_all(wait_seconds=0.01) is False
+    assert task.done() is False
+
+    release.set()
+    await task
+
+
+@pytest.mark.asyncio
 async def test_stop_tracks_detached_child_until_it_really_exits() -> None:
     registry = ActiveOperationRegistry()
     child_entered = asyncio.Event()

@@ -521,6 +521,27 @@ async def test_service_verifies_png_and_rejects_other_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_service_returns_verified_bytes_for_workspace_write() -> None:
+    png = PNG_SIGNATURE + b"verified"
+
+    class PngBackend:
+        name = "stub"
+
+        def available(self) -> bool:
+            return True
+
+        async def generate(self, request: ImageGenRequest) -> ImageResult:
+            return ImageResult(image_base64=base64.b64encode(png).decode())
+
+        async def edit(self, request: ImageEditRequest) -> ImageResult:
+            raise AssertionError("unused")
+
+    result = await ImageGenService(PngBackend()).generate(_request())
+
+    assert result.image_bytes == png
+
+
+@pytest.mark.asyncio
 async def test_service_rejects_oversized_images() -> None:
     huge = PNG_SIGNATURE + b"0" * (DEFAULT_MAX_IMAGE_BYTES + 1)
 

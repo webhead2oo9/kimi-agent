@@ -40,6 +40,10 @@ def validate_name(name: str) -> str | None:
 def validate_skill_content(content: str) -> str | None:
     """Reject body content that looks like misplaced executable-tool metadata."""
     frontmatter, _body = parse_skill_document(content)
+    # Manager input is nested beneath manager-owned frontmatter. An unmatched
+    # leading thematic break is ordinary Markdown body in the saved document.
+    if frontmatter is None:
+        frontmatter = {}
     if not isinstance(frontmatter, dict):
         return "Skill frontmatter must be a YAML object"
     if any(key in frontmatter for key in _TOOL_METADATA_KEYS):

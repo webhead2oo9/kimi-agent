@@ -47,7 +47,7 @@ TOOL_POLICY_FILENAME = "tools.md"
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _MAX_BLOCKED_TOOLS = 64
 
-_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
+_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache()
 
 
 class ToolPolicyLoadError(RuntimeError):
@@ -57,6 +57,7 @@ class ToolPolicyLoadError(RuntimeError):
 _policy_cache_key = LastKnownGoodCache.key
 _remember_policy = _cache.remember
 _last_policy = _cache.last_good
+_forget_policy = _cache.forget
 
 
 def _parse_policy(text: str) -> frozenset[str] | None:
@@ -107,21 +108,17 @@ def global_tool_policy_path(config_dir: Path | None = None) -> Path:
 def load_global_blocked_tools(*, config_dir: Path | None = None) -> frozenset[str]:
     """Read the deployment-wide denylist, retaining it across failed reloads.
 
-    A missing file with no cached value is an empty optional policy. Once a
-    valid policy has loaded, missing, empty, omitted, unreadable, or invalid
-    input retains that path's last-known-good value. A valid
-    ``blocked_tools: []`` explicitly clears the denylist. If a failed present file has no cached value,
-    :class:`ToolPolicyLoadError` stops the caller rather than silently granting
-    tools.
+    Missing files and omitted keys are valid empty policies and clear an earlier
+    value. Malformed or unreadable files retain the last-known-good policy; if
+    none exists, :class:`ToolPolicyLoadError` stops the caller.
     """
     fragment = global_tool_policy_path(config_dir)
     key = _policy_cache_key(fragment)
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        if _last_policy(key) is None:
-            return frozenset()
-        return _retain_or_raise(fragment, key, exc)
+    except FileNotFoundError:
+        _forget_policy(key)
+        return frozenset()
     except (OSError, UnicodeError) as exc:
         return _retain_or_raise(fragment, key, exc)
 
@@ -130,9 +127,7 @@ def load_global_blocked_tools(*, config_dir: Path | None = None) -> frozenset[st
     except ValueError as exc:
         return _retain_or_raise(fragment, key, exc)
     if blocked is None:
-        if _last_policy(key) is None:
-            return frozenset()
-        return _retain_or_raise(fragment, key, ValueError("blocked_tools is absent"))
+        blocked = frozenset()
     _remember_policy(key, blocked)
     return blocked
 

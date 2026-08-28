@@ -126,7 +126,7 @@ def test_load_blocked_tools_invalid_first_value_fails_closed(tmp_path: Path) -> 
         load_channel_blocked_tools("101", config_dir=tmp_path)
 
 
-def test_load_blocked_tools_retains_last_good_across_reload_failures_then_clears(
+def test_load_blocked_tools_retains_invalid_reload_but_missing_or_omitted_clears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_fragment(tmp_path, "102", "---\nblocked_tools: [dangerous_tool]\n---\nbody\n")
@@ -137,16 +137,6 @@ def test_load_blocked_tools_retains_last_good_across_reload_failures_then_clears
     _write_fragment(tmp_path, "102", "---\nblocked_tools: not_a_list\n---\nbody\n")
     assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
 
-    path.unlink()
-    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
-
-    path.write_text("", encoding="utf-8")
-    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
-
-    path.write_text("body only\n", encoding="utf-8")
-    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
-
-    path.write_text("---\nblocked_tools: []\n---\n", encoding="utf-8")
     original_read_text = Path.read_text
 
     def unreadable(self: Path, *args: Any, **kwargs: Any) -> str:
@@ -158,6 +148,15 @@ def test_load_blocked_tools_retains_last_good_across_reload_failures_then_clears
         patch.setattr(Path, "read_text", unreadable)
         assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
 
+    path.unlink()
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == frozenset()
+
+    path.write_text("", encoding="utf-8")
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == frozenset()
+
+    _write_fragment(tmp_path, "102", "---\nblocked_tools: [dangerous_tool]\n---\nbody\n")
+    assert load_channel_blocked_tools("102", config_dir=tmp_path) == expected
+    path.write_text("body only\n", encoding="utf-8")
     assert load_channel_blocked_tools("102", config_dir=tmp_path) == frozenset()
 
 

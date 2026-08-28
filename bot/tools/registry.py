@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 
 import asyncio
 import concurrent.futures
@@ -461,7 +460,7 @@ class ToolRegistry:
         entry = self._core_tools.get(name) or self._search_tools.get(name)
         if entry is None:
             raise KeyError(name)
-        replaced = dataclasses.replace(entry, handler=handler)
+        replaced = replace(entry, handler=handler)
         if entry.searchable:
             self._search_tools[name] = replaced
         else:

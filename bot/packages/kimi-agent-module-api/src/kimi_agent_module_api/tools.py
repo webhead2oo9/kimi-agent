@@ -17,13 +17,14 @@ class ModuleToolContext:
     ``guild_id`` is ``None`` only for a tool registered with
     ``guild_only=False`` and called from a DM or personal chat; the host hides
     guild-only tools there. When ``guild_id`` is set, the host has already
-    confirmed the module is active in that guild.
+    confirmed the module is active in that guild. ``channel_id`` is ``None``
+    in personal chat, which is a slash interaction rather than a channel.
     """
 
     user_id: int
     user_name: str
     guild_id: int | None
-    channel_id: int
+    channel_id: int | None
     thread_id: int | None
     trust_tier: TrustTier
     # Operator per-tool configuration from ``<CONFIG_DIR>/tools/<tool>.md``.

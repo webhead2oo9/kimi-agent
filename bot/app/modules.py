@@ -48,6 +48,8 @@ from kimi_agent_module_api import (
     TrustTier,
 )
 
+from tools.registry import USER_APP_SCOPE_CHANNEL_ID
+
 if TYPE_CHECKING:
     from config.settings import Settings
     from tools.registry import MessageContext, ToolRegistry
@@ -132,10 +134,13 @@ class _LoadTimeToolRegistry:
 
         async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
             guild_id = _snowflake(ctx.guild_id)
-            channel_id = _snowflake(ctx.channel_id)
+            # Personal chat is a slash interaction with no channel of its own.
+            channel_id = (
+                None if ctx.channel_id == USER_APP_SCOPE_CHANNEL_ID else _snowflake(ctx.channel_id)
+            )
             user_id = _snowflake(ctx.user_id)
-            if channel_id is None or user_id is None:
-                raise ValueError("module tools require a user and channel id")
+            if user_id is None:
+                raise ValueError("module tools require a user id")
             return await handler(
                 arguments,
                 ModuleToolContext(
@@ -687,6 +692,18 @@ class ModuleManager:
             self.health.set_constraint(spec.name, "services", "healthy")
         if current is None or current.state == "starting":
             self.health.set(spec.name, "healthy")
+
+    def bind_tool_availability(self, predicate: Callable[[int], bool]) -> None:
+        """Expose every loaded module's tools under one guild predicate without ``start()``.
+
+        For harnesses that load modules but never start them (the eval runner
+        stubs module tools instead). ``start()`` binds each module's own
+        activation predicate; this replaces that binding for all loaded modules.
+        """
+        if self._tool_registry is None:
+            return
+        for spec in self._specs:
+            self._tool_registry.guild_active[spec.name] = predicate
 
     def host_rules(self, name: str) -> tuple[ResolvedHostRule, ...]:
         return self._host_rules.get(name, ())

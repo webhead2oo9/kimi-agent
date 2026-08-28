@@ -544,3 +544,8 @@ def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
     with pytest.raises(ServiceUnavailable):
         old.answer()
     assert registry.get("s", 1, Board).answer() == 1
+    # A second live provider is refused, as in the host.
+    from kimi_agent_module_api.contracts import ModuleContractError
+
+    with pytest.raises(ModuleContractError):
+        registry.provide("s", 1, Board())

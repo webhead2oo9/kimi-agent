@@ -797,6 +797,10 @@ class FakeServiceRegistry:
 
     def provide(self, name: str, version: int, implementation: object) -> _Closable:
         key = (name, version)
+        live = self._records.get(key)
+        if live is not None and live.alive:
+            # The host refuses a second live provider for the same service.
+            raise ModuleContractError(f"service {name}@{version} is already provided")
         record = _FakeProvided(implementation)
         self.provided[key] = implementation
         self._records[key] = record

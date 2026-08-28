@@ -856,3 +856,57 @@ async def test_module_tools_are_hidden_for_a_non_snowflake_guild_id(tmp_path: Pa
         await database.close()
     # Closed module: its tools go with it.
     assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
+
+
+@pytest.mark.asyncio
+async def test_bind_tool_availability_exposes_tools_without_start(tmp_path: Path) -> None:
+    async def noop(_arguments: dict[str, Any], _ctx: Any) -> str:
+        return "ran"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("t", "t", {"type": "object"}, noop)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    from trust.tiers import TrustTier as CoreTier
+
+    assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
+    manager.bind_tool_availability(lambda _guild_id: True)
+    assert [t.name for t in registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")] == ["t"]
+
+
+@pytest.mark.asyncio
+async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None:
+    seen: list[Any] = []
+
+    async def echo(_arguments: dict[str, Any], ctx: Any) -> str:
+        seen.append(ctx)
+        return "ok"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("echo", "echo", {"type": "object"}, echo, guild_only=False)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    await manager.start(_base(database, manager), customize=fake_ports)
+    try:
+        from tools.registry import USER_APP_SCOPE_CHANNEL_ID, MessageContext
+        from trust.tiers import TrustTier as CoreTier
+
+        ctx = MessageContext(
+            user_id="12",
+            user_name="u",
+            guild_id=None,
+            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+            thread_id=None,
+            trust_tier=CoreTier.MEMBER,
+        )
+        assert await registry.dispatch("echo", {}, ctx) == "ok"
+        assert seen[-1].channel_id is None and seen[-1].guild_id is None
+    finally:
+        await manager.close()
+        await database.close()

@@ -337,9 +337,10 @@ class DurableScheduler:
                     self._paused_reported.pop(marker, None)
                 elif marker in self._paused_reported:
                     # The orphan detail must name a job that still exists.
-                    self._paused_reported[marker] = (
-                        f"scheduled job {str(survivor['job_key'])!r} has no handler"
-                    )
+                    detail = f"scheduled job {str(survivor['job_key'])!r} has no handler"
+                    self._paused_reported[marker] = detail
+                    if self._on_health is not None and not self._foreign_paused:
+                        self._on_health(module_name, "degraded", detail)
         if removed:
             self._clear_paused_health_if_recovered(module_name)
         return removed
@@ -654,6 +655,10 @@ class DurableScheduler:
         interval = max(0.05, self._lease_seconds * HEARTBEAT_FRACTION)
         while True:
             await asyncio.sleep(interval)
+            if self._closed:
+                # A handler that ignored cancellation may still own this task;
+                # after close() the leases must be allowed to expire.
+                return
             until = self._clock() + self._lease_seconds
             async with self._database.write_transaction() as conn:
                 await conn.execute(

@@ -263,6 +263,9 @@ def make_turn_dependencies(
     async def _collect_turn_images(*_args: Any, **_kwargs: Any) -> TurnImages:
         return TurnImages(vision_parts=[], edit_target=None)
 
+    async def _resolve_discord_references(*_args: Any, **_kwargs: Any) -> tuple[()]:
+        return ()
+
     async def _persist_prepared_user_message(*_args: Any, **_kwargs: Any) -> None:
         return None
 
@@ -299,6 +302,7 @@ def make_turn_dependencies(
         "channel_pinned_tools": frozenset,
         "blocked_tools": frozenset,
         "tool_configs": dict,
+        "resolve_discord_references": _resolve_discord_references,
         "collect_turn_images": _collect_turn_images,
         "collect_reply_context": _collect_reply_context,
         "collect_turn_attachments": lambda _message: [],

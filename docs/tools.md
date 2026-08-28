@@ -76,6 +76,17 @@ permission-checked positive channel scope for every call. Omitting its channel
 filter searches all eligible channels; an explicit CSV of channel IDs narrows it.
 See [configuration](configuration.md#discord-text-search-gated).
 
+Normal guild messages also receive automatic, ephemeral context for up to five
+same-guild Discord message links, channel links, `<#channel>` mentions, and
+cache-known bare channel IDs in the invoking text. Each resolved item is labeled
+`[Automated hint: ...]`; linked message text is explicitly untrusted data and is
+not copied into the persisted transcript. Channel metadata requires both the
+requester and bot to have `View Channel`; linked message text additionally
+requires `Read Message History`. Private-thread membership and
+`DISCORD_SEARCH_EXCLUDED_CHANNELS` apply. Personal chat and DMs do not resolve
+guild references, and bare message IDs are not supported because they carry no
+channel ID.
+
 `internet_search` returns compact, untrusted results and never tells the model
 which provider answered. A search that found nothing says so in as many words,
 so the model can tell an empty web from a broken provider. See

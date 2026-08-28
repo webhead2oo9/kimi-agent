@@ -21,9 +21,10 @@ Two facts frame everything below:
   auto-responding managed thread. Paused managed threads use ordinary invocation
   rules. An enabled personal DM needs no extra trigger: sending the message is
   the invocation. Other channel chatter is not persisted as conversation
-  history. Three live, non-transcript exceptions are documented below: the
-  context tools, opt-in known-bad image fingerprint enforcement, and the
-  optional staff moderation event feed.
+  history. Four live, non-transcript exceptions are documented below: the
+  context tools, automatic resolution of Discord references in an invoked
+  message, opt-in known-bad image fingerprint enforcement, and the optional
+  staff moderation event feed.
 
 ## What the bot stores, and where
 
@@ -353,19 +354,29 @@ the staff proposer id, summary, bounded configuration preview, and any decision
 and decider id. Those cards are Discord messages, not rows in the local
 transcript, and `/privacy` does not remove them.
 
-### Channel context from other members
+### Channel context and linked messages from other members
 
 Consent gates a user's own directed interactions; it is not a guarantee that no
 text any member ever wrote reaches the provider. When a consented user's turn
 calls `get_channel_context` (recent channel history) or `discord_text_search`
-(operator-configured channels), public-channel messages from other members are
-forwarded to the provider as transient, untrusted context. That is intended:
-the text is already visible to everyone in the channel, and retrieval alone
-does not persist it to the transcript or personal memory. It can show up in a
-non-metadata diagnostic event when content logging is enabled, and staff can
-separately teach derived content into community memory or a shared skill.
-Consent records only exist for users who have interacted with the bot, so
-filtering bystander messages by consent would not be meaningful.
+(operator-configured channels), messages from other members in channels both
+the requester and bot can read are forwarded to the provider as transient,
+untrusted context. The same is true when an invoked guild message contains a
+same-guild Discord message link: Kimi may
+fetch that exact message and add a bounded `[Automated hint: ...]` to the active
+turn. Both requester and bot must be able to view the channel and read its
+history; private-thread membership and operator search exclusions also apply.
+Channel links, `<#channel>` mentions, and cache-known bare channel IDs add only
+permission-checked names and visible parent/category metadata. Personal chat
+does not resolve guild references.
+
+That retrieval is intended: the text is already visible to the requesting user
+and the bot, and retrieval alone does not persist it to the transcript or
+personal memory. It can show up in a non-metadata diagnostic event when content
+logging is enabled, and staff can separately teach derived content into
+community memory or a shared skill. Consent records only exist for users who
+have interacted with the bot, so filtering bystander messages by consent would
+not be meaningful.
 
 ## Operator and staff access
 

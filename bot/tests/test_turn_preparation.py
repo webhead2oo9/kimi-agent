@@ -8,6 +8,7 @@ import pytest
 
 from agent.attachments import AttachmentRef, TurnImages
 from agent.context import ConversationContext
+from agent.discord_references import DiscordReferenceHint
 from agent.reply_context import ReplyContext
 from agent.turn import (
     TurnDependencies,
@@ -165,6 +166,7 @@ def _dependencies(
     channel_pinned_tools: Any | None = None,
     blocked_tools: Any | None = None,
     tool_configs: Any | None = None,
+    resolve_discord_references: Any | None = None,
     chat_provider_resolver: Any | None = None,
 ) -> tuple[TurnDependencies, FakeContextManager]:
     manager = FakeContextManager(context or ConversationContext(key="guild:100:main"))
@@ -177,6 +179,7 @@ def _dependencies(
         "channel_pinned_tools": channel_pinned_tools,
         "blocked_tools": blocked_tools,
         "tool_configs": tool_configs,
+        "resolve_discord_references": resolve_discord_references,
     }
     dependencies = make_turn_dependencies(
         context_manager=manager,
@@ -195,6 +198,29 @@ def _dependencies(
         **{key: value for key, value in optional.items() if value is not None},
     )
     return dependencies, manager
+
+
+@pytest.mark.asyncio
+async def test_prepare_turn_resolves_discord_hints_without_changing_user_content() -> None:
+    hint = DiscordReferenceHint(
+        source="channel_mention",
+        channel_id="222",
+        channel_name="support",
+    )
+    seen: list[str] = []
+
+    async def resolve(content: str) -> tuple[DiscordReferenceHint, ...]:
+        seen.append(content)
+        return (hint,)
+
+    dependencies, _manager = _dependencies(resolve_discord_references=resolve)
+
+    prepared = await prepare_turn(_input(), dependencies=dependencies, config=_config())
+
+    assert prepared is not None
+    assert prepared.content == "hello"
+    assert prepared.discord_reference_hints == (hint,)
+    assert seen == ["hello"]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Kimi privacy policy
 
-_Last updated: 2026-08-27_
+_Last updated: 2026-08-29_
 
 > **Deployment template:** Before publishing this policy, the operator must
 > verify that its enabled services, retention periods, moderation features, and
@@ -46,7 +46,11 @@ While it works on something you asked for, Kimi may read recent messages from
 the current channel or search other channels that you and the bot can both read,
 except channels the operator excluded. That gives the AI useful context, but it
 does not turn those messages into Kimi conversation history just because they
-were retrieved.
+were retrieved. If your invoked message contains a Discord message link, Kimi
+may also read that exact linked message when it is in this server and both you
+and the bot can access it. Channel links, channel mentions, and recognized
+channel IDs may be translated into channel, thread, parent, and category names.
+These automatic hints are temporary context, not transcript copies.
 
 **Kimi ignores ordinary direct messages by default.** An operator can enable
 personal DMs for approved users. When enabled for you, a DM joins the same
@@ -87,12 +91,14 @@ Depending on the features a server enables, Kimi handles:
   and answers are not duplicated into local session tables.
 - **Images in enrolled safety channels**: supported images are read briefly for
   the local comparison described above. The scanner does not keep them.
-- **Public messages in channels Kimi can read**: when someone asks Kimi
+- **Messages in channels Kimi can read**: when someone asks Kimi
   something, it may pull recent messages from that channel, or from channels
-  the operator has configured for search. That can include messages you wrote
-  that were never addressed to Kimi. They go to the AI provider as context for
-  that one reply, and are not saved to Kimi's transcript or personal memory
-  merely because they were retrieved.
+  the operator has configured for search. It may also retrieve an exact message
+  linked in an invoked message after checking the requesting user and bot can
+  read it. That can include messages you wrote that were never addressed to
+  Kimi. They go to the AI provider as context for that one reply, and are not
+  saved to Kimi's transcript or personal memory merely because they were
+  retrieved.
 - **Messages staff teach to Kimi**: staff can deliberately turn a public
   message into shared community knowledge or a reusable shared skill. The
   quoted message is sent to the AI provider for that task. What Kimi learns may
@@ -201,7 +207,7 @@ the configured services and tools needed to answer you.
 - **Diagnostic logs: size-limited.** If diagnostic logging is on, technical
   logs live in rotating files that discard the oldest file as they fill. The
   default mode records metadata only, though operators can choose modes that
-  also record message and response text, public-channel context, and tool
+  also record message and response text, retrieved channel context, and tool
   inputs and results. `/privacy` does not edit these files.
 - **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting
   records (which contain no message text) are kept for cost tracking and are

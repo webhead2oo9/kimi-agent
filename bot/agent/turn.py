@@ -35,6 +35,10 @@ from agent.attachments import (
     message_has_image_attachment,
 )
 from agent.context import ConversationContext
+from agent.discord_references import (
+    ResolvedDiscordReferenceHint,
+    discord_reference_hints_text,
+)
 from agent.core import (
     ConversationTerminationReason,
     ConversationRunRequest,
@@ -216,6 +220,10 @@ class CollectTurnImages(Protocol):
     ) -> TurnImages: ...
 
 
+class ResolveDiscordReferences(Protocol):
+    async def __call__(self, content: str) -> tuple[ResolvedDiscordReferenceHint, ...]: ...
+
+
 class CollectReplyContext(Protocol):
     async def __call__(
         self,
@@ -382,6 +390,7 @@ class TurnRequest:
     personal_skills_index: str = ""
     user_persona: str = ""
     is_new_user: bool = False
+    discord_reference_hints: tuple[ResolvedDiscordReferenceHint, ...] = ()
     input_parts: tuple[ContentPart, ...] = ()
     edit_target_image: ContentPart | None = None
     attachments: tuple[AttachmentRef, ...] = ()
@@ -454,6 +463,7 @@ class TurnDependencies:
     channel_pinned_tools: ChannelPinnedTools
     blocked_tools: BlockedTools
     tool_configs: ToolConfigs
+    resolve_discord_references: ResolveDiscordReferences
     collect_turn_images: CollectTurnImages
     collect_reply_context: CollectReplyContext
     collect_turn_attachments: CollectTurnAttachments
@@ -684,6 +694,12 @@ async def prepare_turn(
 
     _raise_if_turn_deadline_expired(deadline)
 
+    discord_reference_hints = await _resolve_discord_references_for_turn(
+        content,
+        dependencies,
+        deadline=deadline,
+    )
+
     collect_turn_images = dependencies.collect_turn_images
 
     history_messages = ctx.get_history()
@@ -764,6 +780,7 @@ async def prepare_turn(
             skills_index=skills_index,
             personal_skills_index=personal_skills_index,
             user_persona=user_persona,
+            discord_reference_hints=discord_reference_hints,
             input_parts=tuple(turn_images.vision_parts),
             edit_target_image=turn_images.edit_target,
             attachments=tuple(turn_attachments),
@@ -779,6 +796,26 @@ async def prepare_turn(
         if turn_images is not None:
             await _cleanup_moderation_paths(turn_images.cleanup_paths)
         raise
+
+
+async def _resolve_discord_references_for_turn(
+    content: str,
+    dependencies: TurnDependencies,
+    *,
+    deadline: float | None,
+) -> tuple[ResolvedDiscordReferenceHint, ...]:
+    try:
+        return await _await_with_deadline(
+            dependencies.resolve_discord_references(content),
+            deadline,
+        )
+    except ConversationTurnTimeoutError:
+        raise
+    except Exception:
+        log.warning(
+            "Discord reference hint resolution failed; continuing without hints", exc_info=True
+        )
+        return ()
 
 
 async def _is_new_user_for_turn(
@@ -1076,6 +1113,7 @@ async def execute_turn(
                     edit_target_image=turn.edit_target_image,
                     attachments=list(turn.attachments),
                     reply_context=turn.reply_context,
+                    discord_reference_hints=turn.discord_reference_hints,
                     provider_state={},
                     compactor=run_dependencies.compactor,
                     activity_reporter=activity_reporter,
@@ -1896,7 +1934,8 @@ def _join_moderation_text(*chunks: str) -> str:
 
 def _input_moderation_text(turn: TurnRequest) -> str:
     reply_text = turn.reply_context.text if turn.reply_context is not None else ""
-    return _join_moderation_text(turn.content, reply_text)
+    reference_text = discord_reference_hints_text(turn.discord_reference_hints)
+    return _join_moderation_text(turn.content, reply_text, reference_text)
 
 
 def _input_moderation_images(turn: TurnRequest) -> list[ContentPart]:

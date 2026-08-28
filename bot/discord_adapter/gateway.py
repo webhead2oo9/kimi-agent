@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from agent.backfill import BackfilledMessage, collect_channel_context
+from agent.discord_references import ResolvedDiscordReferenceHint
+from discord_adapter.reference_hints import resolve_discord_reference_hints
 from discord_adapter.io import (
     AttachmentDeliveryPlan,
     prepare_attachment_delivery,
@@ -184,6 +186,21 @@ class DiscordGateway:
             content=str(getattr(source, "content", "") or ""),
             author_id=str(getattr(author, "id", "") or ""),
             is_bot=bool(getattr(author, "bot", False)),
+        )
+
+    async def resolve_reference_hints(
+        self,
+        source_message: object,
+        content: str,
+        *,
+        excluded_channel_ids: frozenset[str],
+    ) -> tuple[ResolvedDiscordReferenceHint, ...]:
+        """Resolve automatic hints without exposing inaccessible Discord metadata."""
+
+        return await resolve_discord_reference_hints(
+            source_message,
+            content,
+            excluded_channel_ids=excluded_channel_ids,
         )
 
     async def resolve_discord_search_channels(

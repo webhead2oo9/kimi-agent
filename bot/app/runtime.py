@@ -1081,6 +1081,7 @@ class KimiApplication:
                 self.bot,
                 run_chat=self._handle_user_app_chat_interaction,
                 reset_chat=self._handle_user_app_chat_reset,
+                bot_name=self.settings.bot_name,
             )
         module_manager = self.tools.module_manager
         module_manager.health.on_change = lambda name, health: emit_module_health(

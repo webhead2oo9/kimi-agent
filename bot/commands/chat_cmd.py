@@ -11,6 +11,11 @@ ChatCallback = Callable[
     [discord.Interaction, str, discord.Attachment | None, bool], Awaitable[None]
 ]
 ResetCallback = Callable[[discord.Interaction], Awaitable[str]]
+MAX_COMMAND_DESCRIPTION_LENGTH = 100
+
+
+def _chat_description(bot_name: str) -> str:
+    return f"Chat with {bot_name}"[:MAX_COMMAND_DESCRIPTION_LENGTH]
 
 
 def register_user_app_chat_commands(
@@ -18,10 +23,11 @@ def register_user_app_chat_commands(
     *,
     run_chat: ChatCallback,
     reset_chat: ResetCallback,
+    bot_name: str,
 ) -> None:
     """Register the explicitly user-installed personal chat surface."""
 
-    @app_commands.command(name="chat", description="Chat privately with your personal assistant")
+    @app_commands.command(name="chat", description=_chat_description(bot_name))
     @app_commands.describe(
         message="What you want to say",
         attachment="Optional image or file to include",

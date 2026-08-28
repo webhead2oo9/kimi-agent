@@ -7,6 +7,7 @@ from typing import Any
 import aiohttp
 
 from search.types import HttpResponse, SearchProviderError
+from utils.http import read_bounded_body
 
 _TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 _MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -55,7 +56,7 @@ async def post_json(
 
 async def _response_json(response: aiohttp.ClientResponse) -> dict[str, Any]:
     try:
-        raw = await _read_bounded_body(response, _MAX_JSON_RESPONSE_BYTES)
+        raw = await read_bounded_body(response, _MAX_JSON_RESPONSE_BYTES)
         data = json.loads(raw)
         _validate_json_structure(data)
     except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
@@ -63,23 +64,6 @@ async def _response_json(response: aiohttp.ClientResponse) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise SearchProviderError("Search provider returned an invalid response shape.")
     return data
-
-
-async def _read_bounded_body(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
-    declared = response.headers.get("Content-Length")
-    if declared is not None:
-        try:
-            if int(declared) > max_bytes:
-                raise ValueError("response body exceeds byte cap")
-        except ValueError as exc:
-            raise ValueError("invalid or oversized response body") from exc
-
-    body = bytearray()
-    async for chunk in response.content.iter_chunked(min(65_536, max_bytes + 1)):
-        if len(chunk) > max_bytes - len(body):
-            raise ValueError("response body exceeds byte cap")
-        body.extend(chunk)
-    return bytes(body)
 
 
 def _validate_json_structure(value: object) -> None:

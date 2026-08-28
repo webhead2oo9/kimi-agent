@@ -6,7 +6,7 @@ tags: [code, repository, execution, build, git, delegation]
 
 # Coding work
 
-Choose the smallest execution path that can finish the user's actual task. The
+Choose the smallest execution path that can finish the user's actual task.
 The visible tools are the ones available in this conversation. If `run_code` or
 the durable coding controls are missing, say they are unavailable here. That
 does not prove the whole deployment lacks them, so do not guess why they are

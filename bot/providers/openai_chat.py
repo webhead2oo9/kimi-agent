@@ -122,6 +122,23 @@ class _StreamAccumulator:
             )
         return calls
 
+    def tool_calls_complete(self) -> bool:
+        if not self.tool_call_parts:
+            return False
+        for slot in self.tool_call_parts.values():
+            if not slot["name"]:
+                return False
+            raw_arguments = slot["arguments"]
+            if not raw_arguments:
+                continue
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                return False
+            if not isinstance(arguments, dict):
+                return False
+        return True
+
     def idle_seconds(self) -> float:
         return time.monotonic() - self.last_event_at
 
@@ -293,16 +310,29 @@ class OpenAIChatProvider(LLMProvider):
         if fallback_error is not None:
             return await self._non_streaming_fallback(kwargs, fallback_error)
         if acc.finish_reason is None:
-            log.warning("stream ended without a terminal finish reason: %s", acc.summary())
-            raise ProviderAvailabilityError(
-                "provider stream ended without a terminal finish reason"
+            if acc.tool_call_parts:
+                if acc.tool_calls_complete():
+                    acc.finish_reason = "tool_calls"
+                else:
+                    log.warning("stream ended with an incomplete tool call: %s", acc.summary())
+                    raise ProviderAvailabilityError(
+                        "provider stream ended with an incomplete tool call"
+                    )
+            elif acc.content():
+                acc.finish_reason = "stop"
+            else:
+                log.warning("stream ended without a complete response: %s", acc.summary())
+                raise ProviderAvailabilityError("provider stream ended without a complete response")
+            log.debug(
+                "stream ended without a terminal finish reason; inferred %s", acc.finish_reason
             )
+        tool_calls = acc.tool_calls()
         log.info("stream complete: %s", acc.summary())
         raise_for_terminal_finish_reason(acc.finish_reason)
         provider_response = ProviderResponse(
             content=acc.content(),
             reasoning_content=acc.reasoning(),
-            tool_calls=acc.tool_calls(),
+            tool_calls=tool_calls,
             finish_reason=acc.finish_reason,
             usage=self._usage_dict(acc.usage),
             usage_present=acc.usage is not None,

@@ -12,6 +12,8 @@ from urllib.parse import quote, urlsplit
 
 import aiohttp
 
+from utils.http import read_bounded_body
+
 log = logging.getLogger(__name__)
 
 _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/interactions"
@@ -708,7 +710,11 @@ async def _chunk_stream(
 
 async def _read_json_object(response: aiohttp.ClientResponse) -> dict[str, Any]:
     try:
-        raw = await _read_bounded_body(response, _MAX_JSON_RESPONSE_BYTES)
+        raw = await read_bounded_body(
+            response,
+            _MAX_JSON_RESPONSE_BYTES,
+            error=_ResponseBodyLimitError,
+        )
         data = json.loads(raw)
         _validate_json_structure(data)
     except (
@@ -724,27 +730,13 @@ async def _read_json_object(response: aiohttp.ClientResponse) -> dict[str, Any]:
     return data
 
 
-async def _read_bounded_body(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
-    declared = response.headers.get("Content-Length")
-    if declared is not None:
-        try:
-            declared_size = int(declared)
-        except ValueError as exc:
-            raise _ResponseBodyLimitError("invalid Content-Length") from exc
-        if declared_size < 0 or declared_size > max_bytes:
-            raise _ResponseBodyLimitError("response body exceeds byte cap")
-
-    body = bytearray()
-    async for chunk in response.content.iter_chunked(min(65_536, max_bytes + 1)):
-        if len(chunk) > max_bytes - len(body):
-            raise _ResponseBodyLimitError("response body exceeds byte cap")
-        body.extend(chunk)
-    return bytes(body)
-
-
 async def _drain_response(response: aiohttp.ClientResponse) -> None:
     try:
-        await _read_bounded_body(response, _MAX_ERROR_RESPONSE_BYTES)
+        await read_bounded_body(
+            response,
+            _MAX_ERROR_RESPONSE_BYTES,
+            error=_ResponseBodyLimitError,
+        )
     except _ResponseBodyLimitError:
         response.close()
 

@@ -38,7 +38,7 @@ def _worker_context(*, background: bool = True, conversation_id: int | None = 0)
 
 
 class _FakeControls:
-    def __init__(self, *, status: str = "succeeded", cancelled: bool = True) -> None:
+    def __init__(self, *, status: str | None = "succeeded", cancelled: bool = True) -> None:
         self.status = status
         self.cancelled = cancelled
         self.next_job = 1
@@ -51,6 +51,8 @@ class _FakeControls:
     async def job_status(
         self, task_id: str, job_id: str, wait_seconds: float
     ) -> dict[str, object] | None:
+        if self.status is None:
+            return None
         return {"job_id": job_id, "status": self.status}
 
     async def cancel_job(self, task_id: str, job_id: str) -> bool:
@@ -84,6 +86,32 @@ async def test_netns_jobs_toggle_networked_exec_inflight() -> None:
 
     controls.status = "failed"
     await _call(registry, "coding_job_status", {"job_id": "job-1", "wait_seconds": 0}, ctx)
+    assert ctx.networked_exec_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_unsafe_job_keeps_networked_exec_inflight() -> None:
+    controls = _FakeControls(status="unsafe")
+    registry = _registry(controls, netns_jobs=True)
+    ctx = _worker_context()
+
+    await _call(registry, "coding_job_start", {"path": "scripts/test.sh"}, ctx)
+    await _call(registry, "coding_job_status", {"job_id": "job-1", "wait_seconds": 0}, ctx)
+
+    assert ctx.networked_exec_job_ids == {"job-1"}
+    assert ctx.networked_exec_inflight is True
+
+
+@pytest.mark.asyncio
+async def test_missing_job_clears_stale_networked_exec_state() -> None:
+    registry = _registry(_FakeControls(status=None), netns_jobs=True)
+    ctx = _worker_context()
+
+    await _call(registry, "coding_job_start", {"path": "scripts/test.sh"}, ctx)
+    result = await _call(registry, "coding_job_status", {"job_id": "job-1", "wait_seconds": 0}, ctx)
+
+    assert "error" in result
+    assert ctx.networked_exec_job_ids == set()
     assert ctx.networked_exec_inflight is False
 
 
@@ -229,6 +257,43 @@ async def test_netns_job_yields_the_browser_then_acquires(tmp_path: Path) -> Non
         assert lease.locked() is True
 
     assert yielded == ["u1"]
+    assert lease.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_netns_job_cancellation_during_release_does_not_leak_lease(
+    tmp_path: Path,
+) -> None:
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+
+    class SlowReleaseLease(NetnsLease):
+        async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+            release_started.set()
+            await finish_release.wait()
+            return await super().__aexit__(exc_type, exc_value, traceback)
+
+    lease = SlowReleaseLease()
+    guards = CodeExecRuntimeGuards.create(
+        max_concurrency=1,
+        network_weekly_limit=0,
+        netns_lease=lease,
+    )
+    manager = _manager(tmp_path, guards, "netns")
+
+    async def run() -> None:
+        async with manager._run_lease("u1"):
+            pass
+
+    task = asyncio.create_task(run())
+    await release_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert lease.locked() is True
+
+    finish_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     assert lease.locked() is False
 
 

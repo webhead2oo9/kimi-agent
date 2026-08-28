@@ -26,6 +26,7 @@ from storage.usage import UsageStore
 from tools.code_exec import CodeExecRuntimeGuards
 from tools.workspace import UserLocks
 from trust.tiers import TrustTier
+from utils.asyncio import await_uncancellable
 from workspace import WorkspaceKey, WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -193,16 +194,13 @@ class CodingJobManager:
                 "code; retry this coding job later."
             ) from None
         # Already acquired: re-enter so __aexit__ handles release and poisoning.
-        lease_released = False
         try:
             yield
         except BaseException as exc:
-            lease_released = True
-            await lease.__aexit__(type(exc), exc, exc.__traceback__)
+            await await_uncancellable(lease.__aexit__(type(exc), exc, exc.__traceback__))
             raise
-        finally:
-            if not lease_released:
-                await lease.__aexit__(None, None, None)
+        else:
+            await await_uncancellable(lease.__aexit__(None, None, None))
 
     def workspace_activity(self, workspace_key: str) -> AbstractAsyncContextManager[None]:
         return self._workspace_locks.writer(WorkspaceKey(workspace_key))

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import logging
+from dataclasses import replace
 
 from image_gen.backends import ImageBackend
 from image_gen.types import (
@@ -46,16 +47,14 @@ class ImageGenService:
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.generate(request)
-        self._verify(result)
-        return result
+        return replace(result, image_bytes=self._verify(result))
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.edit(request)
-        self._verify(result)
-        return result
+        return replace(result, image_bytes=self._verify(result))
 
-    def _verify(self, result: ImageResult) -> None:
+    def _verify(self, result: ImageResult) -> bytes:
         """Rejects bodies that are not decodable PNG data within the size cap.
 
         Provider responses are untrusted bytes: a body that is not a PNG would
@@ -70,3 +69,4 @@ class ImageGenService:
             raise ImageGenError(f"generated image exceeds the {self._max_image_bytes} byte cap")
         if not raw.startswith(PNG_SIGNATURE):
             raise ImageGenError("image API returned data that is not a PNG image")
+        return raw

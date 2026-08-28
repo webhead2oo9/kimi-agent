@@ -100,6 +100,53 @@ def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.KimiApplicat
 
 
 @pytest.mark.asyncio
+async def test_gateway_resume_restores_admission_after_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    app.gateway_ready = True
+
+    await app.on_disconnect()
+    assert app.gateway_ready is False
+
+    await app.on_resumed()
+    assert app.gateway_ready is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_resume_does_not_restore_failed_or_closed_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed = _build_test_app(monkeypatch)
+    failed.db_initialized = True
+    failed._startup_error = RuntimeError("startup failed")
+    await failed.on_resumed()
+    assert failed.gateway_ready is False
+
+    closed = _build_test_app(monkeypatch)
+    closed.db_initialized = True
+    closed._closed = True
+    await closed.on_resumed()
+    assert closed.gateway_ready is False
+
+
+@pytest.mark.asyncio
+async def test_ready_preamble_error_restores_initialized_admission_and_unregisters_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    monkeypatch.setattr(app, "_log_ready_state", MagicMock(side_effect=RuntimeError("log failed")))
+
+    with pytest.raises(RuntimeError, match="log failed"):
+        await app.on_ready()
+
+    assert app.gateway_ready is True
+    assert app._ready_event_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_component_interaction_readiness_closes_before_resource_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -161,12 +208,11 @@ async def test_ready_does_not_initialize_after_close_has_started(
 
 
 @pytest.mark.asyncio
-async def test_close_waits_for_ready_initialization_then_prevents_reentry(
+async def test_close_cancels_ready_initialization_then_prevents_reentry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
     initialize_started = asyncio.Event()
-    release_initialize = asyncio.Event()
     close_started = asyncio.Event()
     events: list[str] = []
     initialize_calls = 0
@@ -176,9 +222,8 @@ async def test_close_waits_for_ready_initialization_then_prevents_reentry(
         initialize_calls += 1
         events.append("ready-start")
         initialize_started.set()
-        await release_initialize.wait()
-        events.append("ready-finish")
-        return True
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled READY initialization must not continue")
 
     async def close_resources() -> None:
         events.append("close")
@@ -192,16 +237,13 @@ async def test_close_waits_for_ready_initialization_then_prevents_reentry(
     ready = asyncio.create_task(app.on_ready())
     await initialize_started.wait()
     closing = asyncio.create_task(app.close())
-    await asyncio.sleep(0)
-
-    assert close_started.is_set() is False
-    assert app._closed is False
-
-    release_initialize.set()
-    await asyncio.gather(ready, closing)
+    await asyncio.wait_for(closing, timeout=0.5)
+    with pytest.raises(asyncio.CancelledError):
+        await ready
     await app.on_ready()
 
-    assert events == ["ready-start", "ready-finish", "close"]
+    assert close_started.is_set() is True
+    assert events == ["ready-start", "close"]
     assert initialize_calls == 1
     assert app._closed is True
 
@@ -233,6 +275,33 @@ async def test_concurrent_close_waits_for_the_single_teardown(
     await asyncio.gather(first, second)
 
     assert close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_cancellation_waits_for_owned_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocked_close_resources() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
+
+    closing = asyncio.create_task(app.close())
+    await close_started.wait()
+    closing.cancel()
+    await asyncio.sleep(0)
+    assert closing.done() is False
+
+    release_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert app._close_complete.is_set()
+    await app.close()
 
 
 @pytest.mark.asyncio
@@ -508,7 +577,6 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
     app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
     app.workspace_sweeper_started = False
     sweep_started = asyncio.Event()
-    release_sweep = asyncio.Event()
 
     async def fake_sync(*, guild: object | None = None) -> list[object]:
         assert guild is None
@@ -522,8 +590,8 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
     ) -> int:
         del store, max_age_seconds, max_files
         sweep_started.set()
-        await release_sweep.wait()
-        return 0
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled startup sweep must not continue")
 
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
@@ -532,13 +600,82 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
     ready_task = asyncio.get_running_loop().create_task(app.on_ready())
     await sweep_started.wait()
     closing = asyncio.create_task(app.close())
-    await asyncio.sleep(0)
-    assert closing.done() is False
-    release_sweep.set()
-    await asyncio.gather(ready_task, closing)
+    await asyncio.wait_for(closing, timeout=0.5)
+    with pytest.raises(asyncio.CancelledError):
+        await ready_task
 
     assert app._workspace_sweeper_task is None
     assert app._attachment_sweeper_task is None
+
+
+@pytest.mark.asyncio
+async def test_close_bounds_ready_task_that_ignores_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    initialize_started = asyncio.Event()
+    release_initialize = asyncio.Event()
+
+    async def stubborn_initialize() -> bool:
+        initialize_started.set()
+        while not release_initialize.is_set():
+            try:
+                await release_initialize.wait()
+            except asyncio.CancelledError:
+                continue
+        return True
+
+    monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
+    monkeypatch.setattr(app, "_initialize_ready_locked", stubborn_initialize)
+    monkeypatch.setattr(app, "_close_resources", AsyncMock())
+
+    ready = asyncio.create_task(app.on_ready())
+    await initialize_started.wait()
+
+    await asyncio.wait_for(app.close(), timeout=0.5)
+    assert app._closed is True
+
+    release_initialize.set()
+    await ready
+
+
+@pytest.mark.asyncio
+async def test_stubborn_startup_sweep_cannot_install_tasks_after_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
+    sweep_started = asyncio.Event()
+    release_sweep = asyncio.Event()
+    start_background = MagicMock()
+
+    async def stubborn_sweep(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        sweep_started.set()
+        while not release_sweep.is_set():
+            try:
+                await release_sweep.wait()
+            except asyncio.CancelledError:
+                continue
+        return 0
+
+    monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
+    monkeypatch.setattr(app_runtime, "sweep_attachment_orphans_once", stubborn_sweep)
+    monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app, "_close_resources", AsyncMock())
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", start_background)
+
+    ready = asyncio.create_task(app.on_ready())
+    await sweep_started.wait()
+    await asyncio.wait_for(app.close(), timeout=0.5)
+
+    release_sweep.set()
+    await ready
+
+    assert app._workspace_sweeper_task is None
+    assert app._attachment_sweeper_task is None
+    start_background.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -748,7 +885,7 @@ async def test_application_close_drains_active_message_before_resources(
 
 
 @pytest.mark.asyncio
-async def test_bot_close_drains_application_before_discord_disconnect(
+async def test_bot_close_disconnects_discord_before_draining_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
@@ -765,7 +902,7 @@ async def test_bot_close_drains_application_before_discord_disconnect(
 
     await app.bot.close()
 
-    assert events == ["application", "discord"]
+    assert events == ["discord", "application"]
 
 
 @pytest.mark.asyncio
@@ -995,6 +1132,52 @@ async def test_global_command_sync_failure_does_not_block_local_startup(
     # Reaching the end of on_ready is the assertion: execution passed the
     # sync try/except and ran the remaining READY work to completion.
     await app.on_ready()
+
+
+@pytest.mark.asyncio
+async def test_transport_error_during_command_sync_does_not_mute_initialized_bot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    app.workspace_sweeper_started = True
+    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(side_effect=OSError("offline")))
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+
+    await app.on_ready()
+
+    assert app.gateway_ready is True
+
+
+@pytest.mark.asyncio
+async def test_attachment_sweep_error_does_not_mute_or_block_background_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    created: list[Any] = []
+
+    def create_task(coro: Any) -> object:
+        created.append(coro)
+        coro.close()
+        return object()
+
+    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        app_runtime,
+        "sweep_attachment_orphans_once",
+        AsyncMock(side_effect=OSError("disk unavailable")),
+    )
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+
+    await app.on_ready()
+
+    assert app.gateway_ready is True
+    assert app.workspace_sweeper_started is True
+    assert len(created) == 2
 
 
 @pytest.mark.asyncio

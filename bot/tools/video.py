@@ -16,6 +16,7 @@ from tools.config_spec import KIND_CHOICE, KIND_INT, ToolConfigField
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
+from utils.asyncio import await_uncancellable
 from utils.video_types import video_media_type
 from workspace import ENV_DIR_NAMES, WorkspaceKey, WorkspaceManager
 from usage.normalization import LLMUsageCall, UsageBreakdown
@@ -505,13 +506,7 @@ async def _record_usage(
 
 
 async def _finish_after_cancellation(operation: Awaitable[None]) -> None:
-    task = asyncio.ensure_future(operation)
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    task.result()
+    await await_uncancellable(operation)
 
 
 async def _record_result_usage(

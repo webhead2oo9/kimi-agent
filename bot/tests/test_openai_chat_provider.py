@@ -7,11 +7,7 @@ import httpx2
 import pytest
 from openai import BadRequestError
 
-from providers.errors import (
-    ProviderAvailabilityError,
-    ProviderPolicyError,
-    is_provider_availability_error,
-)
+from providers.errors import ProviderAvailabilityError, ProviderPolicyError
 from providers.openai_chat import OpenAIChatProvider
 from providers.openai_compat import OpenAICompatProvider
 from providers.types import (
@@ -466,20 +462,20 @@ def test_openai_compat_streams_text_content() -> None:
     assert response.tool_calls == []
 
 
-def test_openai_compat_clean_eof_discards_partial_text() -> None:
+def test_openai_compat_clean_eof_defaults_text_stream_to_stop() -> None:
     provider = _streaming_provider(
         FakeStreamingCompletions(
             [_delta_chunk(content="partial output must not escape", tool_calls=None)]
         )
     )
 
-    with pytest.raises(ProviderAvailabilityError) as exc_info:
-        _run_streaming(provider)
+    response = _run_streaming(provider)
 
-    assert is_provider_availability_error(exc_info.value)
+    assert response.content == "partial output must not escape"
+    assert response.finish_reason == "stop"
 
 
-def test_openai_compat_clean_eof_discards_partial_tool_call() -> None:
+def test_openai_compat_clean_eof_infers_tool_call_finish_reason() -> None:
     provider = _streaming_provider(
         FakeStreamingCompletions(
             [
@@ -491,7 +487,7 @@ def test_openai_compat_clean_eof_discards_partial_tool_call() -> None:
                             id="call_1",
                             function=SimpleNamespace(
                                 name="lookup",
-                                arguments='{"q":',
+                                arguments='{"q":"vr"}',
                             ),
                         )
                     ],
@@ -500,10 +496,47 @@ def test_openai_compat_clean_eof_discards_partial_tool_call() -> None:
         )
     )
 
-    with pytest.raises(ProviderAvailabilityError) as exc_info:
-        _run_streaming(provider)
+    response = _run_streaming(provider)
 
-    assert is_provider_availability_error(exc_info.value)
+    assert response.finish_reason == "tool_calls"
+    assert response.tool_calls[0].name == "lookup"
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    (
+        [],
+        [
+            _delta_chunk(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        id="call_1",
+                        function=SimpleNamespace(name="lookup", arguments='{"q":'),
+                    )
+                ],
+            )
+        ],
+        [
+            _delta_chunk(
+                content="I will call a tool",
+                tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        id="call_1",
+                        function=SimpleNamespace(name="lookup", arguments='{"q":'),
+                    )
+                ],
+            )
+        ],
+    ),
+)
+def test_openai_compat_clean_eof_rejects_empty_or_incomplete_stream(chunks: list[Any]) -> None:
+    provider = _streaming_provider(FakeStreamingCompletions(chunks))
+
+    with pytest.raises(ProviderAvailabilityError):
+        _run_streaming(provider)
 
 
 def test_openai_chat_native_content_filter_discards_partial_output() -> None:

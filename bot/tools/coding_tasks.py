@@ -55,7 +55,7 @@ CODING_WORKER_TOOLS = frozenset(
 CODING_WORKER_ALWAYS_VISIBLE_TOOLS = frozenset({"extract_archive", "extract_document_text"})
 
 # Job statuses after which the worker's job no longer occupies the sandbox.
-_ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+_ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "unsafe"})
 
 
 class CodingTaskControls(Protocol):
@@ -421,6 +421,9 @@ def build_coding_registry(
             return tool_error("wait_seconds must be a number")
         result = await controls.job_status(current_task_id, job_id, wait_seconds)
         if result is None:
+            if netns_jobs:
+                ctx.networked_exec_job_ids.discard(job_id)
+                ctx.networked_exec_inflight = bool(ctx.networked_exec_job_ids)
             return tool_error("Coding job not found")
         if netns_jobs and str(result.get("status", "")) not in _ACTIVE_JOB_STATUSES:
             ctx.networked_exec_job_ids.discard(job_id)

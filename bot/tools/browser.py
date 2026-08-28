@@ -22,6 +22,7 @@ from tools.output_queue import AttachmentLimitError, enqueue_output_file
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks, workspace_activity
 from trust.tiers import TrustTier
+from utils.asyncio import await_uncancellable
 from utils.image_types import sniff_image_media_type
 from web_browser.service import BrowserService, BrowserServiceError
 from workspace import WorkspaceManager
@@ -164,12 +165,8 @@ async def _acquire_rooted_turn(
         # caller cancellation arrives. Drain it to ensure no unfinalized rooted
         # turn remains active, even if the caller is cancelled repeatedly.
         cleanup = asyncio.create_task(cancel_acquisition())
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                continue
-        await cleanup
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_uncancellable(cleanup)
         raise cancellation
     finally:
         finalization.cancel()

@@ -483,12 +483,14 @@ async def test_cancelled_completed_write_removes_only_its_generated_file(
         workspace_config: WorkspaceToolConfig,
         workspace_key: WorkspaceKey,
         image_base64: str,
+        image_bytes: bytes | None,
     ) -> tuple[Path, str, int]:
         result = write_output(
             workspace_manager,
             workspace_config,
             workspace_key,
             image_base64,
+            image_bytes,
         )
         generated.append(result[0])
         started.set()
@@ -530,6 +532,7 @@ def test_output_temp_file_is_removed_when_atomic_replace_fails(
             WorkspaceToolConfig(),
             ctx.workspace_key,
             PNG_BASE64,
+            None,
         )
 
     output_dir = manager.user_files_dir(ctx.workspace_key) / "generated_images"

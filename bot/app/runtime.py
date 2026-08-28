@@ -40,6 +40,7 @@ from config.fragments.guild_config import (
     server_setup_activation,
 )
 from agent.context import ContextManager
+from utils.asyncio import await_uncancellable
 from utils.format import sanitize_author_name
 from config.fragments.tool_config import load_tool_configs
 from config.fragments.tool_policy import (
@@ -197,6 +198,7 @@ def _settings_secret_values(settings: Settings) -> tuple[str, ...]:
 log = logging.getLogger(__name__)
 
 GUILD_ACTIVATION_REFRESH_SECONDS = 5.0
+READY_EVENT_DRAIN_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -234,10 +236,10 @@ class KimiBot(commands.Bot):
 
     async def close(self) -> None:
         try:
+            await super().close()
+        finally:
             if self._agent_application is not None:
                 await self._agent_application.close()
-        finally:
-            await super().close()
 
 
 async def _reject_unapproved_guild_interaction(
@@ -305,6 +307,7 @@ class KimiApplication:
     transcript_retention_sweeper_started: bool = False
     video_session_sweeper_started: bool = False
     gateway_ready: bool = False
+    _gateway_generation: int = 0
     active_transcript_retention_days: int = 0
     active_transcript_retention_sweep_interval_seconds: int | None = None
     _auto_retain_task: asyncio.Task | None = None
@@ -320,6 +323,7 @@ class KimiApplication:
     skills_index_cache: SkillsIndexCache = field(init=False)
     _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
     _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
+    _ready_event_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
     _closed: bool = False
     _close_complete: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _startup_error: Exception | None = field(default=None, init=False, repr=False)
@@ -488,18 +492,34 @@ class KimiApplication:
         if self._closed:
             await self._close_complete.wait()
             return
-        wait_for_close = False
-        async with self._ready_init_lock:
-            if self._closed:
-                wait_for_close = True
-            else:
-                self._closed = True
-                try:
-                    await self._close_resources()
-                finally:
-                    self._close_complete.set()
-        if wait_for_close:
-            await self._close_complete.wait()
+        # There is no await between this check and assignment, so competing
+        # close calls cannot both become the teardown owner on one event loop.
+        self._closed = True
+        owner_task = asyncio.current_task()
+        try:
+            await await_uncancellable(self._finish_close(owner_task))
+        finally:
+            self._close_complete.set()
+
+    async def _finish_close(self, owner_task: asyncio.Task[Any] | None) -> None:
+        await self._cancel_ready_events(exclude=owner_task)
+        await self._close_resources()
+
+    async def _cancel_ready_events(self, *, exclude: asyncio.Task[Any] | None) -> None:
+        """Bound shutdown on READY initialization and reconnect maintenance."""
+        tasks = {task for task in self._ready_event_tasks if task is not exclude}
+        for task in tasks:
+            task.cancel()
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=READY_EVENT_DRAIN_SECONDS)
+        for task in done:
+            with suppress(BaseException):
+                task.result()
+        if pending:
+            log.warning(
+                "Timed out waiting for %d READY event task(s) during shutdown", len(pending)
+            )
 
     async def _close_resources(self) -> None:
         self.gateway_ready = False
@@ -565,7 +585,8 @@ class KimiApplication:
             self.transcript_retention_sweeper_started = False
             self.active_transcript_retention_days = 0
             self.active_transcript_retention_sweep_interval_seconds = None
-        await self.active_operations.cancel_all()
+        if not await self.active_operations.cancel_all():
+            log.warning("Timed out waiting for active operations during shutdown")
         await drain_confirmed_privacy_deletions()
         await stop_event_writer()
         if self.coding_tasks is not None:
@@ -596,12 +617,51 @@ class KimiApplication:
         await self.database.close()
 
     async def on_disconnect(self) -> None:
+        self._gateway_generation += 1
         self.gateway_ready = False
+
+    async def on_resumed(self) -> None:
+        """Restore admission after Discord resumes the existing gateway session."""
+        self.gateway_ready = self._can_restore_gateway_readiness()
 
     async def on_ready(self) -> None:
         if self._closed:
             return
+        ready_task = asyncio.current_task()
+        if ready_task is not None:
+            self._ready_event_tasks.add(ready_task)
+        gateway_generation = self._gateway_generation
         self.gateway_ready = False
+        try:
+            self._log_ready_state()
+            async with self._ready_init_lock:
+                if self._closed or self._startup_error is not None:
+                    return
+                startup_succeeded = await self._initialize_ready_locked()
+            if not startup_succeeded:
+                await self.bot.close()
+                return
+            if self._closed:
+                return
+
+            await self._sync_global_commands()
+
+            # READY events can overlap on reconnect. Serialize the check/start pair so
+            # only one copy of each filesystem maintenance loop is created.
+            async with self._ready_init_lock:
+                if self._closed:
+                    return
+                await self._start_filesystem_sweepers_locked()
+                if self._closed:
+                    return
+                self._start_ready_background_tasks_locked()
+        finally:
+            if ready_task is not None:
+                self._ready_event_tasks.discard(ready_task)
+            if gateway_generation == self._gateway_generation:
+                self.gateway_ready = self._can_restore_gateway_readiness()
+
+    def _log_ready_state(self) -> None:
         log.info(
             "Logged in as %s (ID: %s)",
             self.bot.user,
@@ -617,7 +677,6 @@ class KimiApplication:
             self.settings.staff_role_ids,
             self.settings.regular_role_ids,
         )
-
         active_guilds = self.active_guilds()
         pending_guilds = sum(1 for guild in self.bot.guilds if guild.id not in active_guilds)
         log.info(
@@ -626,54 +685,8 @@ class KimiApplication:
             pending_guilds,
         )
 
-        async with self._ready_init_lock:
-            if self._closed or self._startup_error is not None:
-                return
-            startup_succeeded = await self._initialize_ready_locked()
-        if not startup_succeeded:
-            await self.bot.close()
-            return
-
-        # READY events can overlap on reconnect. Serialize the check/start pair so
-        # only one copy of each filesystem maintenance loop is created.
-        async with self._ready_init_lock:
-            if self._closed:
-                return
-            if not self.workspace_sweeper_started:
-                await sweep_attachment_orphans_once(
-                    self.tools.attachment_store,
-                    max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
-                    max_files=self.settings.attachment_orphan_sweep_max_files,
-                )
-                self._workspace_sweeper_task = asyncio.create_task(
-                    workspace_sweeper(
-                        self.tools.workspace_manager,
-                        sweep_interval=self.settings.workspace_sweep_interval,
-                        workspace_locks=self.tools.workspace_locks,
-                        browser_profiles=self.tools.browser_service,
-                    )
-                )
-                self._attachment_sweeper_task = asyncio.create_task(
-                    attachment_orphan_sweeper(
-                        self.tools.attachment_store,
-                        sweep_interval=(self.settings.attachment_orphan_sweep_interval_seconds),
-                        max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
-                        max_files=self.settings.attachment_orphan_sweep_max_files,
-                    )
-                )
-                self.workspace_sweeper_started = True
-                log.info(
-                    "Filesystem sweepers started (workspace TTL: %ds; "
-                    "attachment orphan TTL: %ds, every %ds)",
-                    self.settings.workspace_file_ttl,
-                    self.settings.attachment_orphan_ttl_seconds,
-                    self.settings.attachment_orphan_sweep_interval_seconds,
-                )
-
-        async with self._ready_init_lock:
-            if self._closed:
-                return
-            self._start_ready_background_tasks_locked()
+    def _can_restore_gateway_readiness(self) -> bool:
+        return self.db_initialized and self._startup_error is None and not self._closed
 
     async def _initialize_ready_locked(self) -> bool:
         """Initialize READY-owned resources while ``_ready_init_lock`` is held."""
@@ -706,28 +719,77 @@ class KimiApplication:
                 log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
                 return False
 
-        if self.memory_manager.client:
-            assert self.conversation_store is not None
-            assert self.preference_store is not None
-            await self.memory_manager.ensure_ready(
-                self.conversation_store,
-                self.preference_store,
-            )
-        else:
-            log.warning("No Hindsight URL configured - running without memory")
+        try:
+            if self.memory_manager.client:
+                assert self.conversation_store is not None
+                assert self.preference_store is not None
+                await self.memory_manager.ensure_ready(
+                    self.conversation_store,
+                    self.preference_store,
+                )
+            else:
+                log.warning("No Hindsight URL configured - running without memory")
+        except Exception as exc:
+            if first_init:
+                self._startup_error = exc
+                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
+                return False
+            log.warning("Could not refresh memory integration after READY", exc_info=True)
 
         if first_init:
             self.db_initialized = True
             log.info("Database initialized at %s", self.settings.database_path)
 
+        return True
+
+    async def _sync_global_commands(self) -> None:
+        """Best-effort command propagation, kept outside the lifecycle lock."""
         try:
             synced = await self.bot.tree.sync()
             log.info("Synced %d slash command(s)", len(synced))
-        except discord.HTTPException:
+        except Exception:
             # Command propagation is retried on the next READY, but a transient
-            # Discord failure must not prevent local sweepers from starting.
+            # transport failure must not prevent local sweepers from starting.
             log.warning("Failed to sync global slash commands", exc_info=True)
-        return True
+
+    async def _start_filesystem_sweepers_locked(self) -> None:
+        """Install filesystem maintenance tasks once after best-effort cleanup."""
+        if self.workspace_sweeper_started:
+            return
+        try:
+            await sweep_attachment_orphans_once(
+                self.tools.attachment_store,
+                max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
+                max_files=self.settings.attachment_orphan_sweep_max_files,
+            )
+        except OSError:
+            log.warning("Initial attachment orphan sweep failed", exc_info=True)
+        if self._closed:
+            return
+        self._workspace_sweeper_task = asyncio.create_task(
+            workspace_sweeper(
+                self.tools.workspace_manager,
+                sweep_interval=self.settings.workspace_sweep_interval,
+                workspace_locks=self.tools.workspace_locks,
+                browser_profiles=self.tools.browser_service,
+            )
+        )
+        self._attachment_sweeper_task = asyncio.create_task(
+            attachment_orphan_sweeper(
+                self.tools.attachment_store,
+                sweep_interval=self.settings.attachment_orphan_sweep_interval_seconds,
+                max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
+                max_files=self.settings.attachment_orphan_sweep_max_files,
+            )
+        )
+        self.workspace_sweeper_started = True
+        log.info(
+            "Filesystem sweepers started (workspace TTL: %ds; "
+            "attachment orphan TTL: %ds, every %ds)",
+            self.settings.workspace_file_ttl,
+            self.settings.attachment_orphan_ttl_seconds,
+            self.settings.attachment_orphan_sweep_interval_seconds,
+        )
 
     def _start_ready_background_tasks_locked(self) -> None:
         """Install READY-owned singleton tasks while ``_ready_init_lock`` is held."""
@@ -810,8 +872,6 @@ class KimiApplication:
                 "Guild activation refresher started (every %.0fs)",
                 GUILD_ACTIVATION_REFRESH_SECONDS,
             )
-        if self._startup_error is None:
-            self.gateway_ready = True
 
     async def _first_init_core(self) -> None:
         """One-time startup wiring: DB connect, stores, gates, slash commands.
@@ -2939,6 +2999,7 @@ def build_app(settings: Settings) -> KimiApplication:
     bot._agent_application = application
     bot.event(application.on_ready)
     bot.event(application.on_disconnect)
+    bot.event(application.on_resumed)
     bot.event(application.on_message)
     bot.event(application.on_guild_join)
     return application

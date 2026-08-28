@@ -686,6 +686,7 @@ def test_build_app_binds_discord_events(monkeypatch) -> None:
     assert bound == [
         "on_ready",
         "on_disconnect",
+        "on_resumed",
         "on_message",
         "on_guild_join",
     ]

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from uuid import uuid4
+
+log = logging.getLogger(__name__)
+
+SHUTDOWN_DRAIN_SECONDS = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +172,10 @@ class ActiveOperationRegistry:
             if pending:
                 return len(matched_scopes), False
 
-    async def cancel_all(self) -> None:
-        """Signal all operations, cancel cancellable tasks, and drain late children."""
+    async def cancel_all(self, *, wait_seconds: float = SHUTDOWN_DRAIN_SECONDS) -> bool:
+        """Stop all operations within a deadline and drain late children."""
         current = asyncio.current_task()
+        deadline = asyncio.get_running_loop().time() + max(0.0, wait_seconds)
         while True:
             async with self._lock:
                 operations = [
@@ -178,7 +184,7 @@ class ActiveOperationRegistry:
                     if operation.task is not current
                 ]
             if not operations:
-                return
+                return True
             for operation in operations:
                 operation.stop_event.set()
             tasks = {operation.task for operation in operations}
@@ -187,4 +193,16 @@ class ActiveOperationRegistry:
             }
             for task in cancellable_tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            done, pending = await asyncio.wait(tasks, timeout=remaining)
+            for task in done:
+                with contextlib.suppress(BaseException):
+                    task.result()
+            if pending:
+                log.warning(
+                    "Shutdown left %d non-responsive active operation(s) to finish in background",
+                    len(pending),
+                )
+                return False

@@ -49,6 +49,7 @@ class ImageResult:
     size: str | None = None
     background: str | None = None
     usage: dict[str, Any] | None = None
+    image_bytes: bytes | None = None
 
 
 class ImageGenError(RuntimeError):

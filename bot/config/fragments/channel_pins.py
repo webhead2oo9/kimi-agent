@@ -26,7 +26,7 @@ _ID_RE = re.compile(r"[0-9]+")  # Discord snowflakes
 _TOOL_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _MAX_PINS = 16
 _MAX_BLOCKED = 64
-_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
+_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache()
 
 
 class ChannelBlockedToolsLoadError(RuntimeError):
@@ -97,21 +97,18 @@ def load_channel_blocked_tools(
     key = _blocked_cache.key(fragment)
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        if _blocked_cache.last_good(key) is None:
-            return frozenset()
-        return _retain_channel_blocked_tools(fragment, key, exc)
+    except FileNotFoundError:
+        _blocked_cache.forget(key)
+        return frozenset()
     except (OSError, UnicodeError) as exc:
         return _retain_channel_blocked_tools(fragment, key, exc)
 
     try:
         meta, _body = split_frontmatter_strict(text)
         if "blocked_tools" not in meta:
-            if _blocked_cache.last_good(key) is None:
-                return frozenset()
-            return _retain_channel_blocked_tools(
-                fragment, key, ValueError("blocked_tools is absent")
-            )
+            blocked: frozenset[str] = frozenset()
+            _blocked_cache.remember(key, blocked)
+            return blocked
         raw = meta["blocked_tools"]
         if not isinstance(raw, list):
             raise ValueError("blocked_tools must be a list")

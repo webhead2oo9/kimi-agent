@@ -128,7 +128,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "scripts": {"codex"},
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
-    "search": set(),
+    "search": {"utils"},
     "skills": {"config", "tools", "trust", "utils", "workspace"},
     "storage": {"providers", "usage"},
     "tools": {
@@ -152,7 +152,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "trust": set(),
     "usage": {"config"},
     "utils": set(),
-    "video_understanding": set(),
+    "video_understanding": {"utils"},
     "web_browser": {"sandbox"},
     "workspace": set(),
 }

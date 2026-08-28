@@ -73,7 +73,7 @@ log = logging.getLogger(__name__)
 _ID_RE = re.compile(r"^[0-9]+$")  # Discord snowflakes
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _MAX_BLOCKED_TOOLS = 64
-_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache(max_entries=None)
+_blocked_cache: LastKnownGoodCache[frozenset[str]] = LastKnownGoodCache()
 
 
 class GuildBlockedToolsLoadError(RuntimeError):
@@ -194,10 +194,8 @@ def load_guild_blocked_tools(
     The denylist counterpart of :func:`load_guild_pinned_tools`. These names are
     the base denylist that channel ``blocked_tools`` union onto during turn
     preparation; the registry hides and rejects them this turn. A missing file
-    with no cached value is an empty optional policy. Once loaded, missing,
-    empty, omitted, malformed, or unreadable input retains the last valid value;
-    a valid ``blocked_tools: []`` explicitly clears it. A failed present file
-    without a cached value raises rather than silently granting tools.
+    is an empty optional policy. Missing files and omitted keys clear an earlier
+    value; malformed or unreadable input retains the last valid value.
     """
     if not guild_id or not _ID_RE.match(guild_id):
         return frozenset()
@@ -205,19 +203,18 @@ def load_guild_blocked_tools(
     key = _blocked_cache.key(fragment)
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        if _blocked_cache.last_good(key) is None:
-            return frozenset()
-        return _retain_guild_blocked_tools(fragment, key, exc)
+    except FileNotFoundError:
+        _blocked_cache.forget(key)
+        return frozenset()
     except (OSError, UnicodeError) as exc:
         return _retain_guild_blocked_tools(fragment, key, exc)
 
     try:
         meta, _body = split_frontmatter_strict(text)
         if "blocked_tools" not in meta:
-            if _blocked_cache.last_good(key) is None:
-                return frozenset()
-            return _retain_guild_blocked_tools(fragment, key, ValueError("blocked_tools is absent"))
+            blocked: frozenset[str] = frozenset()
+            _blocked_cache.remember(key, blocked)
+            return blocked
         raw = meta["blocked_tools"]
         if not isinstance(raw, list):
             raise ValueError("blocked_tools must be a list")

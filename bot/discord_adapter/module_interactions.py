@@ -163,16 +163,17 @@ class ModuleInteractionAdapter:
 
     @property
     def message(self) -> MessageRef | None:
-        message = getattr(self._interaction, "message", None)
+        """The message a component lives on. Slash commands have none."""
+        message = self._interaction.message
         if message is None or self._interaction.guild_id is None:
             return None
-        channel = getattr(message, "channel", None)
-        parent_id = getattr(channel, "parent_id", None) if channel is not None else None
+        channel = message.channel
+        parent_id = channel.parent_id if isinstance(channel, discord.Thread) else None
         return MessageRef(
             guild_id=int(self._interaction.guild_id),
-            channel_id=int(getattr(message, "channel_id", None) or self.channel_id),
+            channel_id=int(channel.id),
             message_id=int(message.id),
-            parent_channel_id=int(parent_id) if parent_id else None,
+            parent_channel_id=int(parent_id) if parent_id is not None else None,
         )
 
     def _kwargs(

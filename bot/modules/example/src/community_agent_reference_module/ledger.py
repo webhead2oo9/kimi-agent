@@ -75,7 +75,9 @@ class KudosLedger:
                 "VALUES (?, ?, ?, ?, ?)",
                 (guild_id, giver_id, receiver_id, reason, now),
             )
-            row_id = int(cursor.lastrowid or 0)
+            if cursor.lastrowid is None:
+                raise RuntimeError("kudos insert returned no row id")
+            row_id = int(cursor.lastrowid)
         return Kudos(row_id, guild_id, giver_id, receiver_id, reason, now)
 
     async def get(self, kudos_id: int) -> Kudos | None:

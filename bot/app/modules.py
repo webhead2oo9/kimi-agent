@@ -117,8 +117,13 @@ class _LoadTimeToolRegistry:
 
         async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
             guild_id = _snowflake(ctx.guild_id)
-            predicate = active.get(module_name)
-            if guild_id is not None and predicate is not None and not predicate(guild_id):
+            try:
+                predicate = active[module_name]
+            except KeyError:
+                # Tools are dispatched only after start(); reaching this means
+                # the composition order is broken, not that the guild is fine.
+                raise RuntimeError(f"module {module_name!r} tool called before start()") from None
+            if guild_id is not None and not predicate(guild_id):
                 return "This tool is not available in this server."
             channel_id = _snowflake(ctx.channel_id)
             user_id = _snowflake(ctx.user_id)

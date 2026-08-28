@@ -277,6 +277,24 @@ class BatchRecordingPost(RecordingPost):
         )
 
 
+class PartiallyFailingBatchPost(BatchRecordingPost):
+    def __init__(self, failed_response: HttpResponse) -> None:
+        super().__init__({})
+        self.failed_response = failed_response
+
+    async def __call__(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        if len(payload["urls"]) < 10:
+            self.calls.append((url, headers, payload, timeout_seconds))
+            return self.failed_response
+        return await super().__call__(url, headers, payload, timeout_seconds)
+
+
 @pytest.mark.asyncio
 async def test_tinyfish_search_maps_params_and_snippets() -> None:
     get = RecordingGet(
@@ -368,6 +386,27 @@ async def test_tinyfish_contents_chunks_urls_into_batches_of_ten() -> None:
     assert post.calls[0][2]["per_url_timeout_ms"] == 24_000
     assert len(response.results) == 25
     assert response.results[0].content == ("body of https://example.com/0",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_response",
+    (
+        pytest.param(HttpResponse(503, {}, {}), id="http-error"),
+        pytest.param(HttpResponse(200, {}, {}), id="invalid-response"),
+    ),
+)
+async def test_tinyfish_contents_keeps_successful_sibling_batches(
+    failed_response: HttpResponse,
+) -> None:
+    post = PartiallyFailingBatchPost(failed_response)
+    backend = TinyFishSearchBackend("secret", request=post)
+    urls = tuple(f"https://example.com/{index}" for index in range(11))
+
+    response = await backend.contents(ContentsRequest(urls=urls, content_mode="text"))
+
+    assert len(post.calls) == 2
+    assert [result.url for result in response.results] == list(urls[:10])
 
 
 @pytest.mark.asyncio

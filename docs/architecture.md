@@ -51,9 +51,11 @@ app/                    composition root + Discord-facing application glue:
                         thread_handoff_boundary.py, memory.py, moderation.py,
                         providers.py, coding_tasks.py + coding_jobs.py,
                         tool_surfaces.py, learn_turn.py + learn_log.py
-agent/                  ReAct engine, turn prep, compaction, attachments
+agent/                  ReAct engine, turn prep, compaction, attachments,
+                        automated Discord-reference context framing
 discord_adapter/        the Discord boundary: io (send/receive gates, chunking),
-                        gateway (live channel/member reads), lifecycle (sweepers)
+                        gateway (live channel/member reads), permission-checked
+                        Discord-reference resolution, lifecycle (sweepers)
 providers/              neutral LLM interface, provider profiles, failover
 image_gen/              provider-neutral image backend seam + OpenAI HTTP client
 search/                 provider-neutral internet search chain + Exa/Brave clients

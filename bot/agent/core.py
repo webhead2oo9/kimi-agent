@@ -21,6 +21,10 @@ from agent.activity import (
 from agent.attachments import AttachmentRef, format_attachments_context
 from agent.compaction import NOTE_PREFIX, Compactor
 from agent.context import ConversationContext
+from agent.discord_references import (
+    ResolvedDiscordReferenceHint,
+    discord_reference_hints_message,
+)
 from utils.format import sanitize_author_name
 from config.fragments.prompt import build_system_prompt
 from agent.reply_context import ReplyContext, reply_context_message
@@ -302,6 +306,7 @@ class ConversationRunRequest:
     llm_semaphore: asyncio.Semaphore | None = None
     input_parts: list[ContentPart] | None = None
     reply_context: ReplyContext | None = None
+    discord_reference_hints: tuple[ResolvedDiscordReferenceHint, ...] = ()
     provider_state: dict | None = None
     edit_target_image: ContentPart | None = None
     attachments: list[AttachmentRef] | None = None
@@ -441,6 +446,7 @@ class _ConversationRunner:
         is_new_user = request.is_new_user
         input_parts = request.input_parts
         reply_context = request.reply_context
+        discord_reference_hints = request.discord_reference_hints
         provider_state = request.provider_state
         compactor = request.compactor
         activity_reporter = request.activity_reporter
@@ -498,6 +504,7 @@ class _ConversationRunner:
         )
         recalled_context_msg = _recalled_memories_context_message(recalled_memories)
         reply_context_msg = reply_context_message(reply_context)
+        discord_reference_msg = discord_reference_hints_message(discord_reference_hints)
 
         turn_id = request.turn_id or new_turn_id()
         turn_start = time.monotonic()
@@ -515,9 +522,13 @@ class _ConversationRunner:
                 recalled_context_msg,
                 attachments_context_msg,
                 reply_context_msg,
+                discord_reference_msg,
             )
             if msg is not None
         ]
+        # Linked Discord messages are ephemeral automatic enrichment. Unlike an
+        # actual Discord reply target, they must not enter a durable coding-task
+        # snapshot when the model delegates with conversation context.
         durable_handoff_context_messages = (
             [reply_context_msg] if reply_context_msg is not None else []
         )

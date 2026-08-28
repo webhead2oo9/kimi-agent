@@ -18,6 +18,7 @@ from agent.activity import ActivityUpdate
 from agent.context import ContextManager, ConversationContext
 from agent import core as core_module
 from agent.core import ConversationRunRequest, run_conversation
+from agent.discord_references import DiscordReferenceHint
 from config.fragments.prompt import build_system_prompt
 from agent.reply_context import ReplyContext
 from utils.privacy_barrier import UserPrivacyBarrier
@@ -723,6 +724,15 @@ def test_start_coding_task_receives_text_only_model_visible_context() -> None:
                     author_name="Bob",
                     text="reply details",
                 ),
+                discord_reference_hints=(
+                    DiscordReferenceHint(
+                        source="message_link",
+                        channel_id="555",
+                        channel_name="linked-channel",
+                        author_name="Carol",
+                        message_text="ephemeral linked details",
+                    ),
+                ),
                 max_iterations=3,
             )
         )
@@ -741,6 +751,7 @@ def test_start_coding_task_receives_text_only_model_visible_context() -> None:
     assert "rooted history" in snapshot_text
     assert "remembered preference" not in snapshot_text
     assert "reply details" in snapshot_text
+    assert "ephemeral linked details" not in snapshot_text
     assert "Alice: fix this" in snapshot_text
     assert "I will inspect first." in snapshot_text
     assert "workspace result" in snapshot_text
@@ -2043,6 +2054,46 @@ def test_recalled_memories_are_ephemeral_user_context_each_iteration() -> None:
         part.text or "" for message in context.get_history() for part in message.content
     )
     assert "memory of the current user" not in persisted_text
+
+
+def test_discord_reference_hint_is_ephemeral_automated_context() -> None:
+    context = ConversationContext(key="test")
+    provider = ScriptedProvider([ProviderResponse(content="Use support.")])
+    hint = DiscordReferenceHint(
+        source="channel_mention",
+        channel_id="222222222222222222",
+        channel_name="support",
+        category_name="Help Desk",
+        has_category=True,
+    )
+
+    result = asyncio.run(
+        run_conversation(
+            request=ConversationRunRequest(
+                user_message="use <#222222222222222222>",
+                context=context,
+                trust_tier=TrustTier.MEMBER,
+                user_name="Alice",
+                user_id="123",
+                provider=provider,
+                registry=ToolRegistry(),
+                discord_reference_hints=(hint,),
+            )
+        )
+    )
+
+    assert result == "Use support."
+    [request] = provider.requests
+    [automated_hint] = request.messages
+    hint_text = automated_hint.content[0].text or ""
+    assert hint_text == (
+        "[Automated hint: <#222222222222222222> refers to #support under the “Help Desk” category.]"
+    )
+    assert request.current_user_parts == [ContentPart.from_text("Alice: use <#222222222222222222>")]
+    persisted_text = "\n".join(
+        part.text or "" for message in context.get_history() for part in message.content
+    )
+    assert "Automated hint" not in persisted_text
 
 
 def test_reply_context_is_ephemeral_continuation_context_each_iteration() -> None:

@@ -19,6 +19,7 @@ from agent.activity import ActivityReporter, ActivityUpdate
 from agent.attachments import AttachmentRef
 from agent.context import ConversationContext
 from agent.core import ConversationRunRequest, ConversationRunResult
+from agent.discord_references import DiscordReferenceHint
 from agent.reply_context import ReplyContext
 from agent.turn import (
     RunConversation,
@@ -162,6 +163,7 @@ def _turn_request(
     image_part: ContentPart | None = None,
     attachment: AttachmentRef | None = None,
     reply_context: ReplyContext | None = None,
+    discord_reference_hints: tuple[DiscordReferenceHint, ...] = (),
     trust_tier: TrustTier = TrustTier.REGULAR,
     channel_id: str = "100",
     thread_id: str | None = None,
@@ -187,6 +189,7 @@ def _turn_request(
         edit_target_image=image_part,
         attachments=(attachment,) if attachment else (),
         reply_context=reply_context,
+        discord_reference_hints=discord_reference_hints,
     )
 
 
@@ -1011,6 +1014,31 @@ async def test_execute_turn_passes_reply_context_to_run_conversation(
 
     [call] = run_conversation.calls
     assert call["reply_context"] == reply_context
+
+
+@pytest.mark.asyncio
+async def test_execute_turn_passes_discord_reference_hints_to_run_conversation(
+    tmp_path: Path,
+) -> None:
+    context = ConversationContext(key="guild:100:main")
+    hint = DiscordReferenceHint(
+        source="channel_mention",
+        channel_id="222",
+        channel_name="support",
+    )
+    run_conversation = RecordingRunConversation(ConversationRunResult(text="ok"))
+
+    await execute_turn(
+        _turn_request(context, discord_reference_hints=(hint,)),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path,
+            run_conversation=run_conversation,
+        ),
+        config=_config(),
+    )
+
+    [call] = run_conversation.calls
+    assert call["discord_reference_hints"] == (hint,)
 
 
 @pytest.mark.asyncio

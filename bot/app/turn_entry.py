@@ -18,6 +18,7 @@ from config.fragments.channel_pins import (
     load_channel_thread_handoff,
 )
 from agent.core import run_conversation
+from agent.discord_references import ResolvedDiscordReferenceHint
 from config.fragments.guild_config import (
     load_guild_blocked_tools,
     load_guild_pinned_tools,
@@ -288,6 +289,19 @@ async def build_turn_dependencies(
             return {}
         return hooks.load_tool_configs(specs())
 
+    async def resolve_discord_references(
+        content: str,
+    ) -> tuple[ResolvedDiscordReferenceHint, ...]:
+        # Personal chat is logically guild-less even when /chat was physically
+        # invoked in a guild. Its platform location confers no read authority.
+        if source.personal_chat or source.guild_id is None:
+            return ()
+        return await app.discord_gateway.resolve_reference_hints(
+            source.source_message,
+            content,
+            excluded_channel_ids=app.settings.discord_search_excluded_channel_ids,
+        )
+
     return TurnDependencies(
         context_manager=context_manager,
         provider=provider,
@@ -310,6 +324,7 @@ async def build_turn_dependencies(
         channel_pinned_tools=channel_pinned_tools,
         blocked_tools=blocked_tools,
         tool_configs=tool_configs,
+        resolve_discord_references=resolve_discord_references,
         collect_turn_images=hooks.collect_turn_images,
         collect_reply_context=collect_reply_context_func,
         collect_turn_attachments=collect_turn_attachments_func,

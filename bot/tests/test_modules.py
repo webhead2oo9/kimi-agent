@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,7 +30,14 @@ from kimi_agent_module_api.contracts import (
     ServiceDeclaration,
     ServiceRequirement,
 )
-from kimi_agent_module_api.testing import FakeTrust
+from kimi_agent_module_api.testing import (
+    FakeDiscordActions,
+    FakeEvents,
+    FakeHttp,
+    FakeInteractions,
+    FakeScheduler,
+    FakeTrust,
+)
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.events import EventBusImpl
 from modules.testing import fake_ports
@@ -442,3 +450,125 @@ async def test_start_failure_closes_already_started_modules(tmp_path: Path) -> N
 
     assert events == ["start:base", "start:failing", "close:failing", "close:base"]
     await database.close()
+
+
+class SlowModule(FakeModule):
+    def __init__(self, name: str, events: list[str], *, slow_start: bool, slow_close: bool) -> None:
+        super().__init__(name, events)
+        self.slow_start = slow_start
+        self.slow_close = slow_close
+
+    async def start(self, ctx: ModuleRuntimeContext) -> None:
+        await super().start(ctx)
+        if self.slow_start:
+            await asyncio.sleep(10)
+
+    async def close(self) -> None:
+        if self.slow_close:
+            await asyncio.sleep(10)
+        await super().close()
+
+
+@pytest.mark.asyncio
+async def test_start_timeout_fails_the_module_and_aborts(tmp_path: Path) -> None:
+    events: list[str] = []
+    slow = SlowModule("slow", events, slow_start=True, slow_close=False)
+    manager = _manager(tmp_path, ("slow",), {"slow": _spec("slow", slow)})
+    manager.start_timeout_seconds = 0.05
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+
+    with pytest.raises(RuntimeError, match="start\\(\\) exceeded 0.05s"):
+        await manager.start(_base(database, manager), customize=fake_ports)
+
+    assert events == ["start:slow", "close:slow"]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_close_timeout_is_logged_and_shutdown_continues(tmp_path: Path) -> None:
+    events: list[str] = []
+    stuck = SlowModule("stuck", events, slow_start=False, slow_close=True)
+    other = FakeModule("other", events)
+    manager = _manager(
+        tmp_path,
+        ("stuck", "other"),
+        {"stuck": _spec("stuck", stuck), "other": _spec("other", other)},
+    )
+    manager.close_timeout_seconds = 0.05
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    await manager.start(_base(database, manager), customize=fake_ports)
+
+    await manager.close()
+
+    # "stuck" never appended close (it was cancelled); "other" still closed.
+    assert events == ["start:stuck", "start:other", "close:other"]
+    assert manager.health_snapshot() == {}
+    await database.close()
+
+
+def test_tool_registry_is_sealed_after_loading(tmp_path: Path) -> None:
+    captured: list[ModuleLoadContext] = []
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        captured.append(ctx)
+        ctx.registry.register("early", "ok", {"type": "object"}, _noop_tool)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1.0", create)}, registry)
+
+    assert registry.is_registered("early")
+    with pytest.raises(RuntimeError, match="not start\\(\\)"):
+        captured[0].registry.register("late", "no", {"type": "object"}, _noop_tool)
+    assert not registry.is_registered("late")
+
+
+async def _noop_tool(_arguments: dict[str, Any], _ctx: Any) -> str:
+    return ""
+
+
+@pytest.mark.asyncio
+async def test_base_factories_build_per_module_ports(tmp_path: Path) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def discord_actions(spec: ModuleSpec, _active: Callable[[int], bool]) -> Any:
+        seen.append(("discord", spec.name))
+        return FakeDiscordActions(spec.name)
+
+    def interactions(name: str, _active: Callable[[int], bool]) -> Any:
+        seen.append(("interactions", name))
+        return FakeInteractions(name)
+
+    module = FakeModule("m", [])
+    manager = _manager(tmp_path, ("m",), {"m": _spec("m", module)})
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    base = ModuleRuntimeBase(
+        database=database,
+        bot=object(),
+        is_guild_active=lambda _guild_id: True,
+        current_config_dir=lambda: manager.config_dir,
+        capabilities=ModuleCapabilities(frozenset(), False, False),
+        trust=FakeTrust(),
+        discord_actions=discord_actions,
+        interactions=interactions,
+    )
+
+    def only_bus(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **ports,
+            "events": FakeEvents(spec.name),
+            "scheduler": FakeScheduler(),
+            "http": FakeHttp(),
+        }
+
+    await manager.start(base, customize=only_bus)
+    try:
+        ctx = manager.context_for("m")
+        assert isinstance(ctx.interactions, FakeInteractions)
+        assert sorted(seen) == [("discord", "m"), ("interactions", "m")]
+    finally:
+        await manager.close()
+        await database.close()

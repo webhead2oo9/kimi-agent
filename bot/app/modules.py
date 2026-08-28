@@ -10,6 +10,7 @@ removing the capability.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -22,6 +23,7 @@ from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
 from kimi_agent_module_api.contracts import (
     DiscordActions,
+    InteractionRouter,
     ModuleHealth,
     TrustLookup,
     table_prefix,
@@ -61,9 +63,44 @@ from modules.storage import ModuleStorageImpl, validate_table_aliases
 log = logging.getLogger(__name__)
 
 
-def _module_tool_registry(registry: ToolRegistry) -> ModuleToolRegistry:
-    """Keep the core registry statically conformant with the published SDK."""
-    return registry
+class _LoadTimeToolRegistry:
+    """The ``ModuleToolRegistry`` port, valid only while modules are being created.
+
+    ``create()`` is the one place a module may register tools. Sealing after
+    the load loop turns a stashed registry used from ``start()`` into a clear
+    error instead of a tool that silently appears after tool surfaces settled.
+    """
+
+    def __init__(self, registry: ToolRegistry) -> None:
+        self._registry: ModuleToolRegistry = registry
+        self._sealed = False
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Any,
+        min_tier: Any = None,
+        searchable: bool = False,
+        *,
+        owner_only: bool = False,
+        guild_ids: frozenset[str] | None = None,
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError(
+                f"tool {name!r} cannot be registered after module loading; "
+                "register tools from ModuleSpec.create(), not start()"
+            )
+        kwargs: dict[str, Any] = {"owner_only": owner_only, "guild_ids": guild_ids}
+        if min_tier is not None:
+            kwargs["min_tier"] = min_tier
+        self._registry.register(
+            name, description, parameters, handler, searchable=searchable, **kwargs
+        )
 
 
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
@@ -230,9 +267,26 @@ def _activation_disabled(
     return disabled
 
 
+class ProposalViewFactory(Protocol):
+    def view_for(self, module_name: str) -> ProposalService: ...
+
+
+# Both bind to the module's name and guild-activation predicate; the manager
+# wraps the Discord actions in the declaration gate itself.
+type DiscordActionsFactory = Callable[[ModuleSpec, Callable[[int], bool]], DiscordActions]
+type InteractionRouterFactory = Callable[[str, Callable[[int], bool]], InteractionRouter]
+
+
 @dataclass(frozen=True)
 class ModuleRuntimeBase:
-    """Core-side inputs the manager turns into per-module contexts."""
+    """Core-side inputs the manager turns into per-module contexts.
+
+    Every port a module receives is derived here or from the manager's own
+    services; ``discord_actions`` and ``interactions`` are factories because
+    both bind to the module's name and guild-activation predicate. A ``None``
+    factory leaves that port unset, which ``start()`` rejects unless a
+    ``customize`` hook (the test harness) supplies it.
+    """
 
     database: Database
     bot: Any
@@ -240,12 +294,9 @@ class ModuleRuntimeBase:
     current_config_dir: Callable[[], Path]
     capabilities: ModuleCapabilities
     trust: TrustLookup
-    discord: DiscordActions | None = None
+    discord_actions: DiscordActionsFactory | None = None
+    interactions: InteractionRouterFactory | None = None
     proposals: ProposalViewFactory | None = None
-
-
-class ProposalViewFactory(Protocol):
-    def view_for(self, module_name: str) -> ProposalService: ...
 
 
 _REQUIRED_PORTS = (
@@ -277,6 +328,8 @@ class ModuleManager:
     scheduler: DurableScheduler | None = None
     guild_settings: GuildSettingsService | None = None
     http: ModuleHttpRuntime | None = None
+    start_timeout_seconds: float = 60.0
+    close_timeout_seconds: float = 15.0
     _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
 
     @property
@@ -298,9 +351,12 @@ class ModuleManager:
         manager = cls(
             load_state=ModuleLoadState(requested=tuple(names)),
             settings=settings_registry,
+            start_timeout_seconds=float(core_settings.module_start_timeout_seconds),
+            close_timeout_seconds=float(core_settings.module_close_timeout_seconds),
         )
         if not names:
             return manager
+        tool_registry = _LoadTimeToolRegistry(registry)
         specs = validate_module_selection(
             names,
             core_settings=core_settings,
@@ -319,7 +375,7 @@ class ModuleManager:
                     raise ModuleSettingsError(prepared.load_error or "invalid module settings")
                 ctx = ModuleLoadContext(
                     capabilities=capabilities,
-                    registry=_module_tool_registry(registry),
+                    registry=tool_registry,
                     module_settings=prepared.active if prepared is not None else None,
                     _register_tool_labels=register_tool_labels,
                     _declare_surface_tools=declare_surface_tools,
@@ -334,6 +390,7 @@ class ModuleManager:
                 raise
             manager._modules[spec.name] = instance
             log.info("Kimi module composed: %s %s", spec.name, spec.version)
+        tool_registry.seal()
         for spec in specs:
             if reason := disabled.get(spec.name):
                 log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
@@ -387,9 +444,10 @@ class ModuleManager:
         """Migrate every module, then start them in dependency order.
 
         Each module receives its own frozen ``ModuleRuntimeContext`` assembled
-        from ``base`` plus the per-module ports. ``customize`` lets the
-        composition root (or a test harness) add or replace ports before the
-        context is frozen; missing required ports abort startup.
+        from ``base`` plus the per-module ports. ``customize`` lets a test
+        harness replace ports with fakes before the context is frozen; missing
+        required ports abort startup. A ``start()`` that exceeds
+        ``start_timeout_seconds`` is treated like one that raised.
         """
         try:
             for spec in self._specs:
@@ -414,7 +472,13 @@ class ModuleManager:
                 self._started.append(spec.name)
                 self.health.set(spec.name, "starting")
                 try:
-                    await instance.start(module_ctx)
+                    await asyncio.wait_for(
+                        instance.start(module_ctx), timeout=self.start_timeout_seconds
+                    )
+                except TimeoutError as exc:
+                    detail = f"start() exceeded {self.start_timeout_seconds:g}s"
+                    self.health.set(spec.name, "failed", detail)
+                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}") from exc
                 except BaseException as exc:
                     self.health.set(spec.name, "failed", _summarize(exc))
                     raise
@@ -451,11 +515,19 @@ class ModuleManager:
             "storage": ModuleStorageImpl(base.database, spec.name, spec.table_aliases),
             "health": self.health.reporter_for(spec.name),
             "discord": (
-                DeclaredDiscordActions(base.discord, spec.name, spec.permissions.discord_actions)
-                if base.discord is not None
+                DeclaredDiscordActions(
+                    base.discord_actions(spec, is_module_guild_active),
+                    spec.name,
+                    spec.permissions.discord_actions,
+                )
+                if base.discord_actions is not None
                 else None
             ),
-            "interactions": None,
+            "interactions": (
+                base.interactions(spec.name, is_module_guild_active)
+                if base.interactions is not None
+                else None
+            ),
             "http": (
                 self.http.client_for(spec.name, self._host_rules.get(spec.name, ()))
                 if self.http is not None
@@ -496,10 +568,23 @@ class ModuleManager:
         return self.health.snapshot()
 
     async def close(self) -> None:
+        """Close started modules newest-first, then release their core-side registrations.
+
+        A ``close()`` that exceeds ``close_timeout_seconds`` is cancelled and
+        logged; shutdown never waits on one module.
+        """
         while self._started:
             name = self._started.pop()
             try:
-                await self._modules[name].close()
+                await asyncio.wait_for(
+                    self._modules[name].close(), timeout=self.close_timeout_seconds
+                )
+            except TimeoutError:
+                log.error(
+                    "Kimi module %s close() exceeded %gs; continuing shutdown",
+                    name,
+                    self.close_timeout_seconds,
+                )
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
             finally:

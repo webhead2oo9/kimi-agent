@@ -180,3 +180,33 @@ def test_render_status_explains_soft_disabled_modules() -> None:
     assert "`discord_rag` 0.1.0" in text
     assert "disabled" in text
     assert "discord.message_content.v1" in text
+
+
+def test_keyed_reports_are_independent_concerns() -> None:
+    registry = HealthRegistry(clock=lambda: 1.0)
+    reporter = registry.reporter_for("m")
+
+    reporter.report("degraded", "digest failed", {"digest_failures": 1}, key="digest")
+    reporter.report("healthy", "", {"guilds": 2})
+
+    health = registry.get("m")
+    assert health is not None
+    assert health.state == "degraded"
+    assert health.detail == "digest failed"
+    assert health.metrics == {"digest_failures": 1.0, "guilds": 2.0}
+
+    # A keyed healthy report with nothing attached clears that concern only.
+    reporter.report("healthy", key="digest")
+    cleared = registry.get("m")
+    assert cleared is not None and cleared.state == "healthy"
+    assert cleared.metrics == {"guilds": 2.0}
+
+
+def test_keyed_reports_cannot_clear_core_constraints() -> None:
+    registry = HealthRegistry(clock=lambda: 1.0)
+    registry.mark("m", "degraded", "paused", source="scheduler")
+
+    registry.reporter_for("m").report("healthy", key="scheduler")
+
+    health = registry.get("m")
+    assert health is not None and health.state == "degraded"

@@ -403,3 +403,104 @@ async def test_schedule_validation(tmp_path: Path) -> None:
     finally:
         await scheduler.close()
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_runs_modules_concurrently_but_one_job_per_module(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, poll_seconds=0.02, max_concurrent=4)
+    in_flight: set[str] = set()
+    overlap: list[set[str]] = []
+    release = asyncio.Event()
+
+    def blocking(name: str):
+        async def handler(run: JobRun) -> None:
+            in_flight.add(name)
+            overlap.append(set(in_flight))
+            await release.wait()
+            in_flight.discard(name)
+
+        return handler
+
+    scheduler.view_for("a").register("h", blocking("a"))
+    scheduler.view_for("b").register("h", blocking("b"))
+    await scheduler.view_for("a").run_at("first", clock.now, "h")
+    await scheduler.view_for("a").run_at("second", clock.now, "h")
+    await scheduler.view_for("b").run_at("first", clock.now, "h")
+    scheduler.start()
+    try:
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if len(in_flight) == 2:
+                break
+        # Both modules run at once; a's second job waits for a's first.
+        assert in_flight == {"a", "b"}
+        assert len(scheduler._running) == 2
+        release.set()
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not await scheduler.list_jobs("a") and not await scheduler.list_jobs("b"):
+                break
+        assert await scheduler.list_jobs("a") == []
+        assert max(len(seen) for seen in overlap) == 2
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_pauses_while_a_foreign_process_holds_live_leases(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = DurableScheduler(
+        db,
+        clock=clock,
+        lease_seconds=30.0,
+        poll_seconds=0.02,
+        on_health=lambda m, s, d: health.append((m, s, d)),
+    )
+    ran: list[str] = []
+
+    async def handler(run: JobRun) -> None:
+        ran.append(run.key)
+
+    view = scheduler.view_for("mod")
+    view.register("h", handler)
+    await view.run_at("mine", clock.now, "h")
+    # Simulate another process mid-execution: a live lease this runner never issued.
+    async with db.write_transaction() as conn:
+        await conn.execute(
+            f"""INSERT INTO {TABLE} (job_id, module_name, job_key, handler, run_at,
+                leased_until, lease_token, created_at, updated_at)
+                VALUES ('other:job', 'other', 'job', 'h', ?, ?, 'foreign', ?, ?)""",
+            # Not due itself, so it only matters as a live foreign lease.
+            (clock.now + 10_000, clock.now + 30, clock.now, clock.now),
+        )
+    scheduler.start()
+    try:
+        await asyncio.sleep(0.1)
+        assert scheduler.paused_for_foreign_leases
+        assert ran == []
+        assert health == [
+            ("mod", "degraded", "another scheduler runner holds live leases; jobs paused")
+        ]
+
+        # The foreign lease expires (crashed process) and the runner resumes.
+        clock.now += 31
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if ran:
+                break
+        assert ran == ["mine"]
+        assert not scheduler.paused_for_foreign_leases
+        assert health[-1] == ("mod", "healthy", "")
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+def test_max_concurrent_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ModuleContractError):
+        DurableScheduler(object(), max_concurrent=0)

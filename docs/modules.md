@@ -139,6 +139,31 @@ PyPI's pending-publisher flow and configure this repository, workflow
 reservation, so confirm availability again immediately before the first
 release.
 
+## Lifecycle contract
+
+Core drives every configured module through the same phases, in this order:
+
+1. **Preflight.** Declarations are validated before any module code runs.
+2. **Settings.** The module's settings model is built from the environment and
+   the dotenv, then overlaid from `<CONFIG_DIR>/modules/<name>.md`.
+3. **Create.** `ModuleSpec.create(ctx)` runs with a `ModuleLoadContext`. This is
+   pure wiring: read prepared settings, register LLM tools, construct the
+   module object. No migration has run and no dependency has started, so the
+   context offers no storage, services, or Discord. The tool registry is sealed
+   when loading finishes; registering a tool later (for example from `start()`)
+   raises.
+4. **Migrate.** Every module's `scoped_migrations` run, in dependency order,
+   before any module starts.
+5. **Start.** `start(ctx)` runs in dependency order with the full
+   `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A
+   `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled and
+   treated as a failure.
+6. **Close.** On shutdown, modules close newest-first. `close()` should be
+   idempotent and release what `start()` acquired. A `close()` that exceeds
+   `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled and logged; shutdown moves
+   on to the next module. Core then releases the module's commands,
+   components, event lane, scheduler handlers, and services regardless.
+
 ## Declarations
 
 A `ModuleSpec` can declare what the module intends to use. Declarations are
@@ -182,9 +207,16 @@ the ports are a contract and an audit surface, not a sandbox.
   `MigrationContext` with the same `table()` helper instead of a raw
   connection. This is naming discipline on one shared connection, not SQL
   isolation; every writer still goes through `write_transaction()`.
-- `ctx.health.report(state, detail, metrics)`: `starting`, `healthy`,
-  `degraded`, or `failed`. Core sets `starting` before `start()`, `failed`
-  (and aborts startup) if `start()` raises, and `healthy` after a clean
+- `ctx.health.report(state, detail, metrics, key=None)`: `starting`,
+  `healthy`, `degraded`, or `failed`. Without `key` the call sets the
+  module's overall report and replaces the previous one. With `key` it sets
+  one named concern that is tracked separately (`key="digest"`), so a later
+  unkeyed `healthy` does not erase a `degraded` subsystem; the module's
+  visible state is the worst across its unkeyed report, its keyed concerns,
+  and core's own constraints (scheduler, services, guild settings), which a
+  module cannot clear. A keyed `healthy` with no detail or metrics clears
+  that concern. Core sets `starting` before `start()`, `failed` (and aborts
+  startup) if `start()` raises or times out, and `healthy` after a clean
   return unless the module already reported otherwise. A module that
   declares a service in `provides` but never provides it is marked
   `degraded`. Detail is truncated, metrics are capped and secret-looking
@@ -252,7 +284,15 @@ the ports are a contract and an audit surface, not a sandbox.
   jitter, and backs a failing one off. A live lease is never run twice; an
   expired lease from a crashed process is claimed again. A persisted job
   whose handler is not registered stays paused and marks the module
-  `degraded`. Kimi runs one process; there is no multi-node coordination.
+  `degraded`. The runner executes up to
+  `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (4) jobs at once, at most one per
+  module, so a module's handlers never overlap each other while one module's
+  long job does not delay another's. Kimi runs one process; there is no
+  multi-node coordination. If the runner finds live leases it did not issue,
+  a second process is running jobs against the same database: the runner
+  pauses, logs an error, and marks every module with registered handlers
+  `degraded` until those leases expire (within the 60-second lease) or are
+  released.
 - `ctx.interactions`: slash commands and persistent components without the
   Discord SDK. `add_command(CommandSpec, handler)` builds the app command
   (top-level or one group level; `string`/`integer`/`boolean`/`user`/

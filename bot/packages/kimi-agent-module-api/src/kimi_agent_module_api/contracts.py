@@ -435,11 +435,23 @@ class ModuleHealth:
 
 
 class HealthReporter(Protocol):
+    """Module-side health reporting.
+
+    ``report(...)`` without ``key`` sets the module's overall state and replaces
+    the previous unkeyed report. ``report(..., key="digest")`` sets one named
+    concern that is tracked independently: the module's visible state is the
+    worst of every keyed concern plus the unkeyed report, so one subsystem
+    going ``degraded`` is not erased by another reporting ``healthy``. A keyed
+    ``healthy`` report with no detail and no metrics clears that concern.
+    """
+
     def report(
         self,
         state: HealthState,
         detail: str = "",
         metrics: Mapping[str, float] | None = None,
+        *,
+        key: str | None = None,
     ) -> None: ...
 
 

@@ -276,15 +276,28 @@ class FakeScheduler:
 
 
 class FakeHealth:
+    """Records every report; ``current`` is the latest unkeyed one, ``keyed`` the latest per key."""
+
     def __init__(self) -> None:
         self.reports: list[ModuleHealth] = []
+        self.keyed: dict[str, ModuleHealth] = {}
 
     def report(
-        self, state: HealthState, detail: str = "", metrics: Mapping[str, float] | None = None
+        self,
+        state: HealthState,
+        detail: str = "",
+        metrics: Mapping[str, float] | None = None,
+        *,
+        key: str | None = None,
     ) -> None:
-        self.reports.append(
-            ModuleHealth(state, detail, dict(metrics or {}), float(len(self.reports)))
-        )
+        health = ModuleHealth(state, detail, dict(metrics or {}), float(len(self.reports)))
+        if key is not None:
+            if state == "healthy" and not detail and not metrics:
+                self.keyed.pop(key, None)
+            else:
+                self.keyed[key] = health
+            return
+        self.reports.append(health)
 
     @property
     def current(self) -> ModuleHealth | None:

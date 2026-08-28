@@ -1,13 +1,12 @@
 # Reference module: kudos
 
-A complete, deliberately small Kimi application module. It lets members thank
-each other, keeps a per-guild leaderboard, and posts a periodic digest. The
-feature is an excuse: the point is that every file shows one part of the
-module API in its real shape, with comments explaining *why* the host works
-that way.
+A complete, small Kimi application module. Members thank each other, each
+guild gets a leaderboard, and a digest is posted on a schedule. Every file
+covers one part of the module API, with comments on why the host works that
+way.
 
-It is a starting point, not a dependency. Copy the layout, rename the package
-and the entry point, and replace the behavior.
+Use it as a starting point: copy the layout, rename the package and the entry
+point, and replace the behavior.
 
 ## What it demonstrates
 
@@ -26,12 +25,12 @@ and the entry point, and replace the behavior.
 | Discord actions | `module.py` | Declared `send_message` for the digest embed |
 | Trust | `module.py` | `ctx.trust.tier()` against the guild's `giver_min_tier` |
 | Services | `module.py` | Provides `kudos.board@1` for sibling modules |
-| Proposals | `module.py` | `/kudos setup` proposes a guild document instead of writing config |
+| Proposals | `module.py` | `/kudos setup` proposes a guild document for staff approval |
 | Health | `module.py` | Metrics and `degraded` state after digest failures |
 | Testing | `tests/` | Unit tests on the API fakes only; no host import |
 
 Not used here: `ctx.http` (it needs a real declared host), `raw_bot` and
-`raw_storage` (escape hatches a module should not need), `consumes`
+`raw_storage` (escape hatches most modules should not need), `consumes`
 (this module has no dependency), and `activation_capabilities`.
 
 ## Layout
@@ -107,7 +106,7 @@ or the same fields, without the prefix, as frontmatter in
    and the entry-point name. The module name must match `ModuleSpec.name`
    and `ModuleSettingsDefinition.name`; it prefixes every table and the
    module's event namespace.
-3. Depend on `kimi-agent-module-api` from PyPI instead of the workspace.
+3. Depend on `kimi-agent-module-api` from PyPI.
 4. Replace the behavior. Keep the split: declarations in `spec.py`, SQL in
    one place, business rules in one method shared by every entry point.
 5. Write your own privacy note. A module that stores member data (this one

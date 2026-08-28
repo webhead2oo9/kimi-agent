@@ -1,21 +1,20 @@
 """The module's lifecycle object: everything that runs after the host starts it.
 
-Read this file top to bottom as a tour of the runtime ports:
+Layout:
 
-- ``start()`` is where a module binds to ``ModuleRuntimeContext``. Everything
-  it registers (commands, components, subscriptions, services) returns a
+- ``start()`` binds the module to ``ModuleRuntimeContext``. Everything it
+  registers (commands, components, subscriptions, services) returns a
   ``Registration`` that ``close()`` releases in reverse order.
-- ``_give()`` is the one business rule, shared by the LLM tool, the slash
-  command, and the button so the three entry points cannot drift apart.
-- The rest of the file is one method per surface: the tools the LLM may call,
-  the ``/kudos`` commands, the persistent "Thank back" button, the scheduled
-  digest, the ``discord.member_remove`` subscription, the provided service,
-  and the guild-settings change hook.
+- ``_give()`` holds the business rule shared by the LLM tool, the slash
+  command, and the button.
+- The remaining methods are one per surface: LLM tools, ``/kudos`` commands,
+  the persistent "Thank back" button, the scheduled digest, the
+  ``discord.member_remove`` subscription, the provided service, and the
+  guild-settings change hook.
 
-Module code is trusted and runs in the host process, so the ports are not a
-sandbox. They are the contract that keeps a module reviewable: every Discord
-action, event topic, and service it uses is declared on ``ModuleSpec`` and can
-be inspected by the bot owner with ``/modules manifest``.
+Module code is trusted and runs in the host process. The ports are a
+reviewable contract: every Discord action, event topic, and service the module
+uses is declared on ``ModuleSpec`` and listed by ``/modules manifest``.
 """
 
 from __future__ import annotations
@@ -130,7 +129,7 @@ class KudosModule:
     # ------------------------------------------------------------------
 
     async def start(self, ctx: ModuleRuntimeContext) -> None:
-        """Bind to the runtime. Raising here aborts bot startup, by design."""
+        """Bind to the runtime. Raising here aborts bot startup."""
         self._ctx = ctx
         self._ledger = KudosLedger(ctx.storage)
 
@@ -285,8 +284,8 @@ class KudosModule:
 
     async def tool_give(self, arguments: dict[str, Any], tool_ctx: ModuleToolContext) -> str:
         """``give_kudos``: the model gives kudos on behalf of the person talking to it."""
-        # ``guild_id`` is None in DMs and in personal chat. Kudos are a guild
-        # artifact, so a guild-less caller is refused rather than widened.
+        # ``guild_id`` is None in DMs and in personal chat. Kudos belong to a
+        # guild, so a guild-less caller is refused.
         if tool_ctx.guild_id is None:
             return "Kudos can only be given inside a server."
         receiver_id = _parse_user_id(arguments.get("user"))
@@ -321,7 +320,7 @@ class KudosModule:
 
     async def _command_give(self, interaction: ModuleInteraction) -> None:
         ctx, _ = self._require_started()
-        # ``user`` options arrive as stable ids, never SDK objects.
+        # ``user`` options arrive as stable ids.
         receiver_id = int(interaction.options["member"])
         # ``ctx.trust`` is the same read-only lookup core uses for its own tiers.
         tier = await ctx.trust.tier(interaction.guild_id, interaction.user_id)
@@ -356,9 +355,9 @@ class KudosModule:
         await interaction.respond(embed=self._board_embed(entries, days), ephemeral=not entries)
 
     async def _command_setup(self, interaction: ModuleInteraction) -> None:
-        """Propose a guild-settings change instead of writing configuration directly.
+        """Propose a guild-settings change for staff approval.
 
-        Modules never write below ``CONFIG_DIR``. The proposal port records the
+        Modules do not write below ``CONFIG_DIR``. The proposal port records the
         exact current document as a rollback baseline, posts a review card with
         staff-only Approve/Reject buttons, and applies the change on approval.
         """

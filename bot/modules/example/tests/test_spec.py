@@ -1,7 +1,7 @@
 """The declarations are valid and load-time wiring registers what the docs promise.
 
 These tests run the same validators the host runs at preflight, so a broken
-declaration fails here instead of at the first bot start.
+declaration fails here, before the first bot start.
 """
 
 from __future__ import annotations

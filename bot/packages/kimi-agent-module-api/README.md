@@ -4,7 +4,7 @@ The stable, host-independent contracts for building Kimi application modules:
 separately installed packages that add commands, LLM tools, background jobs,
 event handlers, per-guild settings, and durable data to a Kimi deployment.
 
-This package deliberately contains no bot runtime, Discord client, database
+This package contains no bot runtime, Discord client, database
 implementation, or module loader. It exports:
 
 - `ModuleSpec`, `ModuleLoadContext`, `ModuleRuntimeContext`: the declaration a

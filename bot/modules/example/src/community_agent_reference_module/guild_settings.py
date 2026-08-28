@@ -5,8 +5,8 @@ the guild's: staff of each server edit them, and the host stores them as
 frontmatter in ``<CONFIG_DIR>/guild-modules/<guild_id>/reference_kudos.md``.
 
 The host validates each guild's document against this schema and hands the
-module a typed snapshot through ``ctx.guild_settings``. The module never parses
-a file itself.
+module a typed snapshot through ``ctx.guild_settings``. The module does not parse
+the file itself.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from kimi_agent_module_api import GuildSettingsSchema
 from kimi_agent_module_api.contracts import GuildSettingField
 
 # Names are referenced from several places (commands, the digest job, tests),
-# so they are constants rather than repeated string literals.
+# so they are constants.
 FIELD_DIGEST_CHANNEL = "digest_channel_id"
 FIELD_GIVER_TIER = "giver_min_tier"
 FIELD_ALLOW_SELF_THANKS = "allow_self_thanks"

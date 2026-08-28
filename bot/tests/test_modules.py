@@ -795,3 +795,64 @@ async def test_start_reports_a_cancelled_start_as_failed(tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="cancelled before it finished"):
         await manager.start(_base(database, manager), customize=fake_ports)
     await database.close()
+
+
+@pytest.mark.asyncio
+async def test_module_tools_stay_hidden_while_start_is_in_progress(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Slow(FakeModule):
+        async def start(self, ctx: ModuleRuntimeContext) -> None:
+            entered.set()
+            await release.wait()
+
+    async def noop(_arguments: dict[str, Any], _ctx: Any) -> str:
+        return "ran"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("t", "t", {"type": "object"}, noop)
+        return Slow("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    from trust.tiers import TrustTier as CoreTier
+
+    starting = asyncio.create_task(manager.start(_base(database, manager), customize=fake_ports))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
+        release.set()
+        await starting
+        assert [t.name for t in registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")] == ["t"]
+    finally:
+        await manager.close()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_module_tools_are_hidden_for_a_non_snowflake_guild_id(tmp_path: Path) -> None:
+    async def noop(_arguments: dict[str, Any], _ctx: Any) -> str:
+        return "ran"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("t", "t", {"type": "object"}, noop)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    await manager.start(_base(database, manager), customize=fake_ports)
+    from trust.tiers import TrustTier as CoreTier
+
+    try:
+        assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="guild-1")
+        assert [t.name for t in registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")] == ["t"]
+    finally:
+        await manager.close()
+        await database.close()
+    # Closed module: its tools go with it.
+    assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")

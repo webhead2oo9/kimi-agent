@@ -632,3 +632,92 @@ async def test_resume_restores_the_same_orphan_detail(tmp_path: Path) -> None:
     finally:
         await second.close()
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_job_heartbeat_renews_the_runner_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, lease_seconds=0.2, poll_seconds=0.05)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(run: JobRun) -> None:
+        started.set()
+        await release.wait()
+
+    scheduler.view_for("mod").register("slow", slow)
+    await scheduler.view_for("mod").run_at("job", clock.now, "slow")
+    try:
+        inline = asyncio.create_task(scheduler.run_due())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        clock.now += 1.0  # well past the 0.2s lease; only heartbeats can keep it
+        await asyncio.sleep(0.35)
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None and row[0] > clock.now
+        release.set()
+        await inline
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_claim_commit_releases_the_module_reservation(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    scheduler.view_for("mod").register("h", handler)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    real_commit = db.conn.commit
+    calls = {"n": 0}
+
+    async def flaky_commit() -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:  # the lease acquisition commits first, the claim second
+            raise RuntimeError("disk full")
+        await real_commit()
+
+    db.conn.commit = flaky_commit  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="disk full"):
+            await scheduler.run_due()
+        assert scheduler._running_modules == set()
+        db.conn.commit = real_commit  # type: ignore[method-assign]
+        assert await scheduler.run_due() == 1
+    finally:
+        db.conn.commit = real_commit  # type: ignore[method-assign]
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_orphan_keeps_the_detail_naming_a_live_job(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    first = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    first.view_for("mod").register("h", handler)
+    await first.view_for("mod").run_at("a", clock.now, "h")
+    await first.view_for("mod").run_at("b", clock.now + 1, "h")
+    await first.close()
+    health: list[tuple[str, str, str]] = []
+    second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+    second.view_for("mod").register("other", handler)
+    try:
+        assert await second.run_due() == 0
+        assert health[-1] == ("mod", "degraded", "scheduled job 'a' has no handler")
+        assert await second.view_for("mod").cancel("a")
+        # Still degraded (b is orphaned too), and the stored detail now names b.
+        assert second._paused_reported[("mod", "h")] == "scheduled job 'b' has no handler"
+    finally:
+        await second.close()
+        await db.close()

@@ -183,10 +183,35 @@ def _render_scalar(key: str, value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, str):
-        # JSON string syntax is valid YAML double-quoted syntax, so every
-        # character (colons, hashes, quotes, newlines, "true") round-trips.
-        return json.dumps(value, ensure_ascii=False)
+        return _quote(value)
     raise TypeError(f"guild setting {key!r} has unrenderable value {value!r}")
+
+
+def _quote(text: str) -> str:
+    """YAML double-quoted scalar for any Python string.
+
+    JSON string syntax is valid YAML double-quoted syntax, which handles
+    colons, hashes, quotes, newlines, and words like ``true``. YAML also
+    forbids raw C1 controls, DEL, surrogates, and the two non-characters
+    that JSON leaves unescaped, so those are written as ``\\uXXXX`` too.
+    """
+    escaped = json.dumps(text, ensure_ascii=False)
+    return "".join(f"\\u{ord(ch):04x}" if _yaml_unprintable(ch) else ch for ch in escaped)
+
+
+def _yaml_unprintable(ch: str) -> bool:
+    """Characters a YAML double-quoted scalar cannot carry literally.
+
+    C1 controls and DEL are not printable; surrogates and the two
+    non-characters are invalid; U+2028/U+2029 are YAML line breaks that would
+    be folded together with surrounding spaces; the BOM is a stream marker.
+    """
+    code = ord(ch)
+    return (
+        0x7F <= code <= 0x9F
+        or 0xD800 <= code <= 0xDFFF
+        or code in (0x2028, 0x2029, 0xFEFF, 0xFFFE, 0xFFFF)
+    )
 
 
 def render_guild_settings(values: Mapping[str, Any]) -> str:

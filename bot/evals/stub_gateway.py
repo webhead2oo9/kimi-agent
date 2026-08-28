@@ -87,21 +87,7 @@ def install_safe_stubs(registry: ToolRegistry) -> None:
         entry = by_name.get(name)
         if entry is None:
             continue
-        registry.remove_tools({name})
-        registry.register(
-            name=entry.name,
-            description=entry.description,
-            parameters=entry.parameters,
-            handler=_ack,
-            min_tier=entry.min_tier,
-            searchable=entry.searchable,
-            skill_name=entry.skill_name,
-            category=entry.category,
-            parameters_builder=entry.parameters_builder,
-            owner_only=entry.owner_only,
-            guild_ids=entry.guild_ids,
-            config_spec=entry.config_spec,
-        )
+        registry.replace_handler(name, _ack)
 
 
 @dataclass

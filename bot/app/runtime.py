@@ -700,7 +700,10 @@ class KimiApplication:
         # each module's in-flight event handlers via events.close_module), then
         # tear down the shared HTTP client and event bus nothing can reach anymore.
         if self.tools.module_manager.scheduler is not None:
-            await self.tools.module_manager.scheduler.close()
+            try:
+                await self.tools.module_manager.scheduler.close()
+            except Exception:
+                log.exception("Error closing the module scheduler")
         await self.tools.module_manager.close()
         if self.tools.module_manager.http is not None:
             await self.tools.module_manager.http.close()

@@ -119,7 +119,15 @@ def test_chat_commands_are_user_install_only() -> None:
     async def reset_chat(_interaction: discord.Interaction) -> str:
         return "ok"
 
-    register_user_app_chat_commands(bot, run_chat=run_chat, reset_chat=reset_chat)
+    register_user_app_chat_commands(
+        bot,
+        run_chat=run_chat,
+        reset_chat=reset_chat,
+        bot_name="Kimi",
+    )
+    chat_command = bot.tree.get_command("chat")
+    assert chat_command is not None
+    assert chat_command.description == "Chat with Kimi"
     for name in ("chat", "chat-reset"):
         command = bot.tree.get_command(name)
         assert command is not None
@@ -130,6 +138,28 @@ def test_chat_commands_are_user_install_only() -> None:
         assert contexts.guild is True
         assert contexts.dm_channel is True
         assert contexts.private_channel is True
+
+
+def test_chat_command_description_respects_discord_limit() -> None:
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+
+    async def run_chat(*_args: object) -> None:
+        return None
+
+    async def reset_chat(_interaction: discord.Interaction) -> str:
+        return "ok"
+
+    register_user_app_chat_commands(
+        bot,
+        run_chat=run_chat,
+        reset_chat=reset_chat,
+        bot_name="K" * 100,
+    )
+
+    command = bot.tree.get_command("chat")
+    assert command is not None
+    assert command.description == f"Chat with {'K' * 90}"
+    assert len(command.description) == 100
 
 
 @pytest.mark.parametrize(

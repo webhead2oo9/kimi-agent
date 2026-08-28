@@ -25,6 +25,7 @@ class ExaSearchBackend:
     name = "exa"
     supports_contents = True
     supports_text = True
+    supports_contents_text = True
 
     def __init__(
         self,

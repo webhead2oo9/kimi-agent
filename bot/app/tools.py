@@ -27,6 +27,7 @@ from skills.secrets import load_secrets
 from search.brave import BraveSearchBackend
 from search.chain import SearchChain
 from search.exa import ExaSearchBackend
+from search.tinyfish import TinyFishSearchBackend
 from search.types import SearchBackend
 from sandbox.runner import SandboxConfig, SandboxNetworkMode, sandbox_available
 from sandbox.netns_lease import NetnsLease
@@ -383,9 +384,20 @@ def _register_discord_text_search(
 
 
 def _register_internet_search(settings: Settings, registry: ToolRegistry) -> None:
+    tinyfish_key = settings.tinyfish_api_key.get_secret_value()
     exa_key = settings.exa_api_key.get_secret_value()
     brave_key = settings.brave_api_key.get_secret_value()
     backends: list[SearchBackend] = []
+    # TinyFish leads: its search and fetch endpoints are free at any balance.
+    if tinyfish_key:
+        backends.append(
+            TinyFishSearchBackend(
+                tinyfish_key,
+                search_url=settings.tinyfish_search_url,
+                fetch_url=settings.tinyfish_fetch_url,
+                timeout_seconds=settings.internet_search_backend_timeout_seconds,
+            )
+        )
     if exa_key:
         backends.append(
             ExaSearchBackend(
@@ -404,7 +416,9 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
             )
         )
     if not backends:
-        log.info("Internet search disabled; EXA_API_KEY and BRAVE_API_KEY are not set")
+        log.info(
+            "Internet search disabled; TINYFISH_API_KEY, EXA_API_KEY and BRAVE_API_KEY are not set"
+        )
         return
 
     chain = SearchChain(
@@ -420,6 +434,8 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
             max_output_chars=settings.internet_search_max_output_chars,
             timeout_seconds=settings.internet_search_timeout_seconds,
             fallback_cost_usd={
+                ("tinyfish", "search"): settings.tinyfish_search_cost_usd,
+                ("tinyfish", "contents"): settings.tinyfish_contents_cost_usd,
                 ("exa", "search"): settings.exa_search_cost_usd,
                 ("exa", "contents"): settings.exa_contents_cost_usd,
                 ("brave", "search"): settings.brave_search_cost_usd,

@@ -21,6 +21,7 @@ class HttpResponse:
 
 
 JsonPost = Callable[[str, dict[str, str], dict[str, Any], float], Awaitable[HttpResponse]]
+JsonGet = Callable[[str, dict[str, str], dict[str, str], float], Awaitable[HttpResponse]]
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,11 @@ ConsumeCall = Callable[[], None]
 class SearchBackend(Protocol):
     name: str
     supports_contents: bool
+    # A backend can offer full page text through one entry point and not the
+    # other: TinyFish search returns snippets only, while its fetch endpoint
+    # returns whole pages. Keep the two capabilities separate.
     supports_text: bool
+    supports_contents_text: bool
 
     async def search(self, request: SearchRequest) -> BackendResponse: ...
 

@@ -7,6 +7,7 @@ import pytest
 from search.brave import BraveSearchBackend
 from search.exa import ExaSearchBackend
 from search.normalize import is_safe_fetch_url
+from search.tinyfish import TinyFishSearchBackend
 from search.types import ContentsRequest, HttpResponse, SearchProviderError, SearchRequest
 
 
@@ -234,3 +235,184 @@ async def test_exa_contents_all_failed_is_not_zero_matches() -> None:
         await ExaSearchBackend("secret", request=post).contents(
             ContentsRequest(urls=("https://example.com",))
         )
+
+
+class RecordingGet:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.response_payload = payload
+        self.calls: list[tuple[str, dict[str, str], dict[str, str], float]] = []
+
+    async def __call__(
+        self,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str],
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        self.calls.append((url, headers, params, timeout_seconds))
+        return HttpResponse(200, self.response_payload, {})
+
+
+class BatchRecordingPost(RecordingPost):
+    """Echo one fetch result per requested URL so batching is observable."""
+
+    async def __call__(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        self.calls.append((url, headers, payload, timeout_seconds))
+        return HttpResponse(
+            200,
+            {
+                "results": [
+                    {"url": item, "final_url": item, "title": "Page", "text": f"body of {item}"}
+                    for item in payload["urls"]
+                ],
+                "errors": [],
+            },
+            {},
+        )
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_search_maps_params_and_snippets() -> None:
+    get = RecordingGet(
+        {
+            "query": "waffles",
+            "results": [
+                {
+                    "position": 1,
+                    "site_name": "example.com",
+                    "title": " Example  page ",
+                    "snippet": " useful  text ",
+                    "url": "https://example.com/a",
+                    "date": "2026-08-20",
+                }
+            ],
+            "total_results": 10,
+            "page": 0,
+        }
+    )
+    backend = TinyFishSearchBackend("secret", get=get)
+
+    response = await backend.search(
+        SearchRequest(
+            query="waffles",
+            num_results=10,
+            include_domains=("example.com",),
+            exclude_domains=("spam.example",),
+            start_published_date="2026-08-01",
+            end_published_date="2026-08-24",
+            country="US",
+        )
+    )
+
+    assert get.calls[0][0] == "https://api.search.tinyfish.ai"
+    assert get.calls[0][1]["X-API-Key"] == "secret"
+    assert get.calls[0][2] == {
+        "query": "waffles",
+        "location": "US",
+        "include_domains": "example.com",
+        "exclude_domains": "spam.example",
+        "after_date": "2026-08-01",
+        "before_date": "2026-08-24",
+    }
+    assert response.results[0].title == "Example page"
+    assert response.results[0].content == ("useful text",)
+    assert response.results[0].published_at == "2026-08-20"
+    assert response.reported_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_search_rejects_non_2xx() -> None:
+    class FailingGet(RecordingGet):
+        async def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            params: dict[str, str],
+            timeout_seconds: float,
+        ) -> HttpResponse:
+            self.calls.append((url, headers, params, timeout_seconds))
+            return HttpResponse(402, {}, {})
+
+    backend = TinyFishSearchBackend("secret", get=FailingGet({}))
+
+    with pytest.raises(SearchProviderError, match="HTTP 402"):
+        await backend.search(SearchRequest(query="anything", num_results=10))
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_search_missing_results_is_invalid_shape() -> None:
+    backend = TinyFishSearchBackend("secret", get=RecordingGet({"query": "x"}))
+
+    with pytest.raises(SearchProviderError, match="invalid response shape"):
+        await backend.search(SearchRequest(query="anything", num_results=10))
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_contents_chunks_urls_into_batches_of_ten() -> None:
+    post = BatchRecordingPost({})
+    backend = TinyFishSearchBackend("secret", request=post, timeout_seconds=30.0)
+    urls = tuple(f"https://example.com/{index}" for index in range(25))
+
+    response = await backend.contents(ContentsRequest(urls=urls, content_mode="text"))
+
+    assert [len(call[2]["urls"]) for call in post.calls] == [10, 10, 5]
+    assert post.calls[0][0] == "https://api.fetch.tinyfish.ai"
+    assert post.calls[0][2]["format"] == "markdown"
+    # 80% of the 30s backend budget, in milliseconds.
+    assert post.calls[0][2]["per_url_timeout_ms"] == 24_000
+    assert len(response.results) == 25
+    assert response.results[0].content == ("body of https://example.com/0",)
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_contents_keeps_partial_batch_successes() -> None:
+    post = RecordingPost(
+        {
+            "results": [{"url": "https://example.com/good", "text": "complete page"}],
+            "errors": [{"url": "https://example.com/bad", "error": "bot_blocked", "status": 403}],
+        }
+    )
+    backend = TinyFishSearchBackend("secret", request=post)
+
+    response = await backend.contents(
+        ContentsRequest(urls=("https://example.com/good", "https://example.com/bad"))
+    )
+
+    assert [item.url for item in response.results] == ["https://example.com/good"]
+
+
+@pytest.mark.asyncio
+async def test_tinyfish_contents_all_failed_is_not_zero_matches() -> None:
+    post = RecordingPost({"results": [], "errors": [{"url": "https://example.com"}]})
+
+    with pytest.raises(SearchProviderError, match="could not read"):
+        await TinyFishSearchBackend("secret", request=post).contents(
+            ContentsRequest(urls=("https://example.com",))
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    (
+        "file:///etc/passwd",
+        "https://user:password@example.com/private",
+        "http://localhost/admin",
+        "http://169.254.169.254/latest/meta-data",
+        "http://2130706433/admin",
+    ),
+)
+async def test_tinyfish_contents_rejects_unsafe_urls_before_request(url: str) -> None:
+    post = RecordingPost({})
+    backend = TinyFishSearchBackend("secret", request=post)
+
+    with pytest.raises(SearchProviderError, match=r"public HTTP\(S\) URLs"):
+        await backend.contents(ContentsRequest(urls=(url,)))
+
+    assert post.calls == []

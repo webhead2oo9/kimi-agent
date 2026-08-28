@@ -20,7 +20,7 @@ smaller interface.
 
 ## Try the reference module
 
-This repository maintains one example at `bot/examples/reference-module`. It
+This repository maintains one example at `bot/modules/example`. It
 is executable documentation and a CI fixture, not a production dependency or a
 default-enabled feature.
 

@@ -286,20 +286,24 @@ wheels = [
 [[package]]
 name = "community-agent-reference-module"
 version = "1.0.0"
-source = { editable = "examples/reference-module" }
+source = { editable = "modules/example" }
 dependencies = [
     { name = "kimi-agent-module-api" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "mypy" },
     { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
+    { name = "mypy", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
 ]
 provides-extras = ["dev"]
 

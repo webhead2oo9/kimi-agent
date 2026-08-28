@@ -24,7 +24,8 @@ ENV_FILE=.env.dev uv run python bot.py        # dev instance: test guild + own D
 uv --preview-features audit-command audit --locked  # locked dependency vulnerabilities
 uv run ruff check .                           # lint
 uv run ruff format --check .                  # formatting: the ONLY line-length enforcement (E501 is unselected)
-uv run mypy .                                 # types (Windows fallback: uv run python -m mypy .)
+uv run mypy .                                 # core types (Windows fallback: uv run python -m mypy .)
+uv run mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests  # example package types
 uv run --all-packages python -m pytest -q     # all tests, including the reference module
 uv run python -m pytest tests/test_core_smoke.py -k "test_name"
 git diff --check                              # whitespace

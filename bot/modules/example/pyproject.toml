@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["mypy", "pytest", "ruff"]
 
 [project.entry-points."kimi_agent.modules"]
 reference_greeter = "community_agent_reference_module:SPEC"
@@ -19,3 +19,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+community_agent_reference_module = ["py.typed"]
+
+[tool.mypy]
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+explicit_package_bases = true
+check_untyped_defs = true

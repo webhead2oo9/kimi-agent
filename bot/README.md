@@ -26,8 +26,12 @@ guild installations, and permissions stay intact.
 - **Invocation-gated chat.** Replies to an @mention, a pinged reply, a
   `hey/hi <bot name>` / `<bot name> help` text invocation, or an unmentioned
   message in an auto-responding managed thread. Paused managed threads use the
-  ordinary invocation rules. DMs are ignored, and conversations stay rooted in
-  SQLite so replies continue the same transcript across restarts.
+  ordinary invocation rules. Ordinary DMs are ignored, and conversations stay
+  rooted in SQLite so replies continue the same transcript across restarts.
+- **User-installed personal chat (optional).** Explicitly approved Discord user
+  IDs can carry `/chat` across locations with one private personal transcript
+  and workspace. It is off by default. See
+  [docs/user-app.md](../docs/user-app.md).
 - **Provider-neutral.** Route chat, compaction, and optional durable coding models from
   `config/models.yaml`: OpenAI-compatible (Chat Completions or Responses),
   Anthropic (native or compat gateway), OpenRouter, or Codex. The agent core
@@ -74,7 +78,8 @@ guild installations, and permissions stay intact.
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
 - **Discord commands.** `/memory`, `/mod`, `/moderation`, `/privacy`, and
   `/usage` expose user controls and staff operations; owner-only `/models`
-  changes the global chat model without restarting the bot.
+  changes the global chat model without restarting the bot. An opt-in User
+  Install surface adds `/chat` and `/chat-reset`.
 - **Safety rails.** Optional privacy consent and LLM content moderation, user
   blocks, trust-tiered tools, moderation cases/logging, and read-only
   FingerprintHub sync with bounded local image matching.
@@ -133,6 +138,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | User persona overrides | `tools/persona.py` | [persona.md](../docs/persona.md) |
 | Observability | `observability/` | [observability.md](../docs/observability.md) |
 | Config (every setting) | `config/settings.py` | [configuration.md](../docs/configuration.md) |
+| Discord user-app chat | `commands/chat_cmd.py`, `app/runtime.py` | [user-app.md](../docs/user-app.md) |
 
 ## Quick start
 
@@ -206,7 +212,7 @@ usage/             token-usage normalization and pricing
 codex/             Codex WebSocket Responses transport
 config/            settings, persona, prompt templates
 config/fragments/  operator markdown read fresh each turn (pins, denylists, per-tool config)
-commands/          memory, models, moderation, privacy, and usage commands plus the bot-name-derived teaching menu
+commands/          chat, memory, models, moderation, privacy, and usage commands plus the bot-name-derived teaching menu
 trust/             trust-tier resolution
 evals/             offline eval harness (cassette-replayed runs over the real core)
 utils/             small shared helpers

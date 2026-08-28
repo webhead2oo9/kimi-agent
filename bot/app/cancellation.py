@@ -38,6 +38,7 @@ class ActiveOperationRegistry:
         *,
         user_id: str,
         channel_id: str,
+        stop_event: asyncio.Event | None = None,
     ) -> Iterator[None]:
         """Register an admitted turn before its conversation root is known."""
         task = asyncio.current_task()
@@ -50,7 +51,7 @@ class ActiveOperationRegistry:
             channel_id=channel_id,
             task=task,
             cancel_on_stop=True,
-            stop_event=asyncio.Event(),
+            stop_event=stop_event or asyncio.Event(),
             provisional=True,
         )
         # Publish the turn before its next await so STOP cannot miss work that

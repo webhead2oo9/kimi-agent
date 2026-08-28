@@ -341,6 +341,7 @@ async def test_handle_turn_blocks_input_before_persist_execute_and_cleans_prepar
     assert result is not None
     assert result.response_text == "moderated refusal"
     assert result.blocked_by_moderation is True
+    assert result.termination_reason == "moderation_blocked"
     assert not cleanup_file.exists()
     assert service.calls[0]["text"] == "hello"
 
@@ -973,6 +974,7 @@ async def test_handle_turn_uses_one_absolute_budget_from_preparation(
     assert executed.is_set()
     assert result is not None
     assert "timed out after 0.05 seconds" in result.response_text
+    assert result.termination_reason == "timed_out"
     assert elapsed < 0.08
 
 
@@ -1016,6 +1018,7 @@ async def test_preparation_and_output_moderation_share_absolute_budget(
 
     assert result is not None
     assert "timed out after 0.05 seconds" in result.response_text
+    assert result.termination_reason == "timed_out"
     assert [call["direction"] for call in service.calls] == [
         Direction.INPUT,
         Direction.OUTPUT,
@@ -1059,4 +1062,5 @@ async def test_handle_turn_deadline_bounds_persistence_before_core(
 
     assert result is not None
     assert "timed out" in result.response_text
+    assert result.termination_reason == "timed_out"
     assert executed is False

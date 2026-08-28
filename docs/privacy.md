@@ -50,6 +50,14 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 | `config_proposals` | Module configuration proposals and their exact baselines, summaries, guild and Discord message ids, staff proposer/decider ids, decision reasons, and timestamps. These operational records have no automatic TTL and `/privacy` does not scrub them. |
 
+The optional user-app surface stores one owner-only conversation per user under
+`userchat:<user_id>`. It deliberately has no guild scope even when invoked from
+a guild. Its long-term auto-retained facts are tagged global for that user, and
+its workspace is `<user_id>__userapp`. `/chat-reset` deletes only this transcript
+and its cascading conversation-owned rows; it keeps preferences, long-term
+memory, and workspace files. Full `/privacy` deletion removes all of those
+user-scoped stores, including the user-app workspace. See [user-app.md](user-app.md).
+
 **Encryption at rest (optional).** When `DATABASE_ENCRYPTION_KEY` is set, this
 database, including the WAL sidecar, is encrypted on disk with SQLCipher
 (AES-256), so a stolen `data/bot.db` or backup is unreadable without the key.

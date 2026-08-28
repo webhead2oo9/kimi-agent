@@ -101,6 +101,13 @@ def prompt_template_candidates(
             )
         candidates.append(
             PromptTemplateCandidate(
+                kind="command_local",
+                identifier=command_template,
+                path=command_dir / f"{command_template}.local.md",
+            )
+        )
+        candidates.append(
+            PromptTemplateCandidate(
                 kind="command",
                 identifier=command_template,
                 path=command_dir / f"{command_template}.md",

@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from agent.activity import (
     ActivityReporter,
@@ -47,8 +47,16 @@ from tools._common import tool_error
 from tools.registry import MessageContext, ToolEntry, ToolRegistry, TurnHandoff
 from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, UsageBreakdown, normalize_usage
+from workspace import WorkspaceKey
 
 log = logging.getLogger(__name__)
+
+type ConversationTerminationReason = Literal[
+    "completed",
+    "provider_error",
+    "timed_out",
+    "max_iterations",
+]
 
 MAX_TOOL_NAME_RETRIES = 3
 MAX_ARG_PARSE_RETRIES = 3
@@ -245,7 +253,7 @@ class ConversationRunResult:
     iterations: int = 0
     timed_out: bool = False
     turn_id: str = ""
-    termination_reason: str = "completed"
+    termination_reason: ConversationTerminationReason = "completed"
     terminal_handoff: TurnHandoff | None = None
 
     def __str__(self) -> str:
@@ -331,6 +339,13 @@ class ConversationRunRequest:
     workspace_lock_held: bool = False
     resume_output_files: bool = False
     stop_event: asyncio.Event | None = None
+    # Actual Discord location and the explicit workspace may differ from the
+    # prompt/provider scope for user-installed personal chat.
+    platform_guild_id: str | None = None
+    platform_channel_id: str = ""
+    platform_thread_id: str | None = None
+    workspace_key: WorkspaceKey | None = None
+    personal_chat: bool = False
 
 
 @dataclass
@@ -760,9 +775,16 @@ class _ConversationRunner:
         return MessageContext(
             user_id=request.user_id,
             user_name=request.user_name,
+            # Logical scope: already None for personal chat, which is guild-less.
+            # The physical guild travels separately and confers no authority.
             guild_id=request.guild_id,
-            channel_id=request.channel_id,
-            thread_id=request.thread_id,
+            platform_guild_id=(
+                request.platform_guild_id
+                if request.platform_guild_id is not None
+                else request.guild_id
+            ),
+            channel_id=request.platform_channel_id or request.channel_id,
+            thread_id=(request.platform_thread_id if request.personal_chat else request.thread_id),
             conversation_id=request.context.db_conversation_id,
             channel_name=request.channel_name,
             platform_member=request.platform_member,
@@ -789,6 +811,8 @@ class _ConversationRunner:
             record_usage_call=request.record_usage_call,
             images_supported=ProviderCapability.IMAGE_INPUT in request.provider.capabilities,
             stop_event=request.stop_event,
+            workspace_key_override=request.workspace_key,
+            personal_chat=request.personal_chat,
         )
 
     def _finish_with_fallback(

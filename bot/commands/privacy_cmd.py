@@ -828,6 +828,7 @@ def register_privacy_command(
     bot_name: str = "",
     policy_url: str = "",
     is_available: InteractionAvailability = _always_available,
+    user_install_enabled: bool = False,
 ) -> None:
     display_name = bot_name.strip() or "this bot"
 
@@ -862,5 +863,13 @@ def register_privacy_command(
             view=view,
             ephemeral=True,
         )
+
+    if user_install_enabled:
+        app_commands.allowed_installs(guilds=True, users=True)(privacy)
+        app_commands.allowed_contexts(
+            guilds=True,
+            dms=True,
+            private_channels=True,
+        )(privacy)
 
     bot.tree.add_command(privacy, override=True)

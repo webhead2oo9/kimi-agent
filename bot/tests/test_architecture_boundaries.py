@@ -172,3 +172,26 @@ def test_generic_knowledge_search_surface_has_no_files() -> None:
     assert not (PROJECT_ROOT / "knowledge").exists()
     assert not (PROJECT_ROOT / "docs/knowledge.md").exists()
     assert not (PROJECT_ROOT / "config/knowledge_sources.example.json").exists()
+
+
+def test_tools_never_read_the_physical_guild() -> None:
+    """`MessageContext.guild_id` is the logical data scope and is None in
+    guild-less personal chat; `platform_guild_id` is the raw Discord location
+    and carries no authority.
+
+    Every trust, policy, and data-scope decision a tool makes (dispatch scoping,
+    community banks, skill scoping, catalogs) must read the logical scope, so
+    reaching for the physical guild inside tools/ is the exact mistake that let
+    a personal-chat turn write into the community bank and skill store of
+    whatever guild the slash command happened to be invoked from.
+    """
+    offenders: list[str] = []
+    for path in sorted((PROJECT_ROOT / "tools").rglob("*.py")):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        for node in ast.walk(_parse(relative)):
+            if isinstance(node, ast.Attribute) and node.attr == "platform_guild_id":
+                offenders.append(f"{relative}:{node.lineno}")
+
+    assert not offenders, (
+        f"tools/ must use the logical ctx.guild_id, not the physical location: {offenders}"
+    )

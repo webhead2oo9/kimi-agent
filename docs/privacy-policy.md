@@ -15,9 +15,9 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 ## TL;DR
 
 - Kimi only starts an AI conversation when you call on it: a mention, a pinged
-  reply, `hey/hi Kimi`, `Kimi help`, or an unmentioned message in one of its
-  auto-responding threads. During that conversation it may use recent public
-  messages as context. It **ignores DMs** entirely.
+  reply, `hey/hi Kimi`, `Kimi help`, an unmentioned message in one of its
+  auto-responding threads, or the optional user-installed `/chat` command.
+  Normal bot DMs are ignored; user-app `/chat` is an explicit command surface.
 - Staff can separately opt specific channels into local known-bad image
   matching. A match can delete the message and time out its author; images and
   matches are not sent to the fingerprint service.
@@ -47,8 +47,12 @@ except channels the operator excluded. That gives the AI useful context, but it
 does not turn those messages into Kimi conversation history just because they
 were retrieved.
 
-**Kimi ignores direct messages.** If you DM the bot, your message is dropped
-without being read, stored, or logged.
+**Kimi ignores ordinary direct messages.** If you DM the bot normally, your
+message is dropped without being read, stored, or logged. A deployment may
+separately enable user-installed `/chat`; invoking that command creates one
+private personal transcript keyed to your Discord user ID across locations.
+`/chat-reset` clears that transcript but keeps long-term memory and workspace
+files; `/privacy` remains the full deletion control.
 
 **Known-bad image exception, if your server turns it on.** Staff can enroll
 specific channels in local image-fingerprint enforcement. In those channels,

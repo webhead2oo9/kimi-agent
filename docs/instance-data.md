@@ -64,6 +64,10 @@ than failing, so you won't get an error to warn you. Copy every tracked shared
 command template as well. In particular, the **Teach Kimi** context menu expects
 `config/prompts/commands/learn.md`; without it, the turn falls back to the base
 prompt and loses its narrower learning workflow and quoted-message handling.
+When user-app chat is enabled, copy and customize
+`config/prompts/commands/chat.md` as well. Small in-checkout deployments may use
+the gitignored `chat.local.md` override instead; private `CONFIG_DIR`
+deployments normally keep their customized `chat.md` in the private tree.
 
 Numeric fragments, full overrides, module/plugin/tool files, and skills are only
 included when the deployment actually uses them. Copy the public

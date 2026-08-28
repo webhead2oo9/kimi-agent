@@ -527,6 +527,35 @@ class ConversationStore:
                 (thread_id,),
             )
 
+    async def delete_owner_conversation(self, key: str, owner_user_id: str) -> bool:
+        """Delete one exact owner-only root, including its transcript.
+
+        The owner predicate makes this safe for caller-scoped reset surfaces.
+        Related mappings, activated tools, retained-watermark rows, and coding
+        records cascade with the conversation; long-term memory and workspace
+        data are deliberately outside this operation.
+        """
+
+        async with self._db.write_transaction() as conn:
+            async with conn.execute(
+                "SELECT id FROM conversations "
+                "WHERE key = ? AND owner_user_id = ? AND access_scope = ?",
+                (key, owner_user_id, OWNER_ONLY),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return False
+            conversation_id = int(row["id"])
+            await conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            await conn.execute(
+                "DELETE FROM conversations WHERE id = ?",
+                (conversation_id,),
+            )
+            return True
+
     async def list_thread_conversations(self) -> list[tuple[str, bool]]:
         """Every managed thread id paired with its auto-respond mode."""
         conn = self._db.conn

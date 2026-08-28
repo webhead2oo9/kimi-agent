@@ -12,10 +12,11 @@ Anthropic, OpenRouter, Codex, and more providers to come) in one YAML file, give
 own persona and rules in plain Markdown, and it takes it from there.
 
 It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
-`Kimi help`, or a message inside a thread it's running. DMs are ignored. Under the
-hood, every invocation runs a [ReAct](https://arxiv.org/abs/2210.03629) tool loop
-and comes back with a properly chunked Discord reply, embeds and attachments
-included.
+`Kimi help`, or a message inside a thread it's running. Ordinary DMs are
+ignored. Deployments can optionally grant selected Discord users a command-only
+personal `/chat` app. Under the hood, every invocation runs a
+[ReAct](https://arxiv.org/abs/2210.03629) tool loop and comes back with a
+properly chunked Discord reply, embeds and attachments included.
 
 Roughly what that looks like:
 
@@ -42,6 +43,7 @@ Plain chat works out of the box. There's lots of options to look through and set
 | **Discord context** | Pull recent channel history on demand, or search chosen channels, without persisting what it reads. |
 | **Safety** | Privacy consent, LLM output moderation, user blocks, moderation cases with staff logs, and known-bad image fingerprint matching. |
 | **Plugins** | Add your own tools from your own packages via an explicit allowlist. |
+| **Personal user app** | Optionally grant selected Discord IDs one `/chat` thread and workspace that follows them across locations. |
 
 Turns are stateless and every conversation is keyed to the message that started
 it, stored in SQLite, so replying to an old answer picks the thread back up even
@@ -95,6 +97,7 @@ against a test guild without touching production state.
 | Deploy for the first time | [`docs/setup.md`](docs/setup.md) |
 | Understand the system shape | [`docs/architecture.md`](docs/architecture.md) |
 | Look up a setting | [`docs/configuration.md`](docs/configuration.md) |
+| Configure user-installed personal chat | [`docs/user-app.md`](docs/user-app.md) |
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |
 | Contribute code | [`CLAUDE.md`](CLAUDE.md), the developer map |

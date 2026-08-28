@@ -7,6 +7,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.entry-points."kimi_agent.modules"]
 reference_greeter = "community_agent_reference_module:SPEC"
 
@@ -16,6 +19,3 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.uv.sources]
-kimi-agent-module-api = { workspace = true }

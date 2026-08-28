@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from kimi_agent_module_api import ModuleCapabilities, ModuleLoadContext
-from community_agent_reference_module import ReferenceGreeter, ReferenceSettings, create
+from community_agent_reference_module.module import ReferenceGreeter
+from community_agent_reference_module.settings import ReferenceSettings
+from community_agent_reference_module.spec import create
 
 
 class RecordingRegistry:

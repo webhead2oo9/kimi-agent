@@ -8,9 +8,9 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "kimi-agent-module-api",
     "community-agent-reference-module",
     "kimi-agent",
+    "kimi-agent-module-api",
 ]
 
 [[package]]
@@ -284,17 +284,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kimi-agent-module-api"
-version = "1.0.0"
-source = { editable = "packages/kimi-agent-module-api" }
-dependencies = [
-    { name = "pydantic-settings" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
-
-[[package]]
 name = "community-agent-reference-module"
 version = "1.0.0"
 source = { editable = "examples/reference-module" }
@@ -302,8 +291,17 @@ dependencies = [
     { name = "kimi-agent-module-api" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
-requires-dist = [{ name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" }]
+requires-dist = [
+    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
+    { name = "pytest", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "discord-py"
@@ -546,12 +544,12 @@ dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "anthropic" },
-    { name = "kimi-agent-module-api" },
     { name = "discord-py" },
     { name = "emoji" },
     { name = "firecrawl-anydoc" },
     { name = "hindsight-client" },
     { name = "httpx" },
+    { name = "kimi-agent-module-api" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -574,12 +572,12 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosqlite" },
     { name = "anthropic", specifier = ">=1.0.0" },
-    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
     { name = "discord-py", specifier = ">=2.7" },
     { name = "emoji", specifier = ">=2.0" },
     { name = "firecrawl-anydoc", specifier = "==0.2.3" },
     { name = "hindsight-client" },
     { name = "httpx" },
+    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "openai", specifier = ">=3.0" },
     { name = "pydantic" },
@@ -593,6 +591,17 @@ requires-dist = [
     { name = "sqlcipher3-binary", marker = "sys_platform == 'linux'" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "kimi-agent-module-api"
+version = "1.0.0"
+source = { editable = "packages/kimi-agent-module-api" }
+dependencies = [
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
 
 [[package]]
 name = "librt"

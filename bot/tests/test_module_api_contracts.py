@@ -14,18 +14,22 @@ from pathlib import Path
 import pytest
 
 from app.modules import validate_module_selection
+from config.plugin_settings import PluginSetting, PluginSettingsDefinition
 from config.settings import Settings
-from kimi_agent_module_api import (
+from community_agent_module_api import (
     MODULE_API_VERSION,
     GuildSettingsSchema,
     ModuleLoadContext,
     ModulePermissions,
     ModuleRuntimeContext,
+    ModuleSetting,
+    ModuleSettingsDefinition,
     ModuleSpec,
     ServiceDeclaration,
     ServiceRequirement,
+    TrustTier,
 )
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     CUSTOM_ID_MAX_LENGTH,
     Backoff,
@@ -44,7 +48,16 @@ from kimi_agent_module_api.contracts import (
     validate_services,
     validate_subscription,
 )
-from kimi_agent_module_api.events import CORE_TOPICS
+from community_agent_module_api.events import CORE_TOPICS
+from trust.tiers import TrustTier as CoreTrustTier
+
+SDK_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "packages"
+    / "community-agent-module-api"
+    / "src"
+    / "community_agent_module_api"
+)
 
 
 def _spec(name: str = "demo", **overrides: object) -> ModuleSpec:
@@ -67,7 +80,11 @@ def test_spec_declares_nothing_by_default() -> None:
     assert spec.guild_settings is None
     assert spec.provides == ()
     assert spec.consumes == ()
-    assert spec.api_version == MODULE_API_VERSION == 2
+    assert spec.api_version == MODULE_API_VERSION == 1
+
+
+def test_core_and_modules_share_the_public_trust_enum() -> None:
+    assert CoreTrustTier is TrustTier
 
 
 def test_runtime_context_requires_every_service_port() -> None:
@@ -87,6 +104,15 @@ def test_runtime_context_requires_every_service_port() -> None:
         "current_config_dir",
     } <= required
     assert "bot" not in required and "database" not in required
+
+
+def test_public_module_setting_fields_match_the_core_translation() -> None:
+    assert [field.name for field in dataclasses.fields(ModuleSetting)] == [
+        field.name for field in dataclasses.fields(PluginSetting)
+    ]
+    assert [field.name for field in dataclasses.fields(ModuleSettingsDefinition)] == [
+        field.name for field in dataclasses.fields(PluginSettingsDefinition)
+    ]
 
 
 # --- naming rules ---------------------------------------------------------
@@ -129,11 +155,11 @@ def test_proposals_is_a_reserved_core_module_name() -> None:
 
 
 def test_unsupported_module_api_version_is_rejected_clearly() -> None:
-    with pytest.raises(RuntimeError, match="requires module API 1; core provides 2"):
+    with pytest.raises(RuntimeError, match="requires module API 2; core provides 1"):
         validate_module_selection(
             ("legacy",),
             core_settings=_settings(),
-            installed={"legacy": _spec("legacy", api_version=1)},
+            installed={"legacy": _spec("legacy", api_version=2)},
         )
 
 
@@ -361,10 +387,9 @@ def test_selection_preflight_accepts_full_declarations() -> None:
 def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None:
     """Declarations must be checkable without Discord, the database, or core services.
 
-    Checked statically: importing a submodule runs the package ``__init__``, which
-    still re-exports concrete core types until the cutover removes them.
+    Checked statically in the standalone package source tree.
     """
-    path = Path(__file__).resolve().parents[1] / "kimi_agent_module_api" / f"{module}.py"
+    path = SDK_ROOT / f"{module}.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -372,7 +397,26 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    allowed = set(sys.stdlib_module_names) | {"kimi_agent_module_api"}
+    allowed = set(sys.stdlib_module_names) | {"community_agent_module_api"}
     assert imported <= allowed, (
         f"{module}.py imports outside the contract layer: {imported - allowed}"
     )
+
+
+def test_entire_sdk_has_no_core_runtime_imports() -> None:
+    allowed = set(sys.stdlib_module_names) | {
+        "community_agent_module_api",
+        "pydantic_settings",
+    }
+    outside: dict[str, set[str]] = {}
+    for path in SDK_ROOT.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        if unexpected := imported - allowed:
+            outside[path.name] = unexpected
+    assert outside == {}

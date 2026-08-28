@@ -1,53 +1,48 @@
-"""Stable public contracts for trusted Kimi application modules.
-
-Modules run in-process and are trusted by installation. These contracts are a
-compatibility boundary, not a sandbox: core owns the implementations while
-external packages depend only on the shapes exported here.
-"""
+"""Stable public contracts for trusted, installed assistant modules."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic_settings import BaseSettings
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ConfigSnapshot,
     DiscordActions,
     EventBus,
     GuildSettings,
+    GuildSettingsSchema,
     HealthReporter,
     InteractionRouter,
     ModuleHttp,
-    ModuleStorage,
-    Scheduler,
-    ServiceRegistry,
-    TrustLookup,
-    GuildSettingsSchema,
     ModulePermissions,
+    ModuleStorage,
+    ScopedModuleMigration,
     ProposalActor,
     ProposalError,
     ProposalRef,
     ProposalService,
     ProposalState,
+    Scheduler,
     ServiceDeclaration,
+    ServiceRegistry,
     ServiceRequirement,
+    TrustLookup,
 )
-from config.module_settings import ModuleSetting, ModuleSettingsDefinition
-from trust.tiers import TrustTier
+from community_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
+from community_agent_module_api.tools import (
+    ModuleToolContext,
+    ModuleToolHandler,
+    ModuleToolRegistry,
+)
+from community_agent_module_api.trust import TrustTier
 
-if TYPE_CHECKING:
-    import aiosqlite
+MODULE_API_VERSION = 1
+MODULE_ENTRYPOINT_GROUP = "community_agent.modules"
 
-    from tools.registry import ToolRegistry
-
-MODULE_API_VERSION = 2
-MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
-
-type ModuleMigration = tuple[str, Callable[["aiosqlite.Connection"], Awaitable[None]]]
 _SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
 
 
@@ -59,14 +54,11 @@ class ModuleCapabilities:
 
     def require(self, name: str) -> None:
         if name not in self.available:
-            raise RuntimeError(f"Kimi core does not provide required capability {name!r}")
+            raise RuntimeError(f"the host does not provide required capability {name!r}")
 
 
 class AppModule(Protocol):
-    # Raw-connection migrations. A module that also defines
-    # ``scoped_migrations: Sequence[ScopedModuleMigration]`` gets those run
-    # instead, with a MigrationContext whose ``table()`` applies the prefix.
-    migrations: Sequence[ModuleMigration]
+    scoped_migrations: Sequence[ScopedModuleMigration]
 
     async def start(self, ctx: ModuleRuntimeContext) -> None: ...
 
@@ -83,21 +75,17 @@ class ModuleSpec:
     settings: ModuleSettingsDefinition | None = None
     requires_capabilities: tuple[str, ...] = ()
     activation_capabilities: tuple[str, ...] = ()
-    # Declarations. Validated at selection preflight; enforced by the
-    # runtime services as they land. Defaults declare nothing.
     permissions: ModulePermissions = field(default_factory=ModulePermissions)
     guild_settings: GuildSettingsSchema | None = None
     provides: tuple[ServiceDeclaration, ...] = ()
     consumes: tuple[ServiceRequirement, ...] = ()
-    # Logical table name -> legacy physical name, so an installation keeps
-    # its data until a later release renames tables to the module prefix.
     table_aliases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ModuleLoadContext:
     capabilities: ModuleCapabilities
-    registry: ToolRegistry
+    registry: ModuleToolRegistry
     module_settings: BaseSettings | None
     _register_tool_labels: Callable[[Mapping[str, str]], None]
     _declare_surface_tools: Callable[[str, Sequence[str]], None]
@@ -116,12 +104,7 @@ class ModuleLoadContext:
 
 @dataclass(frozen=True)
 class ModuleRuntimeContext:
-    """What one module receives in ``start()``: services, never raw core objects.
-
-    ``raw_bot`` and ``raw_storage`` are populated only for modules whose
-    permissions declare them. They are audited escape hatches for trusted,
-    owner-installed code, not a security boundary.
-    """
+    """Runtime ports supplied to one module after it has been loaded."""
 
     module_name: str
     is_guild_active: Callable[[int], bool]
@@ -150,17 +133,20 @@ __all__ = [
     "GuildSettingsSchema",
     "ModuleCapabilities",
     "ModuleLoadContext",
-    "ModuleMigration",
     "ModulePermissions",
     "ModuleRuntimeContext",
     "ModuleSetting",
     "ModuleSettingsDefinition",
     "ModuleSpec",
+    "ModuleToolContext",
+    "ModuleToolHandler",
+    "ModuleToolRegistry",
     "ProposalActor",
     "ProposalError",
     "ProposalRef",
     "ProposalService",
     "ProposalState",
+    "ScopedModuleMigration",
     "ServiceDeclaration",
     "ServiceRequirement",
     "TrustTier",

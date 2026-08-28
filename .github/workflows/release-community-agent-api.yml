@@ -1,0 +1,67 @@
+name: Release community agent module API
+
+on:
+  push:
+    tags:
+      - "community-agent-api-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Test, build, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: bot/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Sync and test the workspace
+        run: |
+          uv sync --locked --all-packages --extra dev
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy .
+          uv run python -m pytest -q
+
+      - name: Verify release tag matches package version
+        shell: bash
+        run: |
+          version=$(uv run python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('packages/community-agent-module-api/pyproject.toml').read_text())['project']['version'])")
+          test "${GITHUB_REF_NAME}" = "community-agent-api-v${version}"
+
+      - name: Build publishable API and reference consumer
+        run: |
+          uv build --package community-agent-module-api --no-sources --out-dir dist/community-agent-module-api
+          uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
+
+      - name: Test built module API through the reference wheel
+        shell: bash
+        run: |
+          api_wheel=$(find dist/community-agent-module-api -maxdepth 1 -name '*.whl' -print -quit)
+          api_sdist=$(find dist/community-agent-module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
+          reference_wheel=$(find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "${api_wheel}"
+          test -n "${api_sdist}"
+          test -n "${reference_wheel}"
+          uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"
+
+      - name: Publish to PyPI with Trusted Publishing
+        run: uv publish --trusted-publishing always dist/community-agent-module-api/*

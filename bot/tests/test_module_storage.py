@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from kimi_agent_module_api import ModuleLoadContext, ModuleRuntimeContext, ModuleSpec
-from kimi_agent_module_api.contracts import MigrationContext, ModuleContractError
+from community_agent_module_api import ModuleLoadContext, ModuleRuntimeContext, ModuleSpec
+from community_agent_module_api.contracts import MigrationContext, ModuleContractError
 from modules.storage import ModuleStorageImpl, validate_table_aliases
 from modules.testing import build_test_runtime
 

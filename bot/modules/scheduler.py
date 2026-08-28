@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     Backoff,
     HealthState,
     JobHandler,

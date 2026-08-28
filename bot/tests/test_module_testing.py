@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from kimi_agent_module_api import (
+from community_agent_module_api import (
     ModuleLoadContext,
-    ModuleMigration,
     ModulePermissions,
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api.contracts import UndeclaredDiscordAction
-from kimi_agent_module_api.testing import FakeInteraction, FakeScheduler
+from community_agent_module_api.contracts import (
+    MigrationContext,
+    ScopedModuleMigration,
+    UndeclaredDiscordAction,
+)
+from community_agent_module_api.testing import FakeInteraction, FakeScheduler
 from modules.testing import build_test_runtime, write_guild_config
 
 
@@ -24,10 +26,10 @@ class RecordingModule:
         self.name = name
         self.log = log
         self.ctx: ModuleRuntimeContext | None = None
-        self.migrations: Sequence[ModuleMigration] = (("init", self._migrate),)
+        self.scoped_migrations: tuple[ScopedModuleMigration, ...] = (("init", self._migrate),)
 
-    async def _migrate(self, conn: object) -> None:
-        await conn.execute(  # type: ignore[attr-defined]
+    async def _migrate(self, ctx: MigrationContext) -> None:
+        await ctx.connection.execute(
             f"CREATE TABLE IF NOT EXISTS {self.name}_rows (id INTEGER PRIMARY KEY)"
         )
 

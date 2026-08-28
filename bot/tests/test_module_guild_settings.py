@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Event, Lock, Thread
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     GuildSettingsSnapshot,

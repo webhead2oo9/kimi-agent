@@ -18,7 +18,7 @@ from discord.ext import commands
 
 from discord_adapter.module_events import member_snapshot, message_snapshot
 from discord_adapter.module_interactions import build_view
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     ChannelKind,
     ChannelSnapshot,
     MemberSnapshot,

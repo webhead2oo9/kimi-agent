@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     DiscordActions,
     ModuleHealth,
     TrustLookup,
@@ -30,17 +30,17 @@ from kimi_agent_module_api.contracts import (
     validate_permissions,
     validate_services,
 )
-from kimi_agent_module_api import (
+from community_agent_module_api import (
     AppModule,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
     ModuleCapabilities,
     ModuleLoadContext,
-    ModuleMigration,
     ModuleRuntimeContext,
     ModuleSetting,
     ModuleSettingsDefinition,
     ModuleSpec,
+    ModuleToolRegistry,
     ProposalService,
 )
 
@@ -59,6 +59,11 @@ from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_
 from modules.storage import ModuleStorageImpl, validate_table_aliases
 
 log = logging.getLogger(__name__)
+
+
+def _module_tool_registry(registry: ToolRegistry) -> ModuleToolRegistry:
+    """Keep the core registry statically conformant with the published SDK."""
+    return registry
 
 
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
@@ -307,12 +312,14 @@ class ModuleManager:
         for spec in active_specs:
             before = registry.registered_names()
             try:
-                prepared = settings_registry.prepare(spec.settings) if spec.settings else None
+                prepared = (
+                    settings_registry.prepare_module(spec.settings) if spec.settings else None
+                )
                 if prepared is not None and not prepared.can_register:
                     raise ModuleSettingsError(prepared.load_error or "invalid module settings")
                 ctx = ModuleLoadContext(
                     capabilities=capabilities,
-                    registry=registry,
+                    registry=_module_tool_registry(registry),
                     module_settings=prepared.active if prepared is not None else None,
                     _register_tool_labels=register_tool_labels,
                     _declare_surface_tools=declare_surface_tools,
@@ -514,8 +521,6 @@ class ModuleManager:
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
     scoped = tuple(getattr(instance, "scoped_migrations", ()))
-    if not scoped:
-        return tuple(getattr(instance, "migrations", ()))
 
     def wrap(migrate: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:
         async def run(conn: Any) -> None:
@@ -538,7 +543,6 @@ __all__ = [
     "ModuleLoadContext",
     "ModuleLoadState",
     "ModuleManager",
-    "ModuleMigration",
     "ModuleRuntimeBase",
     "ModuleRuntimeContext",
     "ModuleSetting",

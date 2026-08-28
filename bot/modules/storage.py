@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     MigrationContext,
     ModuleContractError,
     table_prefix,

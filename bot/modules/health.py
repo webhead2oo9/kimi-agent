@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api.contracts import (
     HEALTH_DETAIL_MAX_LENGTH,
     HEALTH_METRICS_MAX_KEYS,
     HealthState,

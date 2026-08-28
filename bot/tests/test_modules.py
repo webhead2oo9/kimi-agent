@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,20 +15,21 @@ from app.modules import (
     MODULE_API_VERSION,
     ModuleLoadContext,
     ModuleManager,
-    ModuleMigration,
     ModuleRuntimeBase,
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api import ModuleCapabilities, events as ev
-from kimi_agent_module_api.contracts import (
+from community_agent_module_api import ModuleCapabilities, events as ev
+from community_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
+    MigrationContext,
+    ScopedModuleMigration,
     ModulePermissions,
     ServiceDeclaration,
     ServiceRequirement,
 )
-from kimi_agent_module_api.testing import FakeTrust
+from community_agent_module_api.testing import FakeTrust
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.events import EventBusImpl
 from modules.testing import fake_ports
@@ -36,21 +37,19 @@ from config.settings import Settings
 from storage.db import Database
 from tools.registry import ToolRegistry
 
-Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
-
 
 class FakeModule:
     def __init__(
         self,
         name: str,
         events: list[str],
-        migrations: tuple[Migration, ...] = (),
+        migrations: tuple[ScopedModuleMigration, ...] = (),
         *,
         fail_start: bool = False,
     ) -> None:
         self.name = name
         self.events = events
-        self.migrations: Sequence[ModuleMigration] = migrations
+        self.scoped_migrations: Sequence[ScopedModuleMigration] = migrations
         self.fail_start = fail_start
 
     async def start(self, _ctx: ModuleRuntimeContext) -> None:
@@ -345,7 +344,7 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
     dependent = FakeModule("dependent", events)
 
     def create_base(ctx: ModuleLoadContext) -> FakeModule:
-        async def handler(_ctx: Any) -> str:
+        async def handler(_arguments: dict[str, Any], _ctx: Any) -> str:
             return "from module"
 
         ctx.registry.register("module_demo", "demo", {}, handler)
@@ -367,13 +366,13 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
 async def test_module_schema_lifecycle_and_reverse_close(tmp_path: Path) -> None:
     events: list[str] = []
 
-    async def create_demo_table(conn: aiosqlite.Connection) -> None:
+    async def create_demo_table(ctx: MigrationContext) -> None:
         events.append("migrate:base")
-        await conn.execute("CREATE TABLE demo_module_data (id INTEGER PRIMARY KEY)")
+        await ctx.connection.execute("CREATE TABLE demo_module_data (id INTEGER PRIMARY KEY)")
 
-    async def create_dependent_table(conn: aiosqlite.Connection) -> None:
+    async def create_dependent_table(ctx: MigrationContext) -> None:
         events.append("migrate:dependent")
-        await conn.execute("CREATE TABLE dependent_module_data (id INTEGER PRIMARY KEY)")
+        await ctx.connection.execute("CREATE TABLE dependent_module_data (id INTEGER PRIMARY KEY)")
 
     base = FakeModule("base", events, (("initial", create_demo_table),))
     dependent = FakeModule("dependent", events, (("initial", create_dependent_table),))

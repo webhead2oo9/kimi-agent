@@ -55,7 +55,7 @@
   discovery validates and applies the complete plugin overlay before that
   plugin registers. An absent file inherits the selected dotenv/default
   values, and a present file is validated atomically. See
-  [plugins.md](plugins.md) for the module, loading, and file-overlay contract.
+  [plugins.md](plugins.md) for the plugin entry point, loading, and file-overlay contract.
 - **Module settings files:** lifecycle-aware modules follow the same
   declaration rules, but their safe overrides live at
   `<CONFIG_DIR>/modules/<module_name>.md`. Module settings are required whenever
@@ -294,7 +294,7 @@ value means no learn logging at all (and, like the other id keys, a malformed va
 the teaching itself.
 
 `proposal_channel_id:` is the staff review channel for configuration proposals
-created by application modules such as `config_admin`. When absent, the bot
+created by application modules. When absent, the bot
 uses the channel where the proposal was invoked. In either case core resolves
 the channel and requires it to belong to this guild before posting. A malformed
 numeric value invalidates `bot_active` activation rather than silently routing
@@ -871,7 +871,7 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `CONFIG_DIR` | path | `config` | Operator config root: `prompt.md`, `persona.md`, `models.yaml`, `settings.md`, `tools.md`, and the `channels/`, `channel_threads/`, `threads/`, `servers/`, `prompts/`, `modules/`, `plugins/`, and `tools/` fragment trees. Consumed by prompt construction, guild/channel fragment loaders, core, module, and plugin settings overlays, tool policy/config, and model routing. |
 | `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is deployment data and is not stored in the repository; a missing store contributes no private skills, while shipped built-ins remain available. |
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
-| `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
+| `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `community_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
 
 ## Storage
 

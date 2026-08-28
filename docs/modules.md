@@ -280,8 +280,9 @@ the ports are a contract and an audit surface, not a sandbox.
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
   `render_guild_settings(values)` renders a document in this format for a
-  proposal (pass the snapshot's `values` with your change applied: unset
-  fields are omitted and strings are quoted). `guild_ids()` lists the active
+  proposal (pass the snapshot's `values` with your change applied: invalid
+  field names are rejected, unset fields are omitted, and strings are quoted).
+  `guild_ids()` lists the active
   guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
   `revision`), refreshed on the guild-activation cadence and immediately after

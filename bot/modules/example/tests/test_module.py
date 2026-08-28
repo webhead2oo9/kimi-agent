@@ -196,6 +196,22 @@ async def test_thank_back_button_only_works_for_the_receiver(started: Harness) -
 
 
 @pytest.mark.asyncio
+async def test_thank_back_button_rejects_malformed_record_ids(started: Harness) -> None:
+    button = started.interactions.components[("button", BUTTON_THANK_BACK)]
+
+    for malformed_part in ("not-a-number", str(1 << 63)):
+        interaction = FakeInteraction(
+            guild_id=GUILD,
+            channel_id=555,
+            user_id=BOB,
+            custom_id=started.interactions.custom_id(BUTTON_THANK_BACK, malformed_part),
+        )
+        await button(interaction)
+        assert interaction.last.ephemeral
+        assert "no longer available" in str(interaction.last.content)
+
+
+@pytest.mark.asyncio
 async def test_top_command_renders_an_embed(started: Harness, member_ctx: ToolContext) -> None:
     await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "a"}, member_ctx)
     _spec, top = started.interactions.commands["kudos.top"]

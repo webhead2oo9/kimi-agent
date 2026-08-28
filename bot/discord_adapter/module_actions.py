@@ -27,6 +27,7 @@ from kimi_agent_module_api.contracts import (
     MessageSnapshot,
     ModuleContractError,
     OutgoingEmbed,
+    RoleSnapshot,
     TrustTierName,
 )
 from trust.resolver import TrustResolver
@@ -431,6 +432,23 @@ class DiscordActionsImpl:
             if snapshot is not None:
                 snapshots.append(snapshot)
         return tuple(snapshots)
+
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
+        if not self._is_guild_active(guild_id):
+            return ()
+        guild = self._bot.get_guild(guild_id)
+        if guild is None:
+            return ()
+        return tuple(
+            RoleSnapshot(
+                guild_id=guild_id,
+                role_id=int(role.id),
+                name=str(role.name),
+                position=int(role.position),
+                managed=bool(role.managed),
+            )
+            for role in sorted(guild.roles, key=lambda role: role.position, reverse=True)
+        )
 
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
         if not self._is_guild_active(guild_id):

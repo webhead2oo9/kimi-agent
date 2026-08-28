@@ -11,11 +11,14 @@ owner manifest and enforced through the ports below; they are not a sandbox.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeVar, overload
+
+_T = TypeVar("_T")
 
 # --------------------------------------------------------------------------
 # Errors
@@ -67,7 +70,8 @@ type DiscordAction = Literal[
     "fetch_messages",
     "fetch_pins",
     "fetch_public_threads",
-    "check_channel_access",
+    "fetch_roles",
+    "can_view_channel",
 ]
 ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
     {
@@ -84,7 +88,8 @@ ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
         "fetch_messages",
         "fetch_pins",
         "fetch_public_threads",
-        "check_channel_access",
+        "fetch_roles",
+        "can_view_channel",
     }
 )
 # Actions that act on a member and therefore run the core target policy.
@@ -172,6 +177,74 @@ _GUILD_SETTING_LIST_MAX = 512
 _GUILD_SETTING_STRING_MAX = 2_000
 
 
+def _render_scalar(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return _quote(value)
+    raise TypeError(f"guild setting {key!r} has unrenderable value {value!r}")
+
+
+def _quote(text: str) -> str:
+    """YAML double-quoted scalar for any Python string.
+
+    JSON string syntax is valid YAML double-quoted syntax, which handles
+    colons, hashes, quotes, newlines, and words like ``true``. YAML also
+    forbids raw C1 controls, DEL, surrogates, and the two non-characters
+    that JSON leaves unescaped, so those are written as ``\\uXXXX`` too.
+    """
+    escaped = json.dumps(text, ensure_ascii=False)
+    return "".join(f"\\u{ord(ch):04x}" if _yaml_unprintable(ch) else ch for ch in escaped)
+
+
+def _yaml_unprintable(ch: str) -> bool:
+    """Characters a YAML double-quoted scalar cannot carry literally.
+
+    C1 controls and DEL are not printable; surrogates and the two
+    non-characters are invalid; U+2028/U+2029 are YAML line breaks that would
+    be folded together with surrounding spaces; the BOM is a stream marker.
+    """
+    code = ord(ch)
+    return (
+        0x7F <= code <= 0x9F
+        or 0xD800 <= code <= 0xDFFF
+        or code in (0x2028, 0x2029, 0xFEFF, 0xFFFE, 0xFFFF)
+    )
+
+
+def render_guild_settings(values: Mapping[str, Any]) -> str:
+    """Render guild settings as the frontmatter-only document the host stores.
+
+    This is the format of ``<CONFIG_DIR>/guild-modules/<guild_id>/<module>.md``
+    and the content a module passes to ``ProposalService.propose`` for a
+    ``guild:<id>:<module>`` target. Pass the snapshot's ``values`` with your
+    change applied: keys are emitted sorted, ``None`` (an unset optional
+    field) is omitted, booleans become ``true``/``false``, ids and ints are
+    bare, strings are always quoted, and lists use flow style. Invalid field
+    names raise ``ValueError``; unsupported values raise ``TypeError``. The
+    schema kinds cover every value a snapshot holds.
+    """
+    keys = tuple(values)
+    for key in keys:
+        if not isinstance(key, str) or not _SETTING_NAME_RE.fullmatch(key):
+            raise ValueError(f"invalid guild setting name {key!r}")
+
+    lines = ["---"]
+    for key in sorted(keys):
+        value = values[key]
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            rendered = "[" + ", ".join(_render_scalar(key, item) for item in value) + "]"
+        else:
+            rendered = _render_scalar(key, value)
+        lines.append(f"{key}: {rendered}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
 def coerce_guild_setting_value(field_spec: GuildSettingField, raw: Any) -> tuple[Any, str | None]:
     """Validate and normalize a configured value or the field's default."""
     if raw is None:
@@ -238,6 +311,8 @@ def coerce_guild_setting_value(field_spec: GuildSettingField, raw: Any) -> tuple
 # --------------------------------------------------------------------------
 
 _MODULE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+# Logical table names a module may ask ``storage.table()`` for.
+TABLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _TOPIC_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 _SETTING_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -435,11 +510,23 @@ class ModuleHealth:
 
 
 class HealthReporter(Protocol):
+    """Module-side health reporting.
+
+    ``report(...)`` without ``key`` sets the module's overall state and replaces
+    the previous unkeyed report. ``report(..., key="digest")`` sets one named
+    concern that is tracked independently: the module's visible state is the
+    worst of every keyed concern plus the unkeyed report, so one subsystem
+    going ``degraded`` is not erased by another reporting ``healthy``. A keyed
+    ``healthy`` report with no detail and no metrics clears that concern.
+    """
+
     def report(
         self,
         state: HealthState,
         detail: str = "",
         metrics: Mapping[str, float] | None = None,
+        *,
+        key: str | None = None,
     ) -> None: ...
 
 
@@ -676,6 +763,17 @@ class MemberSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RoleSnapshot:
+    guild_id: int
+    role_id: int
+    name: str
+    # Higher positions sit above lower ones in the guild's role list.
+    position: int
+    # Managed roles belong to an integration or bot and cannot be assigned by hand.
+    managed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class OutgoingEmbed:
     title: str | None = None
     description: str | None = None
@@ -760,6 +858,8 @@ class DiscordActions(Protocol):
         self, guild_id: int, parent_channel_id: int
     ) -> tuple[ChannelSnapshot, ...]: ...
 
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]: ...
+
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool: ...
 
 
@@ -818,6 +918,11 @@ class ModuleInteraction(Protocol):
 
     @property
     def values(self) -> tuple[str, ...]: ...
+
+    @property
+    def message(self) -> MessageRef | None:
+        """The message a button or select lives on; ``None`` for slash commands."""
+        ...
 
     async def respond(
         self,
@@ -967,4 +1072,22 @@ class ModuleHttp(Protocol):
 class ServiceRegistry(Protocol):
     def provide(self, name: str, version: int, implementation: object) -> Registration: ...
 
+    @overload
     def get(self, name: str, version: int) -> object: ...
+
+    @overload
+    def get(self, name: str, version: int, type_: type[_T]) -> _T: ...
+
+    def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
+        """Resolve a consumed service; with ``type_`` the result is checked and typed.
+
+        The result is always a proxy that forwards attribute access and raises
+        ``ServiceUnavailable`` once the provider closes. ``type_`` is checked
+        against the provided object at resolution time, so a provider that
+        changed its class fails here instead of at the first call, and the
+        proxy is then typed as ``type_`` for method calls. Because it is a
+        proxy, ``isinstance`` on the result is false and special methods
+        (``__call__``, ``__getitem__``, ...) are not forwarded: a service is an
+        object with ordinary methods, nothing more.
+        """
+        ...

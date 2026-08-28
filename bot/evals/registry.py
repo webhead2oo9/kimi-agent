@@ -50,6 +50,9 @@ def compose_tools(
     # stub keeps `start_coding_task` gradeable (delegate or answer inline)
     # without spawning a job.
     init_coding_control_tools(registry, cast(CodingTaskControls, StubCodingControls()))
+    # Modules are loaded, never started, in evals: their tools would otherwise
+    # stay masked. Every eval guild counts as active for them.
+    runtime_tools.module_manager.bind_tool_availability(lambda _guild_id: True)
     install_safe_stubs(registry)
     return memory_manager, provider_manager, runtime_tools
 

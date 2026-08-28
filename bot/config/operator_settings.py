@@ -262,6 +262,9 @@ _MINIMUMS: dict[str, int | float] = {
     "turn_max_concurrency_per_user": 1,
     # ── Retention ────────────────────────────────────────────────────────────
     "transcript_retention_days": 0,  # 0 disables the sweep
+    "module_start_timeout_seconds": 1,
+    "module_close_timeout_seconds": 1,
+    "module_scheduler_max_concurrent_jobs": 1,
     "transcript_retention_sweep_interval_seconds": 1,
     "workspace_file_ttl": 60,
     "workspace_max_size_mb": 1,

@@ -22,6 +22,7 @@ from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
 from kimi_agent_module_api.contracts import (
     DiscordActions,
+    InteractionRouter,
     ModuleHealth,
     TrustLookup,
     table_prefix,
@@ -31,22 +32,27 @@ from kimi_agent_module_api.contracts import (
     validate_services,
 )
 from kimi_agent_module_api import (
+    BASELINE_CAPABILITIES,
     AppModule,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
     ModuleCapabilities,
     ModuleLoadContext,
-    ModuleMigration,
     ModuleRuntimeContext,
     ModuleSetting,
     ModuleSettingsDefinition,
     ModuleSpec,
+    ModuleToolContext,
+    ModuleToolHandler,
     ProposalService,
+    TrustTier,
 )
+
+from tools.registry import USER_APP_SCOPE_CHANNEL_ID
 
 if TYPE_CHECKING:
     from config.settings import Settings
-    from tools.registry import ToolRegistry
+    from tools.registry import MessageContext, ToolRegistry
 
 from modules.actions import DeclaredDiscordActions
 from storage.db import Database
@@ -57,13 +63,149 @@ from modules.http import ModuleHttpRuntime, ResolvedHostRule, resolve_host_rules
 from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl, validate_table_aliases
+from modules.tasks import run_bounded
 
 log = logging.getLogger(__name__)
 
 
+def _snowflake(value: str | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text.isdecimal():
+        raise ValueError(f"module tools require numeric Discord ids, got {value!r}")
+    return int(text)
+
+
+class _LoadTimeToolRegistry:
+    """Shared state behind every module's ``ModuleToolRegistry`` port.
+
+    ``create()`` is the one place a module may register tools. Sealing after
+    the load loop turns a stashed registry used from ``start()`` into a clear
+    error instead of a tool that silently appears after tool surfaces settled.
+    ``guild_active`` is filled at ``start()`` with each module's activation
+    predicate; each registered tool's visibility consults it, so a module's
+    tools are masked everywhere until the module has started and, per guild,
+    wherever the module is inactive.
+    """
+
+    def __init__(self, registry: ToolRegistry) -> None:
+        self._registry = registry
+        self._sealed = False
+        self.guild_active: dict[str, Callable[[int], bool]] = {}
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def for_module(self, module_name: str) -> _ModuleToolRegistrar:
+        return _ModuleToolRegistrar(self, module_name)
+
+    def register(
+        self,
+        module_name: str,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: ModuleToolHandler,
+        *,
+        min_tier: Any,
+        searchable: bool,
+        owner_only: bool,
+        guild_only: bool,
+        guild_ids: frozenset[int] | None,
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError(
+                f"tool {name!r} cannot be registered after module loading; "
+                "register tools from ModuleSpec.create(), not start()"
+            )
+        active = self.guild_active
+
+        def available(guild: str | None) -> bool:
+            # Masked until start() has bound the module's activation predicate.
+            predicate = active.get(module_name)
+            if predicate is None:
+                return False
+            if guild is None:
+                return not guild_only
+            # A guild id that is not a snowflake matches no module guild; the
+            # visibility path has no error boundary, so it must not raise.
+            return guild.isdecimal() and predicate(int(guild))
+
+        async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
+            guild_id = _snowflake(ctx.guild_id)
+            # Personal chat is a slash interaction with no channel of its own.
+            channel_id = (
+                None if ctx.channel_id == USER_APP_SCOPE_CHANNEL_ID else _snowflake(ctx.channel_id)
+            )
+            user_id = _snowflake(ctx.user_id)
+            if user_id is None:
+                raise ValueError("module tools require a user id")
+            return await handler(
+                arguments,
+                ModuleToolContext(
+                    user_id=user_id,
+                    user_name=ctx.user_name,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    thread_id=_snowflake(ctx.thread_id),
+                    trust_tier=ctx.trust_tier,
+                    tool_configs=ctx.tool_configs,
+                ),
+            )
+
+        self._registry.register(
+            name,
+            description,
+            parameters,
+            dispatch,
+            min_tier=min_tier,
+            searchable=searchable,
+            owner_only=owner_only,
+            guild_ids=(
+                frozenset(str(guild) for guild in guild_ids) if guild_ids is not None else None
+            ),
+            available=available,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleToolRegistrar:
+    """The ``ModuleToolRegistry`` port handed to one module's ``create()``."""
+
+    shared: _LoadTimeToolRegistry
+    module_name: str
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: ModuleToolHandler,
+        *,
+        min_tier: TrustTier = TrustTier.MEMBER,
+        searchable: bool = False,
+        owner_only: bool = False,
+        guild_only: bool = True,
+        guild_ids: frozenset[int] | None = None,
+    ) -> None:
+        self.shared.register(
+            self.module_name,
+            name,
+            description,
+            parameters,
+            handler,
+            min_tier=min_tier,
+            searchable=searchable,
+            owner_only=owner_only,
+            guild_only=guild_only,
+            guild_ids=guild_ids,
+        )
+
+
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     """Build the stable capability advertisement for one core configuration."""
-    available = {"discord.history.v1", "proposals.v2"}
+    available = set(BASELINE_CAPABILITIES)
     if core_settings.message_content_intent:
         available.add("discord.message_content.v1")
     return ModuleCapabilities(
@@ -225,9 +367,26 @@ def _activation_disabled(
     return disabled
 
 
+class ProposalViewFactory(Protocol):
+    def view_for(self, module_name: str) -> ProposalService: ...
+
+
+# Both bind to the module's name and guild-activation predicate; the manager
+# wraps the Discord actions in the declaration gate itself.
+type DiscordActionsFactory = Callable[[ModuleSpec, Callable[[int], bool]], DiscordActions]
+type InteractionRouterFactory = Callable[[str, Callable[[int], bool]], InteractionRouter]
+
+
 @dataclass(frozen=True)
 class ModuleRuntimeBase:
-    """Core-side inputs the manager turns into per-module contexts."""
+    """Core-side inputs the manager turns into per-module contexts.
+
+    Every port a module receives is derived here or from the manager's own
+    services; ``discord_actions`` and ``interactions`` are factories because
+    both bind to the module's name and guild-activation predicate. A ``None``
+    factory leaves that port unset, which ``start()`` rejects unless a
+    ``customize`` hook (the test harness) supplies it.
+    """
 
     database: Database
     bot: Any
@@ -235,12 +394,9 @@ class ModuleRuntimeBase:
     current_config_dir: Callable[[], Path]
     capabilities: ModuleCapabilities
     trust: TrustLookup
-    discord: DiscordActions | None = None
+    discord_actions: DiscordActionsFactory | None = None
+    interactions: InteractionRouterFactory | None = None
     proposals: ProposalViewFactory | None = None
-
-
-class ProposalViewFactory(Protocol):
-    def view_for(self, module_name: str) -> ProposalService: ...
 
 
 _REQUIRED_PORTS = (
@@ -272,6 +428,9 @@ class ModuleManager:
     scheduler: DurableScheduler | None = None
     guild_settings: GuildSettingsService | None = None
     http: ModuleHttpRuntime | None = None
+    _tool_registry: _LoadTimeToolRegistry | None = None
+    start_timeout_seconds: float = 60.0
+    close_timeout_seconds: float = 15.0
     _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
 
     @property
@@ -293,6 +452,8 @@ class ModuleManager:
         manager = cls(
             load_state=ModuleLoadState(requested=tuple(names)),
             settings=settings_registry,
+            start_timeout_seconds=float(core_settings.module_start_timeout_seconds),
+            close_timeout_seconds=float(core_settings.module_close_timeout_seconds),
         )
         if not names:
             return manager
@@ -304,29 +465,16 @@ class ModuleManager:
         capabilities = module_capabilities(core_settings)
         disabled = _activation_disabled(specs, capabilities)
         active_specs = tuple(spec for spec in specs if spec.name not in disabled)
-        for spec in active_specs:
-            before = registry.registered_names()
-            try:
-                prepared = settings_registry.prepare(spec.settings) if spec.settings else None
-                if prepared is not None and not prepared.can_register:
-                    raise ModuleSettingsError(prepared.load_error or "invalid module settings")
-                ctx = ModuleLoadContext(
-                    capabilities=capabilities,
-                    registry=registry,
-                    module_settings=prepared.active if prepared is not None else None,
-                    _register_tool_labels=register_tool_labels,
-                    _declare_surface_tools=declare_surface_tools,
-                )
-                settings_values = prepared.active.model_dump() if prepared is not None else None
-                manager._host_rules[spec.name] = resolve_host_rules(
-                    spec.name, spec.permissions.http_hosts, settings_values
-                )
-                instance = spec.create(ctx)
-            except Exception:
-                registry.remove_tools(set(registry.registered_names() - before))
-                raise
-            manager._modules[spec.name] = instance
-            log.info("Kimi module composed: %s %s", spec.name, spec.version)
+        tool_registry = _LoadTimeToolRegistry(registry)
+        manager._tool_registry = tool_registry
+        try:
+            cls._create_all(
+                manager, active_specs, tool_registry, settings_registry, capabilities, registry
+            )
+        finally:
+            # Sealed even when a later create() fails, so a module that stashed
+            # the registry cannot register into a half-loaded application.
+            tool_registry.seal()
         for spec in specs:
             if reason := disabled.get(spec.name):
                 log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
@@ -341,6 +489,41 @@ class ModuleManager:
             ),
         )
         return manager
+
+    @staticmethod
+    def _create_all(
+        manager: ModuleManager,
+        active_specs: Sequence[ModuleSpec],
+        tool_registry: _LoadTimeToolRegistry,
+        settings_registry: ModuleSettingsRegistry,
+        capabilities: ModuleCapabilities,
+        registry: ToolRegistry,
+    ) -> None:
+        for spec in active_specs:
+            before = registry.registered_names()
+            try:
+                prepared = (
+                    settings_registry.prepare_module(spec.settings) if spec.settings else None
+                )
+                if prepared is not None and not prepared.can_register:
+                    raise ModuleSettingsError(prepared.load_error or "invalid module settings")
+                ctx = ModuleLoadContext(
+                    capabilities=capabilities,
+                    registry=tool_registry.for_module(spec.name),
+                    module_settings=prepared.active if prepared is not None else None,
+                    label_sink=register_tool_labels,
+                    surface_sink=declare_surface_tools,
+                )
+                settings_values = prepared.active.model_dump() if prepared is not None else None
+                manager._host_rules[spec.name] = resolve_host_rules(
+                    spec.name, spec.permissions.http_hosts, settings_values
+                )
+                instance = spec.create(ctx)
+            except Exception:
+                registry.remove_tools(set(registry.registered_names() - before))
+                raise
+            manager._modules[spec.name] = instance
+            log.info("Kimi module composed: %s %s", spec.name, spec.version)
 
     @property
     def specs(self) -> Mapping[str, ModuleSpec]:
@@ -380,9 +563,12 @@ class ModuleManager:
         """Migrate every module, then start them in dependency order.
 
         Each module receives its own frozen ``ModuleRuntimeContext`` assembled
-        from ``base`` plus the per-module ports. ``customize`` lets the
-        composition root (or a test harness) add or replace ports before the
-        context is frozen; missing required ports abort startup.
+        from ``base`` plus the per-module ports. ``customize`` lets a test
+        harness replace ports with fakes before the context is frozen; missing
+        required ports abort startup. A ``start()`` that exceeds
+        ``start_timeout_seconds`` is cancelled, given a short grace period,
+        then abandoned if it ignores cancellation; either way it counts as a
+        failed start.
         """
         try:
             for spec in self._specs:
@@ -406,12 +592,29 @@ class ModuleManager:
                 self._contexts[spec.name] = module_ctx
                 self._started.append(spec.name)
                 self.health.set(spec.name, "starting")
-                try:
-                    await instance.start(module_ctx)
-                except BaseException as exc:
-                    self.health.set(spec.name, "failed", _summarize(exc))
-                    raise
+                outcome = await run_bounded(
+                    instance.start(module_ctx),
+                    timeout=self.start_timeout_seconds,
+                    what=f"Kimi module {spec.name} start()",
+                )
+                if outcome.timed_out:
+                    detail = f"start() exceeded {self.start_timeout_seconds:g}s"
+                    if outcome.abandoned:
+                        detail += " and ignored cancellation"
+                    self.health.set(spec.name, "failed", detail)
+                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                if outcome.cancelled:
+                    detail = "start() was cancelled before it finished"
+                    self.health.set(spec.name, "failed", detail)
+                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                if outcome.error is not None:
+                    self.health.set(spec.name, "failed", _summarize(outcome.error))
+                    raise outcome.error
                 self._settle_health(spec)
+                if self._tool_registry is not None:
+                    # Only now are the module's tools visible; before this line
+                    # a half-started module could be called through them.
+                    self._tool_registry.guild_active[spec.name] = module_ctx.is_guild_active
                 log.info("Kimi module started: %s %s", spec.name, spec.version)
         except BaseException:
             await self.close()
@@ -444,11 +647,19 @@ class ModuleManager:
             "storage": ModuleStorageImpl(base.database, spec.name, spec.table_aliases),
             "health": self.health.reporter_for(spec.name),
             "discord": (
-                DeclaredDiscordActions(base.discord, spec.name, spec.permissions.discord_actions)
-                if base.discord is not None
+                DeclaredDiscordActions(
+                    base.discord_actions(spec, is_module_guild_active),
+                    spec.name,
+                    spec.permissions.discord_actions,
+                )
+                if base.discord_actions is not None
                 else None
             ),
-            "interactions": None,
+            "interactions": (
+                base.interactions(spec.name, is_module_guild_active)
+                if base.interactions is not None
+                else None
+            ),
             "http": (
                 self.http.client_for(spec.name, self._host_rules.get(spec.name, ()))
                 if self.http is not None
@@ -482,6 +693,18 @@ class ModuleManager:
         if current is None or current.state == "starting":
             self.health.set(spec.name, "healthy")
 
+    def bind_tool_availability(self, predicate: Callable[[int], bool]) -> None:
+        """Expose every loaded module's tools under one guild predicate without ``start()``.
+
+        For harnesses that load modules but never start them (the eval runner
+        stubs module tools instead). ``start()`` binds each module's own
+        activation predicate; this replaces that binding for all loaded modules.
+        """
+        if self._tool_registry is None:
+            return
+        for spec in self._specs:
+            self._tool_registry.guild_active[spec.name] = predicate
+
     def host_rules(self, name: str) -> tuple[ResolvedHostRule, ...]:
         return self._host_rules.get(name, ())
 
@@ -489,10 +712,31 @@ class ModuleManager:
         return self.health.snapshot()
 
     async def close(self) -> None:
+        """Close started modules newest-first, then release their core-side registrations.
+
+        A ``close()`` that exceeds ``close_timeout_seconds`` is cancelled,
+        given a short grace period, then abandoned; shutdown never waits on
+        one module.
+        """
         while self._started:
             name = self._started.pop()
             try:
-                await self._modules[name].close()
+                outcome = await run_bounded(
+                    self._modules[name].close(),
+                    timeout=self.close_timeout_seconds,
+                    what=f"Kimi module {name} close()",
+                )
+                if outcome.timed_out:
+                    log.error(
+                        "Kimi module %s close() exceeded %gs%s; continuing shutdown",
+                        name,
+                        self.close_timeout_seconds,
+                        " and ignored cancellation" if outcome.abandoned else "",
+                    )
+                elif outcome.cancelled:
+                    log.error("Kimi module %s close() was cancelled before it finished", name)
+                elif outcome.error is not None:
+                    log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
             except Exception:
                 log.exception("Error closing Kimi module %s", name)
             finally:
@@ -509,13 +753,13 @@ class ModuleManager:
                     self.scheduler.unregister_module(name)
                 self.services.retire_module(name)
                 self.health.forget(name)
+                if self._tool_registry is not None:
+                    self._tool_registry.guild_active.pop(name, None)
                 self._contexts.pop(name, None)
 
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
     scoped = tuple(getattr(instance, "scoped_migrations", ()))
-    if not scoped:
-        return tuple(getattr(instance, "migrations", ()))
 
     def wrap(migrate: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:
         async def run(conn: Any) -> None:
@@ -538,7 +782,6 @@ __all__ = [
     "ModuleLoadContext",
     "ModuleLoadState",
     "ModuleManager",
-    "ModuleMigration",
     "ModuleRuntimeBase",
     "ModuleRuntimeContext",
     "ModuleSetting",

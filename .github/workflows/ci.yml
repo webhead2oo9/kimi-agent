@@ -59,7 +59,7 @@ jobs:
       # --locked fails if uv.lock is out of date with pyproject.toml, so a
       # dependency change that skipped a re-lock cannot merge.
       - name: Sync dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --all-packages --extra dev
 
       - name: Audit locked dependencies
         run: uv --preview-features audit-command audit --locked
@@ -73,7 +73,25 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Mypy
-        run: uv run mypy .
+        run: |
+          uv run mypy .
+          uv run mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests
 
       - name: Tests
         run: uv run python -m pytest -q
+
+      - name: Build module API and reference consumer
+        run: |
+          uv build --package kimi-agent-module-api --no-sources --out-dir dist/module-api
+          uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
+
+      - name: Test built module API through the reference wheel
+        shell: bash
+        run: |
+          api_wheel=$(find dist/module-api -maxdepth 1 -name '*.whl' -print -quit)
+          api_sdist=$(find dist/module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
+          reference_wheel=$(find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "${api_wheel}"
+          test -n "${api_sdist}"
+          test -n "${reference_wheel}"
+          uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"

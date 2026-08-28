@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from kimi_agent_module_api.contracts import (
     ModuleContractError,
@@ -21,6 +21,7 @@ from kimi_agent_module_api.contracts import (
 )
 
 log = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True)
@@ -124,7 +125,13 @@ class ModuleServiceView:
             )
         return self.registry.provide(self.module_name, name, version, implementation)
 
-    def get(self, name: str, version: int) -> object:
+    @overload
+    def get(self, name: str, version: int) -> object: ...
+
+    @overload
+    def get(self, name: str, version: int, type_: type[_T]) -> _T: ...
+
+    def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
         requirements = tuple(
             requirement
             for requirement in self.consumes
@@ -139,7 +146,13 @@ class ModuleServiceView:
             raise ModuleContractError(
                 f"module {self.module_name!r} has ambiguous providers for {name}@{version}"
             )
-        return self.registry.get(providers.pop(), name, version)
+        proxy = self.registry.get(providers.pop(), name, version)
+        if type_ is not None and not isinstance(proxy._provided.implementation, type_):
+            raise TypeError(
+                f"service {name}@{version} from {proxy._provided.provider!r} "
+                f"is not a {type_.__name__}"
+            )
+        return proxy
 
 
 def undeclared_provisions(

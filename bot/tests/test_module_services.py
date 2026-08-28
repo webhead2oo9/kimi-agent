@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pathlib import Path
 
 import pytest
@@ -170,3 +172,21 @@ async def test_consumer_does_not_receive_same_service_from_wrong_provider(tmp_pa
             ["rogue", "consumer", "intended"],
             installed=installed,
         )
+
+
+@pytest.mark.asyncio
+async def test_typed_get_checks_the_provided_implementation(tmp_path: Path) -> None:
+    from kimi_agent_module_api.contracts import ServiceDeclaration, ServiceRequirement
+    from modules.services import ModuleServiceView, ServiceRegistryImpl
+
+    class Board: ...
+
+    registry = ServiceRegistryImpl()
+    provider = ModuleServiceView(registry, "p", (ServiceDeclaration("s", 1),), ())
+    consumer = ModuleServiceView(registry, "c", (), (ServiceRequirement("s", 1, "p"),))
+    provider.provide("s", 1, Board())
+
+    typed: Any = consumer.get("s", 1, Board)
+    assert isinstance(typed._provided.implementation, Board)
+    with pytest.raises(TypeError):
+        consumer.get("s", 1, int)

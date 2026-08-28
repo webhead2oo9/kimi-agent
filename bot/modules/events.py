@@ -19,6 +19,8 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
+from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace
+
 from kimi_agent_module_api.contracts import (
     CORE_TOPIC_PREFIX,
     Event,
@@ -277,11 +279,11 @@ class EventBusImpl:
         """Cancel in-flight handlers, then drop the module's subscriptions."""
         lane = self._lanes.pop(module_name, None)
         if lane is not None:
-            for task in lane.workers:
-                task.cancel()
-            for task in lane.workers:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+            await cancel_with_grace(
+                lane.workers,
+                grace=DEFAULT_CANCEL_GRACE_SECONDS,
+                what=f"module {module_name} event handler",
+            )
             lane.queue.clear()
         self._subscriptions = [s for s in self._subscriptions if s.module_name != module_name]
 

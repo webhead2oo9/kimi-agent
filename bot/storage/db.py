@@ -537,6 +537,13 @@ CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
 CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
     ON module_scheduler_jobs(run_at, leased_until);
 
+CREATE TABLE IF NOT EXISTS module_scheduler_runner (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    token        TEXT,
+    leased_until REAL NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) VALUES (1, NULL, 0);
+
 """
 
 
@@ -810,6 +817,17 @@ async def _ensure_module_runtime_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
             ON module_scheduler_jobs(run_at, leased_until)"""
+    )
+    # One row, one runner: the module scheduler's singleton lease.
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS module_scheduler_runner (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            token        TEXT,
+            leased_until REAL NOT NULL DEFAULT 0
+        )"""
+    )
+    await conn.execute(
+        "INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) VALUES (1, NULL, 0)"
     )
 
 

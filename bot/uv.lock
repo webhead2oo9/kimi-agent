@@ -6,6 +6,13 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[manifest]
+members = [
+    "community-agent-reference-module",
+    "kimi-agent",
+    "kimi-agent-module-api",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -277,6 +284,34 @@ wheels = [
 ]
 
 [[package]]
+name = "community-agent-reference-module"
+version = "1.0.0"
+source = { editable = "modules/example" }
+dependencies = [
+    { name = "kimi-agent-module-api" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "kimi-agent-module-api", extra = ["testing"] },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
+    { name = "kimi-agent-module-api", extras = ["testing"], marker = "extra == 'dev'", editable = "packages/kimi-agent-module-api" },
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "discord-py"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -522,6 +557,7 @@ dependencies = [
     { name = "firecrawl-anydoc" },
     { name = "hindsight-client" },
     { name = "httpx" },
+    { name = "kimi-agent-module-api" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -549,6 +585,7 @@ requires-dist = [
     { name = "firecrawl-anydoc", specifier = "==0.2.3" },
     { name = "hindsight-client" },
     { name = "httpx" },
+    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "openai", specifier = ">=3.0" },
     { name = "pydantic" },
@@ -562,6 +599,26 @@ requires-dist = [
     { name = "sqlcipher3-binary", marker = "sys_platform == 'linux'" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "kimi-agent-module-api"
+version = "1.0.0"
+source = { editable = "packages/kimi-agent-module-api" }
+dependencies = [
+    { name = "pydantic-settings" },
+]
+
+[package.optional-dependencies]
+testing = [
+    { name = "aiosqlite" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'testing'" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
+]
+provides-extras = ["testing"]
 
 [[package]]
 name = "librt"

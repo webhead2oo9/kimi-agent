@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from search.brave import BraveSearchBackend
-from search.exa import ExaSearchBackend, _is_safe_contents_url
+from search.exa import ExaSearchBackend
+from search.normalize import is_safe_fetch_url
 from search.types import ContentsRequest, HttpResponse, SearchProviderError, SearchRequest
 
 
@@ -133,7 +134,7 @@ async def test_exa_contents_rejects_unsafe_urls_before_request(url: str) -> None
     ("http://example.com/page", "https://example.com/page", "https://8.8.8.8/page"),
 )
 def test_exa_contents_url_validation_preserves_public_hosts(url: str) -> None:
-    assert _is_safe_contents_url(url) is True
+    assert is_safe_fetch_url(url) is True
 
 
 @pytest.mark.asyncio

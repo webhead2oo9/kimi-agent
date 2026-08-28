@@ -258,10 +258,13 @@ MODULE_START_TIMEOUT_SECONDS=60   # start() past this fails the module and abort
 MODULE_CLOSE_TIMEOUT_SECONDS=15   # close() past this is cancelled; shutdown continues
 ```
 
-A start timeout logs `Kimi module <name> 'start() exceeded 60s'` and `/modules
-status` shows the module `failed` with that detail; the process exits like any
-other module failure. A close timeout logs `Kimi module <name> close()
-exceeded 15s; continuing shutdown` and the remaining modules still close.
+A start timeout logs `Kimi module <name> 'start() exceeded 60s'` and emits a
+`module_health` event with state `failed`; the process then exits like any
+other module failure, so the log and event are the diagnostic surface. A close
+timeout logs `Kimi module <name> close() exceeded 15s; continuing shutdown`
+and the remaining modules still close. In both cases the module's coroutine
+is cancelled and given five seconds; one that ignores cancellation is logged
+as abandoned and left to the event loop.
 If a module trips either ceiling during development, the fix belongs in the
 module (move slow work into a scheduler job, or make `close()` cancel rather
 than await), not in the setting.
@@ -269,6 +272,6 @@ than await), not in the setting.
 The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4)
 jobs concurrently, at most one per module. If a dev instance shares a database
 file with another running instance, the scheduler logs `Module scheduler
-paused: another scheduler runner holds live leases` and runs nothing until the
-other process stops; the isolated dev setup above avoids this by giving each
-instance its own database.
+paused: another scheduler runner holds the lease` and runs nothing until the
+other process stops (or its 60-second lease expires); the isolated dev setup
+above avoids this by giving each instance its own database.

@@ -572,3 +572,78 @@ async def test_base_factories_build_per_module_ports(tmp_path: Path) -> None:
     finally:
         await manager.close()
         await database.close()
+
+
+class StubbornModule(FakeModule):
+    """Swallows cancellation: the ceiling must still hold."""
+
+    async def start(self, ctx: ModuleRuntimeContext) -> None:
+        self.events.append(f"start:{self.name}")
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            # Ignore the first cancellation (the host's), so the grace period
+            # elapses; yield to the loop's own teardown after that.
+            await asyncio.sleep(10)
+
+
+@pytest.mark.asyncio
+async def test_start_timeout_abandons_a_module_that_ignores_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module_runtime, "run_bounded", _fast_grace(module_runtime.run_bounded))
+    events: list[str] = []
+    stubborn = StubbornModule("stubborn", events)
+    manager = _manager(tmp_path, ("stubborn",), {"stubborn": _spec("stubborn", stubborn)})
+    manager.start_timeout_seconds = 0.05
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+
+    with pytest.raises(RuntimeError, match="exceeded 0.05s"):
+        await asyncio.wait_for(
+            manager.start(_base(database, manager), customize=fake_ports), timeout=2
+        )
+    await database.close()
+
+
+def _fast_grace(original: Any) -> Any:
+    async def run(coro: Any, *, timeout: float, grace: float = 0.05, what: str) -> Any:
+        return await original(coro, timeout=timeout, grace=0.05, what=what)
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_module_raising_timeout_error_is_not_a_deadline(tmp_path: Path) -> None:
+    class Impatient(FakeModule):
+        async def start(self, ctx: ModuleRuntimeContext) -> None:
+            raise TimeoutError("upstream took too long")
+
+    manager = _manager(tmp_path, ("m",), {"m": _spec("m", Impatient("m", []))})
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+
+    with pytest.raises(TimeoutError, match="upstream"):
+        await manager.start(_base(database, manager), customize=fake_ports)
+    await database.close()
+
+
+def test_tool_registry_is_sealed_even_when_a_later_create_fails(tmp_path: Path) -> None:
+    captured: list[ModuleLoadContext] = []
+
+    def first(ctx: ModuleLoadContext) -> FakeModule:
+        captured.append(ctx)
+        return FakeModule("first", [])
+
+    def second(_ctx: ModuleLoadContext) -> FakeModule:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        _manager(
+            tmp_path,
+            ("first", "second"),
+            {"first": ModuleSpec("first", "1", first), "second": ModuleSpec("second", "1", second)},
+        )
+
+    with pytest.raises(RuntimeError, match="after module loading"):
+        captured[0].registry.register("late", "no", {"type": "object"}, _noop_tool)

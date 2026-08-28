@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from conftest import ALICE, BOB, GUILD, STAFF, Harness, ToolContext
 from kimi_agent_module_api import TrustTier
@@ -121,8 +123,32 @@ async def test_disabled_guild_refuses(started: Harness, member_ctx: ToolContext)
     started.guild_settings.errors[GUILD] = ("broken",)
 
     reply = await started.tool(TOOL_GIVE, {"user": str(BOB), "reason": "x"}, member_ctx)
+    board = await started.tool(TOOL_LEADERBOARD, {}, member_ctx)
 
     assert "not enabled" in reply
+    assert "not enabled" in board
+
+
+@pytest.mark.asyncio
+async def test_inactive_guild_refuses_even_with_valid_settings(
+    started: Harness, member_ctx: ToolContext
+) -> None:
+    started.active = False
+
+    assert "not enabled" in await started.tool(
+        TOOL_GIVE, {"user": str(BOB), "reason": "x"}, member_ctx
+    )
+
+
+@pytest.mark.asyncio
+async def test_daily_limit_holds_under_concurrent_gives(
+    started: Harness, member_ctx: ToolContext
+) -> None:
+    args = {"user": str(BOB), "reason": "race"}
+
+    replies = await asyncio.gather(*(started.tool(TOOL_GIVE, args, member_ctx) for _ in range(6)))
+
+    assert sum(reply.startswith("Kudos") for reply in replies) == 2
 
 
 @pytest.mark.asyncio
@@ -183,6 +209,12 @@ async def test_thank_back_button_only_works_for_the_receiver(started: Harness) -
     receiver = FakeInteraction(guild_id=GUILD, channel_id=555, user_id=BOB, custom_id=custom_id)
     await button(receiver)
     assert receiver.last.content == f"Kudos to <@{ALICE}>: thanks for the kudos!"
+
+    started.guild_settings.set(GUILD, allow_thank_back=False)
+    disabled = FakeInteraction(guild_id=GUILD, channel_id=555, user_id=BOB, custom_id=custom_id)
+    await button(disabled)
+    assert "turned off" in str(disabled.last.content)
+    started.guild_settings.set(GUILD, allow_thank_back=True)
 
     unknown = FakeInteraction(
         guild_id=GUILD,

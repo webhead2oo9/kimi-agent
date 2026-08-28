@@ -462,11 +462,11 @@ class Settings(BaseSettings):
     # Lifecycle ceilings for each configured module. A start() that exceeds its
     # ceiling aborts startup like any other module failure; a close() that
     # exceeds its ceiling is logged and shutdown moves on to the next module.
-    module_start_timeout_seconds: int = 60
-    module_close_timeout_seconds: int = 15
+    module_start_timeout_seconds: int = Field(default=60, ge=1)
+    module_close_timeout_seconds: int = Field(default=15, ge=1)
     # Module scheduler jobs run concurrently up to this many, at most one per
     # module at a time so a module's own handlers never overlap.
-    module_scheduler_max_concurrent_jobs: int = 4
+    module_scheduler_max_concurrent_jobs: int = Field(default=4, ge=1)
 
     # Storage
     database_path: str = "data/bot.db"

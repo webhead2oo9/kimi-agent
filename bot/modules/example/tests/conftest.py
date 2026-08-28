@@ -12,6 +12,7 @@ it imports the bot.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -67,13 +68,15 @@ class MemoryStorage:
     """``ModuleStorage`` over one in-memory SQLite connection.
 
     The naming rule mirrors the host: ``table("kudos")`` is ``"<module>_kudos"``.
-    ``write_transaction`` commits on success and rolls back on error, which is
-    the only property module code should rely on.
+    ``write_transaction`` serializes writers, commits on success, and rolls
+    back on error; those are the properties module code relies on, so the fake
+    must provide all three or a race in the module cannot be tested.
     """
 
     def __init__(self, connection: aiosqlite.Connection, module_name: str) -> None:
         self._connection = connection
         self._prefix = module_name.replace("-", "_")
+        self._write_lock = asyncio.Lock()
 
     @property
     def connection(self) -> aiosqlite.Connection:
@@ -86,12 +89,13 @@ class MemoryStorage:
 
     @contextlib.asynccontextmanager
     async def _transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-        try:
-            yield self._connection
-        except BaseException:
-            await self._connection.rollback()
-            raise
-        await self._connection.commit()
+        async with self._write_lock:
+            try:
+                yield self._connection
+            except BaseException:
+                await self._connection.rollback()
+                raise
+            await self._connection.commit()
 
     def write_transaction(self) -> Any:
         return self._transaction()
@@ -158,6 +162,8 @@ class Harness:
     services: FakeServiceRegistry
     trust: FakeTrust
     proposals: FakeProposals
+    # Flip to False to simulate the host deactivating the guild.
+    active: bool = True
 
     async def tool(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> str:
         result = await self.registry.tools[name].handler(arguments, ctx)
@@ -213,9 +219,10 @@ async def started(connection: aiosqlite.Connection, tmp_path: Path) -> AsyncIter
     services = FakeServiceRegistry()
     trust = FakeTrust({(GUILD, STAFF): "staff"})
     proposals = FakeProposals(MODULE_NAME)
+    harness_state = {"active": True}
     ctx = ModuleRuntimeContext(
         module_name=MODULE_NAME,
-        is_guild_active=lambda _guild_id: True,
+        is_guild_active=lambda _guild_id: harness_state["active"],
         current_config_dir=lambda: tmp_path,
         capabilities=ModuleCapabilities(frozenset({"proposals.v2"}), False, False),
         events=events,
@@ -231,8 +238,18 @@ async def started(connection: aiosqlite.Connection, tmp_path: Path) -> AsyncIter
         proposals=proposals,
     )
     await module.start(ctx)
+
+    class _Harness(Harness):
+        @property
+        def active(self) -> bool:
+            return harness_state["active"]
+
+        @active.setter
+        def active(self, value: bool) -> None:
+            harness_state["active"] = value
+
     try:
-        yield Harness(
+        yield _Harness(
             module,
             ctx,
             registry,

@@ -420,3 +420,35 @@ def test_entire_sdk_has_no_core_runtime_imports() -> None:
         if unexpected := imported - allowed:
             outside[path.name] = unexpected
     assert outside == {}
+
+
+@pytest.mark.asyncio
+async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> None:
+    from kimi_agent_module_api.contracts import Backoff, JobRun
+    from kimi_agent_module_api.testing import FakeScheduler
+
+    scheduler = FakeScheduler()
+    attempts: list[int] = []
+
+    async def flaky(run: JobRun) -> None:
+        attempts.append(run.attempt)
+        if run.attempt < 3:
+            raise RuntimeError("not yet")
+
+    scheduler.register("h", flaky)
+    await scheduler.run_at("once", 100.0, "h")
+    await scheduler.run_every("often", 60.0, "h", backoff=Backoff(base_seconds=5, multiplier=2))
+
+    assert await scheduler.run_due(now=100.0) == 2
+    # Both failed: kept, attempt preserved, retried after their backoff delay.
+    assert scheduler.jobs["once"].run_at == 100.0 + 30.0
+    assert scheduler.jobs["often"].run_at == 100.0 + 5.0
+    assert await scheduler.run_due(now=130.0) == 2
+    # Second failures back off further: 30*2 and 5*2 seconds.
+    assert scheduler.jobs["once"].run_at == 130.0 + 60.0
+    assert scheduler.jobs["often"].run_at == 130.0 + 10.0
+    assert await scheduler.run_due(now=200.0) == 2
+    assert "once" not in scheduler.jobs, "a one-shot that finally succeeds is deleted"
+    assert scheduler.jobs["often"].run_at == 200.0 + 60.0
+    assert scheduler.jobs["often"].attempt == 0
+    assert attempts == [1, 1, 2, 2, 3, 3]

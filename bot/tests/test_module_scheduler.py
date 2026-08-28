@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from kimi_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
-from modules.scheduler import TABLE, DurableScheduler
+from modules.scheduler import (
+    FOREIGN_RUNNER_DETAIL,
+    RUNNER_TABLE,
+    TABLE,
+    DurableScheduler,
+)
 from storage.db import Database
 
 
@@ -450,7 +455,7 @@ async def test_runner_runs_modules_concurrently_but_one_job_per_module(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_runner_pauses_while_a_foreign_process_holds_live_leases(tmp_path: Path) -> None:
+async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path) -> None:
     db = await _db(tmp_path)
     clock = _Clock()
     health: list[tuple[str, str, str]] = []
@@ -469,33 +474,92 @@ async def test_runner_pauses_while_a_foreign_process_holds_live_leases(tmp_path:
     view = scheduler.view_for("mod")
     view.register("h", handler)
     await view.run_at("mine", clock.now, "h")
-    # Simulate another process mid-execution: a live lease this runner never issued.
+    # Another process holds the singleton runner lease.
     async with db.write_transaction() as conn:
         await conn.execute(
-            f"""INSERT INTO {TABLE} (job_id, module_name, job_key, handler, run_at,
-                leased_until, lease_token, created_at, updated_at)
-                VALUES ('other:job', 'other', 'job', 'h', ?, ?, 'foreign', ?, ?)""",
-            # Not due itself, so it only matters as a live foreign lease.
-            (clock.now + 10_000, clock.now + 30, clock.now, clock.now),
+            f"UPDATE {RUNNER_TABLE} SET token = 'other-process', leased_until = ?",
+            (clock.now + 30,),
         )
     scheduler.start()
     try:
         await asyncio.sleep(0.1)
-        assert scheduler.paused_for_foreign_leases
+        assert scheduler.paused_for_foreign_runner
         assert ran == []
-        assert health == [
-            ("mod", "degraded", "another scheduler runner holds live leases; jobs paused")
-        ]
+        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
 
-        # The foreign lease expires (crashed process) and the runner resumes.
+        # The other process crashed: its lease expires and this runner takes over.
         clock.now += 31
         for _ in range(50):
             await asyncio.sleep(0.02)
             if ran:
                 break
         assert ran == ["mine"]
-        assert not scheduler.paused_for_foreign_leases
+        assert not scheduler.paused_for_foreign_runner
         assert health[-1] == ("mod", "healthy", "")
+    finally:
+        await scheduler.close()
+        cursor = await db.conn.execute(f"SELECT token FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None and row[0] is None, "close releases the runner lease"
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_two_runners_cannot_both_hold_the_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    first = _scheduler(db, clock)
+    second = _scheduler(db, clock)
+    try:
+        assert await first._acquire_runner_lease(clock.now)
+        assert not await second._acquire_runner_lease(clock.now)
+        # Renewal by the holder keeps working; the other still cannot take it.
+        clock.now += 10
+        assert await first._acquire_runner_lease(clock.now)
+        assert not await second._acquire_runner_lease(clock.now)
+        await first.close()
+        assert await second._acquire_runner_lease(clock.now)
+    finally:
+        await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_due_shares_one_job_per_module_with_the_runner(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, poll_seconds=0.02)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    overlapped = False
+    in_flight = 0
+
+    async def handler(run: JobRun) -> None:
+        nonlocal in_flight, overlapped
+        in_flight += 1
+        overlapped = overlapped or in_flight > 1
+        entered.set()
+        await release.wait()
+        in_flight -= 1
+
+    view = scheduler.view_for("mod")
+    view.register("h", handler)
+    await view.run_at("a", clock.now, "h")
+    await view.run_at("b", clock.now, "h")
+    try:
+        inline = asyncio.create_task(scheduler.run_due())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        scheduler.start()
+        await asyncio.sleep(0.1)
+        assert in_flight == 1, "the runner must not start b while run_due runs a"
+        release.set()
+        await inline
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not await view.list():
+                break
+        assert not overlapped
+        assert await view.list() == []
     finally:
         await scheduler.close()
         await db.close()

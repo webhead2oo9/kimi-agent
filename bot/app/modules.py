@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     DiscordActions,
     ModuleHealth,
     TrustLookup,
@@ -30,7 +30,7 @@ from community_agent_module_api.contracts import (
     validate_permissions,
     validate_services,
 )
-from community_agent_module_api import (
+from kimi_agent_module_api import (
     AppModule,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,

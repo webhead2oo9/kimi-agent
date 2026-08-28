@@ -5,9 +5,9 @@ description = "Reference implementation of a community agent module"
 requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["community-agent-module-api>=1.0.0,<2"]
+dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
 
-[project.entry-points."community_agent.modules"]
+[project.entry-points."kimi_agent.modules"]
 reference_greeter = "community_agent_reference_module:SPEC"
 
 [build-system]
@@ -18,4 +18,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.uv.sources]
-community-agent-module-api = { workspace = true }
+kimi-agent-module-api = { workspace = true }

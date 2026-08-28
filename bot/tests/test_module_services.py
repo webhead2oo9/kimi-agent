@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from community_agent_module_api import (
+from kimi_agent_module_api import (
     ModuleLoadContext,
     ModuleRuntimeContext,
     ModuleSpec,
     ServiceDeclaration,
     ServiceRequirement,
 )
-from community_agent_module_api.contracts import ModuleContractError, ServiceUnavailable
+from kimi_agent_module_api.contracts import ModuleContractError, ServiceUnavailable
 from modules.services import ModuleServiceView, ServiceRegistryImpl
 from modules.testing import build_test_runtime
 

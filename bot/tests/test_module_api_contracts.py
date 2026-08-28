@@ -16,7 +16,7 @@ import pytest
 from app.modules import validate_module_selection
 from config.plugin_settings import PluginSetting, PluginSettingsDefinition
 from config.settings import Settings
-from community_agent_module_api import (
+from kimi_agent_module_api import (
     MODULE_API_VERSION,
     GuildSettingsSchema,
     ModuleLoadContext,
@@ -29,7 +29,7 @@ from community_agent_module_api import (
     ServiceRequirement,
     TrustTier,
 )
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     CUSTOM_ID_MAX_LENGTH,
     Backoff,
@@ -48,15 +48,15 @@ from community_agent_module_api.contracts import (
     validate_services,
     validate_subscription,
 )
-from community_agent_module_api.events import CORE_TOPICS
+from kimi_agent_module_api.events import CORE_TOPICS
 from trust.tiers import TrustTier as CoreTrustTier
 
 SDK_ROOT = (
     Path(__file__).resolve().parents[1]
     / "packages"
-    / "community-agent-module-api"
+    / "kimi-agent-module-api"
     / "src"
-    / "community_agent_module_api"
+    / "kimi_agent_module_api"
 )
 
 
@@ -397,7 +397,7 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    allowed = set(sys.stdlib_module_names) | {"community_agent_module_api"}
+    allowed = set(sys.stdlib_module_names) | {"kimi_agent_module_api"}
     assert imported <= allowed, (
         f"{module}.py imports outside the contract layer: {imported - allowed}"
     )
@@ -405,7 +405,7 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
 
 def test_entire_sdk_has_no_core_runtime_imports() -> None:
     allowed = set(sys.stdlib_module_names) | {
-        "community_agent_module_api",
+        "kimi_agent_module_api",
         "pydantic_settings",
     }
     outside: dict[str, set[str]] = {}

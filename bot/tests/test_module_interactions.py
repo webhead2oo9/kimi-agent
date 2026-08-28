@@ -18,7 +18,7 @@ from discord_adapter.module_interactions import (
     _option_value,
     build_view,
 )
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     ButtonSpec,
     CommandOption,
     CommandSpec,
@@ -28,7 +28,7 @@ from community_agent_module_api.contracts import (
     SelectSpec,
     TrustTierName,
 )
-from community_agent_module_api.testing import FakeTrust
+from kimi_agent_module_api.testing import FakeTrust
 
 
 class _Tree:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from community_agent_module_api import ModuleCapabilities, ModuleLoadContext
+from kimi_agent_module_api import ModuleCapabilities, ModuleLoadContext
 from community_agent_reference_module import ReferenceGreeter, ReferenceSettings, create
 
 

@@ -2,7 +2,7 @@
 
 This deliberately small module demonstrates the complete supported path:
 
-- an installed `community_agent.modules` entry point;
+- an installed `kimi_agent.modules` entry point;
 - one operator-editable setting;
 - one LLM tool;
 - a scoped database migration and persistent counter; and
@@ -25,4 +25,4 @@ uv run python bot.py
 ```
 
 Copy this package into another repository, change its distribution/import/module
-names, and depend on `community-agent-module-api` from PyPI when publishing it.
+names, and depend on `kimi-agent-module-api` from PyPI when publishing it.

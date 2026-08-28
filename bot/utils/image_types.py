@@ -4,7 +4,7 @@ import base64
 import binascii
 import mimetypes
 
-from community_agent_module_api.images import (
+from kimi_agent_module_api.images import (
     SUPPORTED_IMAGE_MEDIA_TYPES,
     looks_like_image_attachment as looks_like_image_attachment,
     sniff_image_media_type as sniff_image_media_type,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from community_agent_module_api import TrustTier
+from kimi_agent_module_api import TrustTier
 
 
 def trust_tier_from_value(

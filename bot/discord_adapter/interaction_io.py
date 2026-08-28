@@ -22,6 +22,7 @@ async def send_interaction_result(
     content: str,
     *,
     ephemeral: bool,
+    original_ephemeral: bool,
     output_files: tuple[str, ...] = (),
     output_file_descriptions: tuple[tuple[str, str], ...] = (),
     allowed_file_roots: tuple[str | Path, ...] = (),
@@ -31,9 +32,11 @@ async def send_interaction_result(
 
     channel = interaction.channel
     if channel is None:
-        await interaction.edit_original_response(
-            content="I couldn't resolve where to deliver that response.",
-            allowed_mentions=discord.AllowedMentions.none(),
+        await send_interaction_status(
+            interaction,
+            "I couldn't resolve where to deliver that response.",
+            ephemeral=True,
+            original_ephemeral=original_ephemeral,
         )
         return
     plan = prepare_attachment_delivery(
@@ -46,7 +49,8 @@ async def send_interaction_result(
     prepared = suppress_link_previews(apply_attachment_delivery_notice(content, plan))
     chunks = chunk_message(prepared)
     overflow_file: discord.File | None = None
-    if len(chunks) > MAX_INTERACTION_FOLLOWUPS + 1:
+    max_chunks = MAX_INTERACTION_FOLLOWUPS + int(ephemeral == original_ephemeral)
+    if len(chunks) > max_chunks:
         overflow_file = discord.File(
             io.BytesIO(prepared.encode("utf-8")),
             filename="response.md",
@@ -78,11 +82,15 @@ async def send_interaction_result(
     if plan.embed is not None:
         first_kwargs["embed"] = build_embed(plan.embed)
 
-    if ephemeral:
+    if ephemeral == original_ephemeral:
         edit_kwargs = dict(first_kwargs)
         edit_kwargs["attachments"] = edit_kwargs.pop("files", [])
         await interaction.edit_original_response(**edit_kwargs)
         remaining = chunks[1 : MAX_INTERACTION_FOLLOWUPS + 1]
+    elif ephemeral:
+        await interaction.delete_original_response()
+        await interaction.followup.send(ephemeral=True, **first_kwargs)
+        remaining = chunks[1:MAX_INTERACTION_FOLLOWUPS]
     else:
         await interaction.followup.send(ephemeral=False, **first_kwargs)
         await interaction.edit_original_response(
@@ -99,3 +107,27 @@ async def send_interaction_result(
             ephemeral=ephemeral,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+
+async def send_interaction_status(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    ephemeral: bool,
+    original_ephemeral: bool,
+) -> None:
+    """Replace the deferred response, changing visibility via a followup if needed."""
+
+    if ephemeral == original_ephemeral:
+        await interaction.edit_original_response(
+            content=content,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    if not original_ephemeral:
+        await interaction.delete_original_response()
+    await interaction.followup.send(
+        content,
+        ephemeral=ephemeral,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )

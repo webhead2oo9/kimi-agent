@@ -460,21 +460,28 @@ async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> N
 def test_render_guild_settings_matches_the_host_document_format() -> None:
     from kimi_agent_module_api import render_guild_settings
 
-    rendered = render_guild_settings({"b": True, "a": [1, 2], "c": "x", "d": 3})
+    rendered = render_guild_settings({"b": True, "a": [1, 2], "c": "x: y", "d": 3, "e": None})
 
-    assert rendered == "---\na: [1, 2]\nb: true\nc: x\nd: 3\n---\n"
+    assert rendered == '---\na: [1, 2]\nb: true\nc: "x: y"\nd: 3\n---\n'
 
 
 def test_fake_service_registry_typed_get() -> None:
     from kimi_agent_module_api.contracts import ServiceUnavailable
     from kimi_agent_module_api.testing import FakeServiceRegistry
 
-    class Board: ...
+    class Board:
+        def answer(self) -> int:
+            return 42
 
     registry = FakeServiceRegistry()
-    registry.provide("kudos.board", 1, Board())
+    registration = registry.provide("kudos.board", 1, Board())
 
-    assert isinstance(registry.get("kudos.board", 1, Board), Board)
+    proxy = registry.get("kudos.board", 1, Board)
+    assert proxy.answer() == 42
+    registration.close()
+    with pytest.raises(ServiceUnavailable):
+        proxy.answer()
+    registry.provide("kudos.board", 1, Board())
     with pytest.raises(TypeError):
         registry.get("kudos.board", 1, int)
     with pytest.raises(ServiceUnavailable):

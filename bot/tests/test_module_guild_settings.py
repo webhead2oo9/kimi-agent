@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 from threading import Event, Lock, Thread
 
@@ -274,3 +276,49 @@ def test_stale_refresh_cannot_override_newer_enforcement_snapshot(tmp_path: Path
     assert service.blocked_guilds() == frozenset({GUILD})
     assert changed == [GUILD, other_guild]
     assert health == [("mod", "degraded", f"invalid guild settings in {GUILD}")]
+
+
+def test_render_guild_settings_round_trips_through_the_host_parser() -> None:
+    from kimi_agent_module_api import render_guild_settings
+    from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
+    from modules.guild_settings import coerce_document
+    from utils.frontmatter import split_frontmatter_strict
+
+    schema = GuildSettingsSchema(
+        fields=(
+            GuildSettingField("channel", "id"),
+            GuildSettingField("ids", "id_list"),
+            GuildSettingField("count", "int"),
+            GuildSettingField("flag", "bool"),
+            GuildSettingField("mode", "enum", choices=("a", "b")),
+            GuildSettingField("note", "str"),
+            GuildSettingField("notes", "str_list"),
+            GuildSettingField("unset", "id"),
+        )
+    )
+    values = {
+        "channel": 123,
+        "ids": (1, 2),
+        "count": -4,
+        "flag": True,
+        "mode": "b",
+        "note": "Great job: keep it up # true\nsecond line",
+        "notes": ("yes", "no: maybe", "true"),
+        "unset": None,
+    }
+
+    metadata, body = split_frontmatter_strict(render_guild_settings(values))
+    coerced, errors = coerce_document(schema, metadata)
+
+    assert body == ""
+    assert errors == ()
+    assert coerced == {**values, "unset": None}
+
+
+def test_render_guild_settings_rejects_values_no_schema_kind_holds() -> None:
+    from kimi_agent_module_api import render_guild_settings
+
+    with pytest.raises(TypeError):
+        render_guild_settings({"x": 1.5})
+    with pytest.raises(TypeError):
+        render_guild_settings({"x": {"nested": 1}})

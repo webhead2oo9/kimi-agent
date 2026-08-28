@@ -32,6 +32,7 @@ from kimi_agent_module_api.contracts import (
     validate_services,
 )
 from kimi_agent_module_api import (
+    BASELINE_CAPABILITIES,
     AppModule,
     MODULE_API_VERSION,
     MODULE_ENTRYPOINT_GROUP,
@@ -81,7 +82,9 @@ class _LoadTimeToolRegistry:
     the load loop turns a stashed registry used from ``start()`` into a clear
     error instead of a tool that silently appears after tool surfaces settled.
     ``guild_active`` is filled at ``start()`` with each module's activation
-    predicate; the registered handlers consult it on every call.
+    predicate; each registered tool's visibility consults it, so a module's
+    tools are masked everywhere until the module has started and, per guild,
+    wherever the module is inactive.
     """
 
     def __init__(self, registry: ToolRegistry) -> None:
@@ -106,6 +109,7 @@ class _LoadTimeToolRegistry:
         min_tier: Any,
         searchable: bool,
         owner_only: bool,
+        guild_only: bool,
         guild_ids: frozenset[int] | None,
     ) -> None:
         if self._sealed:
@@ -115,16 +119,17 @@ class _LoadTimeToolRegistry:
             )
         active = self.guild_active
 
+        def available(guild: str | None) -> bool:
+            # Masked until start() has bound the module's activation predicate.
+            predicate = active.get(module_name)
+            if predicate is None:
+                return False
+            if guild is None:
+                return not guild_only
+            return predicate(int(guild))
+
         async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
             guild_id = _snowflake(ctx.guild_id)
-            try:
-                predicate = active[module_name]
-            except KeyError:
-                # Tools are dispatched only after start(); reaching this means
-                # the composition order is broken, not that the guild is fine.
-                raise RuntimeError(f"module {module_name!r} tool called before start()") from None
-            if guild_id is not None and not predicate(guild_id):
-                return "This tool is not available in this server."
             channel_id = _snowflake(ctx.channel_id)
             user_id = _snowflake(ctx.user_id)
             if channel_id is None or user_id is None:
@@ -153,6 +158,7 @@ class _LoadTimeToolRegistry:
             guild_ids=(
                 frozenset(str(guild) for guild in guild_ids) if guild_ids is not None else None
             ),
+            available=available,
         )
 
 
@@ -173,6 +179,7 @@ class _ModuleToolRegistrar:
         min_tier: TrustTier = TrustTier.MEMBER,
         searchable: bool = False,
         owner_only: bool = False,
+        guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
     ) -> None:
         self.shared.register(
@@ -184,13 +191,14 @@ class _ModuleToolRegistrar:
             min_tier=min_tier,
             searchable=searchable,
             owner_only=owner_only,
+            guild_only=guild_only,
             guild_ids=guild_ids,
         )
 
 
 def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     """Build the stable capability advertisement for one core configuration."""
-    available = {"discord.history.v1", "proposals.v2"}
+    available = set(BASELINE_CAPABILITIES)
     if core_settings.message_content_intent:
         available.add("discord.message_content.v1")
     return ModuleCapabilities(
@@ -584,6 +592,12 @@ class ModuleManager:
                 )
                 if outcome.timed_out:
                     detail = f"start() exceeded {self.start_timeout_seconds:g}s"
+                    if outcome.abandoned:
+                        detail += " and ignored cancellation"
+                    self.health.set(spec.name, "failed", detail)
+                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                if outcome.cancelled:
+                    detail = "start() was cancelled before it finished"
                     self.health.set(spec.name, "failed", detail)
                     raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
                 if outcome.error is not None:
@@ -695,10 +709,13 @@ class ModuleManager:
                 )
                 if outcome.timed_out:
                     log.error(
-                        "Kimi module %s close() exceeded %gs; continuing shutdown",
+                        "Kimi module %s close() exceeded %gs%s; continuing shutdown",
                         name,
                         self.close_timeout_seconds,
+                        " and ignored cancellation" if outcome.abandoned else "",
                     )
+                elif outcome.cancelled:
+                    log.error("Kimi module %s close() was cancelled before it finished", name)
                 elif outcome.error is not None:
                     log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
             except Exception:

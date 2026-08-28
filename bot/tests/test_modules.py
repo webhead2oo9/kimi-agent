@@ -716,6 +716,7 @@ async def test_module_tools_refuse_guilds_where_the_module_is_inactive(tmp_path:
 
     def create(ctx: ModuleLoadContext) -> FakeModule:
         ctx.registry.register("count", "count", {"type": "object"}, count)
+        ctx.registry.register("anywhere", "dm ok", {"type": "object"}, count, guild_only=False)
         return FakeModule("m", [])
 
     registry = ToolRegistry()
@@ -746,10 +747,51 @@ async def test_module_tools_refuse_guilds_where_the_module_is_inactive(tmp_path:
             )
 
         assert await registry.dispatch("count", {}, ctx("7")) == "ran"
-        assert "not available in this server" in str(await registry.dispatch("count", {}, ctx("8")))
-        # Guild-less callers are the module's decision, not the host's.
-        assert await registry.dispatch("count", {}, ctx(None)) == "ran"
-        assert calls == 2
+        # Inactive guild: masked like any other gate, never refused by name.
+        assert "Unknown tool" in str(await registry.dispatch("count", {}, ctx("8")))
+        assert not registry.get_tools_for_tier(CoreTier.MEMBER, guild_id="8")
+        assert {t.name for t in registry.get_tools_for_tier(CoreTier.MEMBER, guild_id="7")} == {
+            "count",
+            "anywhere",
+        }
+        # guild_only (the default) also hides the tool from DMs and personal chat.
+        assert "Unknown tool" in str(await registry.dispatch("count", {}, ctx(None)))
+        assert calls == 1
+        # A tool that opted out of guild_only runs in DMs with guild_id None.
+        assert await registry.dispatch("anywhere", {}, ctx(None)) == "ran"
+        assert "Unknown tool" in str(await registry.dispatch("anywhere", {}, ctx("8")))
     finally:
         await manager.close()
         await database.close()
+
+
+def test_module_tools_are_masked_until_the_module_starts(tmp_path: Path) -> None:
+    async def noop(_arguments: dict[str, Any], _ctx: Any) -> str:
+        return "ran"
+
+    def create(ctx: ModuleLoadContext) -> FakeModule:
+        ctx.registry.register("t", "t", {"type": "object"}, noop)
+        return FakeModule("m", [])
+
+    registry = ToolRegistry()
+    _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+
+    from trust.tiers import TrustTier as CoreTier
+
+    assert registry.is_registered("t")
+    assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
+
+
+@pytest.mark.asyncio
+async def test_start_reports_a_cancelled_start_as_failed(tmp_path: Path) -> None:
+    class SelfCancelling(FakeModule):
+        async def start(self, ctx: ModuleRuntimeContext) -> None:
+            raise asyncio.CancelledError
+
+    manager = _manager(tmp_path, ("m",), {"m": _spec("m", SelfCancelling("m", []))})
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+
+    with pytest.raises(RuntimeError, match="cancelled before it finished"):
+        await manager.start(_base(database, manager), customize=fake_ports)
+    await database.close()

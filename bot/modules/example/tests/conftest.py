@@ -101,8 +101,6 @@ class Harness:
     services: FakeServiceRegistry
     trust: FakeTrust
     proposals: FakeProposals
-    # Flip to False to simulate the host deactivating the guild.
-    active: bool = True
 
     async def tool(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> str:
         result = await self.registry.tools[name].handler(arguments, ctx.sdk())
@@ -144,10 +142,9 @@ async def started(storage: MemoryStorage, tmp_path: Path) -> AsyncIterator[Harne
     services = FakeServiceRegistry()
     trust = FakeTrust({(GUILD, STAFF): "staff"})
     proposals = FakeProposals(MODULE_NAME)
-    harness_state = {"active": True}
     ctx = ModuleRuntimeContext(
         module_name=MODULE_NAME,
-        is_guild_active=lambda _guild_id: harness_state["active"],
+        is_guild_active=lambda _guild_id: True,
         current_config_dir=lambda: tmp_path,
         capabilities=ModuleCapabilities(frozenset({"proposals.v2"}), False, False),
         events=events,
@@ -163,18 +160,8 @@ async def started(storage: MemoryStorage, tmp_path: Path) -> AsyncIterator[Harne
         proposals=proposals,
     )
     await module.start(ctx)
-
-    class _Harness(Harness):
-        @property
-        def active(self) -> bool:
-            return harness_state["active"]
-
-        @active.setter
-        def active(self, value: bool) -> None:
-            harness_state["active"] = value
-
     try:
-        yield _Harness(
+        yield Harness(
             module,
             ctx,
             registry,

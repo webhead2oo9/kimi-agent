@@ -248,9 +248,6 @@ class KudosModule:
     ) -> Kudos:
         """Record one kudos or raise ``KudosRefused`` with a user-facing reason."""
         ctx, ledger = self._require_started()
-        if not self._enabled_in(guild_id):
-            raise KudosRefused("Kudos are not enabled in this server.")
-
         values = self._guild_values(guild_id)
         required = TrustTier(str(values.get(FIELD_GIVER_TIER) or "member"))
         if TrustTier(giver_tier) < required:
@@ -288,17 +285,15 @@ class KudosModule:
 
     async def tool_give(self, arguments: dict[str, Any], tool_ctx: ModuleToolContext) -> str:
         """``give_kudos``: the model gives kudos on behalf of the person talking to it."""
-        # ``guild_id`` is None in DMs and in personal chat. Kudos belong to a
-        # guild, so a guild-less caller is refused. (The host has already
-        # refused guilds where this module is inactive.)
-        if tool_ctx.guild_id is None:
-            return "Kudos can only be given inside a server."
+        # Registered guild_only (the default), so the host hides this tool in
+        # DMs and in guilds where the module is inactive; a guild is guaranteed.
+        guild_id = _guild_of(tool_ctx)
         receiver_id = _parse_user_id(arguments.get("user"))
         if receiver_id is None:
             return "Provide the recipient as a numeric Discord user id or an @mention."
         try:
             kudos = await self._give(
-                tool_ctx.guild_id,
+                guild_id,
                 tool_ctx.user_id,
                 receiver_id,
                 str(arguments.get("reason") or ""),
@@ -310,14 +305,9 @@ class KudosModule:
 
     async def tool_leaderboard(self, arguments: dict[str, Any], tool_ctx: ModuleToolContext) -> str:
         """``kudos_leaderboard``: a read-only view the model can quote."""
-        if tool_ctx.guild_id is None:
-            return "The kudos leaderboard is only available inside a server."
-        # The host refuses inactive guilds before the handler; this covers the
-        # module's own guild document being invalid.
-        if not self._enabled_in(tool_ctx.guild_id):
-            return "Kudos are not enabled in this server."
+        guild_id = _guild_of(tool_ctx)
         days = _clamp_days(arguments.get("days"))
-        entries = await self._leaderboard(tool_ctx.guild_id, days)
+        entries = await self._leaderboard(guild_id, days)
         if not entries:
             return f"Nobody has received kudos in the last {days} day(s)."
         lines = [f"{rank}. <@{e.user_id}> — {e.count}" for rank, e in enumerate(entries, 1)]
@@ -453,7 +443,9 @@ class KudosModule:
         posted = 0
         failed = 0
         for guild_id in ctx.guild_settings.guild_ids():
-            if not self._enabled_in(guild_id):
+            # ``guild_ids()`` lists active guilds; a guild whose document is
+            # invalid is still listed and must be skipped here.
+            if not ctx.guild_settings.is_enabled(guild_id):
                 continue
             channel_id = ctx.guild_settings.get(guild_id).values.get(FIELD_DIGEST_CHANNEL)
             if not channel_id:
@@ -507,13 +499,6 @@ class KudosModule:
             raise RuntimeError(f"{MODULE_NAME} is not started")
         return self._ctx, self._ledger
 
-    def _enabled_in(self, guild_id: int) -> bool:
-        """The host's activation predicate plus this module's guild document being valid."""
-        ctx, _ = self._require_started()
-        if not ctx.is_guild_active(guild_id):
-            return False
-        return ctx.guild_settings is None or ctx.guild_settings.is_enabled(guild_id)
-
     def _guild_values(self, guild_id: int) -> Mapping[str, Any]:
         ctx, _ = self._require_started()
         return ctx.guild_settings.get(guild_id).values if ctx.guild_settings else {}
@@ -561,6 +546,13 @@ class KudosModule:
             ctx.health.report("degraded", detail, digest_metrics, key="digest")
         else:
             ctx.health.report("healthy", "", digest_metrics, key="digest")
+
+
+def _guild_of(tool_ctx: ModuleToolContext) -> int:
+    """Guild-only tools always carry a guild; anything else is a host defect."""
+    if tool_ctx.guild_id is None:
+        raise RuntimeError("guild-only tool dispatched without a guild")
+    return tool_ctx.guild_id
 
 
 def _summary(kudos: Kudos) -> str:

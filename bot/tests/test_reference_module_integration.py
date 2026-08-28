@@ -60,11 +60,12 @@ async def test_installed_reference_module_migrates_dispatches_and_persists(
             "give_kudos", {"user": "<@8>", "reason": "again"}, _tool_context("1")
         )
         assert "last 24 hours" in second
-        # A guild-less caller (DM or personal chat) is refused at the handler.
-        refused = await runtime.registry.dispatch(
+        # Guild-only tools are masked, not refused, for a guild-less caller (DM or
+        # personal chat): the registry answers as if the tool did not exist.
+        masked = await runtime.registry.dispatch(
             "give_kudos", {"user": "<@7>", "reason": "x"}, _tool_context("1", guild_id=None)
         )
-        assert "inside a server" in refused
+        assert "Unknown tool" in masked
     finally:
         await runtime.close()
 

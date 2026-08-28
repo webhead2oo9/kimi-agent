@@ -41,6 +41,7 @@ from kimi_agent_module_api.contracts import (
     MessagePage,
     MessageRef,
     MessageSnapshot,
+    TABLE_NAME_RE,
     MigrationContext,
     ModuleContractError,
     ModuleHealth,
@@ -58,9 +59,11 @@ from kimi_agent_module_api.contracts import (
     validate_publish_topic,
 )
 from kimi_agent_module_api.tools import ModuleToolHandler
-
-if True:  # imported after the contracts to keep the package root import acyclic
-    from kimi_agent_module_api import ModuleCapabilities, ModuleLoadContext
+from kimi_agent_module_api import (
+    BASELINE_CAPABILITIES,
+    ModuleCapabilities,
+    ModuleLoadContext,
+)
 
 _T = TypeVar("_T")
 
@@ -765,6 +768,24 @@ class FakeHttp:
         yield response.body
 
 
+class _FakeServiceProxy:
+    """Forwards attributes like the host proxy; raises once the provider is gone."""
+
+    __slots__ = ("_key", "_registry")
+
+    def __init__(self, registry: FakeServiceRegistry, key: tuple[str, int]) -> None:
+        self._registry = registry
+        self._key = key
+
+    def __getattr__(self, attribute: str) -> Any:
+        try:
+            implementation = self._registry.provided[self._key]
+        except KeyError as exc:
+            name, version = self._key
+            raise ServiceUnavailable(f"service {name}@{version} closed") from exc
+        return getattr(implementation, attribute)
+
+
 class FakeServiceRegistry:
     def __init__(self) -> None:
         self.provided: dict[tuple[str, int], object] = {}
@@ -787,7 +808,8 @@ class FakeServiceRegistry:
             raise ServiceUnavailable(f"service {name}@{version} is not provided") from exc
         if type_ is not None and not isinstance(implementation, type_):
             raise TypeError(f"service {name}@{version} is not a {type_.__name__}")
-        return implementation
+        # A proxy, as in the host: attribute access only, dead after close.
+        return _FakeServiceProxy(self, (name, version))
 
 
 class FakeTrust:
@@ -802,18 +824,6 @@ class FakeTrust:
 
     async def tier(self, guild_id: int, user_id: int) -> TrustTierName:
         return self.tiers.get((guild_id, user_id), self.default)
-
-
-@dataclass(slots=True)
-class FakeStorageTables:
-    """Only the naming half of ``ModuleStorage``; ``MemoryStorage`` runs real SQL."""
-
-    module_name: str
-    used: set[str] = field(default_factory=set)
-
-    def table(self, name: str) -> str:
-        self.used.add(name)
-        return f"{self.module_name.replace('-', '_')}_{name}"
 
 
 class MemoryStorage:
@@ -850,8 +860,8 @@ class MemoryStorage:
         return self._connection
 
     def table(self, name: str) -> str:
-        if not name.isidentifier():
-            raise ModuleContractError(f"bad table name {name!r}")
+        if not TABLE_NAME_RE.match(name):
+            raise ModuleContractError(f"table name {name!r} is not a valid identifier")
         return f'"{self._prefix}_{name}"'
 
     @contextlib.asynccontextmanager
@@ -881,6 +891,7 @@ class RecordedTool:
     min_tier: TrustTier
     searchable: bool
     owner_only: bool
+    guild_only: bool
     guild_ids: frozenset[int] | None
 
 
@@ -900,10 +911,18 @@ class RecordingToolRegistry:
         min_tier: TrustTier = TrustTier.MEMBER,
         searchable: bool = False,
         owner_only: bool = False,
+        guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
     ) -> None:
         self.tools[name] = RecordedTool(
-            description, parameters, handler, min_tier, searchable, owner_only, guild_ids
+            description,
+            parameters,
+            handler,
+            min_tier,
+            searchable,
+            owner_only,
+            guild_only,
+            guild_ids,
         )
 
 
@@ -929,7 +948,7 @@ def load_context(
         recorder.surfaces[surface] = tuple(names)
 
     context = ModuleLoadContext(
-        capabilities=capabilities or ModuleCapabilities(frozenset({"proposals.v2"}), False, False),
+        capabilities=capabilities or ModuleCapabilities(BASELINE_CAPABILITIES, False, False),
         registry=recorder.registry,
         module_settings=settings,
         label_sink=recorder.labels.update,
@@ -951,7 +970,6 @@ __all__ = [
     "FakeResponse",
     "FakeScheduler",
     "FakeServiceRegistry",
-    "FakeStorageTables",
     "FakeTrust",
     "LoadContextRecorder",
     "MemoryStorage",

@@ -17,6 +17,10 @@ from discord_adapter.io import (
 MAX_INTERACTION_FOLLOWUPS = 5
 
 
+class PartialPublicDeliveryError(Exception):
+    """A public primary response was sent, but a later chunk failed."""
+
+
 async def send_interaction_result(
     interaction: discord.Interaction,
     content: str,
@@ -101,12 +105,17 @@ async def send_interaction_result(
         # followups; four remain after the private deferred acknowledgement.
         remaining = chunks[1:MAX_INTERACTION_FOLLOWUPS]
 
-    for chunk in remaining:
-        await interaction.followup.send(
-            chunk,
-            ephemeral=ephemeral,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+    try:
+        for chunk in remaining:
+            await interaction.followup.send(
+                chunk,
+                ephemeral=ephemeral,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+    except discord.HTTPException as exc:
+        if not ephemeral and not original_ephemeral:
+            raise PartialPublicDeliveryError from exc
+        raise
 
 
 async def send_interaction_status(

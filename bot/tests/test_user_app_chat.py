@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import discord
 import pytest
@@ -14,7 +15,11 @@ from agent.turn import TurnResult, TurnTerminationReason
 from app import runtime as app_runtime
 from config.fragments.prompt import resolve_template_path
 from config.settings import Settings
-from discord_adapter.interaction_io import send_interaction_result, send_interaction_status
+from discord_adapter.interaction_io import (
+    PartialPublicDeliveryError,
+    send_interaction_result,
+    send_interaction_status,
+)
 from storage.conversations import OWNER_ONLY, ConversationStore
 from storage.db import Database
 from trust.tiers import TrustTier
@@ -37,8 +42,10 @@ def test_user_app_access_uses_highest_overlapping_tier() -> None:
 
 
 def test_user_app_settings_are_off_by_default_and_require_access() -> None:
-    settings = Settings(
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
         user_app_chat_enabled=False,
+        user_app_dm_enabled=False,
         owner_user_id="",
         user_app_member_ids="",
         user_app_regular_ids="",
@@ -46,7 +53,8 @@ def test_user_app_settings_are_off_by_default_and_require_access() -> None:
     )
     assert settings.user_app_chat_enabled is False
     with pytest.raises(ValidationError, match="USER_APP_CHAT_ENABLED requires"):
-        Settings(
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
             user_app_chat_enabled=True,
             owner_user_id="",
             user_app_member_ids="",
@@ -64,6 +72,13 @@ def test_owner_is_automatically_user_app_staff() -> None:
         user_app_staff_ids="",
     )
     assert settings.user_app_staff_id_set == {"42"}
+
+
+def test_owner_user_id_rejects_multiple_ids() -> None:
+    with pytest.raises(ValidationError, match="OWNER_USER_ID must be one numeric"):
+        Settings(_env_file=None, owner_user_id="1,2")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, owner_user_id=" 42 ")  # type: ignore[call-arg]
+    assert settings.owner_user_id == "42"
 
 
 def test_user_app_workspace_is_global_per_user() -> None:
@@ -204,6 +219,45 @@ async def test_public_result_edits_original_then_uses_public_followups() -> None
 
 
 @pytest.mark.asyncio
+async def test_partial_public_delivery_keeps_primary_response() -> None:
+    class Followup:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def send(self, _content: object = None, **_kwargs: object) -> None:
+            self.calls += 1
+            if self.calls == 2:
+                response = SimpleNamespace(status=500, reason="Server Error")
+                raise discord.HTTPException(response, "followup failed")  # type: ignore[arg-type]
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.channel = object()
+            self.followup = Followup()
+            self.edits: list[dict[str, object]] = []
+            self.deleted = False
+
+        async def edit_original_response(self, **kwargs: object) -> None:
+            self.edits.append(kwargs)
+
+        async def delete_original_response(self) -> None:
+            self.deleted = True
+
+    interaction = FakeInteraction()
+    with pytest.raises(PartialPublicDeliveryError):
+        await send_interaction_result(
+            interaction,  # type: ignore[arg-type]
+            "A" * 4500,
+            ephemeral=False,
+            original_ephemeral=False,
+        )
+
+    assert interaction.deleted is False
+    assert len(interaction.edits) == 1
+    assert str(interaction.edits[0]["content"]).startswith("A")
+
+
+@pytest.mark.asyncio
 async def test_private_status_replaces_public_placeholder_with_followup() -> None:
     class Followup:
         def __init__(self) -> None:
@@ -319,6 +373,7 @@ async def test_runtime_registers_user_commands_only_when_enabled(
                 "config_dir": str(tmp_path / "off-config"),
                 "database_path": str(tmp_path / "off.db"),
                 "user_app_chat_enabled": False,
+                "user_app_dm_enabled": False,
             }
         )
     )
@@ -440,6 +495,57 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
     )
     assert calls == 1
     assert "expired because your personal thread was reset or deleted" in stale.edits[-1]
+    await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_personal_chat_timeout_covers_wait_before_turn_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
+    )
+    app = app_runtime.build_app(
+        Settings.model_validate(
+            {
+                "discord_bot_token": "token",
+                "model_api_key": "key",
+                "config_dir": str(tmp_path / "config"),
+                "database_path": str(tmp_path / "runtime.db"),
+                "user_app_chat_enabled": True,
+                "user_app_chat_timeout_seconds": 1,
+                "owner_user_id": "42",
+            }
+        )
+    )
+    await app._first_init_core()
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.id = 1
+            self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
+            self.edits: list[str] = []
+
+        async def edit_original_response(self, **kwargs: object) -> None:
+            self.edits.append(str(kwargs.get("content", "")))
+
+    async def wait_forever(_interaction: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app, "_run_user_app_chat_turn", wait_forever)
+    interaction = FakeInteraction()
+    await app._execute_user_app_chat(
+        interaction,  # type: ignore[arg-type]
+        message="hello",
+        attachment=None,
+        public=False,
+        request_generation=app._user_app_chat_generation("42"),
+    )
+
+    assert interaction.edits == ["That personal chat turn timed out. Run `/chat` again to retry."]
     await app.database.close()
 
 

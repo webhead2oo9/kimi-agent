@@ -291,7 +291,7 @@ class ModuleEventPublisher:
             return
         cached = {int(message.id): message for message in payload.cached_messages}
         self._safe(
-            ev.TOPIC_MESSAGE_DELETE,
+            ev.TOPIC_MESSAGE_BULK_DELETE,
             ev.MessageBulkDeleteEvent(
                 refs=tuple(
                     (

@@ -196,8 +196,15 @@ class ModuleHealthReporter:
         state: HealthState,
         detail: str = "",
         metrics: Mapping[str, float] | None = None,
+        *,
+        key: str | None = None,
     ) -> None:
-        self.registry.set(self.module_name, state, detail, metrics)
+        if key is None:
+            self.registry.set(self.module_name, state, detail, metrics)
+            return
+        # Module-owned concerns live beside core's constraints under their own
+        # namespace so a module cannot clear a "scheduler" or "services" mark.
+        self.registry.set_constraint(self.module_name, f"module:{key}", state, detail, metrics)
 
 
 __all__ = ["HealthRegistry", "ModuleHealthReporter"]

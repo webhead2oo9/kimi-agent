@@ -1,0 +1,24 @@
+[project]
+name = "kimi-agent-module-api"
+version = "1.0.0"
+description = "Stable contracts for community-built assistant modules"
+requires-python = ">=3.14"
+authors = [{ name = "Webhead" }]
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+dependencies = ["pydantic-settings>=2.14.2"]
+
+[project.optional-dependencies]
+# kimi_agent_module_api.testing.MemoryStorage runs real SQL in unit tests.
+testing = ["aiosqlite"]
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kimi_agent_module_api = ["py.typed"]

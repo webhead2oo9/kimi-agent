@@ -9,12 +9,18 @@ that composes real core services lives in core's ``modules.testing``.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import fnmatch
 import hashlib
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, overload
+
+from pydantic_settings import BaseSettings
+
+from kimi_agent_module_api.trust import TrustTier
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
@@ -35,18 +41,31 @@ from kimi_agent_module_api.contracts import (
     MessagePage,
     MessageRef,
     MessageSnapshot,
+    TABLE_NAME_RE,
+    MigrationContext,
+    ModuleContractError,
     ModuleHealth,
     OutgoingEmbed,
     ProposalActor,
     ProposalError,
     ProposalRef,
     ProposalState,
+    RoleSnapshot,
+    ScopedModuleMigration,
     ServiceUnavailable,
     TrustTierName,
     UndeclaredDiscordAction,
     build_custom_id,
     validate_publish_topic,
 )
+from kimi_agent_module_api.tools import ModuleToolHandler
+from kimi_agent_module_api import (
+    BASELINE_CAPABILITIES,
+    ModuleCapabilities,
+    ModuleLoadContext,
+)
+
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True)
@@ -207,12 +226,25 @@ class _FakeJob:
     run_at: float
     interval: float | None
     payload: Mapping[str, Any]
+    backoff: Backoff = field(default_factory=Backoff)
     attempt: int = 0
     last_error: str | None = None
 
 
+def _retry_delay(backoff: Backoff, attempt: int) -> float:
+    return min(
+        backoff.max_seconds, backoff.base_seconds * backoff.multiplier ** max(0, attempt - 1)
+    )
+
+
 class FakeScheduler:
-    """Jobs run only when the test advances time with ``run_due``."""
+    """Jobs run only when the test advances time with ``run_due``.
+
+    Settlement follows the host: a successful one-shot job is deleted, a
+    successful periodic job reschedules from completion, and a failed job of
+    either kind is kept and retried after its ``Backoff`` delay with the
+    attempt count preserved. Jitter is ignored so reschedules are exact.
+    """
 
     def __init__(self) -> None:
         self.handlers: dict[str, JobHandler] = {}
@@ -237,7 +269,14 @@ class FakeScheduler:
         jitter_seconds: float = 0.0,
         backoff: Backoff | None = None,
     ) -> None:
-        self.jobs[key] = _FakeJob(key, handler_name, 0.0, interval_seconds, dict(payload or {}))
+        self.jobs[key] = _FakeJob(
+            key,
+            handler_name,
+            0.0,
+            interval_seconds,
+            dict(payload or {}),
+            backoff=backoff or Backoff(),
+        )
 
     async def cancel(self, key: str) -> bool:
         return self.jobs.pop(key, None) is not None
@@ -265,30 +304,62 @@ class FakeScheduler:
                 await handler(run)
             except Exception as exc:
                 job.last_error = repr(exc)
+                job.run_at = now + _retry_delay(job.backoff, job.attempt)
             else:
                 job.last_error = None
+                job.attempt = 0
+                if job.interval is None:
+                    self.jobs.pop(job.key, None)
+                else:
+                    job.run_at = now + job.interval
             ran += 1
-            if job.interval is None:
-                self.jobs.pop(job.key, None)
-            else:
-                job.run_at = now + job.interval
         return ran
 
 
+_HEALTH_ORDER: dict[str, int] = {"healthy": 0, "starting": 1, "degraded": 2, "failed": 3}
+
+
 class FakeHealth:
+    """Records every report.
+
+    ``history`` holds every call as ``(key, health)``. ``current`` is the latest
+    unkeyed report, ``keyed`` the latest live report per key, and ``state`` the
+    worst across both, which is what the host would show for the module.
+    """
+
     def __init__(self) -> None:
+        self.history: list[tuple[str | None, ModuleHealth]] = []
         self.reports: list[ModuleHealth] = []
+        self.keyed: dict[str, ModuleHealth] = {}
 
     def report(
-        self, state: HealthState, detail: str = "", metrics: Mapping[str, float] | None = None
+        self,
+        state: HealthState,
+        detail: str = "",
+        metrics: Mapping[str, float] | None = None,
+        *,
+        key: str | None = None,
     ) -> None:
-        self.reports.append(
-            ModuleHealth(state, detail, dict(metrics or {}), float(len(self.reports)))
-        )
+        health = ModuleHealth(state, detail, dict(metrics or {}), float(len(self.history)))
+        self.history.append((key, health))
+        if key is not None:
+            if state == "healthy" and not detail and not metrics:
+                self.keyed.pop(key, None)
+            else:
+                self.keyed[key] = health
+            return
+        self.reports.append(health)
 
     @property
     def current(self) -> ModuleHealth | None:
         return self.reports[-1] if self.reports else None
+
+    @property
+    def state(self) -> HealthState:
+        candidates = [*self.keyed.values(), *([self.current] if self.current else [])]
+        if not candidates:
+            return "healthy"
+        return max((health.state for health in candidates), key=_HEALTH_ORDER.__getitem__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +382,7 @@ class FakeDiscordActions:
         self.histories: dict[tuple[int, int], list[MessageSnapshot]] = {}
         self.pins: dict[tuple[int, int], tuple[MessageSnapshot, ...]] = {}
         self.public_threads: dict[tuple[int, int], tuple[ChannelSnapshot, ...]] = {}
+        self.roles: dict[int, tuple[RoleSnapshot, ...]] = {}
         self.channel_access: dict[tuple[int, int, int], bool] = {}
         self._next_message_id = 1000
 
@@ -455,8 +527,12 @@ class FakeDiscordActions:
         self._record("fetch_public_threads", guild_id, parent_channel_id)
         return self.public_threads.get((guild_id, parent_channel_id), ())
 
+    async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
+        self._record("fetch_roles", guild_id)
+        return self.roles.get(guild_id, ())
+
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
-        self._record("check_channel_access", guild_id, user_id, channel_id)
+        self._record("can_view_channel", guild_id, user_id, channel_id)
         return self.channel_access.get((guild_id, user_id, channel_id), False)
 
 
@@ -480,7 +556,9 @@ class FakeInteraction:
         custom_id: str | None = None,
         values: Sequence[str] = (),
         guild_name: str | None = "Test Guild",
+        message: MessageRef | None = None,
     ) -> None:
+        self._message = message
         self._guild_name = guild_name
         self._guild_id = guild_id
         self._channel_id = channel_id
@@ -518,6 +596,10 @@ class FakeInteraction:
     @property
     def values(self) -> tuple[str, ...]:
         return self._values
+
+    @property
+    def message(self) -> MessageRef | None:
+        return self._message
 
     async def respond(
         self,
@@ -686,20 +768,68 @@ class FakeHttp:
         yield response.body
 
 
+@dataclass(slots=True)
+class _FakeProvided:
+    implementation: object
+    alive: bool = True
+
+
+class _FakeServiceProxy:
+    """Forwards attributes like the host proxy; dead for good once its registration closes."""
+
+    __slots__ = ("_key", "_provided")
+
+    def __init__(self, provided: _FakeProvided, key: tuple[str, int]) -> None:
+        self._provided = provided
+        self._key = key
+
+    def __getattr__(self, attribute: str) -> Any:
+        if not self._provided.alive:
+            name, version = self._key
+            raise ServiceUnavailable(f"service {name}@{version} closed")
+        return getattr(self._provided.implementation, attribute)
+
+
 class FakeServiceRegistry:
     def __init__(self) -> None:
         self.provided: dict[tuple[str, int], object] = {}
+        self._records: dict[tuple[str, int], _FakeProvided] = {}
 
     def provide(self, name: str, version: int, implementation: object) -> _Closable:
         key = (name, version)
+        live = self._records.get(key)
+        if live is not None and live.alive:
+            # The host refuses a second live provider for the same service.
+            raise ModuleContractError(f"service {name}@{version} is already provided")
+        record = _FakeProvided(implementation)
         self.provided[key] = implementation
-        return _Closable(lambda: self.provided.pop(key, None))
+        self._records[key] = record
 
-    def get(self, name: str, version: int) -> object:
+        def close() -> None:
+            # Like the host, a re-provided service is a new object; proxies
+            # handed out for this one stay closed.
+            record.alive = False
+            if self._records.get(key) is record:
+                self._records.pop(key, None)
+                self.provided.pop(key, None)
+
+        return _Closable(close)
+
+    @overload
+    def get(self, name: str, version: int) -> object: ...
+
+    @overload
+    def get(self, name: str, version: int, type_: type[_T]) -> _T: ...
+
+    def get(self, name: str, version: int, type_: type[_T] | None = None) -> object:
         try:
-            return self.provided[(name, version)]
+            record = self._records[(name, version)]
         except KeyError as exc:
             raise ServiceUnavailable(f"service {name}@{version} is not provided") from exc
+        if type_ is not None and not isinstance(record.implementation, type_):
+            raise TypeError(f"service {name}@{version} is not a {type_.__name__}")
+        # A proxy, as in the host: attribute access only, dead after close.
+        return _FakeServiceProxy(record, (name, version))
 
 
 class FakeTrust:
@@ -716,16 +846,135 @@ class FakeTrust:
         return self.tiers.get((guild_id, user_id), self.default)
 
 
-@dataclass(slots=True)
-class FakeStorageTables:
-    """Only the naming half of ``ModuleStorage``; real SQL needs the core harness."""
+class MemoryStorage:
+    """``ModuleStorage`` over one in-memory SQLite connection.
 
-    module_name: str
-    used: set[str] = field(default_factory=set)
+    Requires the ``testing`` extra (``kimi-agent-module-api[testing]``), which
+    brings ``aiosqlite``. Mirrors the host's guarantees: ``table()`` returns
+    the quoted ``"<module>_<name>"``, reads go through ``connection``, and
+    ``write_transaction()`` serializes writers, commits on success, and rolls
+    back on error. Use ``migrate()`` to apply a module's ``scoped_migrations``.
+
+    Typical use::
+
+        async with MemoryStorage.open("my_module") as storage:
+            await storage.migrate(MyModule.scoped_migrations)
+            ...
+    """
+
+    def __init__(self, connection: Any, module_name: str) -> None:
+        self._connection = connection
+        self._prefix = module_name.replace("-", "_")
+        self._write_lock = asyncio.Lock()
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def open(cls, module_name: str) -> AsyncIterator[MemoryStorage]:
+        import aiosqlite  # optional dependency: the ``testing`` extra
+
+        async with aiosqlite.connect(":memory:") as connection:
+            yield cls(connection, module_name)
+
+    @property
+    def connection(self) -> Any:
+        return self._connection
 
     def table(self, name: str) -> str:
-        self.used.add(name)
-        return f"{self.module_name.replace('-', '_')}_{name}"
+        if not TABLE_NAME_RE.match(name):
+            raise ModuleContractError(f"table name {name!r} is not a valid identifier")
+        return f'"{self._prefix}_{name}"'
+
+    @contextlib.asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[Any]:
+        async with self._write_lock:
+            try:
+                yield self._connection
+            except BaseException:
+                await self._connection.rollback()
+                raise
+            await self._connection.commit()
+
+    def write_transaction(self) -> Any:
+        return self._transaction()
+
+    async def migrate(self, migrations: Sequence[ScopedModuleMigration]) -> None:
+        for _name, migration in migrations:
+            await migration(MigrationContext(connection=self._connection, table=self.table))
+        await self._connection.commit()
+
+
+@dataclass(slots=True)
+class RecordedTool:
+    description: str
+    parameters: dict[str, Any]
+    handler: ModuleToolHandler
+    min_tier: TrustTier
+    searchable: bool
+    owner_only: bool
+    guild_only: bool
+    guild_ids: frozenset[int] | None
+
+
+class RecordingToolRegistry:
+    """Satisfies ``ModuleToolRegistry`` and remembers every registration."""
+
+    def __init__(self) -> None:
+        self.tools: dict[str, RecordedTool] = {}
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: ModuleToolHandler,
+        *,
+        min_tier: TrustTier = TrustTier.MEMBER,
+        searchable: bool = False,
+        owner_only: bool = False,
+        guild_only: bool = True,
+        guild_ids: frozenset[int] | None = None,
+    ) -> None:
+        self.tools[name] = RecordedTool(
+            description,
+            parameters,
+            handler,
+            min_tier,
+            searchable,
+            owner_only,
+            guild_only,
+            guild_ids,
+        )
+
+
+@dataclass(slots=True)
+class LoadContextRecorder:
+    """What a ``load_context`` captured from ``create()``."""
+
+    registry: RecordingToolRegistry
+    labels: dict[str, str]
+    surfaces: dict[str, tuple[str, ...]]
+
+
+def load_context(
+    settings: BaseSettings | None,
+    *,
+    capabilities: ModuleCapabilities | None = None,
+    registry: RecordingToolRegistry | None = None,
+) -> tuple[ModuleLoadContext, LoadContextRecorder]:
+    """Build a ``ModuleLoadContext`` for calling ``ModuleSpec.create`` in a test."""
+    recorder = LoadContextRecorder(registry or RecordingToolRegistry(), {}, {})
+
+    def declare(surface: str, names: Sequence[str]) -> None:
+        recorder.surfaces[surface] = tuple(names)
+
+    context = ModuleLoadContext(
+        capabilities=capabilities or ModuleCapabilities(BASELINE_CAPABILITIES, False, False),
+        registry=recorder.registry,
+        module_settings=settings,
+        label_sink=recorder.labels.update,
+        surface_sink=declare,
+    )
+    return context, recorder
 
 
 __all__ = [
@@ -741,7 +990,11 @@ __all__ = [
     "FakeResponse",
     "FakeScheduler",
     "FakeServiceRegistry",
-    "FakeStorageTables",
     "FakeTrust",
+    "LoadContextRecorder",
+    "MemoryStorage",
     "ProposedChange",
+    "RecordedTool",
+    "RecordingToolRegistry",
+    "load_context",
 ]

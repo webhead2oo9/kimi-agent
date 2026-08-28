@@ -57,6 +57,10 @@ and reads.
   ordered `_MIGRATIONS` registry upgrades supported lower schema versions.
 - The `schema_version` table records which schema changes have been applied and
   when.
+- **`module_scheduler_runner`** is the module scheduler's singleton lease: one
+  row (`token`, `leased_until`) that the running process renews every tick
+  and releases on close, so a second process against the same file pauses
+  instead of running jobs.
 - **`module_scheduler_jobs`** holds durable module jobs (`module_name`,
   `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns,
   attempt and last error). Core owns it; modules reach it only through

@@ -62,7 +62,6 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "config",
         "discord_adapter",
         "image_gen",
-        "kimi_agent_module_api",
         "memory",
         "moderation",
         "modules",
@@ -84,7 +83,6 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "codex": {"utils"},
     "commands": {
         "discord_adapter",
-        "kimi_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -95,7 +93,6 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "config": {"providers", "tools", "trust", "utils"},
     "discord_adapter": {
         "agent",
-        "kimi_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -118,11 +115,10 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     },
     "image_gen": {"codex"},
     "memory": {"providers", "storage", "utils"},
-    "kimi_agent_module_api": {"config", "trust", "utils"},
     "moderation": {"observability", "providers", "trust", "utils"},
     # Module API runtime services. Grows as each service lands; the app edge is
     # the harness cycle documented above.
-    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
+    "modules": {"app", "config", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
     "scripts": {"codex"},

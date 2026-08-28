@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from kimi_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
-from modules.scheduler import TABLE, DurableScheduler
+from modules.scheduler import (
+    FOREIGN_RUNNER_DETAIL,
+    RUNNER_TABLE,
+    TABLE,
+    DurableScheduler,
+)
 from storage.db import Database
 
 
@@ -402,4 +407,355 @@ async def test_schedule_validation(tmp_path: Path) -> None:
             await view.run_at("k", 1.0, "")
     finally:
         await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_runs_modules_concurrently_but_one_job_per_module(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, poll_seconds=0.02, max_concurrent=4)
+    in_flight: set[str] = set()
+    overlap: list[set[str]] = []
+    release = asyncio.Event()
+
+    def blocking(name: str):
+        async def handler(run: JobRun) -> None:
+            in_flight.add(name)
+            overlap.append(set(in_flight))
+            await release.wait()
+            in_flight.discard(name)
+
+        return handler
+
+    scheduler.view_for("a").register("h", blocking("a"))
+    scheduler.view_for("b").register("h", blocking("b"))
+    await scheduler.view_for("a").run_at("first", clock.now, "h")
+    await scheduler.view_for("a").run_at("second", clock.now, "h")
+    await scheduler.view_for("b").run_at("first", clock.now, "h")
+    scheduler.start()
+    try:
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if len(in_flight) == 2:
+                break
+        # Both modules run at once; a's second job waits for a's first.
+        assert in_flight == {"a", "b"}
+        assert len(scheduler._running) == 2
+        release.set()
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not await scheduler.list_jobs("a") and not await scheduler.list_jobs("b"):
+                break
+        assert await scheduler.list_jobs("a") == []
+        assert max(len(seen) for seen in overlap) == 2
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = DurableScheduler(
+        db,
+        clock=clock,
+        lease_seconds=30.0,
+        poll_seconds=0.02,
+        on_health=lambda m, s, d: health.append((m, s, d)),
+    )
+    ran: list[str] = []
+
+    async def handler(run: JobRun) -> None:
+        ran.append(run.key)
+
+    view = scheduler.view_for("mod")
+    view.register("h", handler)
+    await view.run_at("mine", clock.now, "h")
+    # Another process holds the singleton runner lease.
+    async with db.write_transaction() as conn:
+        await conn.execute(
+            f"UPDATE {RUNNER_TABLE} SET token = 'other-process', leased_until = ?",
+            (clock.now + 30,),
+        )
+    scheduler.start()
+    try:
+        await asyncio.sleep(0.1)
+        assert scheduler.paused_for_foreign_runner
+        assert ran == []
+        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
+
+        # The other process crashed: its lease expires and this runner takes over.
+        clock.now += 31
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if ran:
+                break
+        assert ran == ["mine"]
+        assert not scheduler.paused_for_foreign_runner
+        assert health[-1] == ("mod", "healthy", "")
+    finally:
+        await scheduler.close()
+        cursor = await db.conn.execute(f"SELECT token FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None and row[0] is None, "close releases the runner lease"
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_two_runners_cannot_both_hold_the_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    first = _scheduler(db, clock)
+    second = _scheduler(db, clock)
+    try:
+        assert await first._acquire_runner_lease(clock.now)
+        assert not await second._acquire_runner_lease(clock.now)
+        # Renewal by the holder keeps working; the other still cannot take it.
+        clock.now += 10
+        assert await first._acquire_runner_lease(clock.now)
+        assert not await second._acquire_runner_lease(clock.now)
+        await first.close()
+        assert await second._acquire_runner_lease(clock.now)
+    finally:
+        await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_due_shares_one_job_per_module_with_the_runner(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, poll_seconds=0.02)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    overlapped = False
+    in_flight = 0
+
+    async def handler(run: JobRun) -> None:
+        nonlocal in_flight, overlapped
+        in_flight += 1
+        overlapped = overlapped or in_flight > 1
+        entered.set()
+        await release.wait()
+        in_flight -= 1
+
+    view = scheduler.view_for("mod")
+    view.register("h", handler)
+    await view.run_at("a", clock.now, "h")
+    await view.run_at("b", clock.now, "h")
+    try:
+        inline = asyncio.create_task(scheduler.run_due())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        scheduler.start()
+        await asyncio.sleep(0.1)
+        assert in_flight == 1, "the runner must not start b while run_due runs a"
+        assert len(scheduler._running) == 1 and scheduler._running_modules == {"mod"}
+        release.set()
+        await inline
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not await view.list():
+                break
+        assert not overlapped
+        assert await view.list() == []
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+def test_max_concurrent_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ModuleContractError):
+        DurableScheduler(object(), max_concurrent=0)
+
+
+@pytest.mark.asyncio
+async def test_run_due_also_needs_the_runner_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    scheduler.view_for("mod").register("h", handler)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    async with db.write_transaction() as conn:
+        await conn.execute(
+            f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
+        )
+    try:
+        assert await scheduler.run_due() == 0
+        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
+        # A module registering during the pause is told, too.
+        scheduler.view_for("late").register("h", handler)
+        assert health[-1] == ("late", "degraded", FOREIGN_RUNNER_DETAIL)
+        clock.now += 31
+        assert await scheduler.run_due() == 1
+        assert ("mod", "healthy", "") in health and ("late", "healthy", "") in health
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_the_same_orphan_detail(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    first = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    first.view_for("mod").register("h", handler)
+    await first.view_for("mod").run_at("orphan", clock.now, "h")
+    await first.close()
+    second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+    second.view_for("mod").register("other", handler)
+    try:
+        assert await second.run_due() == 0
+        orphan_detail = health[-1]
+        assert orphan_detail == ("mod", "degraded", "scheduled job 'orphan' has no handler")
+        # Foreign pause and resume must restore exactly that detail.
+        async with db.write_transaction() as conn:
+            await conn.execute(
+                f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
+            )
+        assert await second.run_due() == 0
+        clock.now += 31
+        assert await second.run_due() == 0
+        assert health[-1] == orphan_detail
+    finally:
+        await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_job_heartbeat_renews_the_runner_lease(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, lease_seconds=0.2, poll_seconds=0.05)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(run: JobRun) -> None:
+        started.set()
+        await release.wait()
+
+    scheduler.view_for("mod").register("slow", slow)
+    await scheduler.view_for("mod").run_at("job", clock.now, "slow")
+    try:
+        inline = asyncio.create_task(scheduler.run_due())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        clock.now += 1.0  # well past the 0.2s lease; only heartbeats can keep it
+        await asyncio.sleep(0.35)
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None and row[0] > clock.now
+        release.set()
+        await inline
+    finally:
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_claim_commit_releases_the_module_reservation(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    scheduler.view_for("mod").register("h", handler)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    real_commit = db.conn.commit
+    calls = {"n": 0}
+
+    async def flaky_commit() -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:  # the lease acquisition commits first, the claim second
+            raise RuntimeError("disk full")
+        await real_commit()
+
+    db.conn.commit = flaky_commit  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="disk full"):
+            await scheduler.run_due()
+        assert scheduler._running_modules == set()
+        db.conn.commit = real_commit  # type: ignore[method-assign]
+        assert await scheduler.run_due() == 1
+    finally:
+        db.conn.commit = real_commit  # type: ignore[method-assign]
+        await scheduler.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_orphan_keeps_the_detail_naming_a_live_job(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    first = _scheduler(db, clock)
+
+    async def handler(run: JobRun) -> None:
+        pass
+
+    first.view_for("mod").register("h", handler)
+    await first.view_for("mod").run_at("a", clock.now, "h")
+    await first.view_for("mod").run_at("b", clock.now + 1, "h")
+    await first.close()
+    health: list[tuple[str, str, str]] = []
+    second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
+    second.view_for("mod").register("other", handler)
+    try:
+        assert await second.run_due() == 0
+        assert health[-1] == ("mod", "degraded", "scheduled job 'a' has no handler")
+        assert await second.view_for("mod").cancel("a")
+        # Still degraded (b is orphaned too); the detail, stored and live, now names b.
+        assert second._paused_reported[("mod", "h")] == "scheduled job 'b' has no handler"
+        assert health[-1] == ("mod", "degraded", "scheduled job 'b' has no handler")
+    finally:
+        await second.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_renewing_after_close(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    scheduler = DurableScheduler(db, clock=clock, lease_seconds=0.2, poll_seconds=0.05)
+    started = asyncio.Event()
+
+    async def stubborn(run: JobRun) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            # Ignore the scheduler's cancellation so the job is abandoned; yield
+            # to the loop's own teardown after that.
+            await asyncio.sleep(10)
+
+    scheduler.view_for("mod").register("h", stubborn)
+    await scheduler.view_for("mod").run_at("j", clock.now, "h")
+    scheduler.start()
+    await asyncio.wait_for(started.wait(), timeout=2)
+    try:
+        # The stubborn handler is abandoned after the grace period; its
+        # heartbeat must then stop touching the runner lease.
+        await scheduler.close()
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None
+        leased_until = float(row[0])
+        await asyncio.sleep(0.35)
+        cursor = await db.conn.execute(f"SELECT leased_until FROM {RUNNER_TABLE}")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert float(row[0]) <= leased_until
+    finally:
         await db.close()

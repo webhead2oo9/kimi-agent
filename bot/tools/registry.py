@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import asyncio
 import concurrent.futures
 import logging
@@ -288,6 +289,11 @@ class ToolEntry:
     # time and immutable, so clone_without/replace_skill_tools carry it without
     # special handling.
     config_spec: tuple[ToolConfigField, ...] = ()
+    # Optional runtime availability predicate over the caller's guild id (None
+    # in DMs), AND-ed with every other gate. Application modules use it to mask
+    # their tools where the module is inactive; like guild_ids, a False here
+    # hides the tool from lists and masks it at dispatch.
+    available: Callable[[str | None], bool] | None = None
 
 
 class ToolRegistry:
@@ -321,6 +327,8 @@ class ToolRegistry:
         # Fail closed: a guild-scoped tool needs a concrete guild_id that is in
         # its allowlist. A global tool (guild_ids is None) is allowed anywhere,
         # including DMs where guild_id is None.
+        if entry.available is not None and not entry.available(guild_id):
+            return False
         if entry.guild_ids is None:
             return True
         return guild_id is not None and guild_id in entry.guild_ids
@@ -376,6 +384,7 @@ class ToolRegistry:
         owner_only: bool = False,
         guild_ids: frozenset[str] | None = None,
         config_spec: Sequence[ToolConfigField] = (),
+        available: Callable[[str | None], bool] | None = None,
     ) -> None:
         if name in self._core_tools or name in self._search_tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -397,6 +406,7 @@ class ToolRegistry:
             owner_only=owner_only,
             guild_ids=guild_ids,
             config_spec=validated_config_spec,
+            available=available,
         )
         if searchable:
             self._search_tools[name] = entry
@@ -440,6 +450,21 @@ class ToolRegistry:
         for name in names:
             self._core_tools.pop(name, None)
             self._search_tools.pop(name, None)
+
+    def replace_handler(self, name: str, handler: Callable[..., Coroutine[Any, Any, str]]) -> None:
+        """Swap a registered tool's handler, keeping every other field of its entry.
+
+        The only supported way to stub a tool: re-registering field by field
+        silently drops any gate added to ``ToolEntry`` later.
+        """
+        entry = self._core_tools.get(name) or self._search_tools.get(name)
+        if entry is None:
+            raise KeyError(name)
+        replaced = replace(entry, handler=handler)
+        if entry.searchable:
+            self._search_tools[name] = replaced
+        else:
+            self._core_tools[name] = replaced
 
     def clone_without(self, names: set[str]) -> ToolRegistry:
         """Return an independent registry view sharing entries except ``names``."""

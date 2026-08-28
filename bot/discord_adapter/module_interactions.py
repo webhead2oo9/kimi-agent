@@ -25,6 +25,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from kimi_agent_module_api.contracts import (
+    MessageRef,
     CUSTOM_ID_PREFIX,
     AutocompleteHandler,
     ButtonSpec,
@@ -159,6 +160,21 @@ class ModuleInteractionAdapter:
         data = getattr(self._interaction, "data", None) or {}
         values = data.get("values") if isinstance(data, dict) else None
         return tuple(str(v) for v in values) if values else ()
+
+    @property
+    def message(self) -> MessageRef | None:
+        """The message a component lives on. Slash commands have none."""
+        message = self._interaction.message
+        if message is None or self._interaction.guild_id is None:
+            return None
+        channel = message.channel
+        parent_id = channel.parent_id if isinstance(channel, discord.Thread) else None
+        return MessageRef(
+            guild_id=int(self._interaction.guild_id),
+            channel_id=int(channel.id),
+            message_id=int(message.id),
+            parent_channel_id=int(parent_id) if parent_id is not None else None,
+        )
 
     def _kwargs(
         self,

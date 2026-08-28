@@ -404,7 +404,10 @@ async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
         )
     )
 
-    assert [topic for topic, _payload in published] == [ev.TOPIC_MESSAGE_DELETE] * 2
+    assert [topic for topic, _payload in published] == [
+        ev.TOPIC_MESSAGE_DELETE,
+        ev.TOPIC_MESSAGE_BULK_DELETE,
+    ]
     single = published[0][1]
     bulk = published[1][1]
     assert isinstance(single, ev.MessageDeleteEvent) and single.ref.message_id == 30

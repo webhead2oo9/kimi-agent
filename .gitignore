@@ -1,5 +1,6 @@
 # Top-level environments
 .venv/
+**/*.egg-info/
 
 # Credentials and private key material. Keep checked-in examples discoverable,
 # but fail closed for instance-owned environment and authentication files.

@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from kimi_agent_module_api import ModuleSpec
+from kimi_agent_module_api.contracts import InteractionRouter
 from pydantic import SecretStr
 
 from agent.attachments import (
@@ -115,7 +116,6 @@ from commands.modules_cmd import register_modules_command
 from discord_adapter.module_actions import DiscordActionsImpl, TrustLookupImpl
 from discord_adapter.module_events import ModuleEventPublisher
 from discord_adapter.module_interactions import InteractionRuntime
-from modules.actions import DeclaredDiscordActions
 from modules.events import EventBusImpl
 from modules.guild_settings import GuildSettingsService
 from modules.http import ModuleHttpRuntime
@@ -696,8 +696,14 @@ class KimiApplication:
                 await self.moderation_service.close()
             except Exception:
                 log.exception("Error closing moderation service")
+        # Order matters: stop claiming jobs, then close modules (which cancels
+        # each module's in-flight event handlers via events.close_module), then
+        # tear down the shared HTTP client and event bus nothing can reach anymore.
         if self.tools.module_manager.scheduler is not None:
-            await self.tools.module_manager.scheduler.close()
+            try:
+                await self.tools.module_manager.scheduler.close()
+            except Exception:
+                log.exception("Error closing the module scheduler")
         await self.tools.module_manager.close()
         if self.tools.module_manager.http is not None:
             await self.tools.module_manager.http.close()
@@ -1108,6 +1114,7 @@ class KimiApplication:
         module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
         module_manager.scheduler = DurableScheduler(
             self.database,
+            max_concurrent=self.settings.module_scheduler_max_concurrent_jobs,
             on_health=lambda module, state, detail: module_manager.health.mark(
                 module, state, detail, source="scheduler"
             ),
@@ -1164,27 +1171,23 @@ class KimiApplication:
         )
         await self.proposal_service.warn_unattached()
 
-        def customize_module_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
-            module_is_guild_active = ports["is_guild_active"]
-            return {
-                **ports,
-                "interactions": interaction_runtime.router_for(
-                    spec.name,
-                    trust=module_trust,
-                    is_guild_active=module_is_guild_active,
-                ),
-                "discord": DeclaredDiscordActions(
-                    DiscordActionsImpl(
-                        bot=self.bot,
-                        trust=module_trust,
-                        module_name=spec.name,
-                        is_guild_active=module_is_guild_active,
-                        override_target_policy=spec.permissions.override_target_policy,
-                    ),
-                    spec.name,
-                    spec.permissions.discord_actions,
-                ),
-            }
+        def module_discord_actions(
+            spec: ModuleSpec, module_is_guild_active: Callable[[int], bool]
+        ) -> DiscordActionsImpl:
+            return DiscordActionsImpl(
+                bot=self.bot,
+                trust=module_trust,
+                module_name=spec.name,
+                is_guild_active=module_is_guild_active,
+                override_target_policy=spec.permissions.override_target_policy,
+            )
+
+        def module_interactions(
+            module_name: str, module_is_guild_active: Callable[[int], bool]
+        ) -> InteractionRouter:
+            return interaction_runtime.router_for(
+                module_name, trust=module_trust, is_guild_active=module_is_guild_active
+            )
 
         await module_manager.start(
             ModuleRuntimeBase(
@@ -1194,9 +1197,10 @@ class KimiApplication:
                 current_config_dir=lambda: Path(self.settings.config_dir),
                 capabilities=module_capabilities(self.settings),
                 trust=module_trust,
+                discord_actions=module_discord_actions,
+                interactions=module_interactions,
                 proposals=self.proposal_service,
-            ),
-            customize=customize_module_ports,
+            )
         )
         # Persisted module jobs re-bind to handlers registered during start().
         module_manager.scheduler.start()

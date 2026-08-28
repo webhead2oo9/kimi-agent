@@ -77,16 +77,18 @@ guild installations, and permissions stay intact.
   default-denied networking; the writable store is private instance data. Staff
   can also teach from a selected human message through the **Teach Kimi**
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
-- **Discord commands.** `/memory`, `/mod`, `/moderation`, `/privacy`, and
+- **Discord commands.** `/memory`, `/moderation`, `/privacy`, and
   `/usage` expose user controls and staff operations; owner-only `/models`
   changes the global chat model without restarting the bot. An opt-in User
   Install surface adds `/chat` and `/chat-reset`.
 - **Safety rails.** Optional privacy consent and LLM content moderation, user
-  blocks, trust-tiered tools, moderation cases/logging, and read-only
-  FingerprintHub sync with bounded local image matching.
+  blocks, trust-tiered tools, and strict workspace/network boundaries.
 - **Operator plugins.** Community-specific tools and guild scoping load from
   your own packages via an explicit `PLUGIN_MODULES` allowlist, without forking
   the core. See [docs/plugins.md](../docs/plugins.md).
+- **Application modules.** Attach any installed lifecycle-aware package through
+  the standalone module API; the repository keeps one reference implementation.
+  See [docs/modules.md](../docs/modules.md).
 - **Observability.** Structured JSONL tool-event logging for local inspection.
   See [docs/observability.md](../docs/observability.md).
 

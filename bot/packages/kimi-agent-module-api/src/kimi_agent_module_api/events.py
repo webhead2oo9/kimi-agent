@@ -23,6 +23,7 @@ from kimi_agent_module_api.contracts import (
 TOPIC_MESSAGE = f"{CORE_TOPIC_PREFIX}.message"
 TOPIC_MESSAGE_EDIT = f"{CORE_TOPIC_PREFIX}.message_edit"
 TOPIC_MESSAGE_DELETE = f"{CORE_TOPIC_PREFIX}.message_delete"
+TOPIC_MESSAGE_BULK_DELETE = f"{CORE_TOPIC_PREFIX}.message_bulk_delete"
 TOPIC_MEMBER_JOIN = f"{CORE_TOPIC_PREFIX}.member_join"
 TOPIC_MEMBER_REMOVE = f"{CORE_TOPIC_PREFIX}.member_remove"
 TOPIC_MEMBER_UPDATE = f"{CORE_TOPIC_PREFIX}.member_update"
@@ -33,6 +34,7 @@ CORE_TOPICS: frozenset[str] = frozenset(
         TOPIC_MESSAGE,
         TOPIC_MESSAGE_EDIT,
         TOPIC_MESSAGE_DELETE,
+        TOPIC_MESSAGE_BULK_DELETE,
         TOPIC_MEMBER_JOIN,
         TOPIC_MEMBER_REMOVE,
         TOPIC_MEMBER_UPDATE,

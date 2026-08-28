@@ -42,8 +42,8 @@ Plain chat works out of the box. There's lots of options to look through and set
 | **Skills** | Staff-written Markdown playbooks, plus operator-authored script tools that run under mandatory Linux isolation with no network unless you say so. |
 | **Threads** | Move a conversation into a bot-owned thread without losing the transcript. |
 | **Discord context** | Pull recent channel history on demand, or search chosen channels, without persisting what it reads. |
-| **Safety** | Privacy consent, LLM output moderation, user blocks, moderation cases with staff logs, and known-bad image fingerprint matching. |
-| **Plugins** | Add your own tools from your own packages via an explicit allowlist. |
+| **Safety** | Privacy consent, LLM output moderation, user blocks, trust-tiered tools, and strict workspace/network boundaries. |
+| **Extensions** | Add deployment-owned tools with plugins, or attach any installed lifecycle module through a stable standalone API. |
 | **Personal user app** | Optionally grant selected Discord IDs one `/chat` thread and workspace that follows them across locations. |
 
 Turns are stateless and every conversation is keyed to the message that started

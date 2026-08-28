@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app.modules import validate_module_selection
+from config.plugin_settings import PluginSetting, PluginSettingsDefinition
 from config.settings import Settings
 from kimi_agent_module_api import (
     MODULE_API_VERSION,
@@ -21,9 +22,12 @@ from kimi_agent_module_api import (
     ModuleLoadContext,
     ModulePermissions,
     ModuleRuntimeContext,
+    ModuleSetting,
+    ModuleSettingsDefinition,
     ModuleSpec,
     ServiceDeclaration,
     ServiceRequirement,
+    TrustTier,
 )
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
@@ -45,6 +49,15 @@ from kimi_agent_module_api.contracts import (
     validate_subscription,
 )
 from kimi_agent_module_api.events import CORE_TOPICS
+from trust.tiers import TrustTier as CoreTrustTier
+
+SDK_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "packages"
+    / "kimi-agent-module-api"
+    / "src"
+    / "kimi_agent_module_api"
+)
 
 
 def _spec(name: str = "demo", **overrides: object) -> ModuleSpec:
@@ -67,7 +80,11 @@ def test_spec_declares_nothing_by_default() -> None:
     assert spec.guild_settings is None
     assert spec.provides == ()
     assert spec.consumes == ()
-    assert spec.api_version == MODULE_API_VERSION == 2
+    assert spec.api_version == MODULE_API_VERSION == 1
+
+
+def test_core_and_modules_share_the_public_trust_enum() -> None:
+    assert CoreTrustTier is TrustTier
 
 
 def test_runtime_context_requires_every_service_port() -> None:
@@ -87,6 +104,15 @@ def test_runtime_context_requires_every_service_port() -> None:
         "current_config_dir",
     } <= required
     assert "bot" not in required and "database" not in required
+
+
+def test_public_module_setting_fields_match_the_core_translation() -> None:
+    assert [field.name for field in dataclasses.fields(ModuleSetting)] == [
+        field.name for field in dataclasses.fields(PluginSetting)
+    ]
+    assert [field.name for field in dataclasses.fields(ModuleSettingsDefinition)] == [
+        field.name for field in dataclasses.fields(PluginSettingsDefinition)
+    ]
 
 
 # --- naming rules ---------------------------------------------------------
@@ -129,11 +155,11 @@ def test_proposals_is_a_reserved_core_module_name() -> None:
 
 
 def test_unsupported_module_api_version_is_rejected_clearly() -> None:
-    with pytest.raises(RuntimeError, match="requires module API 1; core provides 2"):
+    with pytest.raises(RuntimeError, match="requires module API 2; core provides 1"):
         validate_module_selection(
             ("legacy",),
             core_settings=_settings(),
-            installed={"legacy": _spec("legacy", api_version=1)},
+            installed={"legacy": _spec("legacy", api_version=2)},
         )
 
 
@@ -361,10 +387,9 @@ def test_selection_preflight_accepts_full_declarations() -> None:
 def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None:
     """Declarations must be checkable without Discord, the database, or core services.
 
-    Checked statically: importing a submodule runs the package ``__init__``, which
-    still re-exports concrete core types until the cutover removes them.
+    Checked statically in the standalone package source tree.
     """
-    path = Path(__file__).resolve().parents[1] / "kimi_agent_module_api" / f"{module}.py"
+    path = SDK_ROOT / f"{module}.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -376,3 +401,159 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
     assert imported <= allowed, (
         f"{module}.py imports outside the contract layer: {imported - allowed}"
     )
+
+
+def test_entire_sdk_has_no_core_runtime_imports() -> None:
+    allowed = set(sys.stdlib_module_names) | {
+        "kimi_agent_module_api",
+        "pydantic_settings",
+    }
+    # testing.MemoryStorage imports aiosqlite lazily behind the ``testing`` extra;
+    # it is a test convenience, not a core runtime package.
+    per_file_allowed = {"testing.py": {"aiosqlite"}}
+    outside: dict[str, set[str]] = {}
+    for path in SDK_ROOT.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        if unexpected := imported - allowed - per_file_allowed.get(path.name, set()):
+            outside[path.name] = unexpected
+    assert outside == {}
+
+
+@pytest.mark.asyncio
+async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> None:
+    from kimi_agent_module_api.contracts import Backoff, JobRun
+    from kimi_agent_module_api.testing import FakeScheduler
+
+    scheduler = FakeScheduler()
+    attempts: list[int] = []
+
+    async def flaky(run: JobRun) -> None:
+        attempts.append(run.attempt)
+        if run.attempt < 3:
+            raise RuntimeError("not yet")
+
+    scheduler.register("h", flaky)
+    await scheduler.run_at("once", 100.0, "h")
+    await scheduler.run_every("often", 60.0, "h", backoff=Backoff(base_seconds=5, multiplier=2))
+
+    assert await scheduler.run_due(now=100.0) == 2
+    # Both failed: kept, attempt preserved, retried after their backoff delay.
+    assert scheduler.jobs["once"].run_at == 100.0 + 30.0
+    assert scheduler.jobs["often"].run_at == 100.0 + 5.0
+    assert await scheduler.run_due(now=130.0) == 2
+    # Second failures back off further: 30*2 and 5*2 seconds.
+    assert scheduler.jobs["once"].run_at == 130.0 + 60.0
+    assert scheduler.jobs["often"].run_at == 130.0 + 10.0
+    assert await scheduler.run_due(now=200.0) == 2
+    assert "once" not in scheduler.jobs, "a one-shot that finally succeeds is deleted"
+    assert scheduler.jobs["often"].run_at == 200.0 + 60.0
+    assert scheduler.jobs["often"].attempt == 0
+    assert attempts == [1, 1, 2, 2, 3, 3]
+
+
+def test_render_guild_settings_matches_the_host_document_format() -> None:
+    from kimi_agent_module_api import render_guild_settings
+
+    rendered = render_guild_settings({"b": True, "a": [1, 2], "c": "x: y", "d": 3, "e": None})
+
+    assert rendered == '---\na: [1, 2]\nb: true\nc: "x: y"\nd: 3\n---\n'
+
+
+@pytest.mark.parametrize("key", ["bad:key", "bad\ninjected", "UPPER", ""])
+def test_render_guild_settings_rejects_invalid_keys(key: str) -> None:
+    from kimi_agent_module_api import render_guild_settings
+
+    with pytest.raises(ValueError, match="invalid guild setting name"):
+        render_guild_settings({key: True})
+
+
+def test_fake_service_registry_typed_get() -> None:
+    from kimi_agent_module_api.contracts import ServiceUnavailable
+    from kimi_agent_module_api.testing import FakeServiceRegistry
+
+    class Board:
+        def answer(self) -> int:
+            return 42
+
+    registry = FakeServiceRegistry()
+    registration = registry.provide("kudos.board", 1, Board())
+
+    proxy = registry.get("kudos.board", 1, Board)
+    assert proxy.answer() == 42
+    registration.close()
+    with pytest.raises(ServiceUnavailable):
+        proxy.answer()
+    registry.provide("kudos.board", 1, Board())
+    with pytest.raises(TypeError):
+        registry.get("kudos.board", 1, int)
+    with pytest.raises(ServiceUnavailable):
+        registry.get("missing", 1)
+
+
+@pytest.mark.asyncio
+async def test_fake_discord_actions_gate_fetch_roles_and_can_view_channel() -> None:
+    from kimi_agent_module_api.contracts import RoleSnapshot, UndeclaredDiscordAction
+    from kimi_agent_module_api.testing import FakeDiscordActions
+
+    actions = FakeDiscordActions("m", frozenset({"fetch_roles"}))
+    actions.roles[1] = (RoleSnapshot(1, 10, "mod", 5),)
+
+    assert await actions.fetch_roles(1) == (RoleSnapshot(1, 10, "mod", 5),)
+    with pytest.raises(UndeclaredDiscordAction):
+        await actions.can_view_channel(1, 2, 3)
+
+
+def test_fake_interaction_exposes_the_component_message() -> None:
+    from kimi_agent_module_api.contracts import MessageRef
+    from kimi_agent_module_api.testing import FakeInteraction
+
+    ref = MessageRef(1, 2, 3)
+    assert FakeInteraction(message=ref).message == ref
+    assert FakeInteraction().message is None
+
+
+@pytest.mark.asyncio
+async def test_memory_storage_serializes_writers_and_runs_migrations() -> None:
+    from kimi_agent_module_api.contracts import MigrationContext
+    from kimi_agent_module_api.testing import MemoryStorage
+
+    async def create(ctx: MigrationContext) -> None:
+        await ctx.connection.execute(f"CREATE TABLE {ctx.table('t')} (n INTEGER)")
+
+    async with MemoryStorage.open("my-mod") as storage:
+        assert storage.table("t") == '"my_mod_t"'
+        await storage.migrate((("001", create),))
+        async with storage.write_transaction() as conn:
+            await conn.execute('INSERT INTO "my_mod_t" (n) VALUES (1)')
+        cursor = await storage.connection.execute('SELECT COUNT(*) FROM "my_mod_t"')
+        assert (await cursor.fetchone())[0] == 1
+
+
+def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
+    from kimi_agent_module_api.contracts import ServiceUnavailable
+    from kimi_agent_module_api.testing import FakeServiceRegistry
+
+    class Board:
+        def answer(self) -> int:
+            return 1
+
+    registry = FakeServiceRegistry()
+    registration = registry.provide("s", 1, Board())
+    old = registry.get("s", 1, Board)
+    registration.close()
+    registry.provide("s", 1, Board())
+
+    with pytest.raises(ServiceUnavailable):
+        old.answer()
+    assert registry.get("s", 1, Board).answer() == 1
+    # A second live provider is refused, as in the host.
+    from kimi_agent_module_api.contracts import ModuleContractError
+
+    with pytest.raises(ModuleContractError):
+        registry.provide("s", 1, Board())

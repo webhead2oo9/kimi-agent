@@ -1,53 +1,52 @@
-"""Stable public contracts for trusted Kimi application modules.
-
-Modules run in-process and are trusted by installation. These contracts are a
-compatibility boundary, not a sandbox: core owns the implementations while
-external packages depend only on the shapes exported here.
-"""
+"""Stable public contracts for trusted, installed assistant modules."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic_settings import BaseSettings
 
 from kimi_agent_module_api.contracts import (
     ConfigSnapshot,
+    RoleSnapshot,
+    render_guild_settings,
     DiscordActions,
     EventBus,
     GuildSettings,
+    GuildSettingsSchema,
     HealthReporter,
     InteractionRouter,
     ModuleHttp,
-    ModuleStorage,
-    Scheduler,
-    ServiceRegistry,
-    TrustLookup,
-    GuildSettingsSchema,
     ModulePermissions,
+    ModuleStorage,
+    ScopedModuleMigration,
     ProposalActor,
     ProposalError,
     ProposalRef,
     ProposalService,
     ProposalState,
+    Scheduler,
     ServiceDeclaration,
+    ServiceRegistry,
     ServiceRequirement,
+    TrustLookup,
 )
-from config.module_settings import ModuleSetting, ModuleSettingsDefinition
-from trust.tiers import TrustTier
+from kimi_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
+from kimi_agent_module_api.tools import (
+    ModuleToolContext,
+    ModuleToolHandler,
+    ModuleToolRegistry,
+)
+from kimi_agent_module_api.trust import TrustTier
 
-if TYPE_CHECKING:
-    import aiosqlite
-
-    from tools.registry import ToolRegistry
-
-MODULE_API_VERSION = 2
+MODULE_API_VERSION = 1
 MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
+# Capabilities every compatible host advertises regardless of configuration.
+BASELINE_CAPABILITIES: frozenset[str] = frozenset({"discord.history.v1", "proposals.v2"})
 
-type ModuleMigration = tuple[str, Callable[["aiosqlite.Connection"], Awaitable[None]]]
 _SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
 
 
@@ -59,14 +58,11 @@ class ModuleCapabilities:
 
     def require(self, name: str) -> None:
         if name not in self.available:
-            raise RuntimeError(f"Kimi core does not provide required capability {name!r}")
+            raise RuntimeError(f"the host does not provide required capability {name!r}")
 
 
 class AppModule(Protocol):
-    # Raw-connection migrations. A module that also defines
-    # ``scoped_migrations: Sequence[ScopedModuleMigration]`` gets those run
-    # instead, with a MigrationContext whose ``table()`` applies the prefix.
-    migrations: Sequence[ModuleMigration]
+    scoped_migrations: Sequence[ScopedModuleMigration]
 
     async def start(self, ctx: ModuleRuntimeContext) -> None: ...
 
@@ -83,24 +79,31 @@ class ModuleSpec:
     settings: ModuleSettingsDefinition | None = None
     requires_capabilities: tuple[str, ...] = ()
     activation_capabilities: tuple[str, ...] = ()
-    # Declarations. Validated at selection preflight; enforced by the
-    # runtime services as they land. Defaults declare nothing.
     permissions: ModulePermissions = field(default_factory=ModulePermissions)
     guild_settings: GuildSettingsSchema | None = None
     provides: tuple[ServiceDeclaration, ...] = ()
     consumes: tuple[ServiceRequirement, ...] = ()
-    # Logical table name -> legacy physical name, so an installation keeps
-    # its data until a later release renames tables to the module prefix.
     table_aliases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ModuleLoadContext:
+    """What ``ModuleSpec.create`` receives.
+
+    ``create()`` is pure wiring: read prepared settings, register LLM tools,
+    construct the module object. No migration has run and no dependency has
+    started, so nothing here reaches storage, services, or Discord; that work
+    belongs in ``start()``. The tool registry is sealed once loading finishes,
+    so tools cannot be registered later from ``start()`` either.
+    """
+
     capabilities: ModuleCapabilities
-    registry: ToolRegistry
+    registry: ModuleToolRegistry
     module_settings: BaseSettings | None
-    _register_tool_labels: Callable[[Mapping[str, str]], None]
-    _declare_surface_tools: Callable[[str, Sequence[str]], None]
+    # Host sinks behind the two convenience methods below. Tests build a
+    # context with ``kimi_agent_module_api.testing.load_context``.
+    label_sink: Callable[[Mapping[str, str]], None]
+    surface_sink: Callable[[str, Sequence[str]], None]
 
     def settings_for(self, settings_type: type[_SettingsT]) -> _SettingsT:
         if self.module_settings is None or not isinstance(self.module_settings, settings_type):
@@ -108,20 +111,17 @@ class ModuleLoadContext:
         return self.module_settings
 
     def register_tool_labels(self, labels: Mapping[str, str]) -> None:
-        self._register_tool_labels(labels)
+        """Gerund phrases shown while a tool runs, e.g. ``{"give_kudos": "Giving kudos"}``."""
+        self.label_sink(labels)
 
     def declare_surface_tools(self, surface: str, names: Sequence[str]) -> None:
-        self._declare_surface_tools(surface, names)
+        """Declare which tools belong to a named evaluation surface."""
+        self.surface_sink(surface, names)
 
 
 @dataclass(frozen=True)
 class ModuleRuntimeContext:
-    """What one module receives in ``start()``: services, never raw core objects.
-
-    ``raw_bot`` and ``raw_storage`` are populated only for modules whose
-    permissions declare them. They are audited escape hatches for trusted,
-    owner-installed code, not a security boundary.
-    """
+    """Runtime ports supplied to one module after it has been loaded."""
 
     module_name: str
     is_guild_active: Callable[[int], bool]
@@ -143,6 +143,7 @@ class ModuleRuntimeContext:
 
 
 __all__ = [
+    "BASELINE_CAPABILITIES",
     "MODULE_API_VERSION",
     "MODULE_ENTRYPOINT_GROUP",
     "AppModule",
@@ -150,18 +151,23 @@ __all__ = [
     "GuildSettingsSchema",
     "ModuleCapabilities",
     "ModuleLoadContext",
-    "ModuleMigration",
     "ModulePermissions",
     "ModuleRuntimeContext",
     "ModuleSetting",
     "ModuleSettingsDefinition",
     "ModuleSpec",
+    "ModuleToolContext",
+    "ModuleToolHandler",
+    "ModuleToolRegistry",
     "ProposalActor",
     "ProposalError",
     "ProposalRef",
     "ProposalService",
     "ProposalState",
+    "RoleSnapshot",
+    "ScopedModuleMigration",
     "ServiceDeclaration",
     "ServiceRequirement",
     "TrustTier",
+    "render_guild_settings",
 ]

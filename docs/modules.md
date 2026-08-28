@@ -1,25 +1,87 @@
 # Application modules
 
-Kimi Agent is a complete LLM bot on its own; application modules are optional.
-A module is a separately installed Python package for a capability that owns
-more than a single tool: Discord commands and listeners, database tables,
-background work, guild configuration, and optionally model-callable tools.
+Application modules are separately installed Python packages. Core does not
+ship a catalog of them, download them at runtime, or test repositories that
+happen to contain them. An operator chooses which distributions to install and
+which installed entry points to activate.
 
-An installed package advertises a `ModuleSpec` through the
-`kimi_agent.modules` entry-point group, but installing it does nothing by
-itself. You activate packages explicitly with a comma-separated list:
+Use a module when an extension needs lifecycle hooks, migrations, durable data,
+events, background jobs, Discord interactions, or host services. If it only
+registers LLM tools for one deployment, an [operator plugin](plugins.md) is the
+smaller interface.
 
-```dotenv
-KIMI_MODULES=community_moderation,image_fingerprints
+| | Operator plugin | Application module |
+|---|---|---|
+| Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `KIMI_MODULES` |
+| Discovery | Direct Python import | Installed `kimi_agent.modules` entry point |
+| Failure | Logged and skipped | Aborts startup |
+| Best for | A few deployment-owned tools | A versioned application capability with state/lifecycle |
+| Packaging | Any importable code | Installable Python distribution |
+
+## Try the reference module
+
+This repository maintains one example at
+[`bot/modules/example`](../bot/modules/example/README.md). It is executable
+documentation and a CI fixture, not a production dependency or a
+default-enabled feature.
+
+From `bot/`:
+
+```console
+uv sync --all-packages --extra dev
 ```
 
-Once a module is on that list it is part of the deployment contract, so
-startup fails if it is missing, has an incompatible module API, has a
-dependency that is not active, has invalid settings, or fails to start.
-Dependencies start first, and modules close in reverse order. An empty
-`KIMI_MODULES` loads no module code and runs no module migrations. Existing
-module tables remain in the shared database while their modules are disabled or
-absent; disabling a module is not data deletion.
+Then set the installed entry-point name and start normally:
+
+```dotenv
+KIMI_MODULES=reference_kudos
+```
+
+The example is a small "kudos" feature that uses every port: deployment and per-guild settings, two ordered migrations,
+scoped storage, a core and a searchable LLM tool, a `/kudos` command group
+with a staff-only subcommand, a persistent button, a durable digest job, a
+`discord.member_remove` subscription and its own published topic, a provided
+service, a configuration proposal, trust lookup, and health metrics. Its
+README maps each surface to the file that demonstrates it. Copy its package
+structure to begin a module of your own.
+
+## Attach any module package
+
+A module distribution depends on the standalone
+`kimi-agent-module-api` package, exposes a `ModuleSpec`, and advertises it
+in `pyproject.toml`:
+
+```toml
+[project]
+name = "my-assistant-module"
+version = "0.1.0"
+dependencies = ["kimi-agent-module-api>=1,<2"]
+
+[project.entry-points."kimi_agent.modules"]
+my_module = "my_assistant_module:SPEC"
+```
+
+Install it using whatever source your deployment controls—a local path, wheel,
+private Git repository, or package index—then add `my_module` to
+`KIMI_MODULES`. A local checkout does not need publishing:
+
+```console
+uv pip install -e ../my-assistant-module
+```
+
+```dotenv
+KIMI_MODULES=my_module
+```
+
+Installing a distribution alone never activates it. Core does not scan a
+folder and never auto-installs a configured name. Once a name is active it is
+part of the deployment contract, so startup fails if it is missing, has an
+incompatible API, has an inactive dependency, has invalid settings, or fails
+to start. Dependencies start first and modules close in reverse order.
+
+An empty `KIMI_MODULES` does not import module entry points or run module
+migrations. Existing module tables remain in the shared database while their
+modules are disabled or absent; disabling is not data deletion.
 
 A module may separately declare `activation_capabilities` for an optional
 feature that is meaningful only when core is configured to expose it. Missing
@@ -29,8 +91,9 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
 
 ## Package and schema contract
 
-- Pin module distributions in deployment-owned requirements or lock data. Do
-  not add optional packages to the core lock file.
+- Pin third-party module distributions in deployment-owned requirements or
+  lock data. Do not add them to the core lock file; the in-repository reference
+  module is a workspace-only CI fixture.
 - Each module has its own version and independent, ordered, forward-only
   migrations. Core records applied versions in `module_schema_versions`.
   Migrations create or update tables when the module starts; those tables remain
@@ -46,31 +109,72 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
   image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
-  provides commands or listeners need not expose anything to the LLM.
+  provides commands or listeners need not expose anything to the LLM. A tool
+  handler receives a `ModuleToolContext` whose ids are `int` snowflakes. A
+  module's tools are hidden (masked, like any other gate) until the module
+  has started and wherever the module is inactive; with `guild_only` (the
+  default) they are hidden from DMs and personal chat as well, so `guild_id`
+  is `None` only for a tool registered with `guild_only=False`, and
+  `channel_id` is `None` only in personal chat.
 
-For a tagged Git deployment, keep the module requirements outside the core
-lock:
+For repeatable deployments, keep third-party module requirements in
+deployment-owned lock data and install them after the core sync. Private Git
+access or a local wheelhouse works without involving core CI. Each module owns
+its release process, tests, configuration docs, and privacy disclosures.
+Before activating a module, the operator must make those disclosures reachable
+from the deployment's public privacy notice. A module that observes events or
+content not addressed to the bot must say so explicitly, including what it
+processes, why, where it sends data, and how long it retains the result.
 
-```text
-kimi-agent-community-moderation @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@community-moderation-v0.2.0#subdirectory=packages/community-moderation
-kimi-agent-image-fingerprints @ git+ssh://git@github.com/webhead2oo9/kimi-agent-modules.git@image-fingerprints-v0.2.0#subdirectory=packages/image-fingerprints
-```
+## Publishing the API
 
-Install that deployment-owned file after each core sync, or layer it on at
-launch with `uv run --with-requirements modules.lock python bot.py`. Private
-Git access has to be provisioned on the host; local versioned wheels are an
-equivalent source if you prefer an offline deployment.
+Publishing the API lets module authors depend on a small, neutral wheel instead
+of cloning this application. Publishing example modules is unnecessary: they
+are templates, while real modules belong to their own maintainers.
 
-The modules Kimi ships with live in the companion repository,
-[`webhead2oo9/kimi-agent-modules`](https://github.com/webhead2oo9/kimi-agent-modules):
-`community_moderation` (staff cases, `/mod`, and the moderation log),
-`image_fingerprints` (known-bad image enforcement backed by a read-only sync
-from a self-hostable
-[FingerPrint Hub](https://github.com/webhead2oo9/FingerPrint-Hub); it depends on
-`community_moderation`), and `config_admin` (staff-facing, guild-scoped
-configuration proposal tools). Each package documents its own configuration, privacy
-posture, and any external service it talks to, so this page stays about the
-contract they share.
+The SDK source is `bot/packages/kimi-agent-module-api`, versioned from
+`1.0.0` with `MODULE_API_VERSION = 1`. Tags named
+`kimi-agent-api-v<version>` run the tag-only release workflow. It verifies
+the tag/version match, tests the workspace, builds with workspace sources
+disabled, imports the wheel in an isolated environment, and publishes using a
+PyPI Trusted Publisher—there is no long-lived PyPI token in GitHub.
+
+Before the first tag, reserve the `kimi-agent-module-api` project through
+PyPI's pending-publisher flow and configure this repository, workflow
+`release-kimi-agent-api.yml`, environment `pypi`. A name lookup is not a
+reservation, so confirm availability again immediately before the first
+release.
+
+## Lifecycle contract
+
+Core drives every configured module through the same phases, in this order:
+
+1. **Preflight.** Declarations are validated before any module code runs.
+2. **Settings.** The module's settings model is built from the environment and
+   the dotenv, then overlaid from `<CONFIG_DIR>/modules/<name>.md`.
+3. **Create.** `ModuleSpec.create(ctx)` runs with a `ModuleLoadContext`. This is
+   pure wiring: read prepared settings, register LLM tools, construct the
+   module object. No migration has run and no dependency has started, so the
+   context offers no storage, services, or Discord. The tool registry is sealed
+   when loading finishes; registering a tool later (for example from `start()`)
+   raises.
+4. **Migrate.** Every module's `scoped_migrations` run, in dependency order,
+   before any module starts.
+5. **Start.** `start(ctx)` runs in dependency order with the full
+   `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A
+   `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled,
+   given five seconds to unwind, then abandoned if it ignores cancellation;
+   all three count as a failed start.
+6. **Close.** On shutdown, modules close newest-first. `close()` should be
+   idempotent and release what `start()` acquired. A `close()` that exceeds
+   `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled, given five seconds to
+   unwind, then abandoned; shutdown moves on to the next module. Core then
+   releases the module's commands, components, event lane, scheduler
+   handlers, and services regardless. Cancellation is cooperative: a module
+   should let `CancelledError` propagate rather than catch it, since a
+   coroutine that refuses to stop is leaked, not killed. After a start
+   timeout the abandoned `start()` may still be running when `close()` is
+   called on the same instance, so `close()` must tolerate that.
 
 ## Declarations
 
@@ -81,7 +185,7 @@ a malformed declaration aborts startup with a named reason:
 - `permissions.discord_actions`: the Discord operations the module will call
   (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
   `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`,
-  `fetch_pins`, `fetch_public_threads`, `check_channel_access`).
+  `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `can_view_channel`).
 - `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
   module subscribes to. A module never declares its own namespace; it may
   publish only under `<module_name>.*`.
@@ -115,27 +219,36 @@ the ports are a contract and an audit surface, not a sandbox.
   `MigrationContext` with the same `table()` helper instead of a raw
   connection. This is naming discipline on one shared connection, not SQL
   isolation; every writer still goes through `write_transaction()`.
-- `ctx.health.report(state, detail, metrics)`: `starting`, `healthy`,
-  `degraded`, or `failed`. Core sets `starting` before `start()`, `failed`
-  (and aborts startup) if `start()` raises, and `healthy` after a clean
+- `ctx.health.report(state, detail, metrics, key=None)`: `starting`,
+  `healthy`, `degraded`, or `failed`. Without `key` the call sets the
+  module's overall report and replaces the previous one. With `key` it sets
+  one named concern that is tracked separately (`key="digest"`), so a later
+  unkeyed `healthy` does not erase a `degraded` subsystem; the module's
+  visible state is the worst across its unkeyed report, its keyed concerns,
+  and core's own constraints (scheduler, services, guild settings), which a
+  module cannot clear. A keyed `healthy` with no detail or metrics clears
+  that concern. Core sets `starting` before `start()`, `failed` (and aborts
+  startup) if `start()` raises or times out, and `healthy` after a clean
   return unless the module already reported otherwise. A module that
   declares a service in `provides` but never provides it is marked
   `degraded`. Detail is truncated, metrics are capped and secret-looking
   keys dropped. Each change is emitted as a best-effort `module_health`
   event when the event log is enabled.
 - `ctx.services.provide(name, version, impl)` / `ctx.services.get(name,
-  version)`: exact-version services between modules. Both must match the
-  spec's `provides` / `consumes`; a consumer must depend on the provider so
-  it starts later. `get` returns a proxy that raises `ServiceUnavailable`
-  once the provider closes.
+  version, type_)`: exact-version services between modules. Both must match
+  the spec's `provides` / `consumes`; a consumer must depend on the provider
+  so it starts later. `get` returns a proxy that raises `ServiceUnavailable`
+  once the provider closes; passing `type_` checks the provided object and
+  types the result.
 
 - `ctx.events.publish(topic, payload)` / `ctx.events.subscribe(pattern,
   handler)`: an in-process bus. A module publishes only under
   `<module_name>.*`; subscribing to `discord.*` or a sibling's topics
   requires the topic (or `<namespace>.*`) in `permissions.event_topics`.
   Core publishes normalized `discord.message`, `discord.message_edit`,
-  `discord.message_delete`, `discord.member_join`, `discord.member_remove`,
-  `discord.member_update`, and `discord.audit_log_entry` events
+  `discord.message_delete`, `discord.message_bulk_delete`,
+  `discord.member_join`, `discord.member_remove`, `discord.member_update`,
+  and `discord.audit_log_entry` events
   (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
   re-fetched, never SDK objects. `publish` returns immediately; each
   subscriber module has a bounded queue and a small worker pool with a
@@ -145,8 +258,8 @@ the ports are a contract and an audit surface, not a sandbox.
 - `ctx.discord`: the declared Discord operations (`send_message`,
   `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`,
   `fetch_message`, `fetch_member`, `fetch_channel`, paginated
-  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, and
-  `check_channel_access`) on stable IDs, returning public
+  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`, and
+  `can_view_channel`) on stable IDs, returning public
   snapshots. Calling an undeclared action raises
   `UndeclaredDiscordAction`. `ban`, `kick`, and `timeout` refuse the bot,
   the acting user, other bots, and any member whose trust tier is not
@@ -166,7 +279,11 @@ the ports are a contract and an audit surface, not a sandbox.
   empty settings. Until a guild has that document, the schema's field names are
   read from `servers/<guild_id>.md` and the snapshot reports
   `legacy=True`, with the module marked `degraded` naming those guilds.
-  `guild_ids()` lists the active guilds known to this module, and
+  `render_guild_settings(values)` renders a document in this format for a
+  proposal (pass the snapshot's `values` with your change applied: invalid
+  field names are rejected, unset fields are omitted, and strings are quoted).
+  `guild_ids()` lists the active
+  guilds known to this module, and
   `get(guild_id)` returns a cached snapshot (`values`, `valid`, `errors`,
   `revision`), refreshed on the guild-activation cadence and immediately after
   an approved proposal; `is_enabled(guild_id)` is the guild being active and
@@ -185,7 +302,16 @@ the ports are a contract and an audit surface, not a sandbox.
   jitter, and backs a failing one off. A live lease is never run twice; an
   expired lease from a crashed process is claimed again. A persisted job
   whose handler is not registered stays paused and marks the module
-  `degraded`. Kimi runs one process; there is no multi-node coordination.
+  `degraded`. The runner executes up to
+  `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (4) jobs at once, at most one per
+  module, so a module's handlers never overlap each other while one module's
+  long job does not delay another's. Kimi runs one process; there is no
+  multi-node coordination. The runner holds a singleton lease in
+  `module_scheduler_runner`, renewed every tick and released on close. A
+  second process against the same database cannot take that lease while it
+  is live: it pauses, logs an error, and marks every module with registered
+  handlers `degraded` until the holder stops or its 60-second lease
+  expires.
 - `ctx.interactions`: slash commands and persistent components without the
   Discord SDK. `add_command(CommandSpec, handler)` builds the app command
   (top-level or one group level; `string`/`integer`/`boolean`/`user`/
@@ -232,9 +358,11 @@ hatches such as `raw_bot`).
 
 `kimi_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
-`FakeHttp`, `FakeProposals`, and friends). They import nothing beyond the standard library and
-the contracts, so a module can unit-test its logic with only the API package
-installed. `FakeDiscordActions` enforces the module's declared actions,
+`FakeHttp`, `FakeProposals`, and friends), `load_context()` for calling
+`create()` with a recording tool registry, and `MemoryStorage` (real SQL over
+in-memory SQLite, behind the `testing` extra). The fakes import nothing beyond
+the standard library and the contracts, so a module can unit-test its logic
+with only the API package installed. `FakeDiscordActions` enforces the module's declared actions,
 `FakeInteractions.component_min_tiers[(kind, key)]` lets tests check a
 component's access tier, and `FakeScheduler.run_due(now)` runs jobs only when
 the test advances time.

@@ -939,7 +939,6 @@ class Settings(BaseSettings):
         "user_app_member_ids",
         "user_app_regular_ids",
         "user_app_staff_ids",
-        "owner_user_id",
     )
     @classmethod
     def _validate_user_ids(cls, value: str, info: ValidationInfo) -> str:
@@ -949,6 +948,14 @@ class Settings(BaseSettings):
                 label = (info.field_name or "user_ids").upper()
                 raise ValueError(f"{label} entry {token!r} is not a numeric Discord user ID")
         return value
+
+    @field_validator("owner_user_id")
+    @classmethod
+    def _validate_owner_user_id(cls, value: str) -> str:
+        owner_id = value.strip()
+        if owner_id and not owner_id.isdigit():
+            raise ValueError("OWNER_USER_ID must be one numeric Discord user ID")
+        return owner_id
 
     @model_validator(mode="after")
     def _validate_user_app_chat_access(self) -> Settings:

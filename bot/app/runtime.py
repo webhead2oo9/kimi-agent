@@ -141,7 +141,11 @@ from discord_adapter.io import (
     strip_mention,
     suppress_link_previews,
 )
-from discord_adapter.interaction_io import send_interaction_result, send_interaction_status
+from discord_adapter.interaction_io import (
+    PartialPublicDeliveryError,
+    send_interaction_result,
+    send_interaction_status,
+)
 from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
@@ -2204,6 +2208,7 @@ class KimiApplication:
         user_id = str(interaction.user.id)
         root_key = f"userchat:{user_id}"
         turn_stop_event = asyncio.Event()
+        deadline = asyncio.get_running_loop().time() + self.settings.user_app_chat_timeout_seconds
         try:
             # Publish the operation synchronously before the first await and keep
             # it registered through transcript persistence and Discord delivery.
@@ -2244,14 +2249,22 @@ class KimiApplication:
                             requested_public=public,
                         )
                         return
-                    await self._run_user_app_chat_turn(
-                        interaction,
-                        message=message,
-                        attachment=attachment,
-                        public=public,
-                        trust_tier=trust_tier,
-                        turn_stop_event=turn_stop_event,
-                    )
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await self._run_user_app_chat_turn(
+                                interaction,
+                                message=message,
+                                attachment=attachment,
+                                public=public,
+                                trust_tier=trust_tier,
+                                turn_stop_event=turn_stop_event,
+                            )
+                    except TimeoutError:
+                        await _send_private_user_app_status(
+                            interaction,
+                            "That personal chat turn timed out. Run `/chat` again to retry.",
+                            requested_public=public,
+                        )
         except PrivacyDeletionPendingError:
             await _send_private_user_app_status(
                 interaction,
@@ -2485,6 +2498,18 @@ class KimiApplication:
                 allowed_file_roots=result.allowed_file_roots,
                 embed=result.embed,
             )
+        except PartialPublicDeliveryError:
+            log.warning(
+                "Personal chat public followup delivery was incomplete for user %s",
+                user_id,
+                exc_info=True,
+            )
+            with suppress(discord.HTTPException):
+                await interaction.followup.send(
+                    "I posted the first part, but couldn't deliver the complete response.",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         except discord.HTTPException:
             log.warning("Personal chat result delivery failed for user %s", user_id, exc_info=True)
             with suppress(discord.HTTPException):

@@ -75,6 +75,7 @@ SERVICE_VERSION = 1
 TOPIC_GIVEN = f"{MODULE_NAME}.given"
 
 MAX_REASON_LENGTH = 200
+MAX_DATABASE_ID = (1 << 63) - 1
 DIGEST_JITTER_SECONDS = 60.0
 
 
@@ -399,7 +400,9 @@ class KudosModule:
     async def _button_thank_back(self, interaction: ModuleInteraction) -> None:
         ctx, ledger = self._require_started()
         parsed = parse_custom_id(interaction.custom_id or "")
-        original = await ledger.get(int(parsed[2][0])) if parsed and parsed[2] else None
+        token = parsed[2][0] if parsed and parsed[2] else ""
+        kudos_id = int(token) if token.isascii() and token.isdecimal() else 0
+        original = await ledger.get(kudos_id) if 0 < kudos_id <= MAX_DATABASE_ID else None
         if original is None or original.guild_id != interaction.guild_id:
             await interaction.respond("That kudos is no longer available.", ephemeral=True)
             return

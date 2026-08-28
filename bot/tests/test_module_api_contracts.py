@@ -465,6 +465,14 @@ def test_render_guild_settings_matches_the_host_document_format() -> None:
     assert rendered == '---\na: [1, 2]\nb: true\nc: "x: y"\nd: 3\n---\n'
 
 
+@pytest.mark.parametrize("key", ["bad:key", "bad\ninjected", "UPPER", ""])
+def test_render_guild_settings_rejects_invalid_keys(key: str) -> None:
+    from kimi_agent_module_api import render_guild_settings
+
+    with pytest.raises(ValueError, match="invalid guild setting name"):
+        render_guild_settings({key: True})
+
+
 def test_fake_service_registry_typed_get() -> None:
     from kimi_agent_module_api.contracts import ServiceUnavailable
     from kimi_agent_module_api.testing import FakeServiceRegistry

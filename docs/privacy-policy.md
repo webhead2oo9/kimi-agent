@@ -165,6 +165,7 @@ close a managed thread.
   such a module, the operator is responsible for making its privacy disclosure
   available to affected users, including what it processes, where it sends
   data, and how long it retains the result.
+
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
 

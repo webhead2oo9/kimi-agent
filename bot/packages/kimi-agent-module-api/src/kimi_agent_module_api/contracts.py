@@ -222,11 +222,17 @@ def render_guild_settings(values: Mapping[str, Any]) -> str:
     ``guild:<id>:<module>`` target. Pass the snapshot's ``values`` with your
     change applied: keys are emitted sorted, ``None`` (an unset optional
     field) is omitted, booleans become ``true``/``false``, ids and ints are
-    bare, strings are always quoted, and lists use flow style. Anything else
-    raises ``TypeError``; the schema kinds cover every value a snapshot holds.
+    bare, strings are always quoted, and lists use flow style. Invalid field
+    names raise ``ValueError``; unsupported values raise ``TypeError``. The
+    schema kinds cover every value a snapshot holds.
     """
+    keys = tuple(values)
+    for key in keys:
+        if not isinstance(key, str) or not _SETTING_NAME_RE.fullmatch(key):
+            raise ValueError(f"invalid guild setting name {key!r}")
+
     lines = ["---"]
-    for key in sorted(values):
+    for key in sorted(keys):
         value = values[key]
         if value is None:
             continue

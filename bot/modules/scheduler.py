@@ -8,6 +8,13 @@ runs the handler while heartbeating the lease, and then either deletes the job
 off (failure). A job whose lease is still live is never run concurrently; an
 expired lease from a crashed process is claimable again. A persisted job whose
 handler is no longer registered stays paused and degrades the module's health.
+
+The runner executes up to ``max_concurrent`` jobs at once, at most one per
+module, so one module's long job cannot delay another module's due work while
+a module's own handlers still never overlap. Kimi is a single process: if the
+runner sees live leases it did not issue, another process is running jobs
+against the same database, and the runner pauses (degrading every module with
+registered handlers) until those leases expire or are released.
 """
 
 from __future__ import annotations
@@ -39,6 +46,8 @@ log = logging.getLogger(__name__)
 TABLE = "module_scheduler_jobs"
 DEFAULT_LEASE_SECONDS = 60.0
 DEFAULT_POLL_SECONDS = 1.0
+DEFAULT_MAX_CONCURRENT = 4
+FOREIGN_LEASE_DETAIL = "another scheduler runner holds live leases; jobs paused"
 HEARTBEAT_FRACTION = 0.5
 MAX_ERROR_CHARS = 300
 _KEY_MAX = 128
@@ -168,18 +177,28 @@ class DurableScheduler:
         clock: Callable[[], float] = time.time,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
+        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         on_health: Callable[[str, HealthState, str], None] | None = None,
         rng: random.Random | None = None,
     ) -> None:
+        if max_concurrent < 1:
+            raise ModuleContractError("max_concurrent must be at least 1")
         self._database = database
         self._clock = clock
         self._lease_seconds = lease_seconds
         self._poll_seconds = poll_seconds
+        self._max_concurrent = max_concurrent
         self._on_health = on_health
         self._rng = rng or random.Random()
         self._handlers: dict[tuple[str, str], JobHandler] = {}
         self._runner: asyncio.Task[None] | None = None
+        # In-flight executions started by the runner loop, keyed by job id, and
+        # the modules they belong to (one job per module at a time).
         self._running: dict[str, asyncio.Task[None]] = {}
+        self._running_modules: set[str] = set()
+        # Lease tokens this process issued; anything else live is foreign.
+        self._own_tokens: set[str] = set()
+        self._foreign_paused = False
         self._wake = asyncio.Event()
         self._closed = False
         self._paused_reported: set[tuple[str, str]] = set()
@@ -298,9 +317,9 @@ class DurableScheduler:
         return removed
 
     def _clear_paused_health_if_recovered(self, module_name: str) -> None:
-        if self._on_health is not None and not any(
-            name == module_name for name, _handler in self._paused_reported
-        ):
+        if self._on_health is None or self._foreign_paused:
+            return
+        if not any(name == module_name for name, _handler in self._paused_reported):
             self._on_health(module_name, "healthy", "")
 
     async def list_jobs(self, module_name: str) -> Sequence[JobInfo]:
@@ -338,13 +357,23 @@ class DurableScheduler:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._running.clear()
+        self._running_modules.clear()
+
+    @property
+    def paused_for_foreign_leases(self) -> bool:
+        return self._foreign_paused
 
     async def run_due(self, *, now: float | None = None, limit: int = 50) -> int:
-        """Claim and run every due job once; returns how many ran. Also used by tests."""
+        """Claim and run due jobs one at a time, inline; returns how many ran.
+
+        This is the serial path used by tests and by callers that want a
+        deterministic tick. The runner loop uses ``_tick`` instead, which runs
+        claimed jobs concurrently.
+        """
         now = self._clock() if now is None else now
         ran = 0
         for _ in range(limit):
-            row = await self._claim_next(now)
+            row = await self._claim_next(now, exclude_modules=self._running_modules)
             if row is None:
                 break
             await self._execute(row)
@@ -354,27 +383,103 @@ class DurableScheduler:
     async def _run_loop(self) -> None:
         while not self._closed:
             try:
-                ran = await self.run_due()
+                progressed = await self._tick()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Module scheduler tick failed")
-                ran = 0
-            if ran:
+                progressed = False
+            if progressed:
                 continue
             self._wake.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self._poll_seconds)
 
-    async def _claim_next(self, now: float) -> _Row | None:
+    async def _tick(self) -> bool:
+        """Start as many due jobs as capacity allows; True if any were started."""
+        now = self._clock()
+        if await self._foreign_leases_live(now):
+            self._enter_foreign_pause()
+            return False
+        self._exit_foreign_pause()
+        started = 0
+        while len(self._running) < self._max_concurrent:
+            row = await self._claim_next(now, exclude_modules=self._running_modules)
+            if row is None:
+                break
+            self._running_modules.add(row.module_name)
+            task = asyncio.create_task(self._run_claimed(row), name=f"module-job:{row.job_id}")
+            self._running[row.job_id] = task
+            started += 1
+        return started > 0
+
+    async def _run_claimed(self, row: _Row) -> None:
+        try:
+            await self._execute(row)
+        finally:
+            self._running.pop(row.job_id, None)
+            self._running_modules.discard(row.module_name)
+            # Capacity freed: let the loop claim the next due job immediately.
+            self._wake.set()
+
+    async def _foreign_leases_live(self, now: float) -> bool:
+        own = sorted(self._own_tokens)
+        sql = f"SELECT COUNT(*) FROM {TABLE} WHERE leased_until > ?"
+        params: list[Any] = [now]
+        if own:
+            sql += " AND lease_token NOT IN (" + ",".join("?" for _ in own) + ")"
+            params.extend(own)
+        cursor = await self._database.conn.execute(sql, params)
+        row = await cursor.fetchone()
+        return bool(row and row[0])
+
+    def _module_names(self) -> set[str]:
+        return {module for module, _handler in self._handlers}
+
+    def _enter_foreign_pause(self) -> None:
+        if self._foreign_paused:
+            return
+        self._foreign_paused = True
+        log.error(
+            "Module scheduler paused: %s. Another Kimi process is running jobs against "
+            "this database; stop it, or wait for its leases (%gs) to expire.",
+            FOREIGN_LEASE_DETAIL,
+            self._lease_seconds,
+        )
+        if self._on_health is not None:
+            for module in sorted(self._module_names()):
+                self._on_health(module, "degraded", FOREIGN_LEASE_DETAIL)
+
+    def _exit_foreign_pause(self) -> None:
+        if not self._foreign_paused:
+            return
+        self._foreign_paused = False
+        log.info("Module scheduler resumed: foreign leases are gone")
+        if self._on_health is None:
+            return
+        for module in sorted(self._module_names()):
+            paused = sorted(handler for name, handler in self._paused_reported if name == module)
+            if paused:
+                self._on_health(
+                    module, "degraded", f"scheduled job handler {paused[0]!r} is not registered"
+                )
+            else:
+                self._on_health(module, "healthy", "")
+
+    async def _claim_next(
+        self, now: float, *, exclude_modules: set[str] | None = None
+    ) -> _Row | None:
         token = f"{now:.6f}:{self._rng.random():.12f}"
+        excluded = sorted(exclude_modules or ())
+        where = "run_at <= ? AND (leased_until IS NULL OR leased_until < ?)"
+        params: list[Any] = [now, now]
+        if excluded:
+            where += " AND module_name NOT IN (" + ",".join("?" for _ in excluded) + ")"
+            params.extend(excluded)
         async with self._database.write_transaction() as conn:
             while True:
                 cursor = await conn.execute(
-                    f"""SELECT * FROM {TABLE}
-                        WHERE run_at <= ? AND (leased_until IS NULL OR leased_until < ?)
-                        ORDER BY run_at LIMIT 1""",
-                    (now, now),
+                    f"SELECT * FROM {TABLE} WHERE {where} ORDER BY run_at LIMIT 1", params
                 )
                 raw = await cursor.fetchone()
                 if raw is None:
@@ -404,6 +509,7 @@ class DurableScheduler:
                 row.leased_until = leased_until
                 row.lease_token = token
                 row.attempt += 1
+                self._own_tokens.add(token)
                 return row
 
     def _report_paused(self, row: _Row) -> None:
@@ -447,7 +553,11 @@ class DurableScheduler:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
-        await self._settle(row, error)
+        try:
+            await self._settle(row, error)
+        finally:
+            if row.lease_token is not None:
+                self._own_tokens.discard(row.lease_token)
 
     async def _heartbeat(self, row: _Row) -> None:
         interval = max(0.05, self._lease_seconds * HEARTBEAT_FRACTION)

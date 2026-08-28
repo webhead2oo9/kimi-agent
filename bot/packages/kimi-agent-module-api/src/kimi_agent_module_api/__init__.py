@@ -84,6 +84,15 @@ class ModuleSpec:
 
 @dataclass(frozen=True)
 class ModuleLoadContext:
+    """What ``ModuleSpec.create`` receives.
+
+    ``create()`` is pure wiring: read prepared settings, register LLM tools,
+    construct the module object. No migration has run and no dependency has
+    started, so nothing here reaches storage, services, or Discord; that work
+    belongs in ``start()``. The tool registry is sealed once loading finishes,
+    so tools cannot be registered later from ``start()`` either.
+    """
+
     capabilities: ModuleCapabilities
     registry: ModuleToolRegistry
     module_settings: BaseSettings | None

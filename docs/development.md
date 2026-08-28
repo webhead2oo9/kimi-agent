@@ -246,3 +246,29 @@ hand-written fakes, so they never need `.env.dev` or the live dev bot.
 
 Offline harness evals replay recorded tool calls through cassettes; see
 [evals.md](evals.md).
+
+
+## Module lifecycle ceilings
+
+Two settings bound how long a configured module may hold up startup or
+shutdown; both default to values a well-behaved module never reaches.
+
+```dotenv
+MODULE_START_TIMEOUT_SECONDS=60   # start() past this fails the module and aborts startup
+MODULE_CLOSE_TIMEOUT_SECONDS=15   # close() past this is cancelled; shutdown continues
+```
+
+A start timeout logs `Kimi module <name> 'start() exceeded 60s'` and `/modules
+status` shows the module `failed` with that detail; the process exits like any
+other module failure. A close timeout logs `Kimi module <name> close()
+exceeded 15s; continuing shutdown` and the remaining modules still close.
+If a module trips either ceiling during development, the fix belongs in the
+module (move slow work into a scheduler job, or make `close()` cancel rather
+than await), not in the setting.
+
+The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4)
+jobs concurrently, at most one per module. If a dev instance shares a database
+file with another running instance, the scheduler logs `Module scheduler
+paused: another scheduler runner holds live leases` and runs nothing until the
+other process stops; the isolated dev setup above avoids this by giving each
+instance its own database.

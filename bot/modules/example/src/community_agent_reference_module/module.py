@@ -38,7 +38,6 @@ from kimi_agent_module_api.contracts import (
     CommandOption,
     CommandSpec,
     Event,
-    HealthState,
     JobRun,
     ModuleInteraction,
     OutgoingEmbed,
@@ -520,15 +519,28 @@ class KudosModule:
         )
 
     def _report_health(self, *, digest_posted: int | None = None) -> None:
+        """Two independent concerns: overall metrics, and the digest's own state.
+
+        The keyed report is tracked separately by the host, so a later unkeyed
+        ``healthy`` (say, after a guild-settings change) does not erase a
+        ``degraded`` digest. The module shows as the worst of the two.
+        """
         ctx, _ = self._require_started()
-        metrics: dict[str, float] = {"digest_failures": float(self._digest_failures)}
+        metrics: dict[str, float] = {}
         if ctx.guild_settings is not None:
             metrics["guilds"] = float(len(ctx.guild_settings.guild_ids()))
-        if digest_posted is not None:
-            metrics["digest_posted"] = float(digest_posted)
-        state: HealthState = "degraded" if self._digest_failures else "healthy"
-        detail = f"{self._digest_failures} guild digest(s) failed" if self._digest_failures else ""
-        ctx.health.report(state, detail, metrics)
+        ctx.health.report("healthy", "", metrics)
+        if digest_posted is None:
+            return
+        digest_metrics = {
+            "digest_posted": float(digest_posted),
+            "digest_failures": float(self._digest_failures),
+        }
+        if self._digest_failures:
+            detail = f"{self._digest_failures} guild digest(s) failed"
+            ctx.health.report("degraded", detail, digest_metrics, key="digest")
+        else:
+            ctx.health.report("healthy", "", digest_metrics, key="digest")
 
 
 def _summary(kudos: Kudos) -> str:

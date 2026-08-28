@@ -246,8 +246,8 @@ async def test_digest_posts_to_configured_channels(
     [call] = started.discord.calls_for("send_message")
     assert call.args[0] == 900
     assert f"<@{BOB}> — 1" in str(call.kwargs["embed"].description)
-    assert started.health.current is not None
-    assert started.health.current.metrics["digest_posted"] == 1.0
+    assert started.health.keyed["digest"].state == "healthy"
+    assert started.health.keyed["digest"].metrics["digest_posted"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -260,9 +260,11 @@ async def test_digest_survives_one_guild_failing(started: Harness, member_ctx: T
 
     job = started.scheduler.jobs[DIGEST_JOB_KEY]
     assert job.last_error is None, "a guild failure must not fail the job"
-    assert started.health.current is not None
-    assert started.health.current.state == "degraded"
-    assert started.health.current.metrics["digest_failures"] == 1.0
+    # The digest concern is keyed, so the module's own unkeyed report stays healthy
+    # while the host shows the worst of the two.
+    assert started.health.current is not None and started.health.current.state == "healthy"
+    assert started.health.keyed["digest"].state == "degraded"
+    assert started.health.keyed["digest"].metrics["digest_failures"] == 1.0
 
 
 @pytest.mark.asyncio

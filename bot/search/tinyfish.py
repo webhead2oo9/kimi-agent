@@ -89,16 +89,26 @@ class TinyFishSearchBackend:
             request.urls[start : start + _FETCH_URL_BATCH]
             for start in range(0, len(request.urls), _FETCH_URL_BATCH)
         ]
-        responses = await asyncio.gather(*(self._post_fetch(batch) for batch in batches))
+        batch_results = await asyncio.gather(*(self._try_fetch_batch(batch) for batch in batches))
 
-        results: list[SearchResult] = []
-        for response in responses:
-            results.extend(_normalize_fetch_results(_required_list(response.payload, "results")))
+        results = [
+            result
+            for batch_result in batch_results
+            if batch_result is not None
+            for result in batch_result
+        ]
         if not results:
             # Per-URL failures ride along with HTTP 200 in errors[], so an empty
             # result set is the only signal that every page failed.
             raise SearchProviderError("TinyFish could not read the requested pages.")
         return BackendResponse(provider=self.name, results=tuple(results))
+
+    async def _try_fetch_batch(self, urls: tuple[str, ...]) -> tuple[SearchResult, ...] | None:
+        try:
+            response = await self._post_fetch(urls)
+            return _normalize_fetch_results(_required_list(response.payload, "results"))
+        except SearchProviderError:
+            return None
 
     async def _get_search(self, params: dict[str, str]) -> HttpResponse:
         response = await self._get(

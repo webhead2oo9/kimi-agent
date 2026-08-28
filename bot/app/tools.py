@@ -311,7 +311,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
         ("discord_text_search",),
         "DISCORD_TEXT_SEARCH_ENABLED + MESSAGE_CONTENT_INTENT",
     ),
-    ("internet search", ("internet_search",), "EXA_API_KEY or BRAVE_API_KEY"),
+    (
+        "internet search",
+        ("internet_search",),
+        "TINYFISH_API_KEY or EXA_API_KEY or BRAVE_API_KEY",
+    ),
     ("Wolfram|Alpha", ("wolfram_alpha",), "WOLFRAM_ALPHA_APP_ID"),
     (
         "image generation",

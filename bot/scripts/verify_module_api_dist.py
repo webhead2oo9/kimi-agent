@@ -24,14 +24,14 @@ def _artifact_names(path: Path) -> set[str]:
 def _verify_artifacts(wheel: Path, sdist: Path) -> None:
     wheel_names = _artifact_names(wheel)
     sdist_names = _artifact_names(sdist)
-    assert "community_agent_module_api/py.typed" in wheel_names
+    assert "kimi_agent_module_api/py.typed" in wheel_names
     assert any(name.endswith(".dist-info/licenses/LICENSE") for name in wheel_names)
-    assert any(name.endswith("/community_agent_module_api/py.typed") for name in sdist_names)
+    assert any(name.endswith("/kimi_agent_module_api/py.typed") for name in sdist_names)
     assert any(name.endswith("/LICENSE") for name in sdist_names)
 
 
 def _verify_consumer() -> None:
-    import community_agent_module_api as api
+    import kimi_agent_module_api as api
 
     assert api.MODULE_API_VERSION == 1
     matches = [

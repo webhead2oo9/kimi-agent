@@ -9,7 +9,7 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic_settings import BaseSettings
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     ConfigSnapshot,
     DiscordActions,
     EventBus,
@@ -32,16 +32,16 @@ from community_agent_module_api.contracts import (
     ServiceRequirement,
     TrustLookup,
 )
-from community_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
-from community_agent_module_api.tools import (
+from kimi_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
+from kimi_agent_module_api.tools import (
     ModuleToolContext,
     ModuleToolHandler,
     ModuleToolRegistry,
 )
-from community_agent_module_api.trust import TrustTier
+from kimi_agent_module_api.trust import TrustTier
 
 MODULE_API_VERSION = 1
-MODULE_ENTRYPOINT_GROUP = "community_agent.modules"
+MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
 
 _SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
 

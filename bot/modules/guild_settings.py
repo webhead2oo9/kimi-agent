@@ -23,7 +23,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     GuildSettingsSnapshot,

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from community_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
+from kimi_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
 from modules.scheduler import TABLE, DurableScheduler
 from storage.db import Database
 

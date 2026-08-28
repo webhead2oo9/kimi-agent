@@ -9,7 +9,7 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     HostNotAllowed,
     HttpHostRule,
     ModuleContractError,

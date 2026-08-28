@@ -15,8 +15,8 @@ from discord_adapter.module_events import (
     audit_entry_event,
     message_snapshot,
 )
-from community_agent_module_api import events as ev
-from community_agent_module_api.contracts import Event, EventTopicError, ModulePermissions
+from kimi_agent_module_api import events as ev
+from kimi_agent_module_api.contracts import Event, EventTopicError, ModulePermissions
 from modules.events import EventBusImpl, ModuleEventView
 
 

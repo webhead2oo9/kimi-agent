@@ -80,7 +80,7 @@ jobs:
 
       - name: Build module API and reference consumer
         run: |
-          uv build --package community-agent-module-api --no-sources --out-dir dist/module-api
+          uv build --package kimi-agent-module-api --no-sources --out-dir dist/module-api
           uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
 
       - name: Test built module API through the reference wheel

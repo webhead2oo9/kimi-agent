@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from community_agent_module_api import (
+from kimi_agent_module_api import (
     AppModule,
     ModuleLoadContext,
     ModuleRuntimeContext,
@@ -17,7 +17,7 @@ from community_agent_module_api import (
     ModuleToolContext,
     ScopedModuleMigration,
 )
-from community_agent_module_api.contracts import MigrationContext
+from kimi_agent_module_api.contracts import MigrationContext
 
 
 class ReferenceSettings(BaseSettings):

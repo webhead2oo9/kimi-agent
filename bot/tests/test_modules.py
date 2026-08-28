@@ -19,8 +19,8 @@ from app.modules import (
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from community_agent_module_api import ModuleCapabilities, events as ev
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api import ModuleCapabilities, events as ev
+from kimi_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     MigrationContext,
@@ -29,7 +29,7 @@ from community_agent_module_api.contracts import (
     ServiceDeclaration,
     ServiceRequirement,
 )
-from community_agent_module_api.testing import FakeTrust
+from kimi_agent_module_api.testing import FakeTrust
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.events import EventBusImpl
 from modules.testing import fake_ports

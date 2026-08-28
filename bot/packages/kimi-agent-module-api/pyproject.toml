@@ -1,5 +1,5 @@
 [project]
-name = "community-agent-module-api"
+name = "kimi-agent-module-api"
 version = "1.0.0"
 description = "Stable contracts for community-built assistant modules"
 requires-python = ">=3.14"
@@ -17,4 +17,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-community_agent_module_api = ["py.typed"]
+kimi_agent_module_api = ["py.typed"]

@@ -19,7 +19,7 @@ from discord_adapter.io import (
     prepare_attachment_delivery,
     suppress_link_previews,
 )
-from community_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
+from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from storage.db import Database
 from storage.coding_tasks import CodingTask, CodingTaskStatus

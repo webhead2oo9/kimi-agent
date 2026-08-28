@@ -50,7 +50,7 @@ Before handing off Python changes, run everything CI runs (`.github/workflows/ci
 - `agent/core.py` is provider-agnostic: no provider imports. Provider-specific parsing stays under `providers/`; `providers/types.py` is the shared vocabulary (`ContentPart`, `ConversationMessage`, `ProviderRequest`, `ProviderResponse`, `ToolCall`, `GeneratedAsset`, `ProviderCapability`).
 - `tools/registry.py:dispatch` is the privilege boundary. `min_tier`, `owner_only`, `guild_ids`, and the operator denylist are all re-checked there, and a tool the caller may not use is masked as `"Unknown tool"`, never refused, so existence never leaks. Never rely on prompt text for staff-only behavior.
 - `modules/` implements the module API services (the standalone contract package is
-  `packages/community-agent-module-api`; `modules/testing.py` is the core integration
+  `packages/kimi-agent-module-api`; `modules/testing.py` is the core integration
   harness). The SDK must never import core runtime packages. `app/runtime.py:build_app`
   is the composition root; `bot.py` is only the entry point; tool/client wiring is
   `app/tools.py`.

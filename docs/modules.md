@@ -13,7 +13,7 @@ smaller interface.
 | | Operator plugin | Application module |
 |---|---|---|
 | Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `KIMI_MODULES` |
-| Discovery | Direct Python import | Installed `community_agent.modules` entry point |
+| Discovery | Direct Python import | Installed `kimi_agent.modules` entry point |
 | Failure | Logged and skipped | Aborts startup |
 | Best for | A few deployment-owned tools | A versioned application capability with state/lifecycle |
 | Packaging | Any importable code | Installable Python distribution |
@@ -45,16 +45,16 @@ inherit.
 ## Attach any module package
 
 A module distribution depends on the standalone
-`community-agent-module-api` package, exposes a `ModuleSpec`, and advertises it
+`kimi-agent-module-api` package, exposes a `ModuleSpec`, and advertises it
 in `pyproject.toml`:
 
 ```toml
 [project]
 name = "my-assistant-module"
 version = "0.1.0"
-dependencies = ["community-agent-module-api>=1,<2"]
+dependencies = ["kimi-agent-module-api>=1,<2"]
 
-[project.entry-points."community_agent.modules"]
+[project.entry-points."kimi_agent.modules"]
 my_module = "my_assistant_module:SPEC"
 ```
 
@@ -102,7 +102,7 @@ shows the reason. `requires_capabilities` remains a hard compatibility check.
   non-secret operator overrides live under
   `<CONFIG_DIR>/modules/<module_name>.md`.
 - A module's runtime context is the only thing it needs from core; the
-  `community_agent_module_api` package exports contracts, event dataclasses,
+  `kimi_agent_module_api` package exports contracts, event dataclasses,
   image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its
   activity labels and evaluation surfaces. This is optional; a module that only
@@ -123,16 +123,16 @@ Publishing the API lets module authors depend on a small, neutral wheel instead
 of cloning this application. Publishing example modules is unnecessary: they
 are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/community-agent-module-api`, versioned from
+The SDK source is `bot/packages/kimi-agent-module-api`, versioned from
 `1.0.0` with `MODULE_API_VERSION = 1`. Tags named
-`community-agent-api-v<version>` run the tag-only release workflow. It verifies
+`kimi-agent-api-v<version>` run the tag-only release workflow. It verifies
 the tag/version match, tests the workspace, builds with workspace sources
 disabled, imports the wheel in an isolated environment, and publishes using a
 PyPI Trusted Publisher—there is no long-lived PyPI token in GitHub.
 
-Before the first tag, reserve the `community-agent-module-api` project through
+Before the first tag, reserve the `kimi-agent-module-api` project through
 PyPI's pending-publisher flow and configure this repository, workflow
-`release-community-agent-api.yml`, environment `pypi`. A name lookup is not a
+`release-kimi-agent-api.yml`, environment `pypi`. A name lookup is not a
 reservation, so confirm availability again immediately before the first
 release.
 
@@ -158,7 +158,7 @@ a malformed declaration aborts startup with a named reason:
   `disable_guild`, so an enforcement module with a broken guild document fails
   closed.
 
-The rules live in `community_agent_module_api.contracts`, which imports only the
+The rules live in `kimi_agent_module_api.contracts`, which imports only the
 standard library so a package can validate its own declarations in tests.
 Every declaration is enforced by the matching runtime service below.
 
@@ -200,7 +200,7 @@ the ports are a contract and an audit surface, not a sandbox.
   Core publishes normalized `discord.message`, `discord.message_edit`,
   `discord.message_delete`, `discord.member_join`, `discord.member_remove`,
   `discord.member_update`, and `discord.audit_log_entry` events
-  (`community_agent_module_api.events`) carrying IDs and whatever cannot be
+  (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
   re-fetched, never SDK objects. `publish` returns immediately; each
   subscriber module has a bounded queue and a small worker pool with a
   per-handler timeout, failures are logged and counted in that module's
@@ -294,7 +294,7 @@ hatches such as `raw_bot`).
 
 ## Testing a module
 
-`community_agent_module_api.testing` ships protocol-level fakes for every service
+`kimi_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
 `FakeHttp`, `FakeProposals`, and friends). They import nothing beyond the standard library and
 the contracts, so a module can unit-test its logic with only the API package
@@ -310,7 +310,7 @@ whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
 context, `runtime.ports[name]` its fakes, and `runtime.registry` the composed
 tool registry for assertions. Module test suites
 may import that harness; module production source may import only
-`community_agent_module_api`.
+`kimi_agent_module_api`.
 
 ## Configuration proposals
 

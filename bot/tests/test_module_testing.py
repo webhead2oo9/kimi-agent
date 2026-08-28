@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from community_agent_module_api import (
+from kimi_agent_module_api import (
     ModuleLoadContext,
     ModulePermissions,
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     MigrationContext,
     ScopedModuleMigration,
     UndeclaredDiscordAction,
 )
-from community_agent_module_api.testing import FakeInteraction, FakeScheduler
+from kimi_agent_module_api.testing import FakeInteraction, FakeScheduler
 from modules.testing import build_test_runtime, write_guild_config
 
 

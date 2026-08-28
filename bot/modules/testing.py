@@ -4,7 +4,7 @@
 the requested modules through ``ModuleManager`` exactly as the bot does,
 applies their migrations, and starts them with a runtime context whose ports
 are the real implementations where core has them and the public fakes from
-``community_agent_module_api.testing`` elsewhere. Health, services, and storage are
+``kimi_agent_module_api.testing`` elsewhere. Health, services, and storage are
 always the real core implementations; inspect them via ``runtime.manager``.
 ``fake_ports`` is the same substitution for tests that drive ``ModuleManager``
 directly.
@@ -21,8 +21,8 @@ from typing import Any
 
 from app.modules import ModuleManager, ModuleRuntimeBase, ModuleRuntimeContext, ModuleSpec
 from config.settings import Settings
-from community_agent_module_api import ModuleCapabilities
-from community_agent_module_api.testing import (
+from kimi_agent_module_api import ModuleCapabilities
+from kimi_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeGuildSettings,

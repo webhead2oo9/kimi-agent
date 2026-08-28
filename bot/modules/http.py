@@ -22,7 +22,7 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     DISCORD_CDN_HOSTS,
     HostNotAllowed,
     HttpHostRule,

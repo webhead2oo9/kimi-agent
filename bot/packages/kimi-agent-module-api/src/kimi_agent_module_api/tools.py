@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Coroutine, Mapping
 from typing import Any, Protocol
 
-from community_agent_module_api.trust import TrustTier
+from kimi_agent_module_api.trust import TrustTier
 
 
 class ModuleToolContext(Protocol):

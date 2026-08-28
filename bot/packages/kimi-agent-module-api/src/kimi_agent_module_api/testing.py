@@ -3,7 +3,7 @@
 Every fake here satisfies one runtime port from ``contracts`` with plain
 Python and records what a module asked of it. Nothing imports Discord, the
 database, or core runtime packages, so a module package can unit-test its own
-logic with only ``community_agent_module_api`` installed. The integration harness
+logic with only ``kimi_agent_module_api`` installed. The integration harness
 that composes real core services lives in core's ``modules.testing``.
 """
 
@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     Backoff,
     ChannelSnapshot,

@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from community_agent_module_api.contracts import (
+from kimi_agent_module_api.contracts import (
     CORE_TOPIC_PREFIX,
     AttachmentSnapshot,
     MemberSnapshot,

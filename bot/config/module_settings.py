@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from community_agent_module_api import ModuleSetting, ModuleSettingsDefinition
+from kimi_agent_module_api import ModuleSetting, ModuleSettingsDefinition
 
 from config.plugin_settings import (
     PluginSetting,

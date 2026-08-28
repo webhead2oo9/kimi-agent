@@ -17,7 +17,7 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 - Kimi only starts an AI conversation when you call on it: a mention, a pinged
   reply, `hey/hi Kimi`, `Kimi help`, an unmentioned message in one of its
   auto-responding threads, or the optional user-installed `/chat` command.
-  Normal bot DMs are ignored; user-app `/chat` is an explicit command surface.
+  Normal bot DMs are ignored unless the operator enables `USER_APP_DM_ENABLED`, which routes DMs from allowlisted users into their own personal chat; user-app `/chat` is an explicit command surface.
 - Staff can separately opt specific channels into local known-bad image
   matching. A match can delete the message and time out its author; images and
   matches are not sent to the fingerprint service.

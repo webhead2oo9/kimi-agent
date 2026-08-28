@@ -22,6 +22,31 @@ Discord user installs are command-only. Installing the app on a user account
 does **not** let it receive arbitrary channel messages, replies, or an ambient
 `hey Kimi` trigger in servers where the bot is absent. Use `/chat` there.
 
+## Direct messages
+
+`USER_APP_DM_ENABLED` (off by default, and requires `USER_APP_CHAT_ENABLED`)
+adds ordinary DMs as a second entry point onto the **same** personal
+conversation. It is not a second surface: a DM and a `/chat` turn share one
+`userchat:<user_id>` root, one transcript, one `<user_id>__userapp` workspace,
+one root lock, and one `/chat-reset` and `/privacy` deletion. You can start a
+thread with `/chat` in a server and continue it by DM.
+
+This is a gateway path rather than an install context, so it applies to DMs the
+bot itself can receive. A DM from anyone not on the `USER_APP_*` access lists is
+ignored without a reply: answering would confirm the bot is listening and invite
+probing from anyone who shares a server with it. Access is re-checked after the
+root lock, so revoking it stops work that was already queued.
+
+Two differences from `/chat` follow from being a real message rather than a
+slash interaction. There is no invocation gate, because a DM has nothing else to
+be addressed to, and no `public:` option, because a DM is already private. There
+is also no interaction token, so `USER_APP_CHAT_TIMEOUT_SECONDS` does not bound
+a DM turn and replies are delivered as ordinary chunked messages.
+
+A bare `stop`, `cancel`, or `abort` cancels a running turn, as it does in a
+server. In a DM that shortcut applies only while something is actually running,
+so those words stay usable as ordinary conversation the rest of the time.
+
 ## Developer Portal setup
 
 In the Discord Developer Portal for the application:
@@ -71,7 +96,8 @@ chat implementation. Trust and owner-only tool gates still apply. Deployment-
 wide tool blocks and tool configuration still apply, while the guild/channel
 pins, blocks, model overrides, and instructions of the invocation location do
 not leak into the personal thread. Thread-handoff actions are unavailable
-because a slash interaction is not a Discord message root.
+because personal chat is guild-less; `_PERSONAL_CHAT_BLOCKED_TOOLS` masks them
+on both entry paths.
 
 Personal chat is guild-less for every trust, policy, and data-scope decision,
 in both directions. The invocation location grants no standing: a tool scoped

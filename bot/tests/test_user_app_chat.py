@@ -13,6 +13,7 @@ from agent.turn import TurnResult, TurnTerminationReason
 from app import runtime as app_runtime
 from config.fragments.prompt import resolve_template_path
 from config.settings import Settings
+from discord_adapter.interaction_io import send_interaction_result, send_interaction_status
 from storage.conversations import OWNER_ONLY, ConversationStore
 from storage.db import Database
 from trust.tiers import TrustTier
@@ -162,6 +163,81 @@ def test_chat_command_description_respects_discord_limit() -> None:
     assert len(command.description) == 100
 
 
+@pytest.mark.asyncio
+async def test_public_result_edits_original_then_uses_public_followups() -> None:
+    class Followup:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, object]] = []
+
+        async def send(self, content: object = None, **kwargs: object) -> None:
+            kwargs["content"] = content
+            self.messages.append(kwargs)
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.channel = object()
+            self.followup = Followup()
+            self.edits: list[dict[str, object]] = []
+            self.deleted = False
+
+        async def edit_original_response(self, **kwargs: object) -> None:
+            self.edits.append(kwargs)
+
+        async def delete_original_response(self) -> None:
+            self.deleted = True
+
+    interaction = FakeInteraction()
+    await send_interaction_result(
+        interaction,  # type: ignore[arg-type]
+        "A" * 2500,
+        ephemeral=False,
+        original_ephemeral=False,
+    )
+
+    assert interaction.deleted is False
+    assert len(interaction.edits) == 1
+    assert str(interaction.edits[0]["content"]).startswith("A")
+    assert interaction.edits[0]["content"] != "Posted the response publicly."
+    assert len(interaction.followup.messages) == 1
+    assert interaction.followup.messages[0]["ephemeral"] is False
+
+
+@pytest.mark.asyncio
+async def test_private_status_replaces_public_placeholder_with_followup() -> None:
+    class Followup:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, object]] = []
+
+        async def send(self, content: object = None, **kwargs: object) -> None:
+            kwargs["content"] = content
+            self.messages.append(kwargs)
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.followup = Followup()
+            self.edits: list[dict[str, object]] = []
+            self.deleted = False
+
+        async def edit_original_response(self, **kwargs: object) -> None:
+            self.edits.append(kwargs)
+
+        async def delete_original_response(self) -> None:
+            self.deleted = True
+
+    interaction = FakeInteraction()
+    await send_interaction_status(
+        interaction,  # type: ignore[arg-type]
+        "Private failure",
+        ephemeral=True,
+        original_ephemeral=False,
+    )
+
+    assert interaction.deleted is True
+    assert interaction.edits == []
+    assert interaction.followup.messages[0]["content"] == "Private failure"
+    assert interaction.followup.messages[0]["ephemeral"] is True
+
+
 @pytest.mark.parametrize(
     ("requested_public", "termination_reason", "blocked", "expected"),
     [
@@ -302,9 +378,24 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
             self.id = interaction_id
             self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
             self.edits: list[str] = []
+            self.followups: list[str] = []
+            self.deleted = False
+
+            class Followup:
+                async def send(
+                    _self,
+                    content: object = None,
+                    **_kwargs: object,
+                ) -> None:
+                    self.followups.append(str(content or ""))
+
+            self.followup = Followup()
 
         async def edit_original_response(self, **kwargs: object) -> None:
             self.edits.append(str(kwargs.get("content", "")))
+
+        async def delete_original_response(self) -> None:
+            self.deleted = True
 
     entered_delivery = asyncio.Event()
     calls = 0
@@ -333,7 +424,9 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
     await task
 
     assert summary == "Your personal chat thread is already clear."
-    assert interaction.edits == ["Stopped."]
+    assert interaction.deleted is True
+    assert interaction.edits == []
+    assert interaction.followups == ["Stopped."]
     assert calls == 1
 
     stale = FakeInteraction(2)

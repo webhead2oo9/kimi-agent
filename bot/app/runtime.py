@@ -141,7 +141,7 @@ from discord_adapter.io import (
     strip_mention,
     suppress_link_previews,
 )
-from discord_adapter.interaction_io import send_interaction_result
+from discord_adapter.interaction_io import send_interaction_result, send_interaction_status
 from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
@@ -333,6 +333,20 @@ def _should_publish_user_app_result(result: TurnResult, *, requested_public: boo
         requested_public
         and result.termination_reason == "completed"
         and not result.blocked_by_moderation
+    )
+
+
+async def _send_private_user_app_status(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    requested_public: bool,
+) -> None:
+    await send_interaction_status(
+        interaction,
+        content,
+        ephemeral=True,
+        original_ephemeral=not requested_public,
     )
 
 
@@ -2145,6 +2159,7 @@ class KimiApplication:
                 store=self.preference_store,
                 on_accept=execute,
                 timeout=self.settings.privacy_consent_timeout,
+                public_response=public,
             )
             await interaction.response.send_message(
                 embed=build_consent_embed(
@@ -2156,10 +2171,10 @@ class KimiApplication:
             )
             return
 
-        # Keep the acknowledgement private so every access, moderation, timeout,
-        # and provider error stays private. A successful public result is emitted
-        # as a followup only after the turn completes.
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # A deferred response cannot change visibility later. Public requests
+        # therefore reserve a public original response; unsuccessful turns
+        # delete that placeholder and report their status in a private followup.
+        await interaction.response.defer(ephemeral=not public, thinking=True)
         await execute(interaction)
 
     def _user_app_chat_generation(self, user_id: str) -> int:
@@ -2193,28 +2208,31 @@ class KimiApplication:
                 self.active_operations.bind_current_provisional(root_key)
                 async with self.privacy_barrier.activity(user_id):
                     if request_generation != self._user_app_chat_generation(user_id):
-                        await interaction.edit_original_response(
-                            content=(
+                        await _send_private_user_app_status(
+                            interaction,
+                            (
                                 "That chat request expired because your personal thread "
                                 "was reset or deleted. Run `/chat` again if you still want it."
                             ),
-                            allowed_mentions=discord.AllowedMentions.none(),
+                            requested_public=public,
                         )
                         return
                     trust_tier = self.user_app_access.resolve(user_id)
                     if trust_tier is None:
-                        await interaction.edit_original_response(
-                            content="You no longer have access to this app's personal chat.",
-                            allowed_mentions=discord.AllowedMentions.none(),
+                        await _send_private_user_app_status(
+                            interaction,
+                            "You no longer have access to this app's personal chat.",
+                            requested_public=public,
                         )
                         return
                     if (
                         self.blocked_user_store is not None
                         and await self.blocked_user_store.is_blocked(user_id)
                     ):
-                        await interaction.edit_original_response(
-                            content="You can't use personal chat right now.",
-                            allowed_mentions=discord.AllowedMentions.none(),
+                        await _send_private_user_app_status(
+                            interaction,
+                            "You can't use personal chat right now.",
+                            requested_public=public,
                         )
                         return
                     await self._run_user_app_chat_turn(
@@ -2226,9 +2244,10 @@ class KimiApplication:
                         turn_stop_event=turn_stop_event,
                     )
         except PrivacyDeletionPendingError:
-            await interaction.edit_original_response(
-                content="Your data deletion is still in progress. Try again when it finishes.",
-                allowed_mentions=discord.AllowedMentions.none(),
+            await _send_private_user_app_status(
+                interaction,
+                "Your data deletion is still in progress. Try again when it finishes.",
+                requested_public=public,
             )
         except asyncio.CancelledError:
             # Shutdown must stay cancellable: the client is already closing, so
@@ -2238,9 +2257,10 @@ class KimiApplication:
             if self._closed:
                 raise
             with suppress(discord.HTTPException):
-                await interaction.edit_original_response(
-                    content="Stopped.",
-                    allowed_mentions=discord.AllowedMentions.none(),
+                await _send_private_user_app_status(
+                    interaction,
+                    "Stopped.",
+                    requested_public=public,
                 )
             log.info("Stopped personal chat response for user %s", user_id)
 
@@ -2264,9 +2284,10 @@ class KimiApplication:
 
         admission = await self.turn_admission.try_acquire(user_id)
         if admission.lease is None:
-            await interaction.edit_original_response(
-                content=TURN_ADMISSION_BUSY_MESSAGE,
-                allowed_mentions=discord.AllowedMentions.none(),
+            await _send_private_user_app_status(
+                interaction,
+                TURN_ADMISSION_BUSY_MESSAGE,
+                requested_public=public,
             )
             return
 
@@ -2417,24 +2438,27 @@ class KimiApplication:
                                 context_channel_id=scope_channel_id,
                             )
         except PrivacyDeletionPendingError:
-            await interaction.edit_original_response(
-                content="Your data deletion is still in progress. Try again when it finishes.",
-                allowed_mentions=discord.AllowedMentions.none(),
+            await _send_private_user_app_status(
+                interaction,
+                "Your data deletion is still in progress. Try again when it finishes.",
+                requested_public=public,
             )
             return
         except Exception:
             log.exception("Personal user-app chat failed for user %s", user_id)
             with suppress(discord.HTTPException):
-                await interaction.edit_original_response(
-                    content="I couldn't complete that chat turn. Please try again.",
-                    allowed_mentions=discord.AllowedMentions.none(),
+                await _send_private_user_app_status(
+                    interaction,
+                    "I couldn't complete that chat turn. Please try again.",
+                    requested_public=public,
                 )
             return
 
         if result is None:
-            await interaction.edit_original_response(
-                content="There wasn't anything I could process in that request.",
-                allowed_mentions=discord.AllowedMentions.none(),
+            await _send_private_user_app_status(
+                interaction,
+                "There wasn't anything I could process in that request.",
+                requested_public=public,
             )
             return
         try:
@@ -2446,6 +2470,7 @@ class KimiApplication:
                 interaction,
                 result.response_text,
                 ephemeral=not publish_publicly,
+                original_ephemeral=not public,
                 output_files=result.output_files,
                 output_file_descriptions=result.output_file_descriptions,
                 allowed_file_roots=result.allowed_file_roots,
@@ -2454,12 +2479,13 @@ class KimiApplication:
         except discord.HTTPException:
             log.warning("Personal chat result delivery failed for user %s", user_id, exc_info=True)
             with suppress(discord.HTTPException):
-                await interaction.edit_original_response(
-                    content=(
+                await _send_private_user_app_status(
+                    interaction,
+                    (
                         "I finished the turn but couldn't deliver the response here. "
                         "Try again privately."
                     ),
-                    allowed_mentions=discord.AllowedMentions.none(),
+                    requested_public=public,
                 )
 
     async def _handle_user_app_chat_reset(self, interaction: discord.Interaction) -> str:

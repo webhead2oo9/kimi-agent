@@ -17,11 +17,13 @@ class UserAppConsentView(discord.ui.View):
         store: PreferenceStore,
         on_accept: Callable[[discord.Interaction], Awaitable[None]],
         timeout: float,
+        public_response: bool = False,
     ) -> None:
         super().__init__(timeout=timeout)
         self._author_id = author_id
         self._store = store
         self._on_accept = on_accept
+        self._public_response = public_response
         self._claimed = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -41,9 +43,9 @@ class UserAppConsentView(discord.ui.View):
         self.stop()
         await self._store.set_consent(str(self._author_id), True)
         # thinking=True creates a fresh deferred command-style response for the
-        # component interaction. Keep it private; a successful public result is
-        # emitted later as a public followup, while failures remain private.
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # component interaction. Public requests reserve the original response;
+        # unsuccessful turns replace it with a private followup.
+        await interaction.response.defer(ephemeral=not self._public_response, thinking=True)
         await self._on_accept(interaction)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary)

@@ -190,6 +190,107 @@ def test_chat_command_description_respects_discord_limit() -> None:
     assert len(command.description) == 100
 
 
+def test_user_app_public_post_uses_invoking_members_permissions() -> None:
+    interaction = SimpleNamespace(
+        guild_id=777,
+        channel=object(),
+        permissions=SimpleNamespace(
+            send_messages=True,
+            use_external_apps=True,
+        ),
+        app_permissions=SimpleNamespace(send_messages=False),
+        is_user_integration=lambda: True,
+        is_guild_integration=lambda: False,
+    )
+
+    assert (
+        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("send_messages", "use_external_apps"),
+    [(False, True), (True, False)],
+)
+def test_user_app_public_post_requires_member_channel_and_external_app_permissions(
+    send_messages: bool,
+    use_external_apps: bool,
+) -> None:
+    interaction = SimpleNamespace(
+        guild_id=777,
+        channel=object(),
+        permissions=SimpleNamespace(
+            send_messages=send_messages,
+            use_external_apps=use_external_apps,
+        ),
+        app_permissions=SimpleNamespace(send_messages=True),
+        is_user_integration=lambda: True,
+        is_guild_integration=lambda: False,
+    )
+
+    assert (
+        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("send_messages_in_threads", "expected"),
+    [(True, True), (False, False)],
+)
+def test_user_app_public_post_uses_thread_permission(
+    monkeypatch: pytest.MonkeyPatch,
+    send_messages_in_threads: bool,
+    expected: bool,
+) -> None:
+    class FakeThread:
+        pass
+
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    interaction = SimpleNamespace(
+        guild_id=777,
+        channel=FakeThread(),
+        permissions=SimpleNamespace(
+            send_messages=False,
+            send_messages_in_threads=send_messages_in_threads,
+            use_external_apps=True,
+        ),
+        app_permissions=SimpleNamespace(send_messages_in_threads=False),
+        is_user_integration=lambda: True,
+        is_guild_integration=lambda: False,
+    )
+
+    assert (
+        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is expected
+    )
+
+
+def test_dual_installed_app_public_post_uses_application_permissions() -> None:
+    interaction = SimpleNamespace(
+        guild_id=777,
+        channel=object(),
+        permissions=SimpleNamespace(
+            send_messages=False,
+            use_external_apps=False,
+        ),
+        app_permissions=SimpleNamespace(send_messages=True),
+        is_user_integration=lambda: True,
+        is_guild_integration=lambda: True,
+    )
+
+    assert (
+        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+    )
+
+
+def test_user_app_public_post_is_allowed_outside_guilds() -> None:
+    interaction = SimpleNamespace(guild_id=None)
+
+    assert (
+        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+    )
+
+
 @pytest.mark.asyncio
 async def test_chat_visibility_choice_maps_to_internal_public_flag() -> None:
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())

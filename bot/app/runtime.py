@@ -322,8 +322,13 @@ def _is_user_only_interaction(interaction: discord.Interaction) -> bool:
 def _interaction_can_post_publicly(interaction: discord.Interaction) -> bool:
     if interaction.guild_id is None:
         return True
-    permissions = getattr(interaction, "app_permissions", None)
+
+    user_only = _is_user_only_interaction(interaction)
+    permission_source = "permissions" if user_only else "app_permissions"
+    permissions = getattr(interaction, permission_source, None)
     if permissions is None:
+        return False
+    if user_only and not bool(getattr(permissions, "use_external_apps", False)):
         return False
     channel = interaction.channel
     if isinstance(channel, discord.Thread):

@@ -6,6 +6,8 @@ _Last updated: 2026-08-29_
 > verify that its enabled services, retention periods, moderation features, and
 > contact route match the deployment, then update the date and host it at the
 > URL configured by `PRIVACY_POLICY_URL`.
+> This template covers Kimi core only. Separately installed application modules
+> must publish their own privacy notice.
 
 Kimi is a general-purpose assistant bot for Discord communities. This page
 explains, in plain language, what data a Kimi deployment handles when you talk
@@ -94,12 +96,6 @@ Depending on the features a server enables, Kimi handles:
   be stored in community memory or a shared skill. If the server configures a
   staff learn-log channel, Kimi attempts to post a summary there; the log is
   optional and a failed post does not undo the learned item.
-- **Staff configuration proposals**: modules can store proposed configuration,
-  its exact baseline, staff proposer and decider IDs, a decision reason, and the
-  Discord review-message location. These operational records have no automatic
-  expiry and are not removed by `/privacy`. The review channel also receives a
-  Discord card with the proposer, summary, a bounded preview, and the decision.
-
 When personal DMs are disabled, or you are not on the approved access list,
 messages sent directly to Kimi are ignored without being read into a turn,
 stored in its transcript, or sent to an AI provider. Kimi may also check whether
@@ -156,13 +152,6 @@ that lets a moderator close a managed thread.
 - **Operator-added tools.** The server operator may install plugins or scripted
   tools that contact additional services when used. The operator is responsible
   for documenting those services and limiting the data each tool sends.
-- **Operator-installed modules.** The server operator may install application
-  modules that receive Discord events or content, including content not
-  addressed to Kimi when the module's function requires it. Before enabling
-  such a module, the operator is responsible for making its privacy disclosure
-  available to affected users, including what it processes, where it sends
-  data, and how long it retains the result.
-
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
 
@@ -209,10 +198,9 @@ the configured services and tools needed to answer you.
   responding to you, Kimi keeps your user ID plus the block's creator, reason,
   and timestamps until the block is removed. Blocks are not removed by
   **Delete my data**.
-- **Discord staff records: controlled by server staff.** Learning and
-  configuration-proposal cards are messages in Discord. They
-  remain until staff or Discord remove them and are not covered by Kimi's local
-  retention sweep or `/privacy`.
+- **Discord staff records: controlled by server staff.** Learning cards are
+  messages in Discord. They remain until staff or Discord remove them and are
+  not covered by Kimi's local retention sweep or `/privacy`.
 
 ## Your controls
 
@@ -234,10 +222,8 @@ the configured services and tools needed to answer you.
   provider safety logs, legally required records, backups, and copies outside
   the stored Gemini video Interactions Kimi knows how to delete; diagnostic
   logs; community knowledge; shared or personal skills; usage and rate-limit
-  records; module configuration proposals; learning and proposal-review
-  messages; blocks; data retained by installed modules except where a module
-  documents its own deletion path; or your saved consent preference. Each has
-  its own lifecycle, described above.
+  records; learning messages; blocks; or your saved consent preference. Each
+  has its own lifecycle, described above.
 
 Deletion waits for any interaction already in progress, and blocks new activity
 for you until the required local deletion finishes. Your confirmation is saved
@@ -260,11 +246,9 @@ cleanup rows remain queued for later retry.
 The bot operator can access the database, workspace files, diagnostic logs, and
 the configured Hindsight service through the deployment's credentials. Anyone
 can check their own usage totals with `/usage`. Discord staff can use `/moderation` and view
-other users' usage totals. Staff with access to configured learning or
-proposal-review channels can see the event cards posted there. Installed
-modules can add other staff-visible records as described in their own privacy
-documentation. None of these commands expose private transcripts or personal
-memory.
+other users' usage totals. Staff with access to configured learning channels can
+see the event cards posted there. None of these commands expose private
+transcripts or personal memory.
 
 ## Age
 

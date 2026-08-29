@@ -6,6 +6,9 @@ The plain-language version written for community members lives in
 [privacy-policy.md](privacy-policy.md); when behavior changes, keep the two in
 sync.
 
+This document covers Kimi core only. Separately installed application modules
+must document their own data handling and publish a separate privacy notice.
+
 Two facts frame everything below:
 
 - **The bot ignores DMs unless personal chat explicitly opts in.** By default,
@@ -24,9 +27,7 @@ Two facts frame everything below:
   history. Core can still read other channel content through explicit context
   tools, automatic resolution of Discord references in an invoked message, and
   staff-initiated teaching from a selected guild message; those paths are
-  documented below. Installed application modules may receive additional
-  Discord events or content; each module's documentation is the source of truth
-  for that behavior.
+  documented below.
 
 ## What the bot stores, and where
 
@@ -54,7 +55,6 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, and timestamps. The row contains no message content. |
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
-| `config_proposals` | Module configuration proposals and their exact baselines, summaries, guild and Discord message ids, staff proposer/decider ids, decision reasons, and timestamps. These operational records have no automatic TTL and `/privacy` does not scrub them. |
 
 The optional user-app surface stores one owner-only conversation per user under
 `userchat:<user_id>`. It deliberately has no guild scope even when invoked from
@@ -203,9 +203,9 @@ A few stores are deliberately not on this clock:
   deletion, because a capacity limit anyone can reset by deleting their data is
   not a limit. A row records only that a bounded tool was used, with no code,
   arguments, results, or message content, and is pruned after eight days.
-- **Configured Discord learning and proposal-review cards** are ordinary
-  messages in staff channels. Their lifecycle belongs to server staff and
-  Discord, not to the local transcript sweep or `/privacy`.
+- **Configured Discord learning cards** are ordinary messages in staff
+  channels. Their lifecycle belongs to server staff and Discord, not to the
+  local transcript sweep or `/privacy`.
 - **Diagnostic logs** (the tool-event log) form an append-only JSONL file at
   `TOOL_EVENT_LOG_PATH` (default `logs/events.jsonl`) that rotates at 50 MB and
   keeps only the current file and one `.1` predecessor. Rotation deletes
@@ -225,8 +225,7 @@ Everything else keeps its own lifecycle, by design:
 | Personal skills (`data/personal_skills/<user_id>/`) | User-authored instruction documents; retained until the user removes them. |
 | Preferences (consent, memory on/off, persona) | Retained as settings. `persona_prompt` is cleared by the memory-forget path. |
 | Moderation blocks | Retained until unblocked. |
-| Configured Discord learning and proposal-review messages | Retained under the server's Discord-channel lifecycle; not deleted by `/privacy`. |
-| Module configuration proposals | Pending rows can be discarded by the proposal workflow. Decided rows remain until the operator removes them from the database; `/privacy` does not scrub them. |
+| Configured Discord learning messages | Retained under the server's Discord-channel lifecycle; not deleted by `/privacy`. |
 
 ### Deletion controls
 
@@ -282,10 +281,8 @@ Everything else keeps its own lifecycle, by design:
     provider safety logs, backups, or legally required records. The action also
     cannot delete Discord messages, other provider-side copies or logs, backups,
     the tool-event log, community memory, shared skills, usage ledgers/markers,
-    module configuration proposals, Discord learning and proposal-review
-    messages, blocks, the retained consent choice, module-owned records except
-    where a module documents its own deletion path, or the non-content
-    bank-state marker.
+    Discord learning messages, blocks, the retained consent choice, or the
+    non-content bank-state marker.
   - **Delete memory** runs `forget_user_memory` only; the transcript is left to
     the retention sweep.
 - **`forget_user_memory`** (`memory/privacy.py`) runs under a shared per-user
@@ -345,31 +342,21 @@ also use a separate third-party LLM endpoint for memory processing. The
 deployment's published policy must identify the Hindsight host and any separate
 downstream provider and describe their data handling.
 
-Application modules, operator plugins, and script-backed skill tools are
-trusted deployment code and may add their own egress. Skill scripts run inside
-the Linux Bubblewrap boundary with network denied by default and only the
-per-call output workspace writable. A tool whose declaration opts into
-`network: true` shares the service host's public, private, and loopback
-reachability without a destination allowlist, so each operator-added tool must
-document the services and data it uses.
-
-Optional application modules may also add database tables, retention rules,
-Discord events, and external services; their package documentation is the
-source of truth for those additions. An empty `KIMI_MODULES` loads no module
-code, but existing module tables remain until the operator explicitly removes
-them. Disabling a module is not data deletion.
+Operator plugins and script-backed skill tools are trusted deployment code and
+may add their own egress. Skill scripts run inside the Linux Bubblewrap boundary
+with network denied by default and only the per-call output workspace writable.
+A tool whose declaration opts into `network: true` shares the service host's
+public, private, and loopback reachability without a destination allowlist, so
+each operator-added tool must document the services and data it uses.
 
 Retrieved and third-party text is always framed to the model as untrusted
 context and, by default, is not written into the persisted transcript.
 
 Discord itself is also a data destination, both for normal replies and for
-optional learning and proposal-review messages. When configured and reachable,
-the learning feed receives a bounded summary of shared knowledge or skill
-content that staff caused the bot to store. A module's proposal-review channel
-receives the staff proposer id, summary, bounded configuration preview, and any
-decision and decider id. Installed modules may post other Discord messages as
-described in their own documentation. Those messages are not rows in the local
-transcript, and `/privacy` does not remove them.
+optional learning messages. When configured and reachable, the learning feed
+receives a bounded summary of shared knowledge or skill content that staff
+caused the bot to store. Those messages are not rows in the local transcript,
+and `/privacy` does not remove them.
 
 ### Channel context and linked messages from other members
 
@@ -405,8 +392,8 @@ member their own token and cost windows (viewing another user or the server
 totals is staff-only), the staff-only `/moderation` manages blocks and reasons,
 and `/models` is bot-owner-only. None of these commands expose
 conversation transcripts or private memory. Staff with access to configured
-learning or proposal-review channels can also read the event cards posted there.
-The privilege gate is the trust check at the command boundary, not prompt text.
+learning channels can also read the event cards posted there. The privilege
+gate is the trust check at the command boundary, not prompt text.
 
 ## Diagnostic logging
 

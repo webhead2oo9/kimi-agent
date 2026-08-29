@@ -497,14 +497,20 @@ def test_fake_service_registry_typed_get() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_discord_actions_gate_fetch_roles_and_can_view_channel() -> None:
-    from kimi_agent_module_api.contracts import RoleSnapshot, UndeclaredDiscordAction
+async def test_fake_discord_actions_gate_fetch_roles_invites_and_can_view_channel() -> None:
+    from kimi_agent_module_api.contracts import (
+        InviteSnapshot,
+        RoleSnapshot,
+        UndeclaredDiscordAction,
+    )
     from kimi_agent_module_api.testing import FakeDiscordActions
 
-    actions = FakeDiscordActions("m", frozenset({"fetch_roles"}))
+    actions = FakeDiscordActions("m", frozenset({"fetch_roles", "fetch_invites"}))
     actions.roles[1] = (RoleSnapshot(1, 10, "mod", 5),)
+    actions.invites[1] = (InviteSnapshot(1, "welcome", uses=2),)
 
     assert await actions.fetch_roles(1) == (RoleSnapshot(1, 10, "mod", 5),)
+    assert await actions.fetch_invites(1) == (InviteSnapshot(1, "welcome", uses=2),)
     with pytest.raises(UndeclaredDiscordAction):
         await actions.can_view_channel(1, 2, 3)
 

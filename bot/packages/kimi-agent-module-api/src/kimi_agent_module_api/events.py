@@ -15,6 +15,7 @@ from typing import Any, Literal
 from kimi_agent_module_api.contracts import (
     CORE_TOPIC_PREFIX,
     AttachmentSnapshot,
+    InviteSnapshot,
     MemberSnapshot,
     MessageRef,
     MessageSnapshot,
@@ -24,6 +25,8 @@ TOPIC_MESSAGE = f"{CORE_TOPIC_PREFIX}.message"
 TOPIC_MESSAGE_EDIT = f"{CORE_TOPIC_PREFIX}.message_edit"
 TOPIC_MESSAGE_DELETE = f"{CORE_TOPIC_PREFIX}.message_delete"
 TOPIC_MESSAGE_BULK_DELETE = f"{CORE_TOPIC_PREFIX}.message_bulk_delete"
+TOPIC_INVITE_CREATE = f"{CORE_TOPIC_PREFIX}.invite_create"
+TOPIC_INVITE_DELETE = f"{CORE_TOPIC_PREFIX}.invite_delete"
 TOPIC_MEMBER_JOIN = f"{CORE_TOPIC_PREFIX}.member_join"
 TOPIC_MEMBER_REMOVE = f"{CORE_TOPIC_PREFIX}.member_remove"
 TOPIC_MEMBER_UPDATE = f"{CORE_TOPIC_PREFIX}.member_update"
@@ -35,6 +38,8 @@ CORE_TOPICS: frozenset[str] = frozenset(
         TOPIC_MESSAGE_EDIT,
         TOPIC_MESSAGE_DELETE,
         TOPIC_MESSAGE_BULK_DELETE,
+        TOPIC_INVITE_CREATE,
+        TOPIC_INVITE_DELETE,
         TOPIC_MEMBER_JOIN,
         TOPIC_MEMBER_REMOVE,
         TOPIC_MEMBER_UPDATE,
@@ -52,9 +57,9 @@ class MessageEvent:
 @dataclass(frozen=True, slots=True)
 class MessageEditEvent:
     ref: MessageRef
-    author_id: int
+    author_id: int | None
     before_content: str | None
-    after_content: str
+    after_content: str | None
     edited_at: float
 
 
@@ -69,6 +74,16 @@ class MessageDeleteEvent:
 @dataclass(frozen=True, slots=True)
 class MessageBulkDeleteEvent:
     refs: tuple[MessageRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InviteCreateEvent:
+    invite: InviteSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class InviteDeleteEvent:
+    invite: InviteSnapshot
 
 
 @dataclass(frozen=True, slots=True)

@@ -140,6 +140,12 @@ class ProviderResponse:
     # mapping is treated as reported. Built-in adapters set this explicitly so
     # an absent usage object remains distinguishable from reported zero counts.
     usage_present: bool | None = None
+    # OpenRouter attribution is deliberately normalized into bounded fields.
+    # Raw router metadata is not continuation state and must not enter history.
+    upstream_provider: str = ""
+    service_tier: str = ""
+    openrouter_charge_usd: float | None = None
+    is_byok: bool | None = None
 
     @property
     def has_tool_calls(self) -> bool:

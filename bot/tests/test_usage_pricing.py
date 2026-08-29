@@ -75,3 +75,22 @@ def test_explicit_specialist_cost_is_preserved_without_catalog_pricing() -> None
 
     assert priced.est_cost_usd == 0.123
     assert priced.pricing_model == "gemini-3.7-flash"
+
+
+def test_pricing_preserves_provider_attribution() -> None:
+    call = LLMUsageCall(
+        model="openai/gpt-5",
+        role="chat",
+        usage=UsageBreakdown(input_tokens=100),
+        upstream_provider="OpenAI",
+        service_tier="priority",
+        openrouter_charge_usd=0.02,
+        is_byok=False,
+    )
+
+    priced = price_usage_call(call, model_config=None)
+
+    assert priced.upstream_provider == "OpenAI"
+    assert priced.service_tier == "priority"
+    assert priced.openrouter_charge_usd == 0.02
+    assert priced.is_byok is False

@@ -46,6 +46,7 @@ class ProviderConfig:
     openai_timeout_seconds: float = 900.0
     stream_stall_timeout_seconds: float = 90.0
     openrouter_provider_json: str = ""
+    openrouter_service_tier: str = ""
     openrouter_app_url: str = ""
     openrouter_app_name: str = DEFAULT_BOT_NAME
     user_agent: str = DEFAULT_BOT_NAME
@@ -113,6 +114,8 @@ def create_provider(config: ProviderConfig) -> LLMProvider:
                 api_key=config.api_key,
                 model=config.model,
                 provider_routing=_parse_openrouter_provider_json(config.openrouter_provider_json),
+                service_tier=config.openrouter_service_tier or None,
+                timeout_seconds=config.openai_timeout_seconds,
                 app_url=config.openrouter_app_url or None,
                 app_name=config.openrouter_app_name or None,
                 user_agent=config.user_agent,

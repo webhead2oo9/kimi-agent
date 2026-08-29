@@ -232,6 +232,7 @@ def build_turn_event(
     primary_model: str = "",
     llm_calls: int = 0,
     usage: dict[str, int] | None = None,
+    provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     content_mode = _require_content_mode(content_mode)
     secret_values = _secret_values(secret_values)
@@ -270,6 +271,7 @@ def build_turn_event(
         "primary_model": primary_model,
         "llm_calls": llm_calls,
         "usage": dict(usage or {}),
+        "provider_calls": [dict(call) for call in provider_calls or []],
         "request": request_field,
         "response": response_field,
     }
@@ -600,6 +602,7 @@ def emit_turn(
     primary_model: str = "",
     llm_calls: int = 0,
     usage: dict[str, int] | None = None,
+    provider_calls: list[dict[str, Any]] | None = None,
 ) -> None:
     if _writer is None:
         return
@@ -621,6 +624,7 @@ def emit_turn(
             primary_model=primary_model,
             llm_calls=llm_calls,
             usage=usage,
+            provider_calls=provider_calls,
         )
     )
 

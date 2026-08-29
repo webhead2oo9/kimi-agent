@@ -321,6 +321,216 @@ roles:
     assert provider_config.openrouter_app_url == "https://example.test/app"
 
 
+def test_resolve_openrouter_serializes_full_typed_routing_policy(tmp_path: Path) -> None:
+    config = load_model_config(
+        _write_config(
+            tmp_path / "models.yaml",
+            """
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    service_tier: priority
+    timeout_seconds: 123
+    provider_routing:
+      order: [anthropic, google]
+      only: [anthropic, google]
+      ignore: [openai]
+      allow_fallbacks: false
+      require_parameters: true
+      data_collection: deny
+      zdr: true
+      enforce_distillable_text: true
+      quantizations: [bf16, fp8, mxfp4]
+      sort: throughput
+      max_price:
+        prompt: 0.5
+        completion: 1.25
+      preferred_min_throughput:
+        p90: 40
+      preferred_max_latency: 3.5
+models:
+  chat:
+    provider: router
+    model: anthropic/claude-sonnet-4-6
+roles:
+  chat: chat
+  compaction: chat
+""",
+        )
+    )
+
+    resolved = resolve_provider_config(
+        config,
+        "chat",
+        settings=_settings(model_api_key="router-key"),
+    )
+
+    assert resolved.openrouter_service_tier == "priority"
+    assert resolved.openai_service_tier == ""
+    assert resolved.openai_timeout_seconds == 123
+    assert json.loads(resolved.openrouter_provider_json) == {
+        "order": ["anthropic", "google"],
+        "only": ["anthropic", "google"],
+        "ignore": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+        "enforce_distillable_text": True,
+        "quantizations": ["bf16", "fp8", "mxfp4"],
+        "sort": "throughput",
+        "max_price": {"prompt": 0.5, "completion": 1.25},
+        "preferred_min_throughput": {"p90": 40.0},
+        "preferred_max_latency": 3.5,
+    }
+
+
+def test_openrouter_accepts_advanced_sort_object(tmp_path: Path) -> None:
+    config = load_model_config(
+        _write_config(
+            tmp_path / "models.yaml",
+            """
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    provider_routing:
+      sort:
+        by: throughput
+        partition: none
+models:
+  chat:
+    provider: router
+    model: openrouter/auto
+roles:
+  chat: chat
+  compaction: chat
+""",
+        )
+    )
+
+    resolved = resolve_provider_config(
+        config,
+        "chat",
+        settings=_settings(model_api_key="router-key"),
+    )
+
+    assert json.loads(resolved.openrouter_provider_json) == {
+        "sort": {"by": "throughput", "partition": "none"}
+    }
+
+
+def test_openrouter_privacy_defaults_are_omitted_but_explicit_false_is_kept(
+    tmp_path: Path,
+) -> None:
+    config = load_model_config(
+        _write_config(
+            tmp_path / "models.yaml",
+            """
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    provider_routing:
+      zdr: false
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+roles:
+  chat: chat
+  compaction: chat
+""",
+        )
+    )
+
+    resolved = resolve_provider_config(
+        config,
+        "chat",
+        settings=_settings(model_api_key="router-key"),
+    )
+
+    assert json.loads(resolved.openrouter_provider_json) == {"zdr": False}
+
+
+@pytest.mark.parametrize(
+    ("profile", "message"),
+    [
+        ("base_url: https://example.invalid/v1", "must not set base_url"),
+        ("keyless: true\n    base_url: https://example.invalid/v1", "keyless profiles"),
+        ("service_tier: batch", "service_tier must be"),
+        (
+            "provider_routing:\n      only: [anthropic]\n      ignore: [anthropic]",
+            "only and ignore overlap",
+        ),
+        (
+            "provider_routing:\n      only: [anthropic]\n      order: [google]",
+            "outside only",
+        ),
+        ("provider_routing:\n      unexpected: true", "Extra inputs are not permitted"),
+    ],
+)
+def test_openrouter_rejects_invalid_profile_combinations(profile: str, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        parse_model_config_text(
+            f"""
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    {profile}
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+roles:
+  chat: chat
+  compaction: chat
+"""
+        )
+
+
+def test_openrouter_requires_api_key_reference() -> None:
+    with pytest.raises(ValidationError, match="must set api_key_env"):
+        parse_model_config_text(
+            """
+providers:
+  router:
+    type: openrouter
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+roles:
+  chat: chat
+  compaction: chat
+"""
+        )
+
+
+def test_provider_routing_is_rejected_for_other_provider_types() -> None:
+    with pytest.raises(ValidationError, match="only supported for provider type 'openrouter'"):
+        parse_model_config_text(
+            """
+providers:
+  main:
+    type: openai_compat
+    base_url: https://gateway.example/v1
+    api_key_env: MODEL_API_KEY
+    provider_routing:
+      zdr: true
+models:
+  chat:
+    provider: main
+    model: gpt-5
+roles:
+  chat: chat
+  compaction: chat
+"""
+        )
+
+
 def test_provider_identity_inherits_the_configured_bot_name(tmp_path: Path) -> None:
     config = load_model_config(
         _write_config(

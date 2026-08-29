@@ -16,7 +16,9 @@ host's trusted LAN/VPN address after the API bind is explicitly configured.
 
 Storage is a **bind mount** (not a named volume) so the data is visible
 on the host filesystem and cannot be lost to `docker volume prune` or
-`docker compose down -v`. Back it up by copying `./data`.
+`docker compose down -v`. For a consistent raw filesystem backup, stop the
+container before copying `./data`; use a backend-supported live-backup method
+if the container must remain running.
 
 This Compose stack does not configure Hindsight's optional authentication
 extension or an authenticating reverse proxy, so both ports bind to loopback
@@ -59,6 +61,7 @@ docker compose logs --tail=50
 docker compose pull && docker compose up -d   # upgrade
 ```
 
-`pull_policy: missing` prevents an accidental image bump on a plain `up`;
-upgrade deliberately so an upstream Postgres major bump never silently breaks
-the `pg0` data.
+The template currently uses the `latest` image tag. Docker Compose always pulls
+an image tagged `latest` even with `pull_policy: missing`, so a plain `up` may
+adopt a newer upstream image. Pin an immutable version tag or digest in a
+deployment that requires upgrades to happen only after review.

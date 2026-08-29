@@ -1,0 +1,44 @@
+#!/bin/bash
+#
+# Quick read-only diagnostics for Kimi.
+# Safe to run anytime.
+#
+set -euo pipefail
+
+echo "Kimi Diagnostics"
+echo "================"
+echo
+
+echo "--- Git status ---"
+git -C "${HOME}/kimi-agent" status --short --branch || true
+echo
+
+echo "--- Config and env file permissions ---"
+stat -c '%U:%G %a %n' \
+  "${HOME}/.config/kimi-agent" \
+  "${HOME}/.config/kimi-agent/kimi.env" \
+  "${HOME}/.config/kimi-agent/runtime.env" 2>/dev/null || true
+echo
+
+echo "--- namei for kimi.env ---"
+namei -l "${HOME}/.config/kimi-agent/kimi.env" 2>/dev/null || true
+echo
+
+echo "--- Service file ---"
+systemctl --user cat kimi-agent.service 2>/dev/null || true
+echo
+
+echo "--- Failed units ---"
+systemctl --user list-units --state=failed --no-pager 2>/dev/null || true
+echo
+
+echo "--- Recent warnings ---"
+journalctl --user -u kimi-agent.service -p warning --no-pager -n 30 2>/dev/null || true
+echo
+
+echo "--- Disk and memory ---"
+df -hT / 2>/dev/null || true
+free -h 2>/dev/null || true
+echo
+
+echo "Done."

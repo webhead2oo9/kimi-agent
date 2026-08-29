@@ -15,7 +15,7 @@ falling through (CI determinism); `off` is fully live. Tapes are keyed by model
 (`<cassettes>/<model-key>/<scenario>.json`) over the read-only shared baseline
 in the flat tree, so a run never rewrites another arm's recordings.
 
-Run: uv run python -m evals.harness_run --model sol --repeat 3
+Run: .venv/bin/python -m evals.harness_run --model sol --repeat 3
 """
 
 from __future__ import annotations

@@ -102,6 +102,27 @@ async def test_run_code_is_member_tier(tmp_path: Path) -> None:
     assert json.loads(result) == {"error": "pass at least one of code, path, or pip_install"}
 
 
+def test_run_code_can_require_regular_tier(tmp_path: Path) -> None:
+    registry = ToolRegistry(owner_user_id=OWNER)
+    manager = WorkspaceManager(base_dir=tmp_path)
+    init_code_exec_tool(
+        registry,
+        manager,
+        SandboxConfig(),
+        locks=UserLocks(),
+        min_tier=TrustTier.REGULAR,
+    )
+
+    member_names = [
+        schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "someuser")
+    ]
+    regular_names = [
+        schema["name"] for schema in registry.get_tool_schemas(TrustTier.REGULAR, set(), "someuser")
+    ]
+    assert "run_code" not in member_names
+    assert "run_code" in regular_names
+
+
 @pytest.mark.asyncio
 async def test_run_code_requires_path_or_code(tmp_path: Path) -> None:
     reg, _ = _register(tmp_path)
@@ -1422,6 +1443,7 @@ def test_app_wiring_registers_run_code_after_successful_probe(
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
         code_exec_enabled=True,
+        code_exec_min_tier="staff",
         code_exec_network_mode="none",
     )
     registry = ToolRegistry(owner_user_id=OWNER)
@@ -1437,6 +1459,14 @@ def test_app_wiring_registers_run_code_after_successful_probe(
     app_tools._register_code_exec(settings, registry, manager, UserLocks())
 
     assert registry.is_registered("run_code")
+    member_names = [
+        schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "someuser")
+    ]
+    staff_names = [
+        schema["name"] for schema in registry.get_tool_schemas(TrustTier.STAFF, set(), "someuser")
+    ]
+    assert "run_code" not in member_names
+    assert "run_code" in staff_names
     assert probed[0].workspace_probe_root == str(Path(settings.workspace_dir).resolve())
 
 

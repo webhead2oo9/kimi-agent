@@ -1,6 +1,10 @@
-# Top-level environments
+# Generated environments and build output
 .venv/
+**/.venv*/
 **/*.egg-info/
+**/build/
+**/dist/
+**/node_modules/
 
 # Credentials and private key material. Keep checked-in examples discoverable,
 # but fail closed for instance-owned environment and authentication files.

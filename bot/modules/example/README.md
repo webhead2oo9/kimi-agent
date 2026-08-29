@@ -60,9 +60,9 @@ Read the files in the order the host uses them: `spec.py` → `settings.py` →
 
 ## How the host runs it
 
-1. **Preflight.** The host loads `SPEC` from the entry point and validates its
-   declarations before running any module code. A bad declaration aborts
-   startup with a named reason.
+1. **Preflight.** The host imports `SPEC` from the entry point and validates its
+   declarations before calling `create()` or any lifecycle hook. A bad
+   declaration aborts startup with a named reason.
 2. **Settings.** The host builds `KudosSettings` from the environment and the
    dotenv, then overlays the fields listed as `exposed` from
    `<CONFIG_DIR>/modules/reference_kudos.md`.
@@ -79,10 +79,11 @@ Read the files in the order the host uses them: `spec.py` → `settings.py` →
 
 ## Try it
 
-From `bot/`, install the workspace and enable the entry point in `.env`:
+From `bot/`, install the reference module into Kimi's existing environment and
+enable the entry point in `.env`:
 
 ```console
-uv sync --all-packages --extra dev
+.venv/bin/python -m pip install --no-deps --editable ./modules/example
 ```
 
 ```dotenv
@@ -118,15 +119,21 @@ or the same fields, without the prefix, as frontmatter in
 Once separated, the package checks itself with only the API installed:
 
 ```console
-uv sync --extra dev
-uv run ruff check .
-uv run mypy .
-uv run pytest
+python3 -m venv .venv
+.venv/bin/python -m pip install --editable '.[dev]'
+.venv/bin/ruff check .
+.venv/bin/mypy .
+.venv/bin/python -m pytest
 ```
+
+Module authors who already use uv may replace the first two commands with
+`uv sync --extra dev`; the checks still run from the module's `.venv`.
 
 ## Data this module keeps
 
 One row per kudos: guild id, giver id, receiver id, the reason text, and a
 timestamp. Rows for a member are deleted when the host reports that they left
-the guild. Nothing leaves the host process; the digest is posted only to the
-channel a guild's staff approved.
+the guild. Tool results and Discord acknowledgements can include the receiver
+id and reason; leaderboards and digests include receiver ids and aggregate
+counts. The scheduled digest is posted only to the channel a guild's staff
+approved.

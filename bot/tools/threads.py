@@ -3,7 +3,7 @@
 ``move_to_thread`` does not create the thread itself. Like ``build_discord_embed``
 it queues a validated, single-slot request on the ``MessageContext``; the thread is
 created at the Discord boundary in ``app/runtime.py:handle_message``, from the
-triggering user message, and the reply is delivered as the thread's first message.
+triggering user message (or a target-channel anchor), and the reply is delivered into it.
 A second call replaces the first; a rejected call leaves a prior request intact.
 Its ``auto_reply`` argument is tri-state on the request: ``None`` means the model
 said nothing and the boundary applies the operator's channel/guild default.
@@ -339,16 +339,13 @@ def init_thread_tools(
         ctx.thread_request = request
         if request.target_channel_id is not None:
             note = (
-                f"Your reply will be posted in <#{request.target_channel_id}> as "
-                "the first message of the new thread, and they'll be added to it "
+                "Your reply will be posted in a new thread opened in "
+                f"<#{request.target_channel_id}>, and they'll be added to it "
                 "and pointed there from here. Answer there in full. Don't also "
                 "answer in this channel."
             )
         else:
-            note = (
-                "Your reply will be posted as the first message of the new "
-                "thread; the conversation continues there."
-            )
+            note = "Your reply will be posted in the new thread; the conversation continues there."
         return json.dumps(
             {
                 "queued": True,
@@ -426,8 +423,8 @@ def init_thread_tools(
         name="move_to_thread",
         description=(
             "Start a new Discord thread from the current user message, including "
-            "for a brand-new conversation. Your current reply becomes the "
-            "thread's first message and you keep responding there without needing "
+            "for a brand-new conversation. Your current reply is posted in the "
+            "new thread and you keep responding there without needing "
             "mentions. Use it when someone asks for a thread, or proactively when "
             "detailed step-by-step troubleshooting or another multi-turn discussion "
             "would clutter a busy channel. Can also open the thread in another "

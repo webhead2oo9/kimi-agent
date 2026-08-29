@@ -31,10 +31,10 @@ named for the command (`prompts/commands/learn/<guild_id>.md`). The first file
 that exists wins; its `<placeholder>` tokens are
 then filled the same way as the default template.
 
-Subdirectories (`commands/`, `channels/`, `servers/`) are created on demand; a
-missing file falls through to the next resolution level. Create and edit
-these files directly under `<CONFIG_DIR>/prompts/`; they are read fresh each
-turn.
+Subdirectories (`commands/`, `channels/`, `servers/`) are optional; create them
+only when needed. A missing file falls through to the next resolution level.
+Create and edit these files directly under `<CONFIG_DIR>/prompts/`; they are
+read fresh each turn.
 
 ## Tokens
 
@@ -48,13 +48,13 @@ section. The full set (`config/fragments/prompt.py:build_system_prompt`):
 | `<date>` | Today's date. |
 | `<bot_name>` | `BOT_NAME`, sanitized. |
 | `<user>`, `<user_id>`, `<trust_tier>` | The current speaker's display name (sanitized), Discord id, and resolved tier. |
-| `<model>` | The selected chain's primary chat model. It does not change even when the turn falls back to another model. |
+| `<model>` | The configured provider model selected for this surface. It does not change even when the turn falls back to another model. |
 | `<channel>`, `<server>` | Sanitized Discord channel and guild names. |
 | `<persona>` | `config/persona.md`, or the current user's compiled persona override in a code-owned frame (see below). |
 | `<channel_instructions>` | The first non-empty body of `config/threads/<thread_id>.md` > `config/channel_threads/<parent_channel_id>.md` > `config/channels/<channel_id>.md` inside a thread, else `config/channels/<channel_id>.md`. Thread-scoped bodies render under a `## Thread Instructions` heading; the channel body renders under `## Channel Instructions`. |
 | `<server_instructions>` | `config/servers/<guild_id>.md` under `## Server Instructions`. |
 | `<onboarding>` | A `## New User` block for a speaker inside their first `NEW_USER_ONBOARDING_TURNS` interactions (orientation plus the `block_user`/report-to-staff guidance); empty otherwise. Omit it and new users get no special handling in that scope. |
-| `<skills>` | The shared skills index visible in this guild. |
+| `<skills>` | The shared skills index visible in the current scope. |
 | `<personal_skills>` | The current user's `## Your Personal Skills` block, when they have any. Omit it only for intentionally tool-less layouts. |
 | `<community_knowledge>` | Recalled community memory for this turn. |
 | `<current_context>` | A summary block of the scalars above (user, id, tier, primary model, channel, server). |
@@ -102,8 +102,9 @@ including that persona renderer's rating and safety boundaries. To give only
 ## Fragment frontmatter
 
 Slot fragments in `config/channels/` and `config/servers/` may start with YAML
-frontmatter (`pinned_tools`, `blocked_tools`, thread switches, trust and log
-wiring); see each directory's `example.md` and `docs/configuration.md`.
+frontmatter for tool policy and thread settings. Server fragments also carry
+trust and log wiring; see each directory's `example.md` and
+`docs/configuration.md`.
 Frontmatter is config, not prompt text: it is stripped before the body fills its
 slot. The thread-scoped `config/threads/` and `config/channel_threads/`
 fragments are body-only.

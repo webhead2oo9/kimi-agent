@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# Simple interactive helper for Codex device authentication.
+# Uses the standard deployment paths unless overridden.
+#
+set -euo pipefail
+
+CONFIG_DIR="${HOME}/.config/kimi-agent"
+ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
+TOKEN_FILE="${TOKEN_FILE:-${CONFIG_DIR}/secrets/codex-auth.json}"
+
+echo "Codex login helper"
+echo "------------------"
+echo "ENV_FILE:   $ENV_FILE"
+echo "TOKEN_FILE: $TOKEN_FILE"
+echo
+
+read -r -p "Continue with these paths? [y/N] " reply
+case "$reply" in
+    [yY][eE][sS]|[yY]) ;;
+    *) echo "Aborted."; exit 1 ;;
+esac
+
+echo
+echo "Starting device authentication flow..."
+echo
+
+ENV_FILE="$ENV_FILE" \
+    python3 scripts/codex_auth.py --token-file "$TOKEN_FILE"
+
+chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+
+echo
+echo "Done. Token saved to $TOKEN_FILE"
+echo "You can now start or restart the bot."

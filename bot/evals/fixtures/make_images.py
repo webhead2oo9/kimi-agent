@@ -5,7 +5,7 @@ generated rather than photographed: each one has content a grader can assert on
 in plain words ("red, green, blue"), and the generator is here so the fixture is
 reviewable as code instead of an opaque binary blob.
 
-    uv run python evals/fixtures/make_images.py
+    .venv/bin/python evals/fixtures/make_images.py
 """
 
 from __future__ import annotations

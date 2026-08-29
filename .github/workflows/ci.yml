@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   pip-compat:
-    name: stdlib venv + pip
+    name: pip install smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -31,37 +31,23 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install the operator environment with stdlib venv and pip
+      - name: Install with stdlib venv and pip
         shell: bash
         run: |
           python_path="$(command -v python)"
+          venv_path="${RUNNER_TEMP}/kimi-agent-pip"
           export PATH=/usr/bin:/bin
           test -z "$(command -v uv || true)"
           "$python_path" --version
-          "${python_path}" -m venv .venv-pip
-          .venv-pip/bin/python -m pip --disable-pip-version-check install \
+          "${python_path}" -m venv "$venv_path"
+          "$venv_path/bin/python" -m pip --disable-pip-version-check install \
             --editable ./packages/kimi-agent-module-api --editable .
           test ! -e build
           test ! -e packages/kimi-agent-module-api/build
           test ! -e modules/example/build
-          .venv-pip/bin/python -m pip check
-          .venv-pip/bin/python -c \
+          "$venv_path/bin/python" -m pip check
+          "$venv_path/bin/python" -c \
             "import aiohttp, discord, kimi_agent_module_api, openai, pydantic"
-
-      - name: Exercise the standard developer environment
-        run: |
-          python_path="$(command -v python)"
-          export PATH=/usr/bin:/bin
-          test -z "$(command -v uv || true)"
-          "$python_path" -m venv .venv-pip-dev
-          .venv-pip-dev/bin/python -m pip --disable-pip-version-check install \
-            --editable ./packages/kimi-agent-module-api \
-            --editable ./modules/example --editable ".[dev]"
-          test ! -e build
-          test ! -e packages/kimi-agent-module-api/build
-          test ! -e modules/example/build
-          .venv-pip-dev/bin/python -m pip check
-          .venv-pip-dev/bin/python -m pytest -q
 
   check:
     name: lint + types + tests

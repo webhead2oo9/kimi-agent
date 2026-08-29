@@ -1,0 +1,87 @@
+#!/bin/bash
+#
+# Installs the user systemd service for Kimi.
+# Run this from the bot/ directory as your normal deployment user.
+#
+set -euo pipefail
+
+if [[ ! -f "bot.py" ]]; then
+    echo "ERROR: Run this script from the bot/ directory." >&2
+    exit 1
+fi
+
+BOT_DIR="$(pwd)"
+USER_NAME="$(id -un)"
+USER_ID="$(id -u)"
+SERVICE_DIR="${HOME}/.config/systemd/user"
+SERVICE_FILE="${SERVICE_DIR}/kimi-agent.service"
+
+CONFIG_DIR="${HOME}/.config/kimi-agent"
+ENV_FILE="${CONFIG_DIR}/kimi.env"
+RUNTIME_ENV="${CONFIG_DIR}/runtime.env"
+
+echo "Kimi systemd service installer"
+echo "=============================="
+echo "User:        $USER_NAME"
+echo "Bot dir:     $BOT_DIR"
+echo "Service:     $SERVICE_FILE"
+echo "ENV_FILE:    $ENV_FILE"
+echo "RUNTIME_ENV: $RUNTIME_ENV"
+echo
+
+read -r -p "Write service file and enable it? [y/N] " reply
+case "$reply" in
+    [yY][eE][sS]|[yY]) ;;
+    *) echo "Aborted."; exit 1 ;;
+esac
+
+# Ensure lingering is enabled
+if ! loginctl show-user "$USER_NAME" -p Linger | grep -q "Linger=yes"; then
+    echo "Enabling lingering for $USER_NAME..."
+    sudo loginctl enable-linger "$USER_NAME"
+fi
+
+mkdir -p "$SERVICE_DIR"
+
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Kimi Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+UMask=0077
+WorkingDirectory=$BOT_DIR
+Environment=PYTHONUNBUFFERED=1
+Environment=ENV_FILE=$ENV_FILE
+EnvironmentFile=$RUNTIME_ENV
+ExecStart=$BOT_DIR/.venv/bin/python bot.py
+TasksMax=128
+MemoryHigh=1536M
+MemoryMax=2G
+MemorySwapMax=1G
+CPUQuota=200%
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
+EOF
+
+chmod 600 "$SERVICE_FILE"
+
+systemctl --user daemon-reload
+systemctl --user enable kimi-agent.service
+
+echo
+echo "Service installed and enabled."
+systemctl --user status kimi-agent.service --no-pager || true
+
+echo
+echo "You can start it with:"
+echo "  systemctl --user start kimi-agent.service"
+echo
+echo "Check logs with:"
+echo "  journalctl --user -u kimi-agent.service -f"

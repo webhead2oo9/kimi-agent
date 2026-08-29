@@ -62,6 +62,7 @@ from tools.wolfram_alpha import (
     init_wolfram_alpha_tool,
 )
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
+from trust.tiers import trust_tier_from_value
 from video_understanding.client import GeminiVideoClient
 from video_understanding.service import VideoUnderstandingService
 from web_browser.service import BrowserService, BrowserServiceConfig
@@ -628,6 +629,10 @@ def _register_code_exec(
         workspace_manager,
         sandbox_config,
         locks=locks,
+        min_tier=trust_tier_from_value(
+            settings.code_exec_min_tier,
+            label="CODE_EXEC_MIN_TIER",
+        ),
         max_concurrency=settings.code_exec_max_concurrency,
         max_user_bytes=settings.workspace_tool_max_user_bytes,
         network_weekly_limit=settings.code_exec_network_weekly_limit,
@@ -635,7 +640,11 @@ def _register_code_exec(
         netns_conflict=netns_conflict,
         runtime_guards=runtime_guards,
     )
-    log.info("Code execution enabled in %s network mode", network_mode)
+    log.info(
+        "Code execution enabled in %s network mode at %s tier",
+        network_mode,
+        settings.code_exec_min_tier,
+    )
     return sandbox_config
 
 

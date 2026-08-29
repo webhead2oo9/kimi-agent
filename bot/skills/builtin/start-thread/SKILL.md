@@ -13,14 +13,16 @@ it is unavailable, say that thread creation is not available here. It is hidden
 inside existing threads and forum posts, on forum parents, and in announcement
 channels because Discord cannot anchor another local thread there.
 
-`move_to_thread` starts a public thread from the current user message. The
-current reply becomes the first message in that thread, so answer normally and
-do not send a separate duplicate announcement. Give it a short, specific name
-of at most 100 characters.
+`move_to_thread` starts a public thread. In the current channel it anchors the
+thread on the current user message; an approved cross-channel handoff uses a new
+anchor in the target channel. The current reply is posted into the thread after
+that anchor, so answer normally and do not send a separate duplicate
+announcement. Give it a short, specific name of at most 100 characters.
 
 Omit `auto_reply` unless the request establishes a preference. `false` starts a
-quiet managed thread where the bot answers only when invoked; otherwise the
-configured channel default decides whether every message receives a reply.
+quiet managed thread where the bot answers only when invoked, `true` starts an
+auto-responding thread, and omission uses the configured channel or guild
+default.
 
 Pass `channel` only when the user actually names another channel. Cross-channel
 handoff requires an operator allowlist and posting permissions for both the bot
@@ -33,8 +35,9 @@ Inside a managed thread, contextual tools appear only when they can act:
   or name invocation. Use this for "be quiet" or "only reply when asked."
 - `resume_thread_replies` restores automatic replies in a paused thread.
 - `leave_thread` sends the current final reply, then locks and archives the
-  thread. This cannot be undone; use it only for an explicit close/archive/end
-  request or a clearly completed thread, not merely a request for quiet.
+  thread. The tool provides no undo; use it only for an explicit
+  close/archive/end request or a clearly completed thread, not merely a request
+  for quiet.
 
 Changing thread mode or closing requires the initiating user, Staff trust, or
 Discord Manage Threads permission. Trust the available contextual tool surface

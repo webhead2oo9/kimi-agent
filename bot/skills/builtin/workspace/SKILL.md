@@ -1,15 +1,15 @@
 ---
 name: workspace
-description: "Work safely with the current user's per-community files: inspect, import, read, edit, extract, package, execute, and return deliverables."
+description: "Work safely with the current user's scoped files: inspect, import, read, edit, extract, package, execute, and return the results."
 tags: [workspace, files, search, edit, documents, artifacts]
 ---
 
 # Workspace files
 
 The workspace is persistent, sandboxed application storage scoped to the
-current user and community. Paths are workspace-relative; absolute paths,
-traversal, and symlink escapes are rejected. It is not general access to the
-host filesystem.
+current user and community, or to the user's personal-chat scope. Paths are
+workspace-relative; absolute paths, traversal, and symlink escapes are rejected.
+It is not general access to the host filesystem.
 
 ## Find and inspect
 

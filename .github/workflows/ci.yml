@@ -15,6 +15,62 @@ permissions:
   contents: read
 
 jobs:
+  pip-compat:
+    name: stdlib venv + pip
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.14 without uv
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            bot/requirements.lock
+            bot/requirements-dev.lock
+
+      - name: Install the operator environment with stdlib venv and pip
+        shell: bash
+        run: |
+          python_path="$(command -v python)"
+          export PATH=/usr/bin:/bin
+          test -z "$(command -v uv || true)"
+          "$python_path" --version
+          "${python_path}" -m venv .venv-pip
+          .venv-pip/bin/python -m pip --disable-pip-version-check install \
+            --require-hashes --requirement requirements.lock
+          .venv-pip/bin/python -m pip --disable-pip-version-check install \
+            --no-deps --editable ./packages/kimi-agent-module-api --editable .
+          test ! -e build
+          test ! -e packages/kimi-agent-module-api/build
+          test ! -e modules/example/build
+          .venv-pip/bin/python -m pip check
+          .venv-pip/bin/python -c \
+            "import aiohttp, discord, kimi_agent_module_api, openai, pydantic"
+
+      - name: Exercise the standard developer environment
+        run: |
+          python_path="$(command -v python)"
+          export PATH=/usr/bin:/bin
+          test -z "$(command -v uv || true)"
+          "$python_path" -m venv .venv-pip-dev
+          .venv-pip-dev/bin/python -m pip --disable-pip-version-check install \
+            --require-hashes --requirement requirements-dev.lock
+          .venv-pip-dev/bin/python -m pip --disable-pip-version-check install \
+            --no-deps --editable ./packages/kimi-agent-module-api \
+            --editable ./modules/example --editable .
+          test ! -e build
+          test ! -e packages/kimi-agent-module-api/build
+          test ! -e modules/example/build
+          .venv-pip-dev/bin/python -m pip check
+          .venv-pip-dev/bin/python -m pytest -q
+
   check:
     name: lint + types + tests
     runs-on: ubuntu-latest
@@ -56,10 +112,30 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
 
+      - name: Check pip lock exports
+        run: |
+          uv export --quiet --locked --no-dev --format requirements.txt \
+            --no-emit-project --no-emit-workspace \
+            --output-file requirements.lock
+          uv export --quiet --locked --all-packages --extra dev \
+            --format requirements.txt --no-emit-project --no-emit-workspace \
+            --output-file requirements-dev.lock
+          git diff --exit-code -- requirements.lock requirements-dev.lock
+
       # --locked fails if uv.lock is out of date with pyproject.toml, so a
       # dependency change that skipped a re-lock cannot merge.
       - name: Sync dependencies
         run: uv sync --locked --all-packages --extra dev
+
+      - name: Check documented uv and pip interoperability
+        run: |
+          .venv/bin/python -m ensurepip
+          .venv/bin/python -m pip --disable-pip-version-check install \
+            --no-deps --editable ./packages/kimi-agent-module-api --editable .
+          test ! -e build
+          test ! -e packages/kimi-agent-module-api/build
+          test ! -e modules/example/build
+          .venv/bin/python -m pip check
 
       - name: Audit locked dependencies
         run: uv --preview-features audit-command audit --locked

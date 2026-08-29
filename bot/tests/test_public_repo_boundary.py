@@ -297,7 +297,10 @@ def test_tracked_discord_ids_are_synthetic() -> None:
             "-E",
             r"[0-9]{17,20}",
             "--",
-            ":!bot/uv.lock",  # dependency hashes contain arbitrary digit runs
+            # Dependency hashes contain arbitrary digit runs.
+            ":!bot/uv.lock",
+            ":!bot/requirements.lock",
+            ":!bot/requirements-dev.lock",
         ],
         cwd=REPO_ROOT,
         check=False,

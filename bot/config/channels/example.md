@@ -19,9 +19,10 @@ blocked_tools: [teach]
 thread_handoff: true
 thread_auto_respond: true
 #
-# Optional automatic thread handoff. Set auto_thread_always to true to move every
-# eligible reply, or leave it false and use either threshold below. Thresholds
-# are independently optional.
+# Optional automatic thread handoff. This section has an effect only when the
+# deployment also sets THREAD_AUTO_HANDOFF_ENABLED=true. Set auto_thread_always
+# to true to move every eligible reply, or leave it false and use either
+# threshold below. Thresholds are independently optional.
 auto_thread_always: false
 auto_thread_min_lines: 4
 auto_thread_min_chars: 600

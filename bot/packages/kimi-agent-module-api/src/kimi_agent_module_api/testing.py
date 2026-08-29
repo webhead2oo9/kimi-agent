@@ -34,6 +34,7 @@ from kimi_agent_module_api.contracts import (
     HealthState,
     HostNotAllowed,
     HttpResponse,
+    InviteSnapshot,
     JobHandler,
     JobInfo,
     JobRun,
@@ -383,6 +384,7 @@ class FakeDiscordActions:
         self.pins: dict[tuple[int, int], tuple[MessageSnapshot, ...]] = {}
         self.public_threads: dict[tuple[int, int], tuple[ChannelSnapshot, ...]] = {}
         self.roles: dict[int, tuple[RoleSnapshot, ...]] = {}
+        self.invites: dict[int, tuple[InviteSnapshot, ...]] = {}
         self.channel_access: dict[tuple[int, int, int], bool] = {}
         self._next_message_id = 1000
 
@@ -530,6 +532,10 @@ class FakeDiscordActions:
     async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
         self._record("fetch_roles", guild_id)
         return self.roles.get(guild_id, ())
+
+    async def fetch_invites(self, guild_id: int) -> tuple[InviteSnapshot, ...]:
+        self._record("fetch_invites", guild_id)
+        return self.invites.get(guild_id, ())
 
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
         self._record("can_view_channel", guild_id, user_id, channel_id)

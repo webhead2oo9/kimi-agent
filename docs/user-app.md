@@ -9,7 +9,7 @@ by default and does not change the bot's normal mention/reply behavior.
 When `USER_APP_CHAT_ENABLED=true`, the application registers these commands for
 **User Install** only:
 
-- `/chat message:<text> attachment:<optional file> public:<false by default>`
+- `/chat message:<text> attachment:<optional file> visibility:<Only me by default|Everyone>`
 - `/chat-reset`
 
 It also makes the existing self-service `/privacy`, `/memory`, and `/stop`
@@ -40,7 +40,7 @@ from running.
 
 Two differences from `/chat` follow from being a real message rather than a
 slash interaction. There is no invocation gate, because a DM has nothing else to
-be addressed to, and no `public:` option, because a DM is already private. There
+be addressed to, and no `visibility:` option, because a DM is already private. There
 is also no interaction token, so `USER_APP_CHAT_TIMEOUT_SECONDS` does not bound
 a DM turn and replies are delivered as ordinary chunked messages.
 
@@ -166,10 +166,17 @@ layouts, doing so affects only `/chat` and does not change the guild persona.
 
 ## Visibility, attachments, and limits
 
-Responses are private/ephemeral by default. `public:true` posts only a
-successful result publicly; access, consent, validation, moderation, timeout,
-provider, and reset messages stay private. Public capability is checked before
-the model turn. Mentions are disabled on all result messages.
+Responses are private/ephemeral by default. Choose `visibility:Everyone` to make
+the deferred response, live narration, tool activity, plan updates, final result,
+and any post-defer failure visible in the channel. The live response is edited in
+place as work progresses, including a heartbeat during long idle steps, and the
+final result or failure replaces it. Initial access, block, empty-input,
+public-permission, and consent checks happen before defer and therefore remain
+private. Access, block, reset-generation, and privacy checks repeated after defer
+use the selected visibility like other post-defer failures. Public capability is
+checked before the model turn. Mentions are disabled on all activity and result
+messages. If a later chunk of a public response cannot be delivered, the already
+posted first chunk remains public and the invoking user receives a private notice.
 
 One optional Discord attachment can accompany the text and travels through the
 same bounded image/file import pipeline as ordinary chat. Generated files and

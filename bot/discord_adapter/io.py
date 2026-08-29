@@ -861,6 +861,51 @@ class DiscordActivityReporter(_ActivityNarrationReporter):
             log.debug("Could not delete Discord activity status", exc_info=True)
 
 
+class InteractionActivityReporter(_ActivityNarrationReporter):
+    """Live narration that edits a deferred interaction response in place.
+
+    The final interaction result or status overwrites this same response. Finishing
+    the reporter only stops pending paints so a late heartbeat cannot race the
+    outcome delivery.
+    """
+
+    def __init__(
+        self,
+        interaction: discord.Interaction,
+        *,
+        min_interval_seconds: float = ACTIVITY_UPDATE_MIN_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        idle_nudge_seconds: float = ACTIVITY_IDLE_NUDGE_SECONDS,
+        stale_heartbeat_seconds: float = ACTIVITY_STALE_HEARTBEAT_SECONDS,
+    ) -> None:
+        super().__init__(
+            min_interval_seconds=min_interval_seconds,
+            clock=clock,
+            sleep=sleep,
+            idle_nudge_seconds=idle_nudge_seconds,
+            stale_heartbeat_seconds=stale_heartbeat_seconds,
+        )
+        self._interaction = interaction
+
+    async def _edit_original(self, content: str) -> bool:
+        try:
+            await self._interaction.edit_original_response(
+                content=content,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+        except discord.HTTPException:
+            log.debug("Could not edit interaction activity status", exc_info=True)
+        return False
+
+    async def _paint_initial(self, content: str) -> bool:
+        return await self._edit_original(content)
+
+    async def _paint_update(self, content: str) -> bool:
+        return await self._edit_original(content)
+
+
 def _neutralize_mentions(text: str) -> str:
     return text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
 

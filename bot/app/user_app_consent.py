@@ -43,8 +43,8 @@ class UserAppConsentView(discord.ui.View):
         self.stop()
         await self._store.set_consent(str(self._author_id), True)
         # thinking=True creates a fresh deferred command-style response for the
-        # component interaction. Public requests reserve the original response;
-        # unsuccessful turns replace it with a private followup.
+        # component interaction. Its visibility carries through live activity,
+        # the final result, and any post-defer failure.
         await interaction.response.defer(ephemeral=not self._public_response, thinking=True)
         await self._on_accept(interaction)
 

@@ -70,6 +70,14 @@ class FakeClock:
         self.now += seconds
 
 
+class RecordingInteraction:
+    def __init__(self) -> None:
+        self.edits: list[dict[str, object]] = []
+
+    async def edit_original_response(self, **kwargs: object) -> None:
+        self.edits.append(kwargs)
+
+
 def test_suppress_link_previews_wraps_standalone_urls_and_keeps_punctuation() -> None:
     content = "Visit https://example.com/a_(b), then HTTPS://example.org?q=1."
 
@@ -465,6 +473,33 @@ async def test_activity_reporter_flushes_latest_throttled_status() -> None:
     await reporter.finish()
 
     assert channel.messages[0].edits == ["Publishing a page..."]
+
+
+@pytest.mark.asyncio
+async def test_interaction_activity_reporter_edits_original_and_stops_on_finish() -> None:
+    interaction = RecordingInteraction()
+    reporter = discord_io.InteractionActivityReporter(
+        cast(discord.Interaction, interaction),
+        min_interval_seconds=0,
+        idle_nudge_seconds=0,
+    )
+
+    await reporter(ActivityUpdate(label="Thinking..."))
+    await reporter.commit_step("Let me check that.", ["internet_search"])
+    await reporter.update_plan([{"content": "Compare sources", "status": "in_progress"}])
+    await reporter.finish()
+    await reporter(ActivityUpdate(label="This must not replace the result."))
+
+    assert [edit["content"] for edit in interaction.edits] == [
+        "Thinking...",
+        "Let me check that.\n-# Searching the web",
+        "Let me check that.\n-# Searching the web\n-# → Compare sources",
+    ]
+    allowed_mentions = interaction.edits[-1]["allowed_mentions"]
+    assert isinstance(allowed_mentions, discord.AllowedMentions)
+    assert allowed_mentions.everyone is False
+    assert allowed_mentions.users is False
+    assert allowed_mentions.roles is False
 
 
 def test_format_narration_step_uses_muted_subtext_for_tools() -> None:

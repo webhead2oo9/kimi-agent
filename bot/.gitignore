@@ -98,6 +98,8 @@ config/plugins*.md
 !config/plugins.template.md
 config/tools/*
 config/plugins/*
+config/modules/*
+config/guild-modules/*
 !config/tools/example.md
 !config/tools/sample.md
 !config/tools/template.md

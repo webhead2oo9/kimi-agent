@@ -32,6 +32,13 @@ The example is a small "kudos" feature that uses most public service ports: depl
 
 For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
 
+For a focused module that lives in its own repository, see
+[`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging).
+It is a working Discord audit log built entirely on the public module API. The
+repository shows how to listen for Discord events, keep module-owned data,
+offer per-server settings and a staff command, schedule cleanup, report health,
+and package and test the module independently from Kimi.
+
 ## Start a module with an LLM
 
 Give an LLM that can read the Kimi checkout the brief below. It works best

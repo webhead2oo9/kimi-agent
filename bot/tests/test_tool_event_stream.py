@@ -383,6 +383,17 @@ def test_build_turn_event_shape() -> None:
             "cache_write_tokens": 0,
             "output_tokens": 25,
         },
+        provider_calls=[
+            {
+                "model": "kimi-k2",
+                "pricing_model": "kimi-k2",
+                "role": "chat",
+                "upstream_provider": "Moonshot AI",
+                "service_tier": "priority",
+                "openrouter_charge_usd": 0.01,
+                "is_byok": False,
+            }
+        ],
     )
     assert e["v"] == ev.SCHEMA_VERSION
     assert e["type"] == "turn"
@@ -403,6 +414,8 @@ def test_build_turn_event_shape() -> None:
         "cache_write_tokens": 0,
         "output_tokens": 25,
     }
+    assert e["provider_calls"][0]["upstream_provider"] == "Moonshot AI"
+    assert e["provider_calls"][0]["openrouter_charge_usd"] == 0.01
     assert e["request"] == []
     assert e["response"] == {
         "role": "assistant",
@@ -730,6 +743,10 @@ def test_run_conversation_emits_tool_call_and_turn_events(tmp_path: Path) -> Non
             ProviderResponse(
                 content="Final answer.",
                 usage={"input_tokens": 20, "output_tokens": 7},
+                upstream_provider="OpenAI",
+                service_tier="priority",
+                openrouter_charge_usd=0.02,
+                is_byok=False,
             ),
         ]
     )
@@ -780,6 +797,15 @@ def test_run_conversation_emits_tool_call_and_turn_events(tmp_path: Path) -> Non
         "cached_read_tokens": 0,
         "cache_write_tokens": 0,
         "output_tokens": 12,
+    }
+    assert turns[0]["provider_calls"][-1] == {
+        "model": "scripted-model",
+        "pricing_model": "scripted-model",
+        "role": "chat",
+        "upstream_provider": "OpenAI",
+        "service_tier": "priority",
+        "openrouter_charge_usd": 0.02,
+        "is_byok": False,
     }
     # All events in the turn share one turn_id.
     assert tool_calls[0]["turn_id"] == turns[0]["turn_id"]

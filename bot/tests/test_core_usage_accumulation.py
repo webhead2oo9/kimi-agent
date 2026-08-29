@@ -99,6 +99,41 @@ async def test_core_preserves_missing_usage_vs_explicit_zero_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_core_preserves_openrouter_attribution_on_usage_calls() -> None:
+    result = await run_conversation(
+        request=ConversationRunRequest(
+            user_message="hello",
+            context=ConversationContext(key="attribution"),
+            trust_tier=TrustTier.MEMBER,
+            user_name="Ann",
+            user_id="u1",
+            provider=cast(
+                LLMProvider,
+                ScriptedProvider(
+                    [
+                        ProviderResponse(
+                            content="done",
+                            usage={"input_tokens": 1, "output_tokens": 2},
+                            upstream_provider="Anthropic",
+                            service_tier="priority",
+                            openrouter_charge_usd=0.003,
+                            is_byok=False,
+                        )
+                    ]
+                ),
+            ),
+            registry=_registry(),
+        )
+    )
+
+    call = result.llm_calls[0]
+    assert call.upstream_provider == "Anthropic"
+    assert call.service_tier == "priority"
+    assert call.openrouter_charge_usd == 0.003
+    assert call.is_byok is False
+
+
+@pytest.mark.asyncio
 async def test_run_conversation_accumulates_multi_iteration_usage() -> None:
     provider = ScriptedProvider(
         [

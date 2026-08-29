@@ -2061,7 +2061,7 @@ def test_discord_reference_hint_is_ephemeral_automated_context() -> None:
     provider = ScriptedProvider([ProviderResponse(content="Use support.")])
     hint = DiscordReferenceHint(
         source="channel_mention",
-        channel_id="222222222222222222",
+        channel_id="700000000000000222",
         channel_name="support",
         category_name="Help Desk",
         has_category=True,
@@ -2070,7 +2070,7 @@ def test_discord_reference_hint_is_ephemeral_automated_context() -> None:
     result = asyncio.run(
         run_conversation(
             request=ConversationRunRequest(
-                user_message="use <#222222222222222222>",
+                user_message="use <#700000000000000222>",
                 context=context,
                 trust_tier=TrustTier.MEMBER,
                 user_name="Alice",
@@ -2087,9 +2087,9 @@ def test_discord_reference_hint_is_ephemeral_automated_context() -> None:
     [automated_hint] = request.messages
     hint_text = automated_hint.content[0].text or ""
     assert hint_text == (
-        "[Automated hint: <#222222222222222222> refers to #support under the “Help Desk” category.]"
+        "[Automated hint: <#700000000000000222> refers to #support under the “Help Desk” category.]"
     )
-    assert request.current_user_parts == [ContentPart.from_text("Alice: use <#222222222222222222>")]
+    assert request.current_user_parts == [ContentPart.from_text("Alice: use <#700000000000000222>")]
     persisted_text = "\n".join(
         part.text or "" for message in context.get_history() for part in message.content
     )

@@ -9,78 +9,118 @@
 > `.env.example` whenever those settings change. The defaults below are the
 > **code defaults**; a deployment's `.env` may override them.
 
+## Quick start
+
+For a new operator, the minimum viable path is:
+
+1. Copy `bot/.env.example` to `.env` and set at least the secrets and allowlists it flags (Discord token, provider keys, allowed channels/guilds).
+2. Copy `bot/config/models.example.yaml` to `config/models.yaml` and fill in the `chat` and `compaction` roles with provider profiles that match your `.env` secrets.
+3. Optionally drop a `<CONFIG_DIR>/settings.md` to tune scalar values without restarting the bot on every tweak.
+4. Restart the bot. The startup probe reports missing files, invalid values, and gated features that didn't enable.
+
+Most settings in this reference are optional or gated off by default. The first half of the page covers the load order and where values come from. The second half lists every setting grouped by feature.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [How configuration loading works](#how-configuration-loading-works)
+  - [Operator overlay](#operator-overlay)
+  - [Plugins](#plugins)
+  - [Modules](#modules)
+  - [Per-tool configuration](#per-tool-configuration)
+  - [Model routing](#model-routing)
+  - [Secrets](#secrets)
+  - [Derived values](#derived-values)
+  - [Validation at startup](#validation-at-startup)
+  - [Adding a new setting](#adding-a-new-setting)
+  - [Common patterns](#common-patterns)
+- [Choosing a dotenv file](#choosing-a-dotenv-file)
+- [Discord & access control](#discord--access-control)
+- [Model routing and LLM execution](#model-routing-and-llm-execution)
+  - [Per-model pricing (cost tracking)](#per-model-pricing-cost-tracking)
+  - [Durable coding tasks](#durable-coding-tasks)
+  - [Codex operational settings](#codex-operational-settings)
+- [Context compaction](#context-compaction)
+- [Content moderation (gated)](#content-moderation-gated)
+- [Discord text search (gated)](#discord-text-search-gated)
+- [Internet search (gated)](#internet-search-gated)
+- [Wolfram|Alpha (gated)](#wolframalpha-gated)
+- [Video understanding (gated)](#video-understanding-gated)
+- [Image generation (gated)](#image-generation-gated)
+- [Attachments & image input](#attachments--image-input)
+- [Hindsight (memory backend)](#hindsight-memory-backend)
+- [User memory](#user-memory)
+- [Privacy consent gate (disabled by default)](#privacy-consent-gate-disabled-by-default)
+- [Thread handoff (gated)](#thread-handoff-gated)
+- [Instruction fragments (channel and thread scopes)](#instruction-fragments-channel-and-thread-scopes)
+- [Instance layout](#instance-layout)
+- [Storage](#storage)
+- [Observability](#observability)
+- [Secrets file](#secrets-file)
+- [Script execution (skills)](#script-execution-skills)
+- [Code execution](#code-execution)
+- [Persistent browser](#persistent-browser)
+- [Workspaces (per-user file sandbox)](#workspaces-per-user-file-sandbox)
+- [Validators & startup behavior](#validators--startup-behavior)
+- [External env keys outside `Settings`](#external-env-keys-outside-settings)
+- [Primary consumers](#primary-consumers)
+- [Deployment notes](#deployment-notes)
+
 ## How configuration loading works
 
-- The core `pydantic-settings` `Settings` class in `config/settings.py` is
-  instantiated once as the module-level `settings` singleton, which everything
-  else imports. Enabled plugins and application modules may own separate
-  `BaseSettings` classes of their own. For a plugin that declares
-  `PLUGIN_SETTINGS`, discovery constructs the instance before registration and
-  hands that exact validated object to the plugin. A plugin managed entirely
-  through the environment instead builds its model through the
-  `ctx.settings_for(...)` fallback during registration.
-- Values come from **OS environment variables** first, then from a local dotenv
-  file: `.env` by default, or whatever `ENV_FILE` names (see below). Core,
-  plugin, and module settings all go through the shared selector in
-  `config/environment.py`, so a dev process can't accidentally read core values
-  from `.env.dev` while plugins read theirs from `.env`. Unknown env keys are
-  ignored (`extra = "ignore"`).
-- **Naming:** an env var is simply the field name upper-cased, so
-  `react_max_tokens` comes from `REACT_MAX_TOKENS` and `workspace_max_size_mb`
-  from `WORKSPACE_MAX_SIZE_MB`. The mapping is case-insensitive.
-- **Operator settings file:** once the object is constructed, `build_app` layers
-  `<CONFIG_DIR>/settings.md` over it
-  (`config/operator_settings.py:apply_operator_settings`). The file manages
-  every plain `bool`/`int`/`float`/`str` field except the ones that define a
-  deployment boundary: no secrets, no paths or binaries (`*_dir`, `*_path`,
-  `*_bin`, `*_file`), no service URLs (`*_url`, `*_base`), no `database_*`, and
-  neither `plugin_modules` nor `kimi_modules`. The `*_ids` allowlists are
-  written as YAML lists in the file (`staff_user_ids: [1, 2]`) rather than the
-  comma-joined strings `.env` uses. The file **takes precedence over the
-  environment**; any field it doesn't mention keeps its environment or default
-  value, and an absent or empty file inherits everything. The overlay is read
-  once inside `build_app`, so an edit takes effect on the next restart. A
-  present file has to be wholly valid: an unreadable or malformed file, or an
-  unknown or out-of-range value, raises `OperatorSettingsError` and stops
-  startup before a single field is applied, because a half-applied overlay
-  would be worse than none.
-- **Plugin settings files:** an enabled plugin may explicitly declare a safe,
-  operator-editable subset of its own settings. Those overrides live separately
-  at `<CONFIG_DIR>/plugins/<plugin_name>.md` and never join the core
-  `settings.md` namespace. The declaration classifies every model field as
-  either explicitly exposed or environment-only, with presentation and
-  validation metadata for the exposed subset; leaving a field unclassified is
-  an error, and discovery also rejects any attempt to expose a secret-,
-  endpoint-, or path-like field. Every plugin setting requires a restart:
-  discovery validates and applies the complete plugin overlay before that
-  plugin registers. An absent file inherits the selected dotenv/default
-  values, and a present file is validated atomically. See
-  [plugins.md](plugins.md) for the plugin entry point, loading, and file-overlay contract.
-- **Module settings files:** lifecycle-aware modules follow the same
-  declaration rules, but their safe overrides live at
-  `<CONFIG_DIR>/modules/<module_name>.md`. Module settings are required whenever
-  the module is configured, so invalid environment or overlay data aborts
-  startup. Module-owned variables are documented in the module package rather
-  than in this core catalog. See [modules.md](modules.md).
-- **Per-tool config fragments:** a tool may declare its own typed knobs. Their
-  operator values live in `<CONFIG_DIR>/tools/<tool_name>.md` and are read
-  **fresh every turn** instead of at boot. More on this below.
-- **Model routing:** provider profiles, model IDs, role assignments, context
-  windows, and chat overrides live in `config/models.yaml`, not in `.env`.
-- **Secrets** use `SecretStr` (for example `OPENCODE_GO_API_KEY`); read them
-  with `.get_secret_value()`. They never appear in `repr()` or logs.
-  `validate_assignment=True` lets tests assign plain strings and still have
-  them coerced to `SecretStr`.
-- **Derived/computed values** are exposed as `@property` accessors that parse a
-  raw string into a richer type (comma-separated → `set`/`list`/`tuple`). They
-  are documented inline below.
-- **Validation at startup:** a few fields validate eagerly so that a typo fails
-  fast with a clear message rather than lazily in the middle of a request
-  (`ALLOWED_CHANNEL_IDS` must be numeric, for instance).
-- **`.env.example`** is the included template; `.env` stays local and is
-  ignored by Git.
-  `ENV_FILE` gets its own section because it is read straight from the process
-  environment rather than through `config/settings.py`.
+Kimi loads configuration from multiple layers so operators can keep secrets and deployment-specific values out of the repository while still having safe, auditable overrides. The core `Settings` model comes from the environment (or a chosen `.env` file). An optional operator settings file can then layer on top of it. Per-tool config, guild and channel fragments, and the model routing file are read at different times and have different lifecycles.
+
+The main `Settings` object is instantiated once as a module-level singleton. Everything else imports this single instance. Plugins and application modules may define their own separate settings models.
+
+Values are read from OS environment variables first, then from the dotenv file named by `ENV_FILE` (default `.env`). Core, plugin, and module settings all use the same selector, so a development process can't accidentally mix files. Unknown environment keys are ignored (`extra = "ignore"`).
+
+Environment variable names match the setting names in upper case (for example `react_max_tokens` maps to `REACT_MAX_TOKENS`). The mapping is case-insensitive.
+
+### Operator overlay
+
+Once the core `Settings` object exists, `build_app` applies an overlay from `<CONFIG_DIR>/settings.md`. This file can modify any plain `bool`, `int`, `float`, or `str` field except those that define deployment boundaries:
+
+- No secrets.
+- No paths, binaries, or files (`*_dir`, `*_path`, `*_bin`, `*_file`).
+- No service URLs (`*_url`, `*_base`).
+- No `database_*` settings.
+- Neither `plugin_modules` nor `kimi_modules`.
+
+The `*_ids` allowlists are written as YAML lists in the operator file rather than the comma-separated strings used in `.env`.
+
+The operator file **takes precedence over the environment**. Any field not mentioned in the file keeps its environment or default value. An absent or empty file changes nothing.
+
+The overlay is read once inside `build_app`, so edits only take effect on the next restart. A present file must be wholly valid. An unreadable file, a malformed file, or an unknown or out-of-range value raises `OperatorSettingsError` and aborts startup before any fields are applied. A half-applied overlay is never allowed.
+
+### Plugins
+
+An enabled plugin may declare a safe, operator-editable subset of its own settings. These overrides live in `<CONFIG_DIR>/plugins/<plugin_name>.md` and never share the core `settings.md` namespace. The plugin must classify every field as either explicitly exposed or environment-only. Leaving a field unclassified is an error, and the system rejects any attempt to expose secrets, endpoints, or paths.
+
+Every plugin setting change requires a restart. Discovery validates and applies the complete overlay before the plugin registers. An absent file inherits the environment or default values. A present file is validated atomically. See [plugins.md](plugins.md) for the plugin entry point, loading, and file-overlay contract.
+
+### Modules
+
+Lifecycle-aware modules follow the same declaration rules, but their safe overrides live at `<CONFIG_DIR>/modules/<module_name>.md`. Module settings are required when the module is configured, so invalid environment or overlay data aborts startup. Module-owned variables are documented in the module package rather than in this core catalog. See [modules.md](modules.md).
+
+### Per-tool configuration
+
+A tool may declare its own typed knobs. Their operator values live in `<CONFIG_DIR>/tools/<tool_name>.md` and are read **fresh every turn** instead of at boot, so a tool config change does not require a restart. More on this below.
+
+### Model routing
+
+Provider profiles, model IDs, role assignments, context windows, and chat overrides live in `config/models.yaml`, not in `.env`.
+
+### Secrets
+
+Secret fields use `SecretStr` (for example `OPENCODE_GO_API_KEY`). Read them with `.get_secret_value()`. They never appear in `repr()` or logs. `validate_assignment=True` lets tests assign plain strings and still have them coerced to `SecretStr`.
+
+### Derived values
+
+Some settings expose `@property` accessors that parse a raw string into a richer type (comma-separated → `set`/`list`/`tuple`). These are documented inline next to their source fields.
+
+### Validation at startup
+
+A few fields validate eagerly so that a typo fails fast with a clear message rather than lazily in the middle of a request. `ALLOWED_CHANNEL_IDS` must be numeric, for example.
 
 ### Adding a new setting
 1. Add the field (with a default + a short comment) to the right group in `config/settings.py`.
@@ -172,6 +212,10 @@ The tool-owned behavior that exists today:
 |---|---|---|---|---|
 | `discord_text_search` | `max_results` | `25` | 1–25 | `config/tools/discord_text_search.md` |
 | `internet_search` | `strategy` | `blend` | `blend` or `failover` | `config/tools/internet_search.md` |
+| `browser` | `max_code_chars` | `12000` | 1–12,000 | `config/tools/browser.md` |
+| `browser` | `max_calls_per_turn` | `16` | 1–16 | `config/tools/browser.md` |
+| `browser` | `max_output_chars` | `28000` | 128–28,000 | `config/tools/browser.md` |
+| `browser` | `max_screenshots_per_turn` | `4` | 0–4 | `config/tools/browser.md` |
 | `generate_image` | `model` | `gpt-image-2` | closed choice | `config/tools/generate_image.md` |
 | `generate_image` | `size` | `auto` | `auto`, `1024x1024`, `1024x1536`, `1536x1024` | `config/tools/generate_image.md` |
 | `generate_image` | `quality` | `auto` | `auto`, `low`, `medium`, `high` | `config/tools/generate_image.md` |
@@ -220,12 +264,14 @@ catalog described above.
 
 | Env var | Default | Description |
 |---|---|---|
-| `ENV_FILE` | `.env` | Which dotenv file every core and plugin `BaseSettings` class loads through `config/environment.py`. `ENV_FILE=.env.dev uv run python bot.py` boots a second instance with its own token, database, plugin credentials, and paths against a test guild. A path that does not exist raises at import instead of silently loading nothing. See [development.md](development.md). |
+| `ENV_FILE` | `.env` | Which dotenv file every core, plugin, and application-module `BaseSettings` class loads through `config/environment.py`. `ENV_FILE=.env.dev .venv/bin/python bot.py` boots a second instance with its own token, database, extension credentials, and paths against a test guild. A path that does not exist raises at import instead of silently loading nothing. See [development.md](development.md). |
 
 This one is read from the process environment only. It can't be set *inside* a
 dotenv file, since it is the thing that selects which file to read.
 
 ## Discord & access control
+
+The bot token, role-based and user-based trust lists, channel and guild allowlists, optional Discord user-install surface, and gateway intent flags live here. The numeric ID lists are validated at startup so a typo fails fast.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -376,7 +422,7 @@ out into its own column while including it in the estimated cost for the window.
 | `OPENCODE_GO_API_KEY` | secret | (none) | OpenCode Go subscription key for every `opencode.ai/zen/go/v1` profile (`openai_compat` /chat/completions for Kimi/GLM; `anthropic_compat` /messages for MiniMax). |
 | `RUNINFRA_GATEWAY_KEY` | secret | (none) | RunInfra gateway key for OpenAI-compatible routes such as DeepSeek V4 Flash at `api.runinfra.ai`. |
 | `GROK_API_KEY` | secret | (none) | xAI Grok key (`openai_compat` profile pointing at `https://api.x.ai/v1`). |
-| `FIREWORKS_API_KEY` | secret | (none) | Fireworks AI key (`openai_compat` profile pointing at `https://api.fireworks.ai/inference/v1`). Also the key the Hindsight Compose stack reads into its own containers (see Deployment notes). |
+| `FIREWORKS_API_KEY` | secret | (none) | Fireworks AI key (`openai_compat` profile pointing at `https://api.fireworks.ai/inference/v1`). |
 | `ZAI_API_KEY` | secret | (none) | Z.AI key for GLM Coding Plan profiles using the dedicated `https://api.z.ai/api/coding/paas/v4` Chat Completions endpoint; see [providers-zai.md](providers-zai.md). |
 | `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional key for profiles assigned to `roles.compaction`. |
@@ -392,17 +438,13 @@ out into its own column while including it in the estimated cost for the window.
 
 ### Durable coding tasks
 
-The background coding service is an optional consumer of the same
-code-execution sandbox described later on this page. `roles.coding` and its
-optional `coding_fallbacks` live in `config/models.yaml`, and every entry there
-must support `text` and `tool_calling`. See
-[Durable coding agent](coding-agent.md) for the lifecycle details.
+The background coding service is an optional consumer of the same code-execution sandbox. `roles.coding` and its optional `coding_fallbacks` live in `config/models.yaml`; every entry must support `text` and `tool_calling`. See [coding-agent.md](coding-agent.md) for the full lifecycle, input handling, and recovery behavior.
 
 | Env var | Type | Default | Description |
 |---|---|---:|---|
 | `CODING_TASKS_ENABLED` | bool | `false` | Request the durable coding service. It remains unavailable unless `roles.coding` exists and the code sandbox passes startup. |
 | `CODING_TASK_MAX_CONCURRENCY` | positive int | `2` | Maximum concurrently active coding workers; one writer per workspace is enforced separately. |
-| `CODING_TASK_MAX_QUEUED_PER_WORKSPACE` | positive int | `3` | Maximum queued tasks for one user/guild workspace. |
+| `CODING_TASK_MAX_QUEUED_PER_WORKSPACE` | positive int | `3` | Maximum queued tasks for one scoped workspace (per-user/guild or personal user-app). |
 | `CODING_TASK_MAX_QUEUED_PER_USER` | positive int | `5` | Maximum queued tasks attributed to one member. |
 | `CODING_TASK_MAX_SECONDS` | positive float | `7200` | Total wall-clock lifetime, including queue/recovery time. |
 | `CODING_PROVIDER_CALL_TIMEOUT_SECONDS` | positive float | `600` | Ceiling for one coding-model request inside the total deadline. |
@@ -433,12 +475,7 @@ settings for the transport itself stay in `.env`.
 
 ## Context compaction
 
-Within-turn ReAct-loop compaction keeps a long, tool-heavy single turn from overflowing the
-model window by summarizing stale in-loop tool history into one untrusted progress note. It
-costs nothing on a normal turn, because no summarizer call is made until the projected
-request reaches the trigger. See [`docs/compaction.md`](compaction.md).
-
-The summarizer model is `roles.compaction` in `config/models.yaml`. If that
+Within-turn ReAct-loop compaction prevents a long, tool-heavy turn from overflowing the model window by summarizing older iterations into one progress note. It costs nothing on a normal turn. See [compaction.md](compaction.md) for tuning guidance, what survives summarization, and fallback behavior. The summarizer model is `roles.compaction` in `config/models.yaml`. If that
 provider profile references `COMPACTION_API_KEY`, set the secret in `.env`;
 otherwise it can share another supported secret env var, or use Codex auth.
 
@@ -677,6 +714,8 @@ persistence, local file limits, quota errors, and the moderation boundary.
 
 ## Attachments & image input
 
+Image attachments collected from a turn's messages are staged in a private directory, used once, and then cleaned up. These settings cap per-file and aggregate size, define the orphan sweeper, and set the vision detail hint the provider sees.
+
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `ATTACHMENT_STORE_DIR` | path | `data/attachments` | Private temporary staging root for image attachments collected from Discord. |
@@ -697,12 +736,14 @@ Hindsight is the optional long-term memory backend. See `docs/memory.md`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `HINDSIGHT_URL` | str | "" | Self-hosted Hindsight service URL. Memory tools activate only when this is configured and startup bank initialization succeeds. Leave it empty until the bot can reach an operator-provided endpoint; [`bot/deploy/hindsight/`](../bot/deploy/hindsight/README.md) contains the generic Docker deployment. |
+| `HINDSIGHT_URL` | str | "" | Reachable Hindsight service URL, either self-hosted or hosted by a third party. Memory tools activate only when this is configured and startup bank initialization succeeds. Leave it empty until the endpoint is ready; [`bot/deploy/hindsight/`](../bot/deploy/hindsight/README.md) contains a generic self-hosted Docker deployment. |
 | `HINDSIGHT_API_KEY` | secret | (none) | Optional Hindsight API key. |
 
 ---
 
 ## User memory
+
+Per-user memory is default-on whenever Hindsight is enabled. Users opt out with `/memory opt-out` and back in with `/memory opt-in`. These settings tune what gets recalled during an ordinary turn and how much the recall budget costs.
 
 Whenever Hindsight is available, each user's memory preference starts out
 enabled. A user turns it off with `/memory opt-out` and back on with
@@ -777,9 +818,7 @@ forums are never eligible.
 
 ## Instruction fragments (channel and thread scopes)
 
-Three body-only fragment directories fill the `<channel_instructions>` prompt
-slot. All three are keyed by a bare Discord snowflake, so the directory a file
-sits in is the only thing that says what its id means:
+Operators can drop short markdown files into one of three fragment directories to inject per-channel or per-thread instructions into the system prompt. All three are keyed by a bare Discord snowflake, so the directory a file sits in is the only thing that says what its id means:
 
 | File | Keyed by | Applies to |
 |---|---|---|
@@ -878,12 +917,14 @@ recommended path settings, backup notes, and the provisioning procedure.
 
 ## Storage
 
+The bot stores conversation transcripts, usage ledgers, provider circuit state, and optional per-user persona text in a single SQLite database. These settings pick the database file, the retention window for transcripts, and personal skill storage. See [database.md](database.md) for the schema, the encryption option, and the sweeper.
+
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `DATABASE_PATH` | path | `data/bot.db` | SQLite database path (WAL). Production state; back it up consistently with its WAL sidecars. See [`docs/database.md`](database.md). |
 | `DATABASE_ENCRYPTION_KEY` | secret | "" | SQLCipher encryption-at-rest passphrase. Empty (default) = plaintext `sqlite3`; when set, the DB is opened through `sqlcipher3` and keyed before any access. Losing the key makes an encrypted DB unrecoverable. Convert an existing plaintext DB with `sqlcipher_export` (see [`docs/database.md`](database.md)); do not just set this on it. Requires the Linux-only `sqlcipher3-binary` dependency. |
 | `TRANSCRIPT_RETENTION_DAYS` | int | `30` | Rolling retention window for raw conversation transcripts. A background sweep purges a whole conversation (and its `messages`/routing/metadata/watermark rows) when `conversations.last_active_at` falls outside this window. Memory and the usage ledger are not on this clock. `0` disables the sweep (keep forever). Must be ≥ 0. See [`docs/privacy.md`](privacy.md). |
-| `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` | int | `3600` | How often the transcript retention sweeper runs. Must be ≥ 1. |
+| `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` | int | `3600` | How often the transcript-retention and video-session/provider-deletion sweepers run. Must be ≥ 1. |
 | `PERSONAL_SKILLS_DIR` | path | `data/personal_skills` | Durable per-user instruction-only personal skill store. Not executable and not swept by workspace cleanup. |
 | `USER_PERSONA_MAX_CHARS` | int | `2000` | Max compiled persona text stored in SQLite and inserted into the `<persona>` prompt slot. Must be positive. |
 | `USER_PERSONA_REQUEST_MAX_CHARS` | int | `8000` | Max raw user request accepted by `persona_set`. Must be positive. |
@@ -898,7 +939,7 @@ These settings control the structured tool-call event stream. See
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `TOOL_EVENT_LOG_ENABLED` | bool | `false` | Emit JSONL tool-call, compaction, and per-turn summary events. |
+| `TOOL_EVENT_LOG_ENABLED` | bool | `false` | Emit JSONL tool-call, compaction, per-turn summary, moderation, and module-health events. |
 | `TOOL_EVENT_LOG_PATH` | path | `logs/events.jsonl` | Output JSONL path. |
 | `TOOL_EVENT_LOG_CONTENT_MODE` | str | `metadata` | How much content each row carries: `metadata`, `redacted`, or verbatim `full`. Set here only, never from the overlay. |
 | `TOOL_EVENT_LOG_MAX_FIELD_BYTES` | int | `8192` | Truncation cap per field (keeps args/results bounded). |
@@ -907,9 +948,18 @@ These settings control the structured tool-call event stream. See
 
 ## Secrets file
 
+Exposable skills can declare named secrets that are loaded from this YAML file on demand. The file is optional and not required for an instruction-only deployment. See [plugins.md](plugins.md) for the declaration format.
+
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `SECRETS_FILE` | path | `secrets/secrets.yaml` | YAML of named secrets injected into skill scripts on demand (declared per skill). |
+
+The file itself is optional when no executable skill needs a secret. If it is
+absent, Kimi logs `Secrets file not found: <path>` and continues with an empty
+store. An empty or non-mapping YAML document also produces an empty store. To
+make an intentional no-secrets deployment quiet and explicit, create the file
+with `{}` and owner-only permissions. A parse/read failure logs the exception
+and likewise leaves the store empty.
 
 `secrets/secrets.yaml` is a top-level YAML mapping:
 
@@ -989,15 +1039,12 @@ second layer.
 
 ## Code execution
 
-`run_code` is Linux-only, `MEMBER` tier, and disabled by default. Setting the
-flag isn't enough on its own: the sandbox and network profile you selected have
-to pass their startup probe before the tool registers at all. See
-[Code execution](code-exec.md) for the threat model and the provisioning
-procedure.
+`run_code` is Linux-only, disabled by default, and available to `MEMBER` and above unless `CODE_EXEC_MIN_TIER` raises the requirement. Setting the flag is not enough on its own: the sandbox and network profile you selected must pass their startup probe before the tool registers. See [code-exec.md](code-exec.md) for the full threat model, network modes, and provisioning steps.
 
 | Setting | Type | Default | Meaning |
 |---|---|---:|---|
 | `CODE_EXEC_ENABLED` | bool | `false` | Request registration of `run_code`; a failed live sandbox probe still leaves it unavailable. |
+| `CODE_EXEC_MIN_TIER` | `member`/`regular`/`staff` | `member` | Lowest trust tier that can see and use `run_code`. Raising it requires a restart. |
 | `CODE_EXEC_NETWORK_MODE` | `none`/`host`/`netns` | `none` | Deployment-wide network boundary. `host` exposes every host-reachable route; `netns` requires the privileged settings below. |
 | `CODE_EXEC_PYTHON_BIN` | path | `/usr/bin/python3` | System Python, used when no shared packages venv is configured. A networked mode also needs it to support venv creation. |
 | `CODE_EXEC_VENV_DIR` | path | empty | Optional dedicated packages venv mounted read-only; never point this at the bot environment. When set, its `bin/python3` becomes the interpreter every run uses, and a networked mode needs that one to support venv creation. |
@@ -1035,13 +1082,7 @@ templates live under
 
 ## Persistent browser
 
-The optional [persistent browser](browser.md) and searchable
-[visual renderer](visual-rendering.md) are Linux-only and share an external
-root-owned runtime pinned to BetterWright 1.10.0 and Mermaid 11.17.2. Their
-execution state remains separate: visual jobs are one-shot and offline. The
-persistent browser's network mode is
-chosen independently of code execution, so you can run the browser in `netns`
-while leaving `CODE_EXEC_NETWORK_MODE=none`. The `BROWSER_NETNS_*` and probe
+The optional persistent browser and visual renderer are Linux-only and share an external root-owned runtime. Visual jobs are one-shot and offline. The browser's network mode is chosen independently of code execution. See [browser.md](browser.md) for isolation details, network modes, and the upgrade procedure. The `BROWSER_NETNS_*` and probe
 values are private instance state under the same rule as the code-exec ones
 above.
 
@@ -1078,8 +1119,7 @@ above.
 
 ## Workspaces (per-user file sandbox)
 
-These settings cover the per-user workspace directories, their TTL and quota
-sweeping, and the limits on the file tools in `tools/workspace/`.
+Each ordinary (user, guild) pair gets a sandboxed directory under `WORKSPACE_DIR`, keyed by `workspace_owner_key`. Personal `/chat` and DM turns use a separate `user_app_workspace_key` across invocation locations. These settings cap file lifetimes, the sweeper cadence, and the limits enforced by every workspace tool. See [workspace.md](workspace.md) for ownership rules and the path-resolution contract.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -1140,12 +1180,9 @@ limit in the Linux service or container. The tool doesn't OCR scanned pages.
 
 ## External env keys outside `Settings`
 
-The only bot-facing env var without a `config.settings.Settings` field is
-`ENV_FILE` (see "Choosing a dotenv file" above). Because it selects which
-dotenv file to load, it has to be read straight from the process environment,
-which happens in `config/environment.py`. (The Hindsight Compose stack
-separately reads `FIREWORKS_API_KEY` from its own `.env` into its containers;
-see [Deployment notes](#deployment-notes).)
+Almost every setting the bot reads lives inside the `Settings` model. The only core-facing exception is `ENV_FILE`, which must be read from the raw process environment before `Settings` is constructed (see "Choosing a dotenv file" above). Plugin and module settings can also live outside the core model when the plugin or module explicitly declares a safe subset for operator files.
+
+The separately deployed Hindsight Compose stack reads its own provider route and credentials from the adjacent `.env`; see [Deployment notes](#deployment-notes).
 
 ---
 
@@ -1191,8 +1228,8 @@ If you want to know where a setting is actually read, this is the map:
 - Your local `.env` wins over the code defaults. It is deployment data and is
   excluded from source control.
 - The included `.env.example` leaves `HINDSIGHT_URL` empty. Set it explicitly
-  to the reachable self-hosted endpoint; `deploy/hindsight/` contains the generic
+  to the reachable endpoint; `deploy/hindsight/` contains a generic self-hosted
   Docker Compose deployment and bring-up instructions.
-- The Compose stack reads `FIREWORKS_API_KEY` from the local `.env` beside its
-  compose file. Keep that file outside the repository; see
+- The Compose stack reads its Hindsight provider route and credential variables
+  from the local `.env` beside its compose file. Keep that file outside the repository; see
   `deploy/hindsight/README.md`.

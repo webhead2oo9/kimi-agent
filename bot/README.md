@@ -11,8 +11,7 @@ invoked. It runs a provider-neutral
 [ReAct](https://arxiv.org/abs/2210.03629) tool-use loop behind trust tiers and
 config gates: it can search configured Discord history, work with per-user
 files, build structured embeds, move a conversation into a managed thread, and
-remember durable facts about who it's talking to. Staff can separately opt
-channels into local known-bad image fingerprint enforcement.
+remember durable facts about who it's talking to.
 
 The bot's runtime name comes from `BOT_NAME` (default `Kimi`) and is never
 hardcoded on the Discord-facing surface; the persona lives in
@@ -145,14 +144,21 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 
 ## Quick start
 
-Requirements: Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot
-token, and access to an LLM provider. Most providers use an API key; Codex uses
-a token file, and gateways that inject credentials upstream need no local model
-secret.
+The canonical Ubuntu operator path is
+[Install and operate Kimi on Ubuntu](../docs/setup.md). It covers host packages,
+the Python environment, external private/runtime paths, Discord and provider
+setup, modules, systemd, upgrades, and diagnostics. This shorter development
+path assumes Python 3.14+ with the standard `venv` module and intentionally
+keeps ignored instance files inside the checkout.
 
 ```bash
-git clone <repo-url> kimibot
-cd kimibot/bot
+git clone https://github.com/webhead2oo9/kimi-agent.git
+cd kimi-agent/bot
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
+.venv/bin/python -m pip install --no-deps \
+  --editable ./packages/kimi-agent-module-api --editable .
+.venv/bin/python -m pip check
 
 cp .env.example .env
 cp config/models.example.yaml config/models.yaml
@@ -164,12 +170,12 @@ cp config/models.example.yaml config/models.yaml
 #   ALLOWED_GUILD_IDS (or activate a guild in the private CONFIG_DIR)
 #   any credential env var(s) your config/models.yaml references (e.g. MODEL_API_KEY)
 
-uv run python bot.py
+.venv/bin/python bot.py
 ```
 
 To run a second instance against a test guild without touching production
 state, put its token and its own `DATABASE_PATH` in `.env.dev` and boot with
-`ENV_FILE=.env.dev uv run python bot.py`. See
+`ENV_FILE=.env.dev .venv/bin/python bot.py`. See
 [development.md](../docs/development.md).
 
 Optional integrations and behaviors are gated by config. Hindsight memory needs
@@ -178,24 +184,27 @@ own settings. [docs/configuration.md](../docs/configuration.md) documents every
 setting. [docs/instance-data.md](../docs/instance-data.md) defines what belongs in
 the public repository and what must remain private deployment state.
 
-> Use `uv run` for everything. A bare `python`/`pytest` runs against an
-> interpreter missing `hindsight-client` and fails with spurious collection
-> errors; `uv run` uses the locked environment.
+> Use the explicit `.venv` executables. A bare `python` or `pytest` may select a
+> different interpreter and fail with misleading missing-dependency errors.
 
 ## Development
 
 ```bash
-uv run python -m pytest          # run the test suite
-uv --preview-features audit-command audit --locked  # dependency vulnerabilities
-uv run ruff check .              # lint
-uv run ruff format --check .     # formatting (owns the 100-col line length)
-uv run mypy .                    # type check
-uv run python -m compileall .    # quick syntax check
+.venv/bin/python -m pytest       # run the test suite
+.venv/bin/ruff check .           # lint
+.venv/bin/ruff format --check .  # formatting (owns the 100-col line length)
+.venv/bin/mypy .                 # type check
+.venv/bin/python -m compileall . # quick syntax check
 ```
 
-Dependencies are declared in `pyproject.toml` and locked in `uv.lock`. Install
-dev extras with `uv sync --extra dev`; CI adds `--locked`. For an editable
-install, use `uv pip install -e ".[dev]"`.
+Dependencies are declared in `pyproject.toml`, resolved in `uv.lock`, and
+exported with hashes to `requirements.lock` and `requirements-dev.lock`. The
+standard developer setup is in [development.md](../docs/development.md). If uv
+is already installed, run `uv sync --locked --all-packages --extra dev` followed
+by `.venv/bin/python -m ensurepip`, then install the three local projects as
+shown in the developer guide. That keeps root metadata and later module-install
+commands available. Lock updates, dependency auditing, and release builds
+remain maintainer/CI tasks that require uv.
 
 ## Project layout
 

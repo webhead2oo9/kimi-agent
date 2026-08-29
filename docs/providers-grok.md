@@ -2,8 +2,9 @@
 
 xAI's Chat Completions endpoint is OpenAI-compatible, so the generic
 `openai_compat` connector covers the features Kimi uses there: text, function
-tools, `reasoning_content`, cached-token usage reporting, and JPG or PNG input
-when the selected model supports it.
+tools, cached-token usage reporting, `reasoning_content` when the selected
+model and Chat Completions route return it, and JPG or PNG input when the
+selected model supports it.
 It does not expose xAI's Responses API or provider-hosted tools such as web
 search, X search, code execution, or image generation. See xAI's current [Chat
 Completions](https://docs.x.ai/developers/model-capabilities/legacy/chat-completions)

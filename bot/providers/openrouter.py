@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 from typing import Any
 
@@ -23,6 +24,8 @@ class OpenRouterProvider(OpenAIChatProvider):
         api_key: str,
         model: str,
         provider_routing: dict[str, Any] | None = None,
+        service_tier: str | None = None,
+        timeout_seconds: float = 900.0,
         app_url: str | None = None,
         app_name: str | None = None,
         user_agent: str = DEFAULT_BOT_NAME,
@@ -32,6 +35,8 @@ class OpenRouterProvider(OpenAIChatProvider):
             base_url="https://openrouter.ai/api/v1",
             model=model,
             provider_key="openrouter",
+            service_tier=service_tier,
+            timeout_seconds=timeout_seconds,
             user_agent=user_agent,
         )
         self._provider_routing = provider_routing or {}
@@ -62,9 +67,14 @@ class OpenRouterProvider(OpenAIChatProvider):
         if self._app_url:
             headers["HTTP-Referer"] = self._app_url
         if self._app_name:
+            headers["X-OpenRouter-Title"] = self._app_name
+            # Keep the legacy title header during migration for deployments that
+            # still inspect it downstream.
             headers["X-Title"] = self._app_name
-        if headers:
-            kwargs["extra_headers"] = headers
+        # Router metadata is opt-in. The response parser retains only normalized
+        # attribution fields, never the full provider payload.
+        headers["X-OpenRouter-Metadata"] = "enabled"
+        kwargs.setdefault("extra_headers", {}).update(headers)
 
     def _response_from_native(self, response: Any) -> ProviderResponse:
         base = super()._response_from_native(response)
@@ -73,21 +83,65 @@ class OpenRouterProvider(OpenAIChatProvider):
         # base OpenAI-chat parser (looking for `reasoning_content`) does not pick
         # up. Fall back to it so reasoning is preserved in history.
         reasoning_content = base.reasoning_content or self._message_field(message, "reasoning")
+        metadata = self._native_field(response, "openrouter_metadata")
+        usage = self._native_field(response, "usage")
         return replace(
             base,
             reasoning_content=reasoning_content,
-            provider_state={
-                "openrouter_metadata": getattr(response, "openrouter_metadata", {}) or {}
-            },
-            generated_assets=self._parse_images(getattr(message, "images", None)),
+            provider_state={},
+            generated_assets=self._parse_images(self._native_field(message, "images")),
+            upstream_provider=self._selected_provider(metadata),
+            service_tier=self._bounded_text(self._native_field(response, "service_tier")),
+            openrouter_charge_usd=self._non_negative_number(self._native_field(usage, "cost")),
+            is_byok=self._optional_bool(self._native_field(metadata, "is_byok")),
         )
 
     @staticmethod
-    def _parse_images(images: Any) -> list[GeneratedAsset]:
+    def _native_field(value: Any, field: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(field)
+        direct = getattr(value, field, None)
+        if direct is not None:
+            return direct
+        model_extra = getattr(value, "model_extra", None)
+        if isinstance(model_extra, dict):
+            return model_extra.get(field)
+        return None
+
+    @staticmethod
+    def _bounded_text(value: Any, *, max_chars: int = 160) -> str:
+        if not isinstance(value, str):
+            return ""
+        return "".join(char for char in value.strip() if char.isprintable())[:max_chars]
+
+    @classmethod
+    def _selected_provider(cls, metadata: Any) -> str:
+        endpoints = cls._native_field(metadata, "endpoints")
+        available = cls._native_field(endpoints, "available")
+        if not isinstance(available, (list, tuple)):
+            return ""
+        for endpoint in available:
+            if cls._native_field(endpoint, "selected") is True:
+                return cls._bounded_text(cls._native_field(endpoint, "provider"))
+        return ""
+
+    @staticmethod
+    def _non_negative_number(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+
+    @staticmethod
+    def _optional_bool(value: Any) -> bool | None:
+        return value if isinstance(value, bool) else None
+
+    @classmethod
+    def _parse_images(cls, images: Any) -> list[GeneratedAsset]:
         assets: list[GeneratedAsset] = []
         for index, image in enumerate(images or [], start=1):
-            image_url = getattr(image, "image_url", None)
-            url = getattr(image_url, "url", None)
+            image_url = cls._native_field(image, "image_url")
+            url = cls._native_field(image_url, "url")
             if not isinstance(url, str):
                 continue
             # Only data URLs carry inline base64. A plain http(s) URL is not

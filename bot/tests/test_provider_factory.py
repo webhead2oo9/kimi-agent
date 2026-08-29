@@ -31,6 +31,27 @@ def test_factory_rejects_invalid_openrouter_provider_json() -> None:
         )
 
 
+def test_factory_forwards_openrouter_routing_tier_and_timeout() -> None:
+    provider = create_provider(
+        ProviderConfig(
+            provider_name="openrouter",
+            api_key="key",
+            base_url="",
+            model="openai/gpt-5",
+            openrouter_provider_json='{"zdr":true,"allow_fallbacks":false}',
+            openrouter_service_tier="priority",
+            openai_timeout_seconds=123,
+        )
+    )
+
+    assert provider._provider_routing == {  # type: ignore[attr-defined]
+        "zdr": True,
+        "allow_fallbacks": False,
+    }
+    assert provider._service_tier == "priority"  # type: ignore[attr-defined]
+    assert provider._client.timeout == 123  # type: ignore[attr-defined]
+
+
 def test_factory_does_not_send_flex_to_non_openai_compatible_base_url() -> None:
     provider = create_provider(
         ProviderConfig(

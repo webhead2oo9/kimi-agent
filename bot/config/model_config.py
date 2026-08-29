@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -51,6 +52,144 @@ class CircuitBreakerPolicy(BaseModel):
     rate_limit_cooldown_seconds: float = Field(default=60.0, gt=0)
 
 
+class OpenRouterPercentileThreshold(BaseModel):
+    """Latency/throughput preference thresholds accepted by OpenRouter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    p50: float | None = Field(default=None, gt=0)
+    p75: float | None = Field(default=None, gt=0)
+    p90: float | None = Field(default=None, gt=0)
+    p99: float | None = Field(default=None, gt=0)
+
+    @field_validator("p50", "p75", "p90", "p99")
+    @classmethod
+    def _finite_threshold(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("OpenRouter preference thresholds must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def _has_threshold(self) -> OpenRouterPercentileThreshold:
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("OpenRouter percentile thresholds must set at least one percentile")
+        return self
+
+
+class OpenRouterMaxPrice(BaseModel):
+    """Maximum per-unit prices used by OpenRouter provider filtering."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: float | None = Field(default=None, ge=0)
+    completion: float | None = Field(default=None, ge=0)
+    image: float | None = Field(default=None, ge=0)
+    audio: float | None = Field(default=None, ge=0)
+    request: float | None = Field(default=None, ge=0)
+
+    @field_validator("prompt", "completion", "image", "audio", "request")
+    @classmethod
+    def _finite_price(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("OpenRouter maximum prices must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def _has_price(self) -> OpenRouterMaxPrice:
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("OpenRouter max_price must set at least one price")
+        return self
+
+
+OpenRouterQuantization = Literal[
+    "int4",
+    "int8",
+    "fp4",
+    "fp6",
+    "fp8",
+    "fp16",
+    "bf16",
+    "fp32",
+    "mxfp4",
+    "mxfp8",
+    "nvfp4",
+    "unknown",
+]
+
+
+class OpenRouterSort(BaseModel):
+    """Advanced endpoint sorting across one or more OpenRouter models."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Literal["price", "throughput", "latency"]
+    partition: Literal["model", "none"] | None = None
+
+
+class OpenRouterRoutingPolicy(BaseModel):
+    """Typed subset of OpenRouter's same-model provider routing contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[str] | None = None
+    only: list[str] | None = None
+    ignore: list[str] | None = None
+    allow_fallbacks: bool | None = None
+    require_parameters: bool | None = None
+    data_collection: Literal["allow", "deny"] | None = None
+    zdr: bool | None = None
+    enforce_distillable_text: bool | None = None
+    quantizations: list[OpenRouterQuantization] | None = None
+    sort: Literal["price", "throughput", "latency"] | OpenRouterSort | None = None
+    max_price: OpenRouterMaxPrice | None = None
+    preferred_min_throughput: float | OpenRouterPercentileThreshold | None = None
+    preferred_max_latency: float | OpenRouterPercentileThreshold | None = None
+
+    @field_validator("order", "only", "ignore")
+    @classmethod
+    def _provider_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        names = [name.strip() for name in value]
+        if not names or any(not name for name in names):
+            raise ValueError("OpenRouter provider lists must contain non-empty names")
+        if len(names) != len(set(names)):
+            raise ValueError("OpenRouter provider lists must not contain duplicates")
+        return names
+
+    @field_validator("quantizations")
+    @classmethod
+    def _unique_quantizations(
+        cls, value: list[OpenRouterQuantization] | None
+    ) -> list[OpenRouterQuantization] | None:
+        if value is not None and (not value or len(value) != len(set(value))):
+            raise ValueError("OpenRouter quantizations must be non-empty and unique")
+        return value
+
+    @field_validator("preferred_min_throughput", "preferred_max_latency")
+    @classmethod
+    def _finite_scalar_preference(
+        cls, value: float | OpenRouterPercentileThreshold | None
+    ) -> float | OpenRouterPercentileThreshold | None:
+        if isinstance(value, float) and (not math.isfinite(value) or value <= 0):
+            raise ValueError("OpenRouter scalar preferences must be finite and greater than zero")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent_provider_filters(self) -> OpenRouterRoutingPolicy:
+        only = set(self.only or [])
+        ignored = set(self.ignore or [])
+        overlap = only & ignored
+        if overlap:
+            raise ValueError(f"OpenRouter only and ignore overlap: {sorted(overlap)}")
+        outside_only = set(self.order or []) - only if only else set()
+        if outside_only:
+            raise ValueError(
+                f"OpenRouter order contains providers outside only: {sorted(outside_only)}"
+            )
+        return self
+
+
 class ProviderProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,7 +207,9 @@ class ProviderProfile(BaseModel):
     # default; set false for a gateway that rejects cache_control or bills cache
     # writes at a rate that outweighs the reads.
     prompt_caching: bool = True
-    provider_routing: dict[str, Any] = Field(default_factory=dict)
+    provider_routing: OpenRouterRoutingPolicy = Field(
+        default_factory=lambda: OpenRouterRoutingPolicy()
+    )
     # Empty inherits BOT_NAME when the profile is resolved. Operators can set a
     # distinct provider-facing identity explicitly when needed.
     app_name: str = ""
@@ -124,6 +265,11 @@ class ProviderProfile(BaseModel):
             raise ValueError(f"unsupported reasoning_effort {value!r}; expected one of: {choices}")
         return normalized
 
+    @field_validator("service_tier")
+    @classmethod
+    def _normalized_service_tier(cls, value: str) -> str:
+        return value.strip().lower()
+
     @model_validator(mode="after")
     def _reasoning_effort_supported_by_type(self) -> ProviderProfile:
         if not self.reasoning_effort:
@@ -150,6 +296,30 @@ class ProviderProfile(BaseModel):
             raise ValueError("keyless profiles must not set api_key_env")
         if not self.base_url:
             raise ValueError("keyless profiles must set base_url")
+        return self
+
+    @model_validator(mode="after")
+    def _openrouter_profile_contract(self) -> ProviderProfile:
+        routing = self.provider_routing.model_dump(exclude_none=True)
+        if self.type != "openrouter":
+            if routing:
+                raise ValueError(
+                    "provider_routing is only supported for provider type 'openrouter'"
+                )
+            if self.service_tier and self.type not in {"openai_compat", "openai_responses"}:
+                raise ValueError(
+                    "service_tier is only supported for OpenAI and OpenRouter provider types"
+                )
+            return self
+
+        if self.keyless:
+            raise ValueError("OpenRouter profiles do not support keyless mode")
+        if self.base_url.strip():
+            raise ValueError("OpenRouter profiles must not set base_url; the endpoint is fixed")
+        if not self.api_key_env:
+            raise ValueError("OpenRouter profiles must set api_key_env")
+        if self.service_tier not in {"", "flex", "priority"}:
+            raise ValueError("OpenRouter service_tier must be 'flex' or 'priority'")
         return self
 
 
@@ -565,11 +735,14 @@ def resolve_provider_config(
         ),
         base_url=profile.base_url,
         model=entry.model,
-        openai_service_tier=profile.service_tier,
+        openai_service_tier=(profile.service_tier if provider_name != "openrouter" else ""),
+        openrouter_service_tier=(profile.service_tier if provider_name == "openrouter" else ""),
         openai_timeout_seconds=profile.timeout_seconds,
         stream_stall_timeout_seconds=settings.provider_stream_stall_timeout_seconds,
         openrouter_provider_json=(
-            json.dumps(profile.provider_routing) if profile.provider_routing else ""
+            json.dumps(profile.provider_routing.model_dump(exclude_none=True))
+            if profile.provider_routing.model_dump(exclude_none=True)
+            else ""
         ),
         openrouter_app_url=profile.app_url,
         openrouter_app_name=app_name,

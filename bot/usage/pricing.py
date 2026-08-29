@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 from typing import Any
 
 from config.model_config import ModelPricing
@@ -36,11 +37,8 @@ def price_usage_call(
             pricing_for_model(model_config, pricing_model),
             call.usage,
         )
-    return LLMUsageCall(
-        model=call.model,
-        role=call.role,
-        usage=call.usage,
-        usage_present=call.usage_present,
+    return replace(
+        call,
         pricing_model=pricing_model,
         est_cost_usd=estimated,
     )

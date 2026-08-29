@@ -1172,6 +1172,10 @@ class _ConversationRunner:
                 usage=usage,
                 usage_present=response.has_reported_usage,
                 pricing_model=response.pricing_model or self.request.provider.model,
+                upstream_provider=response.upstream_provider,
+                service_tier=response.service_tier,
+                openrouter_charge_usd=response.openrouter_charge_usd,
+                is_byok=response.is_byok,
             )
         )
         if counts_iteration:
@@ -1187,6 +1191,18 @@ class _ConversationRunner:
             "primary_model": self.request.provider.model,
             "llm_calls": len(state.llm_calls),
             "usage": asdict(_usage_total(state.llm_calls)),
+            "provider_calls": [
+                {
+                    "model": call.model,
+                    "pricing_model": call.pricing_model or call.model,
+                    "role": call.role,
+                    "upstream_provider": call.upstream_provider,
+                    "service_tier": call.service_tier,
+                    "openrouter_charge_usd": call.openrouter_charge_usd,
+                    "is_byok": call.is_byok,
+                }
+                for call in state.llm_calls
+            ],
         }
 
     def _final_text_for_response(

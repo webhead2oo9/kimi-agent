@@ -38,23 +38,26 @@ being specific to OpenAI.
 
 ## OpenRouter
 
-Use `type: openrouter`. The adapter uses OpenRouter's fixed Chat Completions
-endpoint and supports Kimi's existing text, image-input, client function-tool,
-and explicitly requested inline image-output transport. Browser, search, code,
-workspace, and `generate_image` tools remain local ToolRegistry operations, so
-OpenRouter cannot bypass Kimi's authorization or sandbox.
+Use `type: openrouter`. The adapter talks to OpenRouter's fixed Chat
+Completions endpoint, and carries the same inputs Kimi already supports:
+text, image input, client-side function tools, and inline image output when
+you ask for it explicitly. Tools like browser, search, code execution,
+workspace tools, and `generate_image` are still local ToolRegistry work, so
+routing through OpenRouter never gets around Kimi's authorization or
+sandbox.
 
-An OpenRouter profile must set `api_key_env`, cannot use `keyless`, and cannot
-override `base_url`. It adds these profile fields:
+An OpenRouter profile must set `api_key_env`. It cannot use `keyless`, and
+it cannot set `base_url`. On top of the generic profile fields it gains:
 
-- **`provider_routing`**: a structured OpenRouter provider-routing object,
-  validated at startup and serialized into the request's `provider` field.
+- **`provider_routing`**: a typed OpenRouter routing policy, validated at
+  startup and sent as the request's `provider` field.
 - **`service_tier`**: optional `flex` or `priority`, sent as the top-level
-  OpenRouter service tier. An empty value leaves OpenRouter's default unchanged.
-- **`timeout_seconds`**: the SDK transport timeout for the OpenRouter request.
-- **`app_name`**: the same provider identity described above. OpenRouter
-  receives it as `X-OpenRouter-Title` and the legacy `X-Title` header.
-- **`app_url`**: the attribution header, unset by default.
+  service tier. Leave it empty to keep OpenRouter's default.
+- **`timeout_seconds`**: the SDK transport timeout for OpenRouter requests.
+- **`app_name`**: the provider-facing identity. Inherits `BOT_NAME` when
+  unset, and is sent to OpenRouter as both `X-OpenRouter-Title` and the
+  legacy `X-Title`.
+- **`app_url`**: the `HTTP-Referer` attribution header, unset by default.
 
 ```yaml
 providers:
@@ -86,47 +89,62 @@ providers:
       preferred_max_latency: 4
 ```
 
-The routing schema supports `order`, `only`, `ignore`, `allow_fallbacks`,
+The routing policy accepts `order`, `only`, `ignore`, `allow_fallbacks`,
 `require_parameters`, `data_collection`, `zdr`, `enforce_distillable_text`,
 `quantizations`, `sort`, `max_price`, `preferred_min_throughput`, and
-`preferred_max_latency`. Unknown keys, duplicate/blank provider names,
-contradictory `only`/`ignore` filters, unsupported enum values, and invalid
-numeric bounds fail configuration loading. Provider names are not checked
-against a hard-coded catalog because OpenRouter can add or rename them.
-`sort` accepts either `price`, `throughput`, or `latency` directly, or an object
-with one of those values in `by` and an optional `partition` of `model` or
-`none` for advanced sorting across model fallbacks.
+`preferred_max_latency`. Anything else is rejected. So are duplicate or
+blank provider names, an `only` and `ignore` that overlap, an `order`
+that names a provider outside `only`, values outside the supported enums,
+and numbers that aren't in range. Provider names are not checked against a
+hard-coded list because OpenRouter adds and renames them. Quantizations are
+validated against an enum rather than a frozen list.
 
-All routing and privacy members are optional. In particular, omitted `zdr` and
-`data_collection` values are not sent, so the upstream default is preserved;
-an explicit `false` is retained. See OpenRouter's current
-[provider-routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection)
-for the semantics of each field and its
-[service-tier documentation](https://openrouter.ai/docs/guides/features/service-tiers)
-for tier behavior.
+`sort` takes either the string `price`, `throughput`, or `latency`, or an
+object with `by` set to one of those and an optional `partition` of `model`
+or `none` for sorting across model fallbacks. Throughput and latency
+preferences take either a single number or an
+`OpenRouterPercentileThreshold` object with one or more of `p50`, `p75`,
+`p90`, `p99`.
 
-Every request opts into bounded router metadata. Each provider call in the turn
-event reports the served model, configured pricing model, selected upstream
-provider, returned service tier, OpenRouter account charge, and BYOK flag when
-OpenRouter returns them. Unknown metadata fields are ignored and raw router
-metadata never enters conversation state. The adapter reads the BYOK flag from
-`openrouter_metadata.is_byok` and the provider from the selected entry in
-`openrouter_metadata.endpoints.available`. `usage.cost` is named
-`openrouter_charge_usd` because it is the amount charged to the OpenRouter
-account; a BYOK response can therefore differ from the upstream provider's own
-invoice. See OpenRouter's
-[usage accounting documentation](https://openrouter.ai/docs/cookbook/administration/usage-accounting).
+Every routing and privacy field is optional. If you leave `zdr` or
+`data_collection` out, that field is not sent at all, so the OpenRouter
+account or request default wins. Setting them to `false` is kept, since that
+is an explicit choice. See OpenRouter's
+[provider-routing guide](https://openrouter.ai/docs/guides/routing/provider-selection)
+and its
+[service-tier guide](https://openrouter.ai/docs/guides/features/service-tiers)
+for what each one means.
 
-This exact charge is response/turn-event telemetry only. Kimi's `/usage`
-command continues to use the static rate card in model configuration and may
-differ from the OpenRouter charge; this integration does not change the usage
-ledger schema.
+### Response attribution
 
-One thing to keep straight: OpenRouter's own upstream fallback and Kimi's
-`<role>_fallbacks` chain are independent layers. OpenRouter can silently move
-you between upstreams inside a single request, while the Kimi chain only
-engages when the whole OpenRouter call fails with a transient availability
-error. Using both is fine, but remember that a reply attributed to the
-OpenRouter model entry may have been served by any upstream that routing chose.
-The turn event's `provider_calls` field makes that selection visible when the
-router supplies metadata.
+Every request opts in to bounded router metadata. The turn event records one
+`provider_calls` row per completed model call, in call order. Each row
+carries the served model, the configured `pricing_model`, the call `role`,
+and any of `upstream_provider`, `service_tier`, `openrouter_charge_usd`,
+and `is_byok` that OpenRouter sent back. Fields Kimi doesn't recognize
+are dropped, and the full router payload never lands in conversation
+history. The adapter reads the BYOK flag from
+`openrouter_metadata.is_byok`, the upstream provider from the `selected`
+entry in `openrouter_metadata.endpoints.available`, and the charge from
+`usage.cost`.
+
+The field is called `openrouter_charge_usd` because that is the amount
+OpenRouter charged your account. A BYOK response can come back cheaper
+than what you'd get from the upstream provider's own invoice, because the
+two surfaces don't agree on who is paying whom. See OpenRouter's
+[usage accounting guide](https://openrouter.ai/docs/cookbook/administration/usage-accounting)
+if the difference matters.
+
+This charge lives in the turn event only. The `/usage` command keeps
+pricing from your static rate card in model config, and it can come back
+different from what OpenRouter reported. That is intentional: this change
+does not touch the usage ledger schema.
+
+One thing to keep separate: OpenRouter's own upstream fallback and Kimi's
+`<role>_fallbacks` chain are two different layers. OpenRouter can quietly
+re-route between upstreams inside one request. Kimi's chain only kicks in
+when the whole OpenRouter call fails with a transient availability
+error. Use both if you want; just remember that a reply attributed to the
+OpenRouter model entry may have been served by any upstream the router
+chose. The turn event's `provider_calls` field shows you which one when
+the router tells us.

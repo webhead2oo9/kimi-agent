@@ -84,6 +84,9 @@ Every event is one JSON object on its own line. The current schema is `v: 2`. To
   // usage/normalization.py (same shape the /usage ledger records).
   "usage": { "input_tokens": 5210, "cached_read_tokens": 4100, "cache_write_tokens": 0, "output_tokens": 380 },
   // One attribution record per completed provider call, in call order.
+  // `model` is the serving model, `pricing_model` is the rate card applied,
+  // `role` identifies the call's purpose, and the remaining fields carry
+  // bounded OpenRouter response attribution when present (otherwise empty or null).
   "provider_calls": [{
     "model": "provider/chat-fallback",
     "pricing_model": "provider/chat-fallback",
@@ -166,14 +169,15 @@ The `moderation` event is emitted by `moderation/service.py` (through `emit_mode
   priced from the serving backend's `pricing_model`), so the two surfaces
   agree. Under `redacted` or `full` this stream also carries request and
   response content that the ledger never keeps.
-- **Provider-call attribution:** `provider_calls` contains one entry for every
-  completed model call in call order, including compaction and model-backed-tool
-  calls. `model` is the serving model, `pricing_model` selects the configured
-  rate card, and `role` identifies the call's purpose. `upstream_provider`,
-  `service_tier`, `openrouter_charge_usd`, and `is_byok` carry bounded
-  OpenRouter response attribution when supplied; otherwise they are empty or
-  `null`. The OpenRouter charge is provider-reported telemetry and can differ
-  from Kimi's static configured-rate estimate.
+- **Provider-call attribution:** `provider_calls` carries one entry per
+  completed model call, in call order, covering compaction and model-backed
+  tool calls the same way as the outer loop. `model` is the serving backend,
+  `pricing_model` selects the configured rate card, and `role` identifies the
+  call's purpose. `upstream_provider`, `service_tier`,
+  `openrouter_charge_usd`, and `is_byok` carry bounded OpenRouter response
+  attribution when supplied, otherwise empty or `null`. The charge is
+  provider-reported telemetry and can differ from Kimi's static configured
+  rate; the ledger still prices each call from `pricing_model`.
 - **Child tool calls:** a `tool_call` row may come from the outer ReAct loop or
   from a tool-owned private loop. Child rows share the outer turn's `turn_id`
   and carry an empty `model` unless the emitting loop names one, but the turn's

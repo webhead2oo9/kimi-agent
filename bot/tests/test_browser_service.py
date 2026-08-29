@@ -172,10 +172,12 @@ def test_bridge_and_installer_lock_runtime_contract() -> None:
     assert "FONTCONFIG_FILE" not in installer
 
 
+@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
 def test_betterwright_installer_shell_syntax() -> None:
     subprocess.run(["sh", "-n", str(BETTERWRIGHT_INSTALLER)], check=True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
 def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path: Path) -> None:
     lexical = _run_installer_preflight(tmp_path, "/opt/kimi/../kimi/betterwright")
     alias = tmp_path / "runtime-alias"
@@ -188,6 +190,7 @@ def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path
         assert "refusing runtime directory" not in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
 def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Path) -> None:
     victim = tmp_path / "victim"
     victim.mkdir()

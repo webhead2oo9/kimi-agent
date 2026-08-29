@@ -206,7 +206,7 @@ as expected. Stop the process with `Ctrl+C`.
 If the bot connects but ignores every message, check guild activation first.
 An invited guild remains silent until it's explicitly activated, and
 `bot_active: false` overrides `ALLOWED_GUILD_IDS`. See
-[Setup](setup.md#the-bot-starts-and-then-ignores-every-mention) for the complete
+[Setup](setup.md#18-troubleshooting) for the complete
 failure checklist.
 
 ## Editing config and prompts

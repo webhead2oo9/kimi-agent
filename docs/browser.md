@@ -6,7 +6,7 @@ Enabling the browser adds real attack surface. It is off by default. Only turn i
 
 ## How a browser turn works
 
-Each Discord user gets their own profile. The folder name is a hash of their user id, not the id itself. Cookies, local storage, and tabs stay inside one conversation and never mix across users. Only one worker runs at a time; switching users closes the current worker before the next one starts.
+Each Discord user gets their own profile. The folder name is a hash of their user id, not the id itself. Cookies and local storage persist in that user's profile across conversations, while tabs stay inside one conversation. Nothing mixes across users. Only one worker runs at a time; switching users closes the current worker before the next one starts.
 
 Each call sends one bounded Playwright snippet to the bridge and gets structured JSON back. Screenshots are accepted only from the current profile's artifact directory. They are checked for path, type, and size, then copied into the user's workspace. If the model can see images, it receives them. A proof screenshot is also attached to the Discord reply. All page content is treated as untrusted data.
 

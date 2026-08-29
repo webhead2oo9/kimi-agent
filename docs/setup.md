@@ -332,7 +332,7 @@ chmod 600 "$HOME/.config/kimi-agent/kimi.env"
 
 **Important:** Do not leave any angle-bracket placeholders in the file. Add only the extra keys your deployment actually needs (internet search, for example, activates when you set at least one of `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY`).
 
-When copying from another installation, only bring over config and credential files. Never copy the venv, database, workspaces, logs, or browser profiles.
+When creating a separate installation, only bring over config and credential files. For an intentional migration or restore, stop the bot first and copy the database with its WAL sidecars, workspaces, personal skills, and any browser profiles you want to preserve. Never copy the venv; logs are optional.
 
 ---
 
@@ -373,7 +373,7 @@ Edit the model routing file:
 nano "$HOME/.config/kimi-agent/config/models.yaml"
 ```
 
-Replace every `.example.invalid` URL and model ID. Set realistic context windows and capabilities. The `chat` and `compaction` roles must point to models that support text + tool calling. Don't declare `image_input` until you've actually tested images on that route.
+Replace every `.example.invalid` URL and model ID. Set realistic context windows and capabilities. The `chat` role must support text + tool calling; `compaction` only needs text. Don't declare `image_input` until you've actually tested images on that route.
 
 A minimal working example:
 

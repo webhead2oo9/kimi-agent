@@ -15,7 +15,7 @@ For a new operator, the minimum viable path is:
 
 1. Copy `bot/.env.example` to `.env` and set at least the secrets and allowlists it flags (Discord token, provider keys, allowed channels/guilds).
 2. Copy `bot/config/models.example.yaml` to `config/models.yaml` and fill in the `chat` and `compaction` roles with provider profiles that match your `.env` secrets.
-3. Optionally drop a `<CONFIG_DIR>/settings.md` to tune scalar values without restarting the bot on every tweak.
+3. Optionally drop a `<CONFIG_DIR>/settings.md` to keep supported scalar overrides in one place; changes take effect after restart.
 4. Restart the bot. The startup probe reports missing files, invalid values, and gated features that didn't enable.
 
 Most settings in this reference are optional or gated off by default. The first half of the page covers the load order and where values come from. The second half lists every setting grouped by feature.
@@ -948,7 +948,7 @@ These settings control the structured tool-call event stream. See
 
 ## Secrets file
 
-Exposable skills can declare named secrets that are loaded from this YAML file on demand. The file is optional and not required for an instruction-only deployment. See [plugins.md](plugins.md) for the declaration format.
+Exposable skills can declare named secrets that are loaded from this YAML file on demand. The file is optional and not required for an instruction-only deployment. See the [shared skill store documentation](../bot/skills/README.md#private-store) for the declaration format.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|

@@ -722,52 +722,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     cassette_dir = Path(args.cassettes)
     shared_fallback = args.cassette != "record" and not args.no_shared_cassettes
-
-    if args.dry_run:
-        print(f"Model:     {spec.label} ({spec.model})")
-        provider_display = spec.provider_name
-        if endpoint := safe_provider_endpoint(spec.base_url):
-            provider_display += f" ({endpoint})"
-        print(f"Provider:  {provider_display}")
-        max_tokens_note = f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
-        print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
-        print(f"Vision:    {vision_mode}")
-        if vision_mode == "caption" and models.image_captioner is not None:
-            print(
-                f"Image captions: {models.image_captioner.label} "
-                f"({models.image_captioner.model}; cache: {caption_cache_dir})"
-            )
-        print(f"Scenarios: {', '.join(s.id for s in scenarios)}")
-        print(f"Cassette:  {args.cassette} (dir: {cassette_dir}, tapes: {model_key})")
-        # Tape provenance before anything is spent: a scenario with no tape runs
-        # fully live, which is the one thing a dry run should be able to warn about.
-        for scenario in scenarios:
-            _, provenance = load_cassette(
-                cassette_dir, scenario.id, model_key, shared_fallback=shared_fallback
-            )
-            print(f"  {scenario.id}: {provenance}")
-        live = args.cassette in ("off", "record")
-        per_scenario = "all live" if live else "replayed where recorded"
-        print(
-            f"Total run_conversation calls: {len(scenarios) * args.repeat} "
-            f"({len(scenarios)} scenarios x {args.repeat} reps, tools {per_scenario})"
-        )
-        return 0
-
-    provider = InstrumentedProvider(
-        build_eval_provider(spec),
-        min_request_interval_seconds=spec.min_request_interval_seconds,
-        request_timeout_seconds=spec.timeout_seconds,
-    )
-    caption_provider = (
-        InstrumentedProvider(
-            build_eval_provider(models.image_captioner),
-            min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
-            request_timeout_seconds=models.image_captioner.timeout_seconds,
-        )
-        if vision_mode == "caption" and models.image_captioner is not None and has_visual
-        else None
-    )
     eval_run_nonce = new_eval_run_nonce()
     identities_by_scenario = {
         scenario.id: tuple(
@@ -785,6 +739,8 @@ async def _run(args: argparse.Namespace) -> int:
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
     eval_registry = None
+    provider: InstrumentedProvider | None = None
+    caption_provider: InstrumentedProvider | None = None
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
         registry = eval_registry.registry
@@ -817,6 +773,53 @@ async def _run(args: argparse.Namespace) -> int:
                 log.error("Scenario %s expects unavailable tools: %s", scenario_id, tools)
             log.error("Refusing to run against a partial tool surface (check .env gates).")
             return 2
+        if args.dry_run:
+            print(f"Model:     {spec.label} ({spec.model})")
+            provider_display = spec.provider_name
+            if endpoint := safe_provider_endpoint(spec.base_url):
+                provider_display += f" ({endpoint})"
+            print(f"Provider:  {provider_display}")
+            max_tokens_note = (
+                f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
+            )
+            print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
+            print(f"Vision:    {vision_mode}")
+            if vision_mode == "caption" and models.image_captioner is not None:
+                print(
+                    f"Image captions: {models.image_captioner.label} "
+                    f"({models.image_captioner.model}; cache: {caption_cache_dir})"
+                )
+            print(f"Scenarios: {', '.join(s.id for s in scenarios)}")
+            print(f"Cassette:  {args.cassette} (dir: {cassette_dir}, tapes: {model_key})")
+            # Tape provenance before anything is spent: a scenario with no tape runs
+            # fully live, which is the one thing a dry run should be able to warn about.
+            for scenario in scenarios:
+                _, provenance = load_cassette(
+                    cassette_dir, scenario.id, model_key, shared_fallback=shared_fallback
+                )
+                print(f"  {scenario.id}: {provenance}")
+            live = args.cassette in ("off", "record")
+            per_scenario = "all live" if live else "replayed where recorded"
+            print(
+                f"Total run_conversation calls: {len(scenarios) * args.repeat} "
+                f"({len(scenarios)} scenarios x {args.repeat} reps, tools {per_scenario})"
+            )
+            return 0
+
+        provider = InstrumentedProvider(
+            build_eval_provider(spec),
+            min_request_interval_seconds=spec.min_request_interval_seconds,
+            request_timeout_seconds=spec.timeout_seconds,
+        )
+        caption_provider = (
+            InstrumentedProvider(
+                build_eval_provider(models.image_captioner),
+                min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
+                request_timeout_seconds=models.image_captioner.timeout_seconds,
+            )
+            if vision_mode == "caption" and models.image_captioner is not None and has_visual
+            else None
+        )
         compactor = eval_registry.provider_manager.build_compactor()
         for scenario in scenarios:
             # record must not inherit an underlay it will never rewrite: the point
@@ -886,7 +889,8 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         if eval_registry is not None:
             await eval_registry.close()
-        await close_provider(provider)
+        if provider is not None:
+            await close_provider(provider)
         if caption_provider is not None:
             await close_provider(caption_provider)
 

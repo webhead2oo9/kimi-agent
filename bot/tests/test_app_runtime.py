@@ -624,9 +624,7 @@ async def test_first_init_core_has_no_optional_module_tables(monkeypatch, tmp_pa
 
     cursor = await app.database.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     tables = {str(row[0]) for row in await cursor.fetchall()}
-    assert "moderation_cases" not in tables
-    assert "image_fingerprints" not in tables
-    assert "fingerprint_hub_sync_state" not in tables
+    assert "reference_kudos_kudos" not in tables
     assert app.tools.module_manager.load_state.loaded == ()
     await app.database.close()
 

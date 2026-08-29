@@ -15,11 +15,11 @@ from modules.testing import build_test_runtime
 def test_table_names_are_prefixed_quoted_and_alias_aware() -> None:
     storage = ModuleStorageImpl(
         database=object(),
-        module_name="image-fingerprints",
-        table_aliases={"hashes": "image_fingerprints"},
+        module_name="audit-log",
+        table_aliases={"hashes": "legacy_hashes"},
     )
-    assert storage.table("sync_state") == '"image_fingerprints_sync_state"'
-    assert storage.table("hashes") == '"image_fingerprints"'
+    assert storage.table("sync_state") == '"audit_log_sync_state"'
+    assert storage.table("hashes") == '"legacy_hashes"'
     with pytest.raises(ModuleContractError):
         storage.table("Bad Name")
     with pytest.raises(ModuleContractError):
@@ -27,9 +27,9 @@ def test_table_names_are_prefixed_quoted_and_alias_aware() -> None:
 
 
 def test_alias_validation_rejects_prefixed_targets_and_bad_identifiers() -> None:
-    validate_table_aliases("community_moderation", {"cases": "moderation_cases"})
+    validate_table_aliases("case_manager", {"cases": "legacy_cases"})
     with pytest.raises(ModuleContractError):
-        validate_table_aliases("community_moderation", {"cases": "community_moderation_cases"})
+        validate_table_aliases("case_manager", {"cases": "case_manager_cases"})
     with pytest.raises(ModuleContractError):
         validate_table_aliases("m", {"ok": "not valid"})
     with pytest.raises(ModuleContractError):
@@ -123,17 +123,15 @@ async def test_aliases_resolve_to_legacy_tables(tmp_path: Path) -> None:
     module = Legacy()
     runtime = await build_test_runtime(
         tmp_path,
-        ["community_moderation"],
+        ["case_manager"],
         installed={
-            "community_moderation": _spec(
-                "community_moderation", module, table_aliases={"cases": "moderation_cases"}
-            )
+            "case_manager": _spec("case_manager", module, table_aliases={"cases": "legacy_cases"})
         },
     )
     try:
-        assert module.seen == '"moderation_cases"'
+        assert module.seen == '"legacy_cases"'
         cursor = await runtime.database.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'moderation_cases'"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'legacy_cases'"
         )
         assert await cursor.fetchone() is not None
     finally:

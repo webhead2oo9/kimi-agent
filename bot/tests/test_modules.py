@@ -382,6 +382,8 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
     assert manager.load_state.loaded == ("base", "dependent")
     assert registry.is_registered("module_demo")
     assert manager.spec("base").name == "base"
+    assert manager.tool_names("base") == ("module_demo",)
+    assert manager.tool_names("dependent") == ()
 
 
 @pytest.mark.asyncio

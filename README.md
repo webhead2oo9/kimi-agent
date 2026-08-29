@@ -99,6 +99,7 @@ against a test guild without touching production state.
 | Understand the system shape | [`docs/architecture.md`](docs/architecture.md) |
 | Look up a setting | [`docs/configuration.md`](docs/configuration.md) |
 | Configure user-installed personal chat | [`docs/user-app.md`](docs/user-app.md) |
+| Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md) |
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |
 | Contribute code | [`CLAUDE.md`](CLAUDE.md), the developer map |

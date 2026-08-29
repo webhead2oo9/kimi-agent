@@ -45,6 +45,31 @@ service, a configuration proposal, trust lookup, and health metrics. Its
 README maps each surface to the file that demonstrates it. Copy its package
 structure to begin a module of your own.
 
+## Start a module with an LLM
+
+Give an LLM that can read the Kimi checkout this short brief:
+
+```text
+Build a Kimi application module that [DESCRIBE THE FEATURE].
+
+Before coding, read:
+- docs/modules.md
+- bot/modules/example/README.md
+- the complete bot/modules/example package, including its tests
+- bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/
+- CLAUDE.md
+
+Follow the reference module's package structure and the current API rather than
+inventing new interfaces. Keep the module separately installable and do not
+import Kimi core implementation code. Ask me only for feature decisions that
+cannot be inferred safely.
+
+Implement the module, its tests, and its README. The README must tell an
+operator how to install, enable, configure, restart, and verify it, and disclose
+stored data and external data flows. Run the module's lint, type, and test
+checks before handing it back.
+```
+
 ## Attach any module package
 
 A module distribution depends on the standalone
@@ -63,10 +88,13 @@ my_module = "my_assistant_module:SPEC"
 
 Install it using whatever source your deployment controls—a local path, wheel,
 private Git repository, or package index—then add `my_module` to
-`KIMI_MODULES`. A local checkout does not need publishing:
+`KIMI_MODULES`. Install into the exact environment that runs Kimi; installing
+with another interpreter does not make the entry point visible to the bot. For
+the standard in-checkout `.venv`, run this from `bot/` after the core sync. A
+local checkout does not need publishing:
 
 ```console
-uv pip install -e ../my-assistant-module
+uv pip install --python .venv/bin/python --editable /path/to/my-assistant-module
 ```
 
 ```dotenv
@@ -78,6 +106,13 @@ folder and never auto-installs a configured name. Once a name is active it is
 part of the deployment contract, so startup fails if it is missing, has an
 incompatible API, has an inactive dependency, has invalid settings, or fails
 to start. Dependencies start first and modules close in reverse order.
+
+After installation, activation, and any deployment or per-guild configuration,
+restart the Kimi process. Check startup logs for the module's composed, migrated,
+and started messages plus a successful slash-command sync. Then run
+`/modules status` and smoke-test the module's user-facing command or event path.
+If a later `uv sync` removes packages not owned by the core lock, reinstall
+deployment-owned modules afterward before restarting Kimi.
 
 An empty `KIMI_MODULES` does not import module entry points or run module
 migrations. Existing module tables remain in the shared database while their

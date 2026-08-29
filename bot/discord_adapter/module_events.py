@@ -186,7 +186,7 @@ def audit_entry_event(
         target_id = getattr(entry, "_target_id", None)
     try:
         numeric_target_id = int(target_id) if target_id is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # Some non-snowflake audit targets use domain identifiers. Discord
         # invite entries, for example, expose the invite code as ``target.id``.
         numeric_target_id = None

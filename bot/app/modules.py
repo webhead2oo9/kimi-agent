@@ -346,9 +346,11 @@ def validate_module_selection(
 def _validate_declarations(spec: ModuleSpec) -> None:
     """Reject malformed declarations before any module code is created."""
     try:
-        if spec.name == "proposals":
-            raise ValueError("module name 'proposals' is reserved by core")
         validate_module_name(spec.name)
+        if spec.settings is not None and spec.settings.name != spec.name:
+            raise ValueError(
+                f"settings name {spec.settings.name!r} does not match module name {spec.name!r}"
+            )
         validate_permissions(spec.name, spec.permissions)
         validate_services(spec.name, spec.dependencies, spec.provides, spec.consumes)
         if spec.guild_settings is not None:
@@ -776,6 +778,7 @@ class ModuleManager:
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
     scoped = tuple(getattr(instance, "scoped_migrations", ()))
+    declared_names: set[str] = set()
 
     def wrap(migrate: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:
         async def run(conn: Any) -> None:
@@ -783,7 +786,30 @@ def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[An
 
         return run
 
-    return tuple((name, wrap(migrate)) for name, migrate in scoped)
+    prepared: list[tuple[str, Callable[[Any], Awaitable[None]]]] = []
+    for version, declaration in enumerate(scoped, start=1):
+        if not isinstance(declaration, tuple) or len(declaration) != 2:
+            raise RuntimeError(
+                f"Kimi module {storage.module_name!r} migration v{version} must be a "
+                "(name, callable) tuple"
+            )
+        name, migrate = declaration
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError(
+                f"Kimi module {storage.module_name!r} migration v{version} must have "
+                "a non-empty name"
+            )
+        if name in declared_names:
+            raise RuntimeError(
+                f"Kimi module {storage.module_name!r} declares duplicate migration name {name!r}"
+            )
+        if not callable(migrate):
+            raise RuntimeError(
+                f"Kimi module {storage.module_name!r} migration {name!r} is not callable"
+            )
+        declared_names.add(name)
+        prepared.append((name, wrap(migrate)))
+    return tuple(prepared)
 
 
 def _summarize(exc: BaseException) -> str:

@@ -262,7 +262,10 @@ class _Registration:
     def close(self) -> None:
         if not self.closed:
             self.closed = True
-            self.close_fn()
+            try:
+                self.close_fn()
+            finally:
+                self.router._forget_registration(self)
 
 
 class ComponentDispatcher:
@@ -287,17 +290,32 @@ class ComponentDispatcher:
         handler: CommandHandler,
         expires_after_seconds: float | None,
         min_tier: TrustTierName,
-    ) -> None:
+    ) -> _ComponentRegistration:
+        identity = (router.module_name, kind, key)
+        if identity in self._handlers:
+            raise ModuleContractError(
+                f"module {router.module_name!r} component {kind}/{key!r} is already registered"
+            )
         expires_at = self._clock() + expires_after_seconds if expires_after_seconds else None
-        self._handlers[(router.module_name, kind, key)] = _ComponentRegistration(
-            router, handler, expires_at, min_tier
-        )
+        registration = _ComponentRegistration(router, handler, expires_at, min_tier)
+        self._handlers[identity] = registration
+        return registration
 
-    def unregister(self, module_name: str, kind: str, key: str) -> None:
-        self._handlers.pop((module_name, kind, key), None)
+    def unregister(
+        self,
+        module_name: str,
+        kind: str,
+        key: str,
+        registration: _ComponentRegistration,
+    ) -> None:
+        identity = (module_name, kind, key)
+        if self._handlers.get(identity) is registration:
+            self._handlers.pop(identity)
 
-    def unregister_module(self, module_name: str) -> None:
-        for entry in [k for k in self._handlers if k[0] == module_name]:
+    def unregister_module(self, router: InteractionRouterImpl) -> None:
+        for entry in [
+            key for key, registration in self._handlers.items() if registration.router is router
+        ]:
             self._handlers.pop(entry, None)
 
     def registered(self, module_name: str) -> tuple[tuple[str, str], ...]:
@@ -417,6 +435,7 @@ class InteractionRouterImpl:
         self._is_guild_active = is_guild_active
         self._groups: dict[str, app_commands.Group] = {}
         self._commands: list[tuple[str | None, str]] = []
+        self._registrations: list[_Registration] = []
         self._closed = False
 
     @property
@@ -435,6 +454,11 @@ class InteractionRouterImpl:
     ) -> _Registration:
         if self._closed:
             raise RuntimeError(f"module {self._module_name!r} interactions are closed")
+        qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
+        if (spec.group, spec.name) in self._commands:
+            raise ModuleContractError(
+                f"module {self._module_name!r} command {qualified!r} is already registered"
+            )
         command = self._build_command(spec, handler, autocomplete)
         if spec.group:
             group = self._groups.get(spec.group)
@@ -461,7 +485,13 @@ class InteractionRouterImpl:
         def close() -> None:
             self._remove_command(spec.group, spec.name)
 
-        return _Registration(self, close)
+        registration = _Registration(self, close)
+        self._registrations.append(registration)
+        return registration
+
+    def _forget_registration(self, registration: _Registration) -> None:
+        if registration in self._registrations:
+            self._registrations.remove(registration)
 
     def _remove_command(self, group_name: str | None, name: str) -> None:
         if group_name:
@@ -589,13 +619,20 @@ class InteractionRouterImpl:
         expires_after_seconds: float | None = None,
         min_tier: TrustTierName = "member",
     ) -> _Registration:
+        if self._closed:
+            raise RuntimeError(f"module {self._module_name!r} interactions are closed")
         if kind not in ("button", "select"):
             raise ModuleContractError(f"unsupported component kind {kind!r}")
         build_custom_id(self._module_name, key)  # validates the key
-        self._dispatcher.register(self, kind, key, handler, expires_after_seconds, min_tier)
-        return _Registration(
-            self, lambda: self._dispatcher.unregister(self._module_name, kind, key)
+        component = self._dispatcher.register(
+            self, kind, key, handler, expires_after_seconds, min_tier
         )
+        registration = _Registration(
+            self,
+            lambda: self._dispatcher.unregister(self._module_name, kind, key, component),
+        )
+        self._registrations.append(registration)
+        return registration
 
     def custom_id(self, key: str, *parts: str) -> str:
         return build_custom_id(self._module_name, key, *parts)
@@ -607,9 +644,9 @@ class InteractionRouterImpl:
 
     def close(self) -> None:
         self._closed = True
-        for group_name, name in list(self._commands):
-            self._remove_command(group_name, name)
-        self._dispatcher.unregister_module(self._module_name)
+        for registration in list(self._registrations):
+            registration.close()
+        self._dispatcher.unregister_module(self)
 
 
 @dataclass(slots=True)

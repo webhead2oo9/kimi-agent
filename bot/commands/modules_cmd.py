@@ -33,7 +33,7 @@ def render_status(
     for name in requested:
         if name in disabled:
             version, reason = disabled[name]
-            lines.append(f"â€¢ â¸ï¸ `{name}` {version} â€” disabled: {reason}")
+            lines.append(f"• ⏸️ `{name}` {version} — disabled: {reason}")
             continue
         spec = specs.get(name)
         state = health.get(name)

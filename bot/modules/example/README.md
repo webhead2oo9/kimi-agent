@@ -69,7 +69,9 @@ Read the files in the order the host uses them: `spec.py` → `settings.py` →
 3. **Load.** `create()` receives the prepared settings and the tool registry,
    registers the two LLM tools, and returns a `KudosModule`.
 4. **Migrate.** Migrations run in order against the module's prefixed tables.
-   The host records each applied name in `module_schema_versions`.
+   The host records each applied name in `module_schema_versions`. Released
+   names and positions are immutable; append a new migration for every later
+   schema change.
 5. **Start.** `start()` receives the `ModuleRuntimeContext` and registers the
    digest job, the event subscription, the commands, the button, and the
    service. Raising here aborts startup.

@@ -192,6 +192,10 @@ gateway intent is enabled in the deployment.
   module is a workspace-only CI fixture.
 - Each module has its own version and independent, ordered, forward-only
   migrations. Core records applied versions in `module_schema_versions`.
+  Treat every released migration name and position as immutable: only append
+  new migrations. Startup rejects duplicate names, gaps, or any mismatch
+  between the declared sequence and the history already recorded for that
+  module.
   Migrations create or update tables when the module starts; those tables remain
   while the module is disabled or absent.
 - A module can depend on another named module. Every dependency must also be

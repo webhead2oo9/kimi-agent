@@ -675,6 +675,10 @@ class FakeInteractions:
         autocomplete: Callable[..., Any] | None = None,
     ) -> _Closable:
         qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
+        if qualified in self.commands:
+            raise ModuleContractError(
+                f"module {self.module_name!r} command {qualified!r} is already registered"
+            )
         self.commands[qualified] = (spec, handler)
         if autocomplete is not None:
             self.autocompletes[qualified] = autocomplete
@@ -691,12 +695,20 @@ class FakeInteractions:
         expires_after_seconds: float | None = None,
         min_tier: TrustTierName = "member",
     ) -> _Closable:
-        self.components[(kind, key)] = handler
-        self.component_min_tiers[(kind, key)] = min_tier
+        if kind not in ("button", "select"):
+            raise ModuleContractError(f"unsupported component kind {kind!r}")
+        build_custom_id(self.module_name, key)
+        identity = (kind, key)
+        if identity in self.components:
+            raise ModuleContractError(
+                f"module {self.module_name!r} component {kind}/{key!r} is already registered"
+            )
+        self.components[identity] = handler
+        self.component_min_tiers[identity] = min_tier
         return _Closable(
             lambda: (
-                self.components.pop((kind, key), None),
-                self.component_min_tiers.pop((kind, key), None),
+                self.components.pop(identity, None),
+                self.component_min_tiers.pop(identity, None),
             )
         )
 

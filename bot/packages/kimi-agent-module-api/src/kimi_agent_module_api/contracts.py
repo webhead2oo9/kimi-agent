@@ -319,6 +319,7 @@ _TOPIC_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 _SETTING_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CORE_TOPIC_PREFIX = "discord"
+_CORE_RESERVED_MODULE_NAMES = frozenset({CORE_TOPIC_PREFIX, "proposals"})
 CUSTOM_ID_PREFIX = "m"
 CUSTOM_ID_MAX_LENGTH = 100
 
@@ -330,6 +331,8 @@ def table_prefix(module_name: str) -> str:
 def validate_module_name(name: str) -> None:
     if not _MODULE_NAME_RE.match(name):
         raise ModuleContractError(f"invalid module name {name!r}")
+    if table_prefix(name) in _CORE_RESERVED_MODULE_NAMES:
+        raise ModuleContractError(f"module name {name!r} is reserved by core")
 
 
 def split_topic(topic: str, *, allow_wildcard: bool = False) -> tuple[str, str]:
@@ -343,6 +346,8 @@ def split_topic(topic: str, *, allow_wildcard: bool = False) -> tuple[str, str]:
 
 def validate_publish_topic(module_name: str, topic: str) -> None:
     namespace, _ = split_topic(topic)
+    if namespace == CORE_TOPIC_PREFIX:
+        raise EventTopicError(f"event namespace {CORE_TOPIC_PREFIX!r} is reserved by core")
     if namespace != table_prefix(module_name):
         raise EventTopicError(
             f"module {module_name!r} may only publish under {table_prefix(module_name)!r}.*"

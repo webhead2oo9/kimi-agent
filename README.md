@@ -51,9 +51,10 @@ Plain chat works out of the box. There's lots of options to look through and set
 | **Extensions** | Add deployment-owned tools with plugins, or attach any installed lifecycle module through a stable standalone API. |
 | **Personal user app** | Optionally grant selected Discord IDs one `/chat` thread and workspace that follows them across locations. |
 
-Turns are stateless and every conversation is keyed to the message that started
-it, stored in SQLite, so replying to an old answer picks the thread back up even
-after a restart.
+Turns are stateless, and guild conversations are keyed to the message that
+started them and stored in SQLite, so replying to an old answer picks the thread
+back up even after a restart. The optional personal user app instead keeps one
+conversation per approved user.
 
 ## Repository layout
 
@@ -67,13 +68,20 @@ locked dependencies and runs lint, types, and tests from there).
 
 ## Quick start
 
-You'll need Python 3.14+, [uv](https://docs.astral.sh/uv/), a Discord bot token,
-and one LLM provider you can reach. Most want an API key; Codex uses a token file,
-and some gateways inject credentials upstream.
+For an Ubuntu deployment, use the single end-to-end
+[installation and operations guide](docs/setup.md). It includes the repository
+clone, Python environment, host packages, private data layout, Discord/provider
+configuration, modules, systemd, upgrades, and diagnostics. The shorter block
+below is only for an existing development checkout with Python 3.14+ and the
+standard `venv` module already installed.
 
 ```bash
 cd bot
-uv sync
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
+.venv/bin/python -m pip install --no-deps \
+  --editable ./packages/kimi-agent-module-api --editable .
+.venv/bin/python -m pip check
 cp .env.example .env
 cp config/models.example.yaml config/models.yaml
 ```
@@ -86,12 +94,14 @@ Then fill in two files:
   be honest about context windows, capabilities, roles, and fallbacks.
 
 ```bash
-uv run python bot.py
+.venv/bin/python bot.py
 ```
 
-Always go through `uv run`; a bare `python` or `pytest` finds an interpreter
-without the locked dependencies and fails in confusing ways.
-[docs/setup.md](docs/setup.md) walks a first deployment end to end, and
+If uv is already installed, the equivalent block is `uv sync --locked`, then
+`.venv/bin/python -m ensurepip`, followed by the same editable local-project
+install and `pip check` above. `ensurepip` retains compatibility with later
+module-install commands. In either case, use the explicit project interpreter;
+a bare `python` or `pytest` may find a different environment.
 [docs/development.md](docs/development.md) shows how to run a second instance
 against a test guild without touching production state.
 
@@ -104,7 +114,7 @@ against a test guild without touching production state.
 | Understand the system shape | [`docs/architecture.md`](docs/architecture.md) |
 | Look up a setting | [`docs/configuration.md`](docs/configuration.md) |
 | Configure user-installed personal chat | [`docs/user-app.md`](docs/user-app.md) |
-| Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md) |
+| Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md), [standalone Discord logging module](https://github.com/webhead2oo9/kimi-agent-discord-logging) |
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |
 | Contribute code | [`CLAUDE.md`](CLAUDE.md), the developer map |

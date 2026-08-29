@@ -1,14 +1,8 @@
 # Application modules
 
-Application modules are separately installed Python packages. Core does not
-ship a catalog of them, download them at runtime, or test repositories that
-happen to contain them. An operator chooses which distributions to install and
-which installed entry points to activate.
+Application modules are separately installed Python packages. Core does not ship a catalog of them, download them at runtime, or test repositories that happen to contain them. An operator chooses which distributions to install and which installed entry points to activate.
 
-Use a module when an extension needs lifecycle hooks, migrations, durable data,
-events, background jobs, Discord interactions, or host services. If it only
-registers LLM tools for one deployment, an [operator plugin](plugins.md) is the
-smaller interface.
+Use a module when an extension needs lifecycle hooks, migrations, durable data, events, background jobs, Discord interactions, or host services. If it only registers LLM tools for one deployment, an [operator plugin](plugins.md) is the smaller interface.
 
 | | Operator plugin | Application module |
 |---|---|---|
@@ -20,15 +14,12 @@ smaller interface.
 
 ## Try the reference module
 
-This repository maintains one example at
-[`bot/modules/example`](../bot/modules/example/README.md). It is executable
-documentation and a CI fixture, not a production dependency or a
-default-enabled feature.
+This repository maintains one example at [`bot/modules/example`](../bot/modules/example/README.md). It is executable documentation and a CI fixture, not a production dependency or a default-enabled feature.
 
 From `bot/`:
 
 ```console
-uv sync --all-packages --extra dev
+.venv/bin/python -m pip install --no-deps --editable ./modules/example
 ```
 
 Then set the installed entry-point name and start normally:
@@ -37,13 +28,9 @@ Then set the installed entry-point name and start normally:
 KIMI_MODULES=reference_kudos
 ```
 
-The example is a small "kudos" feature that uses every port: deployment and per-guild settings, two ordered migrations,
-scoped storage, a core and a searchable LLM tool, a `/kudos` command group
-with a staff-only subcommand, a persistent button, a durable digest job, a
-`discord.member_remove` subscription and its own published topic, a provided
-service, a configuration proposal, trust lookup, and health metrics. Its
-README maps each surface to the file that demonstrates it. Copy its package
-structure to begin a module of your own.
+The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Copy its package structure to begin a module of your own.
+
+For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
 
 ## Start a module with an LLM
 
@@ -65,12 +52,13 @@ Before writing any code, read in this order:
 2. bot/modules/example/README.md, then the whole bot/modules/example package
    in the order its README gives, including pyproject.toml and tests/
 3. bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/ (the only
-   package the module may import at runtime)
+   Kimi host package the module may import at runtime)
 4. CLAUDE.md, for code style and conventions
 
-Rules that the host enforces, so do not work around them:
-- Depend only on `kimi-agent-module-api>=1,<2` at runtime. Never import
-  `bot/` core packages; tests may use the SDK fakes in
+Rules and boundaries to follow:
+- Depend on `kimi-agent-module-api>=1,<2` for host contracts and declare any
+  other runtime dependencies in the module package. Never import `bot/` core
+  packages; tests may use the SDK fakes in
   `kimi_agent_module_api.testing` and nothing from core.
 - Use the existing ports and contracts exactly as the reference module does.
   Do not invent new interfaces, subclass host types, or reach for `raw_bot`
@@ -79,7 +67,8 @@ Rules that the host enforces, so do not work around them:
   outbound HTTP host, and provided or consumed service goes in the
   `ModuleSpec` permissions, or the call raises at runtime. Do not declare
   what the module does not use.
-- All SQL goes through `ctx.storage.table()` and `write_transaction()`, with
+- Build every table name with `ctx.storage.table()`, run reads through
+  `ctx.storage.connection`, and run every write in `write_transaction()`, with
   forward-only migrations that create the tables the module reads.
 - Per-guild configuration is a typed `guild_settings` schema, read through
   `ctx.guild_settings`; deployment settings are a `pydantic-settings` model
@@ -114,13 +103,18 @@ Deliver:
   each row holds, retention and deletion, every external host contacted, and
   whether the module observes messages or events not addressed to the bot.
 
-Before handing back, run from the module directory and fix everything they
-report: `uv sync --extra dev`, `uv run ruff check .`, `uv run ruff format
---check .`, `uv run mypy .`, `uv run pytest`. Then install the module into
-the Kimi checkout's environment with `uv pip install --python
-.venv/bin/python --editable [OUTPUT DIR]` from `bot/`, set
-`KIMI_MODULES=<name>` in a dev dotenv, and confirm startup reaches the
-module's started message. Report exactly what you ran and what you saw.
+Before handing back, run each of these in the module directory:
+- `python3 -m venv .venv`
+- `.venv/bin/python -m pip install --editable '.[dev]'`
+- `.venv/bin/ruff check .`
+- `.venv/bin/ruff format --check .`
+- `.venv/bin/mypy .`
+- `.venv/bin/python -m pytest`
+
+Then, from `bot/`, install the module into Kimi's environment with
+`.venv/bin/python -m pip install --editable <output-dir>`, set
+`KIMI_MODULES=<name>` in a dev dotenv, and confirm startup reaches the module's
+started message. Report exactly what you ran and what you saw.
 ```
 
 Replace the bracketed placeholders, and remove the final installation step if
@@ -130,9 +124,7 @@ whatever database and Discord access it declared.
 
 ## Attach any module package
 
-A module distribution depends on the standalone
-`kimi-agent-module-api` package, exposes a `ModuleSpec`, and advertises it
-in `pyproject.toml`:
+A module distribution depends on the standalone `kimi-agent-module-api` package, exposes a `ModuleSpec`, and advertises it in `pyproject.toml`:
 
 ```toml
 [project]
@@ -144,83 +136,37 @@ dependencies = ["kimi-agent-module-api>=1,<2"]
 my_module = "my_assistant_module:SPEC"
 ```
 
-Install it using whatever source your deployment controls—a local path, wheel,
-private Git repository, or package index—then add `my_module` to
-`KIMI_MODULES`. Install into the exact environment that runs Kimi; installing
-with another interpreter does not make the entry point visible to the bot. For
-the standard in-checkout `.venv`, run this from `bot/` after the core sync. A
-local checkout does not need publishing:
+Install it using whatever source your deployment controls (a local path, wheel, private Git repository, or package index), then add `my_module` to `KIMI_MODULES`. Install into the exact environment that runs Kimi; installing with another interpreter doesn't make the entry point visible to the bot. For the standard in-checkout `.venv`, run this from `bot/` after installing the core environment. A local checkout doesn't need publishing:
 
 ```console
-uv pip install --python .venv/bin/python --editable /path/to/my-assistant-module
+.venv/bin/python -m pip install --editable /path/to/my-assistant-module
 ```
 
 ```dotenv
 KIMI_MODULES=my_module
 ```
 
-Installing a distribution alone never activates it. Core does not scan a
-folder and never auto-installs a configured name. Once a name is active it is
-part of the deployment contract, so startup fails if it is missing, has an
-incompatible API, has an inactive dependency, has invalid settings, or fails
-to start. Dependencies start first and modules close in reverse order.
+Installing a distribution alone never activates it. Core doesn't scan a folder and never auto-installs a configured name. Once a name is active it's part of the deployment contract, so startup fails if it's missing, has an incompatible API, has an inactive dependency, has invalid settings, or fails to start. Dependencies start first and modules close in reverse order.
 
-After installation, activation, and any deployment or per-guild configuration,
-restart the Kimi process. Check startup logs for the module's composed, migrated,
-and started messages plus a successful slash-command sync. Then run
-`/modules status` and smoke-test the module's user-facing command or event path.
-If a later `uv sync` removes packages not owned by the core lock, reinstall
-deployment-owned modules afterward before restarting Kimi.
+After installation, activation, and any deployment or per-guild configuration, restart the Kimi process. Check startup logs for the module's composed, migrated, and started messages plus a successful slash-command sync. Then run `/modules status` and smoke-test the module's user-facing command or event path. Reinstall deployment-owned modules whenever the core environment is recreated. If you use the optional uv path, a later `uv sync` can remove pip, Kimi's editable root metadata, and packages not owned by the core lock. Repeat the `ensurepip` and editable core install commands in setup step 5 before reinstalling the modules. Pip normally retains them.
 
-An empty `KIMI_MODULES` does not import module entry points or run module
-migrations. Existing module tables remain in the shared database while their
-modules are disabled or absent; disabling is not data deletion.
+An empty `KIMI_MODULES` doesn't import module entry points or run module migrations. Existing module tables remain in the shared database while their modules are disabled or absent; disabling isn't data deletion.
 
-A module may separately declare `activation_capabilities` for an optional
-feature that is meaningful only when core is configured to expose it. Missing
-activation capabilities soft-disable that module (and its dependents) without
-creating it, running migrations, or aborting bot startup; `/modules status`
-shows the reason. `requires_capabilities` remains a hard compatibility check.
-The intent-backed capabilities are `discord.members.v1` and
-`discord.message_content.v1`; they are advertised only when the corresponding
-gateway intent is enabled in the deployment.
+A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a hard compatibility check. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
 
 ## Package and schema contract
 
-- Pin third-party module distributions in deployment-owned requirements or
-  lock data. Do not add them to the core lock file; the in-repository reference
-  module is a workspace-only CI fixture.
-- Each module has its own version and independent, ordered, forward-only
-  migrations. Core records applied versions in `module_schema_versions`.
-  Treat every released migration name and position as immutable: only append
-  new migrations. Startup rejects duplicate names, gaps, or any mismatch
-  between the declared sequence and the history already recorded for that
-  module.
-  Migrations create or update tables when the module starts; those tables remain
-  while the module is disabled or absent.
-- A module can depend on another named module. Every dependency must also be
-  present in `KIMI_MODULES`, because dependencies are never activated
-  implicitly.
-- Module settings use the same selected dotenv as the core. Explicitly exposed,
-  non-secret operator overrides live under
-  `<CONFIG_DIR>/modules/<module_name>.md`.
-- A module's runtime context is the only thing it needs from core; the
-  `kimi_agent_module_api` package exports contracts, event dataclasses,
-  image helpers, and test fakes, never core implementation types.
-- A module can register ordinary tools on the shared registry and declare its
-  activity labels and evaluation surfaces. This is optional; a module that only
-  provides commands or listeners need not expose anything to the LLM. A tool
-  handler receives a `ModuleToolContext` whose ids are `int` snowflakes. A
-  module's tools are hidden (masked, like any other gate) until the module
-  has started and wherever the module is inactive; with `guild_only` (the
-  default) they are hidden from DMs and personal chat as well, so `guild_id`
-  is `None` only for a tool registered with `guild_only=False`, and
-  `channel_id` is `None` only in personal chat.
+- Pin third-party module distributions in deployment-owned requirements or lock data. Don't add them to the core lock file; the in-repository reference module is a workspace-only CI fixture.
+- Each module has its own version and independent, ordered, forward-only migrations. Core records applied versions in `module_schema_versions`. Treat every released migration name and position as immutable: only append new migrations. Startup rejects duplicate names, gaps, or any mismatch between the declared sequence and the history already recorded for that module. Migrations create or update tables when the module starts; those tables remain while the module is disabled or absent.
+- A module can depend on another named module. Every dependency must also be present in `KIMI_MODULES`, because dependencies are never activated implicitly.
+- Module settings use the same selected dotenv as the core. Explicitly exposed, non-secret operator overrides live under `<CONFIG_DIR>/modules/<module_name>.md`.
+- A module's runtime context is the only thing it needs from core; the `kimi_agent_module_api` package exports contracts, event dataclasses, image helpers, and test fakes, never core implementation types.
+- A module can register ordinary tools on the shared registry and declare its activity labels and evaluation surfaces. This is optional; a module that only provides commands or listeners need not expose anything to the LLM. A tool handler receives a `ModuleToolContext` whose ids are `int` snowflakes. A module's tools are hidden (masked, like any other gate) until the module has started and wherever the module is inactive; with `guild_only` (the default) they are hidden from DMs and personal chat as well, so `guild_id` is `None` only for a tool registered with `guild_only=False`, and `channel_id` is `None` only in personal chat.
 
 For repeatable deployments, keep third-party module requirements in
-deployment-owned lock data and install them after the core sync. Private Git
-access or a local wheelhouse works without involving core CI. Each module owns
-its release process, tests, configuration docs, and privacy disclosures.
+deployment-owned lock data and install them after the core environment. Private
+Git access or a local wheelhouse works without involving core CI. Each module
+owns its release process, tests, configuration docs, and privacy disclosures.
 Before activating a module, the operator must make those disclosures reachable
 from the deployment's public privacy notice. A module that observes events or
 content not addressed to the bot must say so explicitly, including what it
@@ -228,80 +174,34 @@ processes, why, where it sends data, and how long it retains the result.
 
 ## Publishing the API
 
-Publishing the API lets module authors depend on a small, neutral wheel instead
-of cloning this application. Publishing example modules is unnecessary: they
-are templates, while real modules belong to their own maintainers.
+Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, versioned from
-`1.0.0` with `MODULE_API_VERSION = 1`. Tags named
-`kimi-agent-api-v<version>` run the tag-only release workflow. It verifies
-the tag/version match, tests the workspace, builds with workspace sources
-disabled, imports the wheel in an isolated environment, and publishes using a
-PyPI Trusted Publisher—there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, versioned from `1.0.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
-Before the first tag, reserve the `kimi-agent-module-api` project through
-PyPI's pending-publisher flow and configure this repository, workflow
-`release-kimi-agent-api.yml`, environment `pypi`. A name lookup is not a
-reservation, so confirm availability again immediately before the first
-release.
+Before the first tag, reserve the `kimi-agent-module-api` project through PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi`. A name lookup isn't a reservation, so confirm availability again immediately before the first release.
 
 ## Lifecycle contract
 
 Core drives every configured module through the same phases, in this order:
 
-1. **Preflight.** Declarations are validated before any module code runs.
-2. **Settings.** The module's settings model is built from the environment and
-   the dotenv, then overlaid from `<CONFIG_DIR>/modules/<name>.md`.
-3. **Create.** `ModuleSpec.create(ctx)` runs with a `ModuleLoadContext`. This is
-   pure wiring: read prepared settings, register LLM tools, construct the
-   module object. No migration has run and no dependency has started, so the
-   context offers no storage, services, or Discord. The tool registry is sealed
-   when loading finishes; registering a tool later (for example from `start()`)
-   raises.
-4. **Migrate.** Every module's `scoped_migrations` run, in dependency order,
-   before any module starts.
-5. **Start.** `start(ctx)` runs in dependency order with the full
-   `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A
-   `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled,
-   given five seconds to unwind, then abandoned if it ignores cancellation;
-   all three count as a failed start.
-6. **Close.** On shutdown, modules close newest-first. `close()` should be
-   idempotent and release what `start()` acquired. A `close()` that exceeds
-   `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled, given five seconds to
-   unwind, then abandoned; shutdown moves on to the next module. Core then
-   releases the module's commands, components, event lane, scheduler
-   handlers, and services regardless. Cancellation is cooperative: a module
-   should let `CancelledError` propagate rather than catch it, since a
-   coroutine that refuses to stop is leaked, not killed. After a start
-   timeout the abandoned `start()` may still be running when `close()` is
-   called on the same instance, so `close()` must tolerate that.
+1. **Preflight.** After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs.
+2. **Settings.** The module's settings model is built from the environment and the dotenv, then overlaid from `<CONFIG_DIR>/modules/<name>.md`.
+3. **Create.** `ModuleSpec.create(ctx)` runs with a `ModuleLoadContext`. This is pure wiring: read prepared settings, register LLM tools, construct the module object. No migration has run and no dependency has started, so the context offers no storage, services, or Discord. The tool registry is sealed when loading finishes; registering a tool later (for example from `start()`) raises.
+4. **Migrate.** Every module's `scoped_migrations` run, in dependency order, before any module starts.
+5. **Start.** `start(ctx)` runs in dependency order with the full `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled, given five seconds to unwind, then abandoned if it ignores cancellation; all three count as a failed start.
+6. **Close.** On shutdown, modules close newest-first. `close()` should be idempotent and release what `start()` acquired. A `close()` that exceeds `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled, given five seconds to unwind, then abandoned; shutdown moves on to the next module. Core then releases the module's commands, components, event lane, scheduler handlers, and services regardless. Cancellation is cooperative: a module should let `CancelledError` propagate rather than catch it, since a coroutine that refuses to stop is leaked, not killed. After a start timeout the abandoned `start()` may still be running when `close()` is called on the same instance, so `close()` must tolerate that.
 
 ## Declarations
 
-A `ModuleSpec` can declare what the module intends to use. Declarations are
-validated when the module set is preflighted, before any module code runs, so
-a malformed declaration aborts startup with a named reason:
+A `ModuleSpec` can declare what the module intends to use. After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs, so a malformed declaration aborts startup with a named reason:
 
-- `permissions.discord_actions`: the Discord operations the module will call
-  (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
-  `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`,
-  `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `fetch_invites`,
-  `can_view_channel`).
-- `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
-  module subscribes to. A module never declares its own namespace; it may
-  publish only under `<module_name>.*`.
-- `permissions.http_hosts`: exact outbound hosts, the `discord-cdn` token, or
-  `${setting_name}` resolved from the module's settings. Wildcards are not
-  accepted.
-- `provides` / `consumes`: exact `(name, version)` services. A consumed service
-  must come from a module listed in `dependencies`.
-- `guild_settings`: a typed per-guild schema whose `invalid_policy` defaults to
-  `disable_guild`, so an enforcement module with a broken guild document fails
-  closed.
+- `permissions.discord_actions`: the Discord operations the module will call (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `fetch_invites`, `can_view_channel`).
+- `permissions.event_topics`: core (`discord.*`) or sibling-module topics the module subscribes to. A module never declares its own namespace; it may publish only under `<module_name>.*`.
+- `permissions.http_hosts`: exact outbound hosts, the `discord-cdn` token, or `${setting_name}` resolved from the module's settings. Wildcards are not accepted.
+- `provides` / `consumes`: exact `(name, version)` services. A consumed service must come from a module listed in `dependencies`.
+- `guild_settings`: a typed per-guild schema whose `invalid_policy` defaults to `disable_guild`, so an enforcement module with a broken guild document fails closed.
 
-The rules live in `kimi_agent_module_api.contracts`, which imports only the
-standard library so a package can validate its own declarations in tests.
-Every declaration is enforced by the matching runtime service below.
+The rules live in `kimi_agent_module_api.contracts`, which imports only the standard library so a package can validate its own declarations in tests. Host preflight runs those checks before `create()` or any lifecycle hook. Every declaration is enforced by the matching runtime service below.
 
 ## Runtime services
 
@@ -483,8 +383,8 @@ migrations to a fresh SQLite file, and starts them with a per-module context
 whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
 context, `runtime.ports[name]` its fakes, and `runtime.registry` the composed
 tool registry for assertions. Module test suites
-may import that harness; module production source may import only
-`kimi_agent_module_api`.
+may import that harness; module production source must use
+`kimi_agent_module_api` rather than core packages for host-facing contracts.
 
 ## Configuration proposals
 
@@ -504,8 +404,4 @@ retry reconcile a process interruption without an eight-state workflow.
 
 ## Modules versus operator plugins
 
-Reach for an application module when you need a required, versioned capability
-with a lifecycle or a schema. Reach for an [operator plugin](plugins.md) when
-you want a best-effort, deployment-local LLM tool extension. The failure modes
-follow from that split: a broken configured module aborts startup, while a
-broken plugin is logged, rolled back, and skipped.
+Reach for an application module when you need a required, versioned capability with a lifecycle or a schema. Reach for an [operator plugin](plugins.md) when you want a best-effort, deployment-local LLM tool extension. The failure modes follow from that split: a broken configured module aborts startup, while a broken plugin is logged, rolled back, and skipped.

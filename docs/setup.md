@@ -1,168 +1,715 @@
-# Setup and boot
+# Getting Kimi Up and Running on Ubuntu
 
-This is what a fresh deployment needs, in the order you'll need it. Runtime
-commands and configuration live under `bot/`; each command block below is
-self-contained and starts from the repository root.
+This guide walks you through setting up Kimi on an Ubuntu server from start to finish.
 
-## 1. Dependencies
+**Quick heads-up before you begin:**
+- This was tested on Ubuntu Server 26.04.1 LTS (64-bit) with Python 3.14.
+- You'll run everything as a regular sudo-enabled user. Never run as root.
+- The current dependency lock only works reliably on `amd64`/`x86_64`. ARM64 hosts will hit snags right now.
+- Your private config, secrets, database, and workspaces live **outside** the checkout so updates stay safe.
+- Replace every `<placeholder>` with your real values.
+- Commands marked **workstation** run on the computer you use to manage the server. Commands marked **server** run after you SSH in.
 
-```sh
-cd bot
-uv sync
-```
 
-You need Python ≥3.14, managed by uv (`pyproject.toml` / `uv.lock` are pinned).
-Linux is the supported production and security-review target. Other platforms
-work fine for development, but they don't carry the production containment
-guarantees.
 
-If you want executable skill tools, you also need Bubblewrap and util-linux. On
-Debian/Ubuntu:
+---
 
-```sh
-sudo apt-get install bubblewrap util-linux
-```
+## 1. Make SSH Nice and Easy (No Passwords Every Time)
 
-When `SKILLS_DIR` contains a `tools:` declaration, boot runs a real namespace
-probe and fails if the packages, kernel user-namespace support, or host security
-policy can't create the boundary. The bot process must also run as an
-unprivileged service account; executable-skill boot explicitly rejects UID 0.
-There is no unsandboxed fallback. If your skill store is
-instruction-only or empty, none of these binaries are required.
+Skip this section if you already have password-free SSH working.
 
-The persistent browser and one-call visual renderer have their own requirements:
-Node 22.18 or newer and the root-owned pinned runtime installed by
-[`bot/deploy/betterwright/install.sh`](../bot/deploy/betterwright/install.sh).
-Follow [Persistent browser](browser.md) for host or VPN-namespace deployment and
-[Visual rendering](visual-rendering.md) for charts and Mermaid. One
-`BROWSER_ENABLED` gate requests both; visual rendering adds no second setting.
-Without a valid runtime and sandbox probe, boot still continues, but neither
-tool registers. When only the exact Mermaid asset is missing, `browser` remains
-available and the visual tools stay unregistered.
+### Why do this?
+You want a secure key so you can connect without typing a password every time, and without ever sending passwords over the network.
 
-## 2. Minimal configuration
-
-To get the bot logging in and responding to mentions, you need exactly four
-things:
-
-| Requirement | Where | Notes |
-|---|---|---|
-| Discord bot token | `DISCORD_BOT_TOKEN` in `bot/.env` | Copy `bot/.env.example` → `bot/.env` first; the token comes from the Developer Portal application. |
-| A guild the bot is in | Developer Portal invite URL | `applications.commands` + `bot` scopes, with least-privilege permissions for the features you enable. |
-| That guild activated | `ALLOWED_GUILD_IDS=<guild id>` in `.env`, **or** `config/servers/<guild_id>.md` with `bot_active: true` | Guild activation fails closed: an invited but unactivated guild gets no responses at all. Empty `ALLOWED_GUILD_IDS` does **not** mean "all guilds". |
-| One chat provider | `bot/config/models.yaml` + any required local credential | Copy `config/models.example.yaml` → `config/models.yaml`; replace its non-routable host/model placeholders; set accurate context windows, capabilities, roles, and fallbacks. Key-backed profiles use the `.env` variable named by `api_key_env`; Codex uses its token file, and gateways that inject credentials upstream set `keyless: true`. The template stays text-only until vision is explicitly verified. |
-
-Keep in mind that `config/models.yaml`, the deployment's guild/channel/thread
-fragments, `.env`, and the entire live `SKILLS_DIR` are gitignored instance
-data; only the generic examples and read-only built-in skills are tracked. The
-in-checkout paths are fine for a test deployment, but production points
-`CONFIG_DIR` and `SKILLS_DIR` at a private tree outside the checkout. An absent
-private skill store is perfectly valid; just restore it before boot when the
-deployment depends on its learned or operator-authored skills. See
-[`instance-data.md`](instance-data.md) for the private-repository tree, the
-required prompt and model files, the deployment workflow, and the data that
-must remain outside both repositories.
-
-### Optional but recommended for a test deployment
-
-- `BOT_NAME`: substituted into the persona (`config/persona.md`).
-- Message Content intent: enable it in the Developer Portal for the full
-  experience (the `hey/hi <name>` and `<name> help` text triggers, thread
-  auto-reply, and `discord_text_search`). Without it, plain mentions and replies still work;
-  set `MESSAGE_CONTENT_INTENT=false` and `THREAD_HANDOFF_ENABLED=false` while
-  it's unapproved.
-
-### Optional user-installed personal chat
-
-`/chat` is not part of minimal boot and is off by default. To offer it, enable
-User Install with the `applications.commands` scope in the Discord Developer
-Portal, configure `USER_APP_CHAT_ENABLED=true` plus the numeric user-tier ID
-lists, and restart. Follow [Discord user-app personal chat](user-app.md) for the
-complete portal, access, prompt, visibility, and reset setup.
-
-### Not needed for boot
-
-Everything else either degrades gracefully or simply stays off: Hindsight
-memory (an empty `HINDSIGHT_URL` means memory is disabled and the bot runs
-fine), OpenAI moderation, Discord search exclusions, application modules,
-plugins, the persona compiler, and SQLCipher at-rest encryption. The defaults in
-`bot/.env.example` are production-reasonable, so only fill in what you use.
-
-## 3. Boot
+**On the server console** (if SSH isn't running yet):
 
 ```sh
-cd bot
-uv run python bot.py
+sudo apt-get install --yes openssh-server
+sudo systemctl enable --now ssh
+sudo ss -ltnp | grep ':22'
 ```
 
-Here's what you should expect: settings validate, SQLite opens and initializes
-schema v4 (automatically migrating supported lower schema versions), the
-gateway connects, `on_ready` completes boot under the READY initialization lock,
-and JSONL turn events write to `logs/` when enabled. A mention in the test guild
-then round-trips the whole way: mention → ReAct turn → reply → durable transcript.
+You should see sshd listening on port 22.
 
-## 4. Verification gates
-
-Before declaring any change good, run the standing gates, which are what CI
-enforces:
+Record the server's host key fingerprint so you can verify it later:
 
 ```sh
-cd bot
-npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
-npm audit --prefix deploy/betterwright --omit=dev
-node --check web_browser/bridge.mjs
-node --check web_browser/visual_bridge.mjs
-uv sync --locked --extra dev
-uv --preview-features audit-command audit --locked
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy .
-uv run python -m pytest -q
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-The npm install does not run package scripts. A browser deployment must
-additionally pass the Linux production smoke test documented in
-[Visual rendering](visual-rendering.md). The workflow file remains authoritative.
+**On your workstation**, make the first password login and compare that fingerprint character-by-character before accepting the host key:
 
-## 5. When boot fails
+```sh
+ssh <deployment-user>@<server-address>
+```
 
-Start from the symptom. Each message below is the exact text the process logs.
+Now create a dedicated SSH key for this server (it won't touch any keys you already have):
 
-| What you see | What it means |
+```sh
+ssh-keygen -t ed25519 -f "$HOME/.ssh/kimi-install-ed25519" -C kimi-install
+ssh-copy-id -i "$HOME/.ssh/kimi-install-ed25519.pub" \
+  <deployment-user>@<server-address>
+```
+
+If your workstation doesn't have `ssh-copy-id`, do it manually during the password session:
+
+```sh
+scp "$HOME/.ssh/kimi-install-ed25519.pub" \
+  <deployment-user>@<server-address>:/tmp/kimi-install-ed25519.pub
+ssh <deployment-user>@<server-address> \
+  'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF -f /tmp/kimi-install-ed25519.pub ~/.ssh/authorized_keys || cat /tmp/kimi-install-ed25519.pub >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; rm -f /tmp/kimi-install-ed25519.pub'
+```
+
+Add this to your workstation's `~/.ssh/config` so you can just type `ssh kimi-install`:
+
+```sshconfig
+Host kimi-install
+    HostName <server-address>
+    User <deployment-user>
+    IdentityFile ~/.ssh/kimi-install-ed25519
+    IdentitiesOnly yes
+```
+
+Test that it truly won't fall back to a password:
+
+```sh
+ssh -o BatchMode=yes -o PasswordAuthentication=no kimi-install 'id -un; hostname'
+```
+
+It should print your username and the server hostname with zero prompting. You're good.
+
+---
+
+## 2. Take a Quick Baseline of Your Server
+
+Before installing anything, let's see what we're working with. Run this on the **server**:
+
+```sh
+cat /etc/os-release
+uname -m
+dpkg --print-architecture
+id
+python3 --version || true
+df -hT /
+free -h
+ps -p 1 -o comm=
+systemctl --version | head -n 1
+```
+
+**What you're checking:**
+- Linux + Python 3.14 or newer
+- You're not root (good!)
+- Enough disk space and memory for the features you want
+- The browser features will need a little extra room for Node and Chromium
+
+---
+
+## 3. Install the Packages Kimi Needs
+
+### Core packages
+On the **server**:
+
+```sh
+sudo apt-get update
+sudo apt-get install --yes git python3-venv
+```
+
+### Sandbox packages (browser, code execution, skills)
+These features run inside isolated sandboxes, so we need a few extra tools:
+
+```sh
+sudo apt-get install --yes bubblewrap util-linux
+```
+
+### Browser + visual rendering packages
+The browser and chart tools also need Node 22.18+, npm, unzip, and some shared libraries:
+
+```sh
+sudo apt-get install --yes nodejs npm unzip \
+  libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+  libasound2t64 libxdamage1 libatspi2.0-0t64
+node --version
+npm --version
+```
+
+Ubuntu 26.04.1 ships Node 22.22. Perfect. Don't continue on anything older than 22.18.
+
+---
+
+## 4. Clone the Bot
+
+Do this as your normal deployment user on the **server**:
+
+```sh
+git clone https://github.com/webhead2oo9/kimi-agent.git kimi-agent
+cd kimi-agent
+```
+
+If you want a branch other than `main`, add `--branch <name>` to the clone command.
+
+---
+
+## 5. Create the Python Environment
+
+We'll create a virtual environment with hash-checked dependencies for safety. If you have `uv` installed, the same commands will use it automatically.
+
+Run this as the deployment user:
+
+```sh
+cd "$HOME/kimi-agent/bot"
+
+if command -v uv >/dev/null 2>&1; then
+  echo "Using installed uv"
+  uv sync --locked
+  .venv/bin/python -m ensurepip
+else
+  echo "Using standard venv and pip"
+  python3 -m venv .venv
+  .venv/bin/python -m pip --disable-pip-version-check install \
+    --require-hashes --requirement requirements.lock
+fi
+.venv/bin/python -m pip --disable-pip-version-check install \
+  --no-deps --editable ./packages/kimi-agent-module-api --editable .
+
+test -x .venv/bin/python
+.venv/bin/python --version
+.venv/bin/python -m pip check
+```
+
+**What success looks like:**
+- `.venv/bin/python` exists and is Python 3.14+
+- pip says "No broken requirements found."
+
+The hash-checking step protects you from tampered packages. If you want `uv` later, install it with its official standalone installer (never with sudo).
+
+---
+
+## 6. Prepare User Services and Sandbox Tools
+
+Some features (browser, code execution) run in isolated services, so we need your user manager to stay active even after you log out.
+
+Enable lingering:
+
+```sh
+sudo loginctl enable-linger "$(id -un)"
+sudo systemctl start "user@$(id -u).service"
+```
+
+### Ubuntu 26.04.1: Disable Apport
+
+Ubuntu's crash reporter can interfere with the sandbox. Check if it's active:
+
+```sh
+sysctl kernel.core_pattern
+```
+
+If the output starts with `|`, turn it off:
+
+```sh
+sudo sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport
+sudo systemctl disable --now apport.service
+sysctl kernel.core_pattern
+```
+
+Only continue once the value no longer starts with `|`.
+
+### Install the Browser Runtime
+
+The browser and chart tools need a pinned Chromium runtime:
+
+```sh
+cd kimi-agent/bot
+sudo sh ./deploy/betterwright/install.sh
+.venv/bin/python -m deploy.betterwright.smoke_test
+```
+
+A successful run ends with `browser smoke passed`.
+
+The runtime is installed at `/opt/kimi/betterwright` (owned by root). Leave it there.
+
+---
+
+## 7. Create Your Private Folders
+
+Your config, secrets, database, and workspaces live outside the public checkout so updates stay safe.
+
+Run this as the deployment user:
+
+```sh
+umask 077
+install -d -m 700 \
+  "$HOME/.config/kimi-agent/config" \
+  "$HOME/.config/kimi-agent/secrets" \
+  "$HOME/.local/share/kimi-agent/data" \
+  "$HOME/.local/share/kimi-agent/workspaces" \
+  "$HOME/.local/share/kimi-agent/skills" \
+  "$HOME/.local/share/kimi-agent/browser_profiles" \
+  "$HOME/.local/state/kimi-agent/logs" \
+  "$HOME/.cache/kimi-agent/attachments"
+```
+
+Copy the default prompt and model files:
+
+```sh
+cd kimi-agent/bot
+install -m 600 config/prompt.md config/persona.md \
+  "$HOME/.config/kimi-agent/config/"
+install -m 600 config/prompts/commands/*.md \
+  "$HOME/.config/kimi-agent/config/prompts/commands/"
+install -m 600 config/models.example.yaml \
+  "$HOME/.config/kimi-agent/config/models.yaml"
+printf '%s\n' '{}' > "$HOME/.config/kimi-agent/secrets/skills.yaml"
+chmod 600 "$HOME/.config/kimi-agent/secrets/skills.yaml"
+```
+
+### Where things live
+
+| Path | Purpose |
 |---|---|
-| `DISCORD_BOT_TOKEN is not set`, then exit 1 | The token is missing from the selected dotenv file (`.env`, or whatever `ENV_FILE` names). |
-| `Configured model credentials are unavailable; check config/models.yaml and the referenced .env secret values.`, then exit 1 | A reachable model has no usable credentials. The check covers every role including `roles.compaction`, so a compaction-only profile with an unset key stops boot too. `keyless: true` profiles and Codex profiles are checked differently: the gateway needs no local secret, while Codex uses its token file. |
-| `Model routing file not found: <path>. Copy config/models.example.yaml to <path>, then replace its placeholders.` | `<CONFIG_DIR>/models.yaml` does not exist. Boot never falls back to the tracked template. |
-| `Codex authentication rejected (...). Run: python scripts/codex_auth.py --token-file <file>`, then exit 1 | The stored Codex token was revoked. A network error or timeout during the same check only warns and retries on first use. |
-| `Executable skill tools require Linux; unsandboxed execution is disabled` | The skill store declares `tools:` on a non-Linux host. |
-| `Executable skill tools require an unprivileged service account; refusing to run as root` | The process is UID 0. |
-| `Executable skill tools require bwrap, prlimit; unsandboxed execution is disabled` | The packages from step 1 are absent, or present but not executable. |
-| `Executable skill sandbox probe exited <code>: <stderr>` | Bubblewrap is installed, but the kernel or host security policy will not let it create the namespace. |
+| `~/.config/kimi-agent/config` | Prompts, models, guild settings |
+| `~/.config/kimi-agent/kimi.env` | Discord token + main settings (mode 600) |
+| `~/.config/kimi-agent/secrets` | Skill secrets, Codex auth |
+| `~/.local/share/kimi-agent` | Database, workspaces, skills, browser profiles |
+| `~/.local/state/kimi-agent/logs` | Tool event logs |
+| `~/.cache/kimi-agent/attachments` | Temporary files |
 
-The four sandbox messages only appear when the store actually declares
-`tools:`; an instruction-only or empty store skips the probe entirely.
+### Create `kimi.env`
 
-### The bot starts and then ignores every mention
+Print your home path first:
 
-Booting is not the same as activation, and an unactivated guild logs nothing at
-all, so the silence itself is the clue. Check the guild's activation state:
+```sh
+printf '%s\n' "$HOME"
+```
 
-- If there is no `config/servers/<guild_id>.md` and the id isn't in
-  `ALLOWED_GUILD_IDS`, the state is `pending` and the bot stays silent.
-- If the fragment exists but the state is `invalid_setup`, then
-  `server_setup_activation` refused it. It fails closed on *any* malformed
-  sibling key, not just `bot_active`: a non-numeric `learn_log_channel_id` or
-  `proposal_channel_id`, or
-  one bad entry in `staff_user_ids`, `staff_role_ids`, `regular_role_ids`, or
-  `thread_targets`, voids the whole file. Active modules can add their own
-  fail-closed validators. The reasoning is simple: a typo in a trust list must
-  never activate a guild with the wrong boundaries.
-- `bot_active: false` wins over `ALLOWED_GUILD_IDS`.
+Then create the file (replace every placeholder):
 
-One thing that is deliberately non-fatal at boot: a chat model whose
-`context_window` is smaller than `COMPACTION_TRIGGER_TOKENS` +
-`REACT_MAX_TOKENS` logs a single warning naming both numbers and the model, and
-the bot keeps running.
+```sh
+cat > "$HOME/.config/kimi-agent/kimi.env" <<'EOF'
+# Discord and the explicitly activated sandbox guild.
+DISCORD_BOT_TOKEN=<discord-bot-token>
+BOT_NAME=Kimi
+OWNER_USER_ID=<operator-user-id>
+STAFF_USER_IDS=<operator-user-id>
+ALLOWED_GUILD_IDS=<guild-id>
 
-If you want to run a second local bot with its own config and data, dev-instance
-isolation is covered in [`development.md`](development.md).
+# Required by the Discord logging module used in this guide.
+MESSAGE_CONTENT_INTENT=true
+MEMBERS_INTENT=true
+
+# User-installed personal chat and DM access.
+USER_APP_CHAT_ENABLED=true
+USER_APP_STAFF_IDS=<operator-user-id>
+USER_APP_MEMBER_IDS=
+USER_APP_REGULAR_IDS=
+USER_APP_CHAT_TIMEOUT_SECONDS=840
+USER_APP_DM_ENABLED=true
+
+# Generic key-backed provider. Use the exact variable named by models.yaml.
+MODEL_API_KEY=<provider-api-key>
+CODEX_TOKEN_FILE=<home-directory>/.config/kimi-agent/secrets/codex-auth.json
+
+# Private configuration and runtime state.
+CONFIG_DIR=<home-directory>/.config/kimi-agent/config
+SKILLS_DIR=<home-directory>/.local/share/kimi-agent/skills
+DATABASE_PATH=<home-directory>/.local/share/kimi-agent/data/bot.db
+WORKSPACE_DIR=<home-directory>/.local/share/kimi-agent/workspaces
+ATTACHMENT_STORE_DIR=<home-directory>/.cache/kimi-agent/attachments
+PERSONAL_SKILLS_DIR=<home-directory>/.local/share/kimi-agent/personal_skills
+TOOL_EVENT_LOG_ENABLED=true
+TOOL_EVENT_LOG_PATH=<home-directory>/.local/state/kimi-agent/logs/events.jsonl
+TOOL_EVENT_LOG_CONTENT_MODE=metadata
+SECRETS_FILE=<home-directory>/.config/kimi-agent/secrets/skills.yaml
+BROWSER_PROFILES_DIR=<home-directory>/.local/share/kimi-agent/browser_profiles
+BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
+
+# Separately installed application modules, by entry-point name.
+KIMI_MODULES=discord_logging
+EOF
+chmod 600 "$HOME/.config/kimi-agent/kimi.env"
+```
+
+**Important:** Do not leave any angle-bracket placeholders in the file. Add only the extra keys your deployment actually needs (internet search, for example, activates when you set at least one of `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY`).
+
+When copying from another installation, only bring over config and credential files. Never copy the venv, database, workspaces, logs, or browser profiles.
+
+---
+
+## 8. Configure the Discord Application
+
+Go to the Discord Developer Portal for the application that owns your bot token.
+
+### Bot settings
+1. On the **Bot** tab, create or reset the token and store it only in `kimi.env`.
+2. Enable **Message Content Intent** only if a module or feature you enable requires it (we set `MESSAGE_CONTENT_INTENT=true` in the example env file).
+3. Enable **Server Members Intent** only if a module or feature you enable requires it (the optional discord-logging example needs it).
+4. Keep **Guild Install** enabled with the `bot` and `applications.commands` scopes.
+5. Install the bot only into your sandbox guild and give it the minimum permissions it needs.
+
+For normal chat the bot needs: View Channel, Send Messages, Read Message History, Embed Links, Attach Files, and Use Application Commands.
+
+Turn on Developer Mode in Discord so you can right-click → Copy ID for guilds, channels, users, and roles. The `ALLOWED_GUILD_IDS` setting only activates the guilds you list. Empty does **not** mean "every guild."
+
+### Enable user-installed chat and DMs
+In the same installation settings:
+
+1. Enable **User Install** as an installation context.
+2. Give it the `applications.commands` scope.
+3. Install the user-install link on each allowlisted account.
+4. Leave Guild Install enabled (it's a separate surface).
+
+The `USER_APP_*` settings let the operator use `/chat` and expose `/privacy`, `/memory`, and `/stop` on the personal surface. DMs are ignored for anyone not on the allowlist.
+
+
+
+---
+
+## 9. Configure Model Providers
+
+Edit the model routing file:
+
+```sh
+nano "$HOME/.config/kimi-agent/config/models.yaml"
+```
+
+Replace every `.example.invalid` URL and model ID. Set realistic context windows and capabilities. The `chat` and `compaction` roles must point to models that support text + tool calling. Don't declare `image_input` until you've actually tested images on that route.
+
+A minimal working example:
+
+```yaml
+providers:
+  primary:
+    type: openai_compat
+    base_url: https://api.example.com/v1
+    api_key_env: MODEL_API_KEY
+
+models:
+  primary-chat:
+    provider: primary
+    model: <provider-model-id>
+    context_window: <provider-context-window>
+    capabilities: [text, tool_calling]
+
+roles:
+  chat: primary-chat
+  chat_fallbacks: []
+  compaction: primary-chat
+  compaction_fallbacks: []
+
+selectable_chat_models: [primary-chat]
+
+overrides:
+  channels: {}
+  guilds: {}
+  users: {}
+  commands: {}
+```
+
+Secrets stay in `kimi.env`; `models.yaml` just names the environment variable.
+
+If your model route uses `codex`, run the login helper:
+
+```sh
+cd kimi-agent/bot
+./scripts/codex-login
+```
+
+It will prompt for confirmation and then start the device authentication flow.
+
+---
+
+## 10. Create a Runtime Profile
+
+Here's a baseline for a 4 vCPU / 4 GiB RAM machine.
+
+```sh
+cat > "$HOME/.config/kimi-agent/runtime.env" <<'EOF'
+BROWSER_ENABLED=true
+BROWSER_NETWORK_MODE=host
+BROWSER_MAX_TOTAL_MEMORY_MB=1536
+BROWSER_MAX_TASKS=128
+BROWSER_CPU_QUOTA_PERCENT=200
+BROWSER_TMP_SIZE_MB=256
+BROWSER_MAX_PROFILE_MB=256
+
+CODE_EXEC_ENABLED=true
+CODE_EXEC_MIN_TIER=member
+CODE_EXEC_NETWORK_MODE=none
+CODE_EXEC_PYTHON_BIN=/usr/bin/python3
+CODE_EXEC_MAX_MEMORY_MB=2048
+CODE_EXEC_MAX_TOTAL_MEMORY_MB=1536
+CODE_EXEC_MAX_TASKS=96
+CODE_EXEC_CPU_QUOTA_PERCENT=200
+CODE_EXEC_TMP_SIZE_MB=256
+CODE_EXEC_ENV_DIR_MAX_MB=512
+CODE_EXEC_ENV_DIR_MAX_FILES=50000
+EOF
+chmod 600 "$HOME/.config/kimi-agent/runtime.env"
+```
+
+`BROWSER_NETWORK_MODE=host` is the straightforward public-browser path. Code execution stays offline. The test needed `BROWSER_MAX_TASKS=128` because Chromium creates renderer threads. Lowering it without re-testing can cause failures.
+
+Don't blindly copy resource limits or network modes from another host.
+
+---
+
+## 11. (Optional) Discord Logging Module Example
+
+Kimi supports separately installed application modules. The discord-logging module is one example of what a module can do. It is completely optional. You only need it if you want edit/delete/invite/member logging in a channel.
+
+If you enable it, it requires the two privileged intents. You can review the module's code to see exactly what it does and what permissions it needs. The steps below show how to install and configure it as an example.
+
+```sh
+module_dir="$HOME/kimi-agent-discord-logging"
+module_commit="<reviewed-module-commit>"
+test ! -e "$module_dir"
+git clone https://github.com/webhead2oo9/kimi-agent-discord-logging.git \
+  "$module_dir"
+git -C "$module_dir" checkout --detach "$module_commit"
+git -C "$module_dir" status --short --branch
+test "$(git -C "$module_dir" rev-parse HEAD)" = "$module_commit"
+
+cd "$HOME/kimi-agent/bot"
+.venv/bin/python -m pip --disable-pip-version-check install \
+  --no-deps --editable "$module_dir"
+.venv/bin/python - <<'PY'
+from importlib.metadata import entry_points, version
+
+names = {item.name for item in entry_points(group="kimi_agent.modules")}
+assert "discord_logging" in names
+print("discord-logging-version=" + version("kimi-agent-discord-logging"))
+print("discord-logging-entry-point=present")
+PY
+```
+
+After any later `uv sync`, repeat the editable install.
+
+Create a minimal guild config for the sandbox:
+
+```sh
+install -d -m 700 \
+  "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>"
+cat > "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>/discord_logging.md" <<'EOF'
+---
+logging_channel_id: <logging-channel-id>
+log_edits: true
+log_deletes: true
+log_bulk_deletes: true
+log_invite_create: true
+log_invite_delete: true
+log_member_joins: true
+ignored_channel_ids: []
+snapshot_retention_days: 30
+---
+EOF
+chmod 600 \
+  "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>/discord_logging.md"
+```
+
+The logging channel needs View Channel, Send Messages, and Embed Links. The bot needs View Channel (and ideally Read Message History) in observed channels. Put sensitive channels in the ignored list.
+
+Follow the module's own README for the full field list and privacy notes.
+
+---
+
+## 12. Run Preflight Checks (No Discord Connection Yet)
+
+Run the preflight helper:
+
+```sh
+cd kimi-agent/bot
+./scripts/preflight
+```
+
+It checks provider credentials, model routing, Codex authentication (if used), and the browser runtime.
+
+A missing or revoked required Codex credential will cause the script to exit with an error. Temporary network problems will show a warning. The bot will retry automatically on first use.
+
+These checks do not connect the bot to Discord.
+
+---
+
+## 13. Install the systemd Service
+
+Run the installer from the bot directory:
+
+```sh
+./scripts/install-service
+```
+
+It will create the service file with the correct paths, enable lingering if needed, and enable the service.
+
+You can start it later with:
+```sh
+systemctl --user start kimi-agent.service
+```
+
+---
+
+## 14. Start the Service
+
+If nothing else is using the token, just start it:
+
+```sh
+systemctl --user start kimi-agent.service
+systemctl --user status kimi-agent.service --no-pager
+journalctl --user -u kimi-agent.service -n 150 --no-pager
+```
+
+---
+
+## 15. Day-to-Day Service Management
+
+Handy commands:
+
+```sh
+systemctl --user start kimi-agent.service
+systemctl --user stop kimi-agent.service
+systemctl --user restart kimi-agent.service
+
+systemctl --user status kimi-agent.service --no-pager
+journalctl --user -u kimi-agent.service -n 200 --no-pager
+journalctl --user -u kimi-agent.service -b --no-pager
+journalctl --user -u kimi-agent.service \
+  --since '30 minutes ago' --no-pager
+
+# Follow live logs until you press Ctrl-C
+journalctl --user -u kimi-agent.service -f
+```
+
+Restart after changing `kimi.env`, `runtime.env`, `models.yaml`, or module registration. Most prompt and fragment files reload live, but a restart is still the safest validation.
+
+A quick restart can leave a stale scheduler lease for up to 60 seconds. Always prove there's only one `bot.py` process. The "another scheduler runner holds the lease" message is only okay if you then see "Module scheduler resumed" and the module becomes healthy within roughly 80 seconds.
+
+Check boot setup:
+
+```sh
+loginctl show-user "$(id -un)" -p Linger
+systemctl --user is-enabled kimi-agent.service
+systemctl --user is-active kimi-agent.service
+```
+
+---
+
+## 16. Upgrading
+
+### 1. Stop the service
+```sh
+systemctl --user stop kimi-agent.service
+```
+
+### 2. (Optional) Quick backup
+If you want a safety net:
+```sh
+backup_dir="$HOME/kimi-agent-backups/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$backup_dir"
+tar -C "$HOME" -czf "$backup_dir/private-state.tar.gz" \
+  .config/kimi-agent \
+  .config/systemd/user/kimi-agent.service \
+  .local/share/kimi-agent
+```
+
+### 3. Update the code
+Make sure your checkout is clean, then pull:
+```sh
+git status --short --branch
+git pull --ff-only
+```
+
+Compare any prompt changes against your private copies.
+
+### 4. Reinstall Python packages
+```sh
+cd kimi-agent/bot
+if command -v uv >/dev/null 2>&1; then
+  uv sync --locked
+  .venv/bin/python -m ensurepip
+else
+  python3 -m venv .venv
+  .venv/bin/python -m pip install --require-hashes --requirement requirements.lock
+fi
+.venv/bin/python -m pip install --no-deps --editable ./packages/kimi-agent-module-api --editable .
+```
+
+### 5. Optional: discord-logging module
+If you installed the optional discord-logging module, update it too:
+```sh
+.venv/bin/python -m pip install --no-deps --editable "$HOME/kimi-agent-discord-logging"
+```
+
+### 6. Run preflight and start
+```sh
+./scripts/preflight
+systemctl --user start kimi-agent.service
+```
+
+---
+
+## 17. Validation Checklist
+
+A healthy installation should show:
+
+1. Service is `active/running` with `Result=success` and no restart loop.
+2. Discord connected, your guild is active, slash commands synced.
+3. Database and every module initialized; `discord_logging` reports healthy.
+4. Browser and code execution registered under your chosen isolation modes.
+5. No error-level journal entries, unexplained warnings, permission problems, or missing files.
+6. A clean restart produces the same result.
+
+When testing interaction, stay inside the sandbox guild: one normal response, `/modules status`, an edit/delete logging event, private `/chat`, public `/chat`, and an allowlisted DM. Note anything you didn't exercise.
+
+For automatic startup, reboot only after the first connection is solid:
+
+```sh
+sudo reboot
+```
+
+After reconnecting:
+
+```sh
+ssh kimi-install
+systemctl --user is-active kimi-agent.service
+systemctl --user status kimi-agent.service --no-pager
+journalctl --user -u kimi-agent.service -b --no-pager
+```
+
+Make sure your persistent data survived.
+
+---
+
+## 18. Troubleshooting
+
+| Symptom | What it usually means & what to check |
+|---|---|
+| `.venv/bin/python` is missing | Install `python3-venv` and repeat step 5. |
+| `uv: command not found` | uv is optional. Use the venv/pip path or install uv from its official site. |
+| `No module named pip` after `uv sync` | uv intentionally prunes pip. Run `.venv/bin/python -m ensurepip` before installing extra modules. |
+| Hash mismatch from pip | Stop. Don't disable hash checking. Confirm the checkout is clean and `requirements.lock` matches the revision. |
+| BetterWright says `unzip extract failed` | Install `unzip` and rerun the installer. |
+| Chromium can't create threads | Raise `BROWSER_MAX_TASKS` (test needed 128) and rerun the smoke test. |
+| Browser/code probe fails | Check `sysctl kernel.core_pattern`. A leading `|` bypasses the sandbox's zero-core limit. Also verify Bubblewrap, user manager, and workspace mounts. |
+| `DISCORD_BOT_TOKEN is not set` | The `ENV_FILE` is missing, unreadable, or doesn't contain the token. Check paths and permissions (don't print the value). |
+| Provider credentials unavailable | A chat, fallback, or compaction route is missing its key/token. |
+| Model routing file not found | `<CONFIG_DIR>/models.yaml` is missing. Kimi never falls back to the example template. |
+| Discord rejects privileged intents | The portal and your `kimi.env` settings disagree. Enable both sides or turn off the feature that needs them. |
+| Bot is online but ignores the guild | The guild is inactive, its fragment is invalid, `bot_active: false` wins, or the bot lacks channel permissions. |
+| `discord_logging` entry point missing | Reinstall the module after any `uv sync` or environment recreation. |
+| Logging module is soft-disabled | Both required intents aren't enabled. `/modules status` will tell you exactly what's missing. |
+| Module is healthy but posts nothing | Check the exact guild-module file path, logging channel ID, ignored list, event toggles, and permissions. |
+| `systemctl --user` can't reach the bus | Run it as the deployment user. Confirm lingering and `user@<uid>.service` are working. Never use sudo for user units. |
+| Service restarts over and over | Stop it, fix the first journal error, run `systemctl --user reset-failed`, then start once. |
+| Scheduler pauses after a fast restart | Prove there's only one `bot.py` process. A stale lease can take up to 60 seconds to clear; wait for the "resumed" message and a healthy module within ~80 seconds. |
+| Skill secrets file warning | Non-fatal. Create a mode-600 `{}` file when you don't intend to use executable skill secrets. |
+
+Run the diagnostics helper for a quick overview:
+
+```sh
+./scripts/diagnostics
+```
+
+Never dump the full environment or print credential files while debugging.
+
+---
+
+
+
+That's the whole process! Take it one section at a time, and you'll have a solid, maintainable Kimi deployment. The journal and troubleshooting table are your best friends when something doesn't go exactly as planned. Enjoy your bot!

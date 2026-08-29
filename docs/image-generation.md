@@ -46,7 +46,7 @@ provider:
 
 ```bash
 cd bot
-uv run python scripts/codex_auth.py --token-file secrets/codex-auth.json
+.venv/bin/python scripts/codex_auth.py --token-file secrets/codex-auth.json
 ```
 
 OAuth requests target `https://chatgpt.com/backend-api/codex`, sending the
@@ -79,7 +79,7 @@ This keeps every model-supplied path behind
 traversal, and symlink chains.
 
 Successful output is a PNG saved under a collision-resistant
-`generated_images/image-<uuid>.png` path in the caller's per-guild workspace.
+`generated_images/image-<uuid>.png` path in the caller's scoped workspace.
 It counts against normal workspace quota, is automatically queued for the
 final Discord reply with its accessibility description, and remains available
 for a later edit through `reference_paths`. The tool returns only metadata and

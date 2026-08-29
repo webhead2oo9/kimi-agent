@@ -4,14 +4,15 @@ This directory is the canonical documentation set for the repository. The
 runtime source, configuration templates, deployment files, and tests all live
 under `../bot/`, and links from these pages point there explicitly.
 
-If you're new to the project, read [Setup and boot](setup.md) first, then
+If you're new to the project, read [Install and operate Kimi](setup.md) first, then
 [Architecture](architecture.md), then the [developer map](../CLAUDE.md).
 That's enough to get a bot running and to find your way around the source.
 The rest is reference material.
 
 ## Start here
 
-- [Setup and boot](setup.md): first deployment and verification.
+- [Install and operate Kimi](setup.md): the canonical end-to-end Ubuntu
+  deployment, service, upgrade, and troubleshooting guide.
 - [Architecture](architecture.md): the shape of the system and its package map.
 - [Configuration](configuration.md): every deployment setting and every live
   fragment surface.

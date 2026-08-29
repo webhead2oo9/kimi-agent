@@ -1,20 +1,10 @@
 # Observability: the tool event stream
 
-The bot can emit structured JSON lines for tool calls, turn summaries, and
-context compaction events. By default those lines carry metadata only: timings,
-ids, tool names, and outcomes. Getting the actual arguments, results, prompts,
-and replies into the file takes a deliberate environment setting. The stream is
-plain JSONL, so `tail -f logs/events.jsonl | jq .` works directly.
+The bot can emit structured JSON lines for tool calls, turn summaries, context compaction, moderation matches, and application-module health. By default those lines carry metadata only: timings, ids, tool names, and outcomes. Getting the actual arguments, results, prompts, and replies into the file takes a deliberate environment setting. The stream is plain JSONL, so `tail -f logs/events.jsonl | jq .` works directly.
 
-The stream is **off by default**. While it is disabled, no writer is started
-and `emit_*` calls return without writing anything. The file is the whole
-output contract; the bot does not depend on anything consuming it.
+The stream is **off by default**. While it is disabled, no writer is started and `emit_*` calls return without writing anything. The file is the whole output contract; the bot does not depend on anything consuming it.
 
-`module_health` events are best-effort reports of application-module health
-transitions: `module`, `state`
-(`starting`/`healthy`/`degraded`/`failed`), a length-bounded `detail`, and
-bounded numeric `metrics`. Detail text is supplied by trusted module code and is
-not redacted, so modules must keep user content and secrets out of it.
+`module_health` events are best-effort reports of application-module health transitions: `module`, `state` (`starting`/`healthy`/`degraded`/`failed`), a length-bounded `detail`, and bounded numeric `metrics`. Detail text is supplied by trusted module code and is not redacted, so modules must keep user content and secrets out of it.
 
 ## Enabling it
 
@@ -28,64 +18,26 @@ These settings live in `config/settings.py` and are mirrored in `.env.example`:
 | `TOOL_EVENT_LOG_MAX_FIELD_BYTES`| `8192`              | Per-field cap on `args`/`result`, each `request` message, and `response` before truncation. |
 
 ```bash
-TOOL_EVENT_LOG_ENABLED=true uv run python bot.py
+TOOL_EVENT_LOG_ENABLED=true .venv/bin/python bot.py
 ```
 
-The three content modes trade detail for safety. `metadata` keeps tool
-payloads, prompts, memories, user messages, and assistant replies out of the
-file entirely. `redacted` writes them, but first strips values under
-credential-looking keys and any secret it already knows from `Settings`.
-`full` is the verbatim stream, unchanged; it warns at startup, because what
-lands in the file can include both secrets and private conversation. `logs/`
-is git-ignored.
+The three content modes trade detail for safety. `metadata` keeps tool payloads, prompts, memories, user messages, and assistant replies out of the file entirely. `redacted` writes them, but first strips values under credential-looking keys and any secret it already knows from `Settings`. `full` is the verbatim stream, unchanged; it warns at startup, because what lands in the file can include both secrets and private conversation. `logs/` is git-ignored.
 
 ## Data flow
 
-Each turn carries one `turn_id`. On the production path `agent/turn.py` mints
-it and passes it in via `ConversationRunRequest.turn_id`. The same id stamps
-the turn's `usage_ledger` and `paid_usage_ledger` rows, so JSONL events join
-directly to ledger rows; `agent/core.py:run_conversation` generates an id
-itself only for direct callers that supply none.
+Each turn carries one `turn_id`. On the production path `agent/turn.py` mints it and passes it in via `ConversationRunRequest.turn_id`. The same id stamps the turn's `usage_ledger` and `paid_usage_ledger` rows, so JSONL events join directly to ledger rows; `agent/core.py:run_conversation` generates an id itself only for direct callers that supply none.
 
-At the dispatch boundary the loop calls `observability.events.emit_tool_call(...)`
-for every tool the model invokes, including bad-tool-name and unparseable-args
-attempts, which carry `ok: false` from their `{"error": ...}` result. If
-in-loop context compaction runs, the loop calls `emit_compaction(...)` with the
-compaction reason and the message and tool-result counts. A tool with its own
-private dispatch loop can attach child `tool_call` events to the same turn by
-reusing `ctx.tool_event_turn_id`, which lets a JSONL consumer correlate the
-sub-loop with the outer call. No shipped tool does this today; the turn's own
-`tool_count` counts only what the outer ReAct loop dispatched, so a sub-loop's
-rows are visible in the stream but not in that total.
+At the dispatch boundary the loop calls `observability.events.emit_tool_call(...)` for every tool the model invokes, including bad-tool-name and unparseable-args attempts, which carry `ok: false` from their `{"error": ...}` result. If in-loop context compaction runs, the loop calls `emit_compaction(...)` with the compaction reason and the message and tool-result counts. A tool with its own private dispatch loop can attach child `tool_call` events to the same turn by reusing `ctx.tool_event_turn_id`, which lets a JSONL consumer correlate the sub-loop with the outer call. No shipped tool does this today; the turn's own `tool_count` counts only what the outer ReAct loop dispatched, so a sub-loop's rows are visible in the stream but not in that total.
 
-When the turn produces its final response (or ends on the max-iteration
-fallback or the whole-turn wall-clock timeout) the loop calls `emit_turn(...)`.
-Under `redacted` or `full`, that row carries a snapshot of the iteration-0
-model input and the final assistant text; under `metadata` both fields are
-`null`. Recent channel history shows up in that snapshot only if the model
-explicitly called `get_channel_context`.
+When the turn produces its final response (or ends on the max-iteration fallback or the whole-turn wall-clock timeout) the loop calls `emit_turn(...)`. Under `redacted` or `full`, that row carries a snapshot of the iteration-0 model input and the final assistant text; under `metadata` both fields are `null`. Because the snapshot is captured before tool dispatch, channel history fetched later with `get_channel_context` does not appear in it. In `redacted` or `full` mode, that history can instead appear in the corresponding `tool_call.result`.
 
-`emit_*` are no-ops unless the writer was started.
-`KimiApplication.on_ready` calls `start_event_writer(...)` when
-`TOOL_EVENT_LOG_ENABLED` is set, and application shutdown flushes via
-`stop_event_writer()`.
+`emit_*` are no-ops unless the writer was started. `KimiApplication.on_ready` calls `start_event_writer(...)` when `TOOL_EVENT_LOG_ENABLED` is set, and application shutdown flushes via `stop_event_writer()`.
 
-The writer (`observability/events.py:EventWriter`) is non-blocking: `emit_*`
-only enqueue onto an `asyncio.Queue`, and a single background task drains it,
-appends one line, and flushes. The ReAct loop never touches the disk. If the
-queue fills, the writer drops events with a one-time warning; if the path can't
-be opened, the writer stays disabled; and an `OSError` during a write stops the
-drain task with one warning, after which later events are silently dropped.
-Whatever happens, logging never crashes the bot. On POSIX the live file and its
-rotated backup are created mode `0600`, readable only by the owner, and if the
-file cannot be locked down that way the writer never starts.
+The writer (`observability/events.py:EventWriter`) is non-blocking: `emit_*` only enqueue onto an `asyncio.Queue`, and a single background task drains it, appends one line, and flushes. The ReAct loop never touches the disk. If the queue fills, the writer drops events with a one-time warning; if the path can't be opened, the writer stays disabled; and an `OSError` during a write stops the drain task with one warning, after which later events are silently dropped. Whatever happens, logging never crashes the bot. On POSIX the live file and its rotated backup are created mode `0600`, readable only by the owner, and if the file can't be locked down that way the writer never starts.
 
 ## Event schema
 
-Every event is one JSON object on its own line. The current schema is `v: 2`.
-Tool, turn, compaction, and moderation rows name the `content_mode` they were
-written under; `module_health` rows do not. A file can contain both `v: 1` and
-`v: 2` shapes, so branch on `v` and event `type` when reading it.
+Every event is one JSON object on its own line. The current schema is `v: 2`. Tool, turn, compaction, and moderation rows name the `content_mode` they were written under; `module_health` rows do not. A file can contain both `v: 1` and `v: 2` shapes, so branch on `v` and event `type` when reading it.
 
 ### `tool_call`
 
@@ -139,17 +91,9 @@ written under; `module_health` rows do not. A file can contain both `v: 1` and
 }
 ```
 
-Under `redacted` and `full`, `request` is a **model-input** view rather than a
-byte-for-byte provider request. It omits the full tool JSON schemas (only tool
-**names** appear, in the `tools` section) and the generation parameters
-(`temperature`, `max_tokens`, capability flags). The `system` and `tools` roles
-are synthetic labels, since the system prompt and tool definitions are not
-ordinary messages. Keep in mind that `browse_tools` can widen the tool set on
-later iterations; this snapshot captures the iteration-0 set only.
+Under `redacted` and `full`, `request` is a **model-input** view rather than a byte-for-byte provider request. It omits the full tool JSON schemas (only tool **names** appear, in the `tools` section) and the generation parameters (`temperature`, `max_tokens`, capability flags). The `system` and `tools` roles are synthetic labels, since the system prompt and tool definitions are not ordinary messages. Keep in mind that `browse_tools` can widen the tool set on later iterations; this snapshot captures the iteration-0 set only.
 
-Where it is present, `response` holds the final user-facing assistant text for
-the turn. Tool-iteration narration appears in provider history and activity
-updates, not in this field.
+Where it is present, `response` holds the final user-facing assistant text for the turn. Tool-iteration narration appears in provider history and activity updates, not in this field.
 
 ### `compaction`
 
@@ -198,14 +142,7 @@ logs only counts, the reason, and size metadata for JSONL consumers.
 }
 ```
 
-The `moderation` event is emitted by `moderation/service.py` (through
-`emit_moderation`) only when the omni-moderation backend returns a real
-category match that the policy blocks. Failure-path blocks, where a backend
-error or timeout fails input open or output closed, are logged but do not emit
-this event. `direction` is `"input"` for the inbound user message or
-`"output"` for the bot's reply. The row carries no `turn_id` or `iteration`,
-because moderation runs at the message boundary, outside the ReAct dispatch
-loop.
+The `moderation` event is emitted by `moderation/service.py` (through `emit_moderation`) only when the omni-moderation backend returns a real category match that the policy blocks. Failure-path blocks, where a backend error or timeout fails input open or output closed, are logged but do not emit this event. `direction` is `"input"` for the inbound user message or `"output"` for the bot's reply. The row carries no `turn_id` or `iteration`, because moderation runs at the message boundary, outside the ReAct dispatch loop.
 
 ### Rules
 
@@ -249,13 +186,13 @@ loop.
   max-iteration fallback). `run_conversation` does not yet receive the Discord
   trigger kind, so richer values can be wired later without a `v` bump.
 - **`full` is the sensitive one.** It records tool arguments and results, the
-  system prompt, transcript and backfill history, recalled memories, attachment
-  context, user text, tool names, and the final assistant reply, all verbatim.
-  Every mode's file is private instance data and belongs on the box that wrote
-  it. Handle a `full` file the way you would handle the secrets inside it.
+  system prompt, stored transcript, injected iteration-0 context such as
+  recalled memories and attachments, user text, tool names, and the final
+  assistant reply, all verbatim. Requested channel history may appear in the
+  relevant tool result rather than the turn request. Every mode's file is
+  private instance data and belongs on the box that wrote it. Handle a `full`
+  file the way you would handle the secrets inside it.
 
 ## Rotation
 
-Rotation is size-based. When the live file would exceed ~50 MB the writer
-rolls it to `events.jsonl.1` (a single backup) and starts a fresh file. Both
-are ordinary JSONL files, and on POSIX both stay at mode `0600`.
+Rotation is size-based. When the live file would exceed ~50 MB the writer rolls it to `events.jsonl.1` (a single backup) and starts a fresh file. Both are ordinary JSONL files, and on POSIX both stay at mode `0600`.

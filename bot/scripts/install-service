@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# Installs the user systemd service for Kimi.
+# Run this as your normal deployment user.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PYTHON_BIN="$BOT_DIR/.venv/bin/python"
+USER_NAME="$(id -un)"
+SERVICE_DIR="${HOME}/.config/systemd/user"
+SERVICE_FILE="${SERVICE_DIR}/kimi-agent.service"
+
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+
+systemd_quote() {
+    local value="$1"
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        echo "ERROR: systemd paths cannot contain newlines" >&2
+        return 1
+    fi
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '"%s"' "$value"
+}
+
+systemd_exec_quote() {
+    local value="${1//\$/\$\$}"
+    systemd_quote "$value"
+}
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
+    echo "Create the bot virtual environment and install its dependencies first." >&2
+    exit 1
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: $ENV_FILE not found" >&2
+    exit 1
+fi
+
+SYSTEMD_WORKING_DIRECTORY="$(systemd_quote "$BOT_DIR")"
+SYSTEMD_ENV_FILE="$(systemd_quote "ENV_FILE=$ENV_FILE")"
+SYSTEMD_RUNTIME_ENV="$(systemd_quote "-$RUNTIME_ENV")"
+SYSTEMD_EXECUTABLE="$(systemd_exec_quote "$PYTHON_BIN")"
+
+echo "Kimi systemd service installer"
+echo "=============================="
+echo "User:        $USER_NAME"
+echo "Bot dir:     $BOT_DIR"
+echo "Service:     $SERVICE_FILE"
+echo "ENV_FILE:    $ENV_FILE"
+echo "RUNTIME_ENV: $RUNTIME_ENV"
+echo
+
+read -r -p "Write service file and enable it? [y/N] " reply
+case "$reply" in
+    [yY][eE][sS]|[yY]) ;;
+    *) echo "Aborted."; exit 1 ;;
+esac
+
+# Ensure lingering is enabled
+if ! loginctl show-user "$USER_NAME" -p Linger | grep -q "Linger=yes"; then
+    echo "Enabling lingering for $USER_NAME..."
+    sudo loginctl enable-linger "$USER_NAME"
+fi
+
+mkdir -p "$SERVICE_DIR"
+
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Kimi Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+UMask=0077
+WorkingDirectory=$SYSTEMD_WORKING_DIRECTORY
+Environment=PYTHONUNBUFFERED=1
+Environment=$SYSTEMD_ENV_FILE
+EnvironmentFile=$SYSTEMD_RUNTIME_ENV
+ExecStart=$SYSTEMD_EXECUTABLE bot.py
+TasksMax=128
+MemoryHigh=1536M
+MemoryMax=2G
+MemorySwapMax=1G
+CPUQuota=200%
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
+EOF
+
+chmod 600 "$SERVICE_FILE"
+
+systemctl --user daemon-reload
+systemctl --user enable kimi-agent.service
+
+echo
+echo "Service installed and enabled."
+systemctl --user status kimi-agent.service --no-pager || true
+
+echo
+echo "You can start it with:"
+echo "  systemctl --user start kimi-agent.service"
+echo
+echo "Check logs with:"
+echo "  journalctl --user -u kimi-agent.service -f"

@@ -7,9 +7,9 @@
 # lives on the host filesystem so it is plainly visible and cannot be lost to
 # a stray `docker volume prune`/`down -v`.
 #
-# pull_policy: missing pins to the already-pulled :latest image so a future
-# upstream :latest (e.g. a Postgres major bump) can't silently break the pg0
-# data. To upgrade deliberately: `docker compose pull && docker compose up -d`.
+# Compose still pulls an image tagged :latest when pull_policy is `missing`.
+# Pin an immutable version tag or digest when upgrades must happen only after
+# review; then use `docker compose pull && docker compose up -d` deliberately.
 services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:latest

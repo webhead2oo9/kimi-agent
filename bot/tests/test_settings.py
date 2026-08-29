@@ -20,6 +20,7 @@ def test_code_exec_public_defaults_are_safe() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.code_exec_enabled is False
+    assert settings.code_exec_min_tier == "member"
     assert settings.code_exec_network_mode == "none"
     assert settings.code_exec_workspace_quota_poll_seconds == 5.0
     assert settings.code_exec_workspace_quota_scan_retries == 4
@@ -67,6 +68,29 @@ def test_enabled_netns_code_exec_requires_complete_fail_closed_probe_config() ->
 def test_invalid_code_exec_network_mode_fails_fast() -> None:
     with pytest.raises(ValidationError, match="none, host, netns"):
         Settings(_env_file=None, code_exec_network_mode="vpn")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("tier", ["member", "regular", "staff"])
+def test_code_exec_min_tier_is_normalized(tier: str) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        code_exec_min_tier=tier.upper(),
+    )
+
+    assert settings.code_exec_min_tier == tier
+
+
+def test_invalid_code_exec_min_tier_fails_fast() -> None:
+    with pytest.raises(ValidationError, match="member, regular, staff"):
+        Settings(_env_file=None, code_exec_min_tier="owner")  # type: ignore[call-arg]
+
+
+def test_code_exec_min_tier_reads_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODE_EXEC_MIN_TIER", "staff")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.code_exec_min_tier == "staff"
 
 
 def test_browser_is_off_by_default_and_defaults_to_host_networking() -> None:

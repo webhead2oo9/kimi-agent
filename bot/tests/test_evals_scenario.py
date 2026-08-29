@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from evals.scenario import Scenario, load_scenario, load_scenarios, split_gated_scenarios
+from evals.identity import EvalIdentity
+from evals.scenario import Scenario, TurnSpec, load_scenario, load_scenarios, split_gated_scenarios
+from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
 
@@ -229,7 +231,17 @@ def test_load_scenario_parses_staff_tier_and_rejects_invalid(tmp_path):
         load_scenario(bad)
 
 
-def test_split_gated_scenarios_holds_back_only_undeclared_hosts(tmp_path):
+async def _noop_tool(args, ctx):
+    return "{}"
+
+
+def _identities(*scenarios: Scenario) -> dict[str, tuple[EvalIdentity, ...]]:
+    return {
+        scenario.id: (EvalIdentity("run", "candidate", scenario.id, 0),) for scenario in scenarios
+    }
+
+
+def test_split_gated_scenarios_holds_back_only_unavailable_hosts(tmp_path):
     """requires_tools means "this host cannot", not a model failure.
 
     The harness hard-fails on an expected-but-unregistered tool, which is right for
@@ -251,11 +263,54 @@ def test_split_gated_scenarios_holds_back_only_undeclared_hosts(tmp_path):
     )
 
     scenarios = load_scenarios(tmp_path)
-    runnable, held = split_gated_scenarios(scenarios, {"read_file"})
+    identities = _identities(*scenarios)
+    registry = ToolRegistry()
+    registry.register("read_file", "", {}, _noop_tool)
+    runnable, held = split_gated_scenarios(
+        scenarios,
+        registry=registry,
+        identities_by_scenario=identities,
+    )
     assert [s.id for s in runnable] == ["plain"]
     assert [(s.id, missing) for s, missing in held] == [("needs-sandbox", ["run_code"])]
 
     # Same scenarios on a host that does register it: nothing sits out.
-    runnable, held = split_gated_scenarios(scenarios, {"read_file", "run_code"})
+    registry.register("run_code", "", {}, _noop_tool)
+    runnable, held = split_gated_scenarios(
+        scenarios,
+        registry=registry,
+        identities_by_scenario=identities,
+    )
     assert sorted(s.id for s in runnable) == ["needs-sandbox", "plain"]
     assert held == []
+
+
+def test_split_gated_scenarios_respects_code_exec_min_tier() -> None:
+    regular = Scenario(
+        id="regular-code",
+        category="sandbox",
+        trust_tier=TrustTier.REGULAR,
+        turns=[TurnSpec("calculate")],
+        requires_tools=["run_code"],
+    )
+    staff = Scenario(
+        id="staff-code",
+        category="sandbox",
+        trust_tier=TrustTier.STAFF,
+        turns=[TurnSpec("calculate")],
+        requires_tools=["run_code"],
+    )
+    registry = ToolRegistry()
+    # This is the registry surface produced by CODE_EXEC_MIN_TIER=staff.
+    registry.register("run_code", "", {}, _noop_tool, min_tier=TrustTier.STAFF)
+
+    runnable, held = split_gated_scenarios(
+        [regular, staff],
+        registry=registry,
+        identities_by_scenario=_identities(regular, staff),
+    )
+
+    assert [scenario.id for scenario in runnable] == ["staff-code"]
+    assert [(scenario.id, missing) for scenario, missing in held] == [
+        ("regular-code", ["run_code"])
+    ]

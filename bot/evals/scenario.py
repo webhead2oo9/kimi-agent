@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml  # type: ignore[import-untyped]
 
 from evals.cassette import Fault
 from trust.tiers import TrustTier, trust_tier_from_value
+
+if TYPE_CHECKING:
+    from evals.identity import EvalIdentity
+    from tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -208,10 +213,54 @@ def load_scenario(path: str | Path) -> Scenario:
     )
 
 
+def scenario_blocked_tools(scenario: Scenario) -> frozenset[str]:
+    """Return the platform-scope denylist used by an eval scenario turn."""
+    return frozenset() if scenario.guild_id else frozenset({"move_to_thread"})
+
+
+def unavailable_scenario_tools(
+    scenario: Scenario,
+    tool_names: Sequence[str],
+    *,
+    registry: ToolRegistry,
+    identities: Sequence[EvalIdentity],
+) -> list[str]:
+    """Return tools unavailable to at least one planned caller of ``scenario``.
+
+    Registration alone is insufficient: production visibility also applies the
+    scenario's trust tier, synthetic caller identity, guild scope, operator
+    denylist, and each tool's runtime availability predicate. ``has_tool`` is
+    the registry's shared visibility boundary for those gates. Searchable-tool
+    activation is deliberately excluded because a scenario can load an
+    otherwise-visible tool with ``browse_tools`` during the turn.
+    """
+    if tool_names and not identities:
+        raise ValueError(f"Scenario {scenario.id!r} has tools to check but no eval identities")
+    guild_id = scenario.guild_id or None
+    blocked = scenario_blocked_tools(scenario)
+    return [
+        name
+        for name in tool_names
+        if any(
+            not registry.has_tool(
+                name,
+                user_id=identity.user_id,
+                guild_id=guild_id,
+                blocked=blocked,
+                tier=scenario.trust_tier,
+            )
+            for identity in identities
+        )
+    ]
+
+
 def split_gated_scenarios(
-    scenarios: list[Scenario], registered: set[str]
+    scenarios: list[Scenario],
+    *,
+    registry: ToolRegistry,
+    identities_by_scenario: Mapping[str, Sequence[EvalIdentity]],
 ) -> tuple[list[Scenario], list[tuple[Scenario, list[str]]]]:
-    """Partition into (runnable here, held back with the tools this host lacks).
+    """Partition into (runnable here, held back with unavailable required tools).
 
     Mirrors split_image_scenarios: the gated scenarios live in the default tree so
     every runner loads them, and the runner decides. Returning the missing names
@@ -221,7 +270,12 @@ def split_gated_scenarios(
     runnable: list[Scenario] = []
     gated: list[tuple[Scenario, list[str]]] = []
     for scenario in scenarios:
-        missing = [t for t in scenario.requires_tools if t not in registered]
+        missing = unavailable_scenario_tools(
+            scenario,
+            scenario.requires_tools,
+            registry=registry,
+            identities=identities_by_scenario[scenario.id],
+        )
         if missing:
             gated.append((scenario, missing))
         else:

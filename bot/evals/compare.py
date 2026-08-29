@@ -1,7 +1,7 @@
 """Diff two harness-eval runs: the accept/reject math for a harness change.
 
 Usage:
-    uv run python -m evals.compare runA/summary.json runB/summary.json
+    .venv/bin/python -m evals.compare runA/summary.json runB/summary.json
 
 Run A is the reference (e.g. main), run B the variant. Exit code 1 when the
 variant regresses the overall mean score by more than --epsilon, so a driver

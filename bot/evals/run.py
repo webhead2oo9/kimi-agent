@@ -16,7 +16,12 @@ from evals.mechanical import compute_mechanical
 from evals.models import ModelsConfig, build_eval_provider, load_models
 from evals.registry import EvalRegistry, build_eval_registry
 from evals.report import ScenarioReport, render_report, write_raw_jsonl
-from evals.scenario import load_scenarios, split_image_scenarios
+from evals.scenario import (
+    load_scenarios,
+    split_gated_scenarios,
+    split_image_scenarios,
+    unavailable_scenario_tools,
+)
 from evals.stub_gateway import StubGateway
 
 log = logging.getLogger("evals")
@@ -45,6 +50,8 @@ async def _run(args: argparse.Namespace) -> int:
     models = load_models(args.models)
     caption_cache_dir = Path(getattr(args, "captions", EVALS_DIR / "captions"))
     scenarios = load_scenarios(args.scenarios)
+    selected_scenario_ids = [scenario.id for scenario in scenarios]
+    skipped_scenarios: dict[str, list[str]] = {}
     rubric = load_rubric(args.rubric)
     if args.candidate not in models.candidates:
         log.error("Unknown candidate %r; known: %s", args.candidate, list(models.candidates))
@@ -63,6 +70,8 @@ async def _run(args: argparse.Namespace) -> int:
         blind = [
             spec.label for spec in (candidate_spec, models.baseline) if not spec.supports_images()
         ]
+        for scenario in visual:
+            skipped_scenarios[scenario.id] = ["image_input"]
         log.warning(
             "Skipping %d image scenario(s). %s cannot see images (declare capabilities "
             "in evals/models.yaml): %s",
@@ -74,42 +83,92 @@ async def _run(args: argparse.Namespace) -> int:
         log.error("No runnable scenarios: every selected scenario needs a vision-capable pair.")
         return 2
 
-    if args.dry_run:
-        for line in plan_matrix(args.candidate, models, [s.id for s in scenarios]):
-            print(line)
-        return 0
-
-    candidate = InstrumentedProvider(
-        build_eval_provider(models.candidates[args.candidate]),
-        min_request_interval_seconds=models.candidates[args.candidate].min_request_interval_seconds,
-        request_timeout_seconds=models.candidates[args.candidate].timeout_seconds,
-    )
-    baseline = InstrumentedProvider(
-        build_eval_provider(models.baseline),
-        min_request_interval_seconds=models.baseline.min_request_interval_seconds,
-        request_timeout_seconds=models.baseline.timeout_seconds,
-    )
-    judge = InstrumentedProvider(
-        build_eval_provider(models.judge),
-        min_request_interval_seconds=models.judge.min_request_interval_seconds,
-        request_timeout_seconds=models.judge.timeout_seconds,
-    )
-    caption_provider = (
-        InstrumentedProvider(
-            build_eval_provider(models.image_captioner),
-            min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
-            request_timeout_seconds=models.image_captioner.timeout_seconds,
-        )
-        if models.image_captioner is not None and visual
-        else None
-    )
-
     gateway = StubGateway()
     eval_registry: EvalRegistry | None = None
+    candidate: InstrumentedProvider | None = None
+    baseline: InstrumentedProvider | None = None
+    judge: InstrumentedProvider | None = None
+    caption_provider: InstrumentedProvider | None = None
     reports: list[ScenarioReport] = []
     eval_run_nonce = new_eval_run_nonce()
+    identities_by_scenario = {
+        scenario.id: (
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=f"candidate:{candidate_spec.label}",
+                scenario_id=scenario.id,
+                repetition=0,
+            ),
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=f"baseline:{models.baseline.label}",
+                scenario_id=scenario.id,
+                repetition=0,
+            ),
+        )
+        for scenario in scenarios
+    }
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
+        scenarios, gated = split_gated_scenarios(
+            scenarios,
+            registry=eval_registry.registry,
+            identities_by_scenario=identities_by_scenario,
+        )
+        for gated_scenario, missing in gated:
+            log.warning(
+                "Skipping %s: its eval callers cannot access %s at the declared tier/scope",
+                gated_scenario.id,
+                ", ".join(missing),
+            )
+            skipped_scenarios[gated_scenario.id] = missing
+        if not scenarios:
+            log.error("Every selected scenario needs a tool unavailable at its tier/scope.")
+            return 2
+        expected_problems: dict[str, list[str]] = {}
+        for scenario in scenarios:
+            missing = unavailable_scenario_tools(
+                scenario,
+                scenario.expect.should_use_tools,
+                registry=eval_registry.registry,
+                identities=identities_by_scenario[scenario.id],
+            )
+            if missing:
+                expected_problems[scenario.id] = missing
+        if expected_problems:
+            for scenario_id, tools in expected_problems.items():
+                log.error("Scenario %s expects unavailable tools: %s", scenario_id, tools)
+            log.error("Refusing to run against a partial tool surface (check .env gates).")
+            return 2
+        if args.dry_run:
+            for line in plan_matrix(args.candidate, models, [s.id for s in scenarios]):
+                print(line)
+            return 0
+
+        candidate = InstrumentedProvider(
+            build_eval_provider(candidate_spec),
+            min_request_interval_seconds=candidate_spec.min_request_interval_seconds,
+            request_timeout_seconds=candidate_spec.timeout_seconds,
+        )
+        baseline = InstrumentedProvider(
+            build_eval_provider(models.baseline),
+            min_request_interval_seconds=models.baseline.min_request_interval_seconds,
+            request_timeout_seconds=models.baseline.timeout_seconds,
+        )
+        judge = InstrumentedProvider(
+            build_eval_provider(models.judge),
+            min_request_interval_seconds=models.judge.min_request_interval_seconds,
+            request_timeout_seconds=models.judge.timeout_seconds,
+        )
+        caption_provider = (
+            InstrumentedProvider(
+                build_eval_provider(models.image_captioner),
+                min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
+                request_timeout_seconds=models.image_captioner.timeout_seconds,
+            )
+            if models.image_captioner is not None and visual
+            else None
+        )
         # Production parity: every chat turn runs with the mandatory compactor
         # (same wiring as app/runtime.py).
         compactor = eval_registry.provider_manager.build_compactor()
@@ -136,12 +195,7 @@ async def _run(args: argparse.Namespace) -> int:
                     settings.thread_handoff_suggest_after_tool_calls
                 ),
                 compactor=compactor,
-                identity=EvalIdentity(
-                    run_nonce=eval_run_nonce,
-                    arm=f"candidate:{candidate_spec.label}",
-                    scenario_id=scenario.id,
-                    repetition=0,
-                ),
+                identity=identities_by_scenario[scenario.id][0],
                 image_captions=image_captions,
             )
             base_run = await run_scenario_for_model(
@@ -156,12 +210,7 @@ async def _run(args: argparse.Namespace) -> int:
                     settings.thread_handoff_suggest_after_tool_calls
                 ),
                 compactor=compactor,
-                identity=EvalIdentity(
-                    run_nonce=eval_run_nonce,
-                    arm=f"baseline:{models.baseline.label}",
-                    scenario_id=scenario.id,
-                    repetition=0,
-                ),
+                identity=identities_by_scenario[scenario.id][1],
                 image_captions=image_captions,
             )
             judge_result = await judge_pair(
@@ -182,15 +231,25 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         if eval_registry is not None:
             await eval_registry.close()
-        await close_provider(candidate)
-        await close_provider(baseline)
-        await close_provider(judge)
+        if candidate is not None:
+            await close_provider(candidate)
+        if baseline is not None:
+            await close_provider(baseline)
+        if judge is not None:
+            await close_provider(judge)
         if caption_provider is not None:
             await close_provider(caption_provider)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    md = render_report(candidate.model, baseline.model, reports, rubric)
+    md = render_report(
+        candidate_spec.model,
+        models.baseline.model,
+        reports,
+        rubric,
+        selected_scenarios=selected_scenario_ids,
+        skipped_scenarios=skipped_scenarios,
+    )
     if models.image_captioner is not None and visual:
         md = (
             f"> Visual evidence was captioned once by `{models.image_captioner.model}` "
@@ -198,7 +257,12 @@ async def _run(args: argparse.Namespace) -> int:
             f"{md}"
         )
     (out_dir / "report.md").write_text(md)
-    write_raw_jsonl(out_dir / "raw.jsonl", reports)
+    write_raw_jsonl(
+        out_dir / "raw.jsonl",
+        reports,
+        selected_scenarios=selected_scenario_ids,
+        skipped_scenarios=skipped_scenarios,
+    )
     candidate_tokens = sum(report.candidate_run.total_tokens for report in reports)
     baseline_tokens = sum(report.baseline_run.total_tokens for report in reports)
     print(f"Report written to {out_dir / 'report.md'}")

@@ -123,8 +123,9 @@ any bytes reach Google. Provider network work never holds a database write
 transaction. After Interaction creation, one transaction creates the session,
 records its first Interaction, and claims the reservation. Normal failures
 release the reservation into the durable deletion outbox; a crash leaves an
-unattached reservation that startup/hourly cleanup expires after a conservative
-grace period.
+unattached reservation that startup and periodic cleanup expire after a
+conservative grace period. The periodic interval is
+`TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` (one hour by default).
 
 Sessions survive turns and restarts in SQLite. Source rows retain only
 safe metadata: source kind, display filename/relative locator, byte size, model,

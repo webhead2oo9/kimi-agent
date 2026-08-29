@@ -1,142 +1,83 @@
 # Architecture
 
-This is the project-level map: what the system is made of and where each piece
-lives.
+This page is a map of Kimi: the ways people talk to it, and which folders own which job.
 
 ## What this bot is
 
-At its core, the bot has two foreground model-driven surfaces over a
-provider-neutral LLM layer, an optional durable background coding surface, and
-a seam for optional application modules:
+People talk to Kimi in a few different ways. Under the hood they all use the same model loop, so swapping OpenAI, Anthropic, or another provider does not change the rest of the bot. There is also an optional background coding worker. You can install extra modules if you want features that are not in core.
 
-**Mention-triggered conversational agent.** This is the community's chat
-surface. A guild message that mentions the bot (or lands in a handoff thread)
-enters a provider-neutral ReAct loop with transcript-backed context, trust-gated
-tool dispatch, and Hindsight memory. It does not expose a general guild
-conversational slash command.
+### Community chat
 
-**User-installed personal chat (optional).** When explicitly enabled, `/chat`
-enters the same ReAct and tool stack through an owner-only `userchat:<user_id>`
-root. Prompt/model/memory/workspace scope is personal and global, and
-the surface is guild-less for every trust, policy, and data-scope decision, so
-guild-scoped tools and guild artifacts stay out of reach. The actual invocation
-location is carried separately for permission-sensitive Discord tools and
-confers no authority. See [Discord user-app personal chat](user-app.md).
+This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
-**"Teach Kimi" message context menu** (the name follows `BOT_NAME`;
-`commands/learn_cmd.py` → `app/learn_turn.py`). This is a staff-only scoped
-turn over the same ReAct core, running on an independent registry limited to
-`LEARN_TOOLS`. It's answered ephemerally, never persisted to a transcript, and
-audited by `app/learn_log.py`.
+### Personal chat (optional)
 
-**Durable coding agent (optional).** Large repository tasks leave the foreground
-Discord turn through `start_coding_task` and continue in a bounded background
-worker. The worker resolves the independent `roles.coding` model chain, stores
-task, checkpoint, event, and managed-job state in SQLite, and reports progress
-and completion back to Discord. It registers only when explicitly enabled and
-both its tool-capable model role and the Linux code sandbox are available; it
-never falls back to `roles.chat`. See [Durable coding agent](coding-agent.md).
+`/chat` is optional and off until you enable it. It uses the same model loop, but each person gets a private `userchat:<user_id>` conversation, plus their own prompt, memory, and workspace. That chat is not tied to any Discord server, so server tools and server files stay out of reach. The channel they typed in is only used for Discord permissions. It does not grant extra trust. See [Discord user-app personal chat](user-app.md).
+
+### Teach Kimi
+
+Staff can use the message context menu (named after `BOT_NAME`) to teach the bot from a selected message. That is still a model turn, but it only gets the `LEARN_TOOLS` set. The reply is shown once and is not saved to the conversation. `app/learn_log.py` writes an audit record. Code path: `commands/learn_cmd.py` → `app/learn_turn.py`.
+
+### Durable coding agent (optional)
+
+Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands them to a background worker with its own `roles.coding` model (never the normal chat model). Progress lives in SQLite and comes back to Discord as the work moves. This only turns on if you enable it, the coding model can call tools, and the Linux sandbox is available. See [Durable coding agent](coding-agent.md).
 
 ## Where things live (`bot/`)
 
-```
-bot.py                  entry: Settings -> build_app() -> run()
-app/                    composition root + Discord-facing application glue:
-                        runtime.py (build_app, on_ready boot, on_message),
-                        turn_entry.py (turn admission -> ReAct wiring),
-                        tools.py (tool/client wiring), modules.py (versioned
-                        application modules), plugins.py (operator plugin
-                        loader), consent.py,
-                        admission.py, conversation_routing.py, threads.py +
-                        thread_handoff_boundary.py, memory.py, moderation.py,
-                        providers.py, coding_tasks.py + coding_jobs.py,
-                        tool_surfaces.py, learn_turn.py + learn_log.py
-agent/                  ReAct engine, turn prep, compaction, attachments,
-                        automated Discord-reference context framing
-discord_adapter/        the Discord boundary: io (send/receive gates, chunking),
-                        gateway (live channel/member reads), permission-checked
-                        Discord-reference resolution, lifecycle (sweepers)
-providers/              neutral LLM interface, provider profiles, failover
-image_gen/              provider-neutral image backend seam + OpenAI HTTP client
-search/                 provider-neutral internet search chain + Exa/Brave clients
-video_understanding/    Gemini Interactions client + rooted session coordinator
-config/                 pydantic-settings, models.yaml routing, operator overlay
-config/fragments/       operator markdown read fresh each turn: guild/channel
-                        pins and denylists, per-tool config, prompt templates
-tools/                  registry, browse-tools activation, workspace + memory +
-                        community-knowledge + internet/Discord search + persona
-                        tools + optional image-generation/video/code-execution/
-                        browser/visual/coding-task surfaces
-web_browser/            BetterWright persistent-browser bridge and isolated
-                        per-user worker lifecycle, plus the fixed-code ephemeral
-                        offline chart/Mermaid renderer
-workspace/              per-user sandboxed file workspaces (stdlib-only; the
-                        runtime data tree at workspaces/ is created on demand)
-sandbox/                Linux code-execution boundary: Bubblewrap/systemd-run,
-                        seccomp policy, network-namespace lease, resource limits
-commands/               staff/user app commands (/privacy, /memory, optional
-                        /chat + /chat-reset, /usage, /models, ...) and the
-                        "Teach Kimi" context menu
-memory/                 Hindsight client, bank scoping, auto-retain, opt-out
-storage/                SQLite WAL core schema v4, module schema ledger,
-                        conversation + video session/deletion + coding task/event/job
-                        state, LLM/paid-tool usage stores, global model selection
-trust/                  trust-tier resolution from Discord roles + allowlists
-moderation/             content safety: LLM input/output screening, tier
-                        exemptions, pluggable backend (shipped and wired)
-observability/          versioned JSONL turn/tool/moderation events
-usage/                  LLM token/cost normalization and pricing
-codex/                  Codex OAuth + WebSocket transport
-utils/                  leaf helpers: frontmatter, atomic writes, formatting
-evals/                  deterministic stub-surface harness + scenario set
-skills/                 merged read-only built-ins + private shared-skill store,
-                        executable-skill registration and sandbox runner;
-                        live skills/store content is instance data
-tests/                  test suite (incl. architecture-boundary guards)
-deploy/                 optional service deployments, BetterWright installer,
-                        and generic network-namespace provisioning templates
-scripts/                operator/maintenance scripts
-```
+| Path | What it is |
+|---|---|
+| `bot.py` | Starts the process: load settings, `build_app()`, run |
+| `app/` | Where the bot is wired together, then handed Discord events |
+| `agent/` | The model loop: turn prep, tools, compaction, attachments |
+| `discord_adapter/` | Talks to Discord: sending, receiving, permissions, cleanup jobs |
+| `providers/` | How Kimi talks to model APIs, including failover |
+| `image_gen/` | Image generation/editing backend |
+| `search/` | Internet search (Exa, Brave, and the shared chain) |
+| `video_understanding/` | Gemini video sessions |
+| `config/` | Settings, `models.yaml`, operator overlay |
+| `config/fragments/` | Markdown you can edit without restarting: pins, denylists, prompts, per-tool settings |
+| `tools/` | Tool registry and the built-in tools |
+| `web_browser/` | Persistent browser profiles, plus one-shot chart/Mermaid rendering |
+| `workspace/` | Per-user file folders |
+| `sandbox/` | The Linux jail for running code |
+| `commands/` | Slash commands and the Teach Kimi menu |
+| `memory/` | Hindsight memory: banks, auto-retain, opt-out |
+| `storage/` | SQLite: conversations, usage, circuits, coding tasks, video sessions |
+| `trust/` | Who counts as member, regular, or staff |
+| `moderation/` | Screens model input and output |
+| `observability/` | JSONL logs of turns, tools, and moderation |
+| `usage/` | Token and cost accounting |
+| `codex/` | Codex login and its WebSocket transport |
+| `utils/` | Small shared helpers |
+| `evals/` | Offline test harness for the model loop |
+| `skills/` | Built-in skill docs plus the private skill store |
+| `modules/` | Services used by installed modules, plus the in-repo example |
+| `packages/` | The standalone module API package |
+| `tests/` | Tests, including the import-boundary checks |
+| `deploy/` | Installer bits for the browser runtime and network namespaces |
+| `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
 
-## Structural decisions
+`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, `on_message`), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
-A few decisions shape everything above, so they're worth stating explicitly.
+## Design choices that matter
 
-- **Composition root for the core.** Runtime, config, providers, storage, and
-  trust all wire up in one place (`app/runtime.py:build_app()`).
-  Deployment-specific tools arrive through the best-effort plugin seam
-  (`app/plugins.py`), while required commands, listeners, schema, background
-  jobs, and optional LLM tools arrive through the fail-fast application-module
-  seam (`app/modules.py`).
-- **Guild-scoped by construction.** `guild_id` rides every schema, and the
-  per-guild seams are real: guild activation is explicit and fail-closed;
-  trust, pins, denylists, and prompts layer per guild from
-  `config/servers/<id>.md`; workspaces are keyed per (user, guild); community
-  memory banks are per guild; and tools and skills can be guild-scoped. The
-  result is that one deployment can serve several communities without sharing
-  their data surfaces. The opt-in personal user-app root is the explicit
-  exception: it uses separate prompt/policy and workspace scope so invoking it
-  from a guild cannot import that guild's private configuration.
-- **File-based operator config.** `config/models.yaml` and the `settings.md`
-  overlay are validated once at startup. Prompt and policy frontmatter
-  fragments are read fresh for each turn, so those targeted edits need neither
-  an admin console nor a restart.
-- **Fail-closed boundaries.** Tool dispatch gates on trust tier and denylists;
-  output moderation fails closed before Discord delivery; configured modules
-  fail startup if they're absent or incompatible. The exception is the
-  Hindsight gate, which degrades the bot cleanly instead of erroring.
+**Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Kimi logs it and keeps going. Installed modules (`app/modules.py`) are required: missing or incompatible ones stop startup.
 
-## Deeper reading
+**Each server keeps its own stuff.** Guild id is on the data. A server has to be explicitly allowed. Trust, prompts, pins, and denylists come from `config/servers/<id>.md`. Workspaces and community memory are per server. `/chat` is the exception so using it inside a server cannot pull that server's private config.
 
-Once you have the map, these are the places to go next:
+**Config is files.** `models.yaml` and `settings.md` are checked at startup. Prompt and policy files are re-read every turn, so you can edit those without a console or a restart.
 
-- `../bot/README.md`: bot-level feature/architecture summary.
-- `configuration.md`: complete configuration reference.
-- `user-app.md`: optional Discord user-install `/chat` surface and data scopes.
-- `tools.md`: complete built-in tool catalog and availability gates.
-- `code-exec.md`: code-execution modes, threat model, deployment, and verification.
-- `visual-rendering.md`: one-call charts/Mermaid, offline rendering, and deployment.
-- `coding-agent.md`: durable coding lifecycle, model routing, recovery, and cancellation.
-- `internet-search.md`: Exa/Brave search behavior, output, per-turn budget, and cost accounting.
-- `video-understanding.md`: YouTube/uploaded-video sessions, Files + Interactions state, streaming, caching, limits, and deletion.
-- `image-generation.md`: explicit OpenAI image generation/editing, auth modes, workspace references, limits, and provider seam.
+**Refuse by default.** Tools check trust and denylists when they run. Moderation blocks a bad reply before it hits Discord. A configured module that is missing or incompatible stops the process. Hindsight is the exception: if it is down, the bot keeps running without memory.
+
+## Where to go next
+
+- [`../bot/README.md`](../bot/README.md): what the bot can do
+- [Configuration](configuration.md): every setting and live fragment
+- [Discord user-app personal chat](user-app.md): optional `/chat`
+- [Tool catalog](tools.md): built-in tools and who can use them
+- [Code execution](code-exec.md): the Linux sandbox
+- [Visual rendering](visual-rendering.md): charts and Mermaid
+- [Durable coding agent](coding-agent.md): background coding jobs
+- [Internet search](internet-search.md): Exa/Brave search
+- [Video understanding](video-understanding.md): YouTube and uploaded video
+- [Image generation](image-generation.md): image generation and editing

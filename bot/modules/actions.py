@@ -9,6 +9,7 @@ from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     ChannelSnapshot,
     DiscordActions,
+    InviteSnapshot,
     MemberSnapshot,
     MessageRef,
     MessagePage,
@@ -143,6 +144,10 @@ class DeclaredDiscordActions:
     async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]:
         self._gate("fetch_roles")
         return await self._inner.fetch_roles(guild_id)
+
+    async def fetch_invites(self, guild_id: int) -> tuple[InviteSnapshot, ...]:
+        self._gate("fetch_invites")
+        return await self._inner.fetch_invites(guild_id)
 
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:
         self._gate("can_view_channel")

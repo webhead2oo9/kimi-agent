@@ -17,6 +17,7 @@ from discord.ext import commands
 from kimi_agent_module_api import events as ev
 from kimi_agent_module_api.contracts import (
     AttachmentSnapshot,
+    InviteSnapshot,
     MemberSnapshot,
     MessageRef,
     MessageSnapshot,
@@ -38,6 +39,24 @@ def attachment_snapshot(attachment: discord.Attachment) -> AttachmentSnapshot:
         url=str(attachment.url),
         size=int(attachment.size),
         content_type=attachment.content_type,
+    )
+
+
+def invite_snapshot(invite: discord.Invite) -> InviteSnapshot:
+    guild = getattr(invite, "guild", None)
+    channel = getattr(invite, "channel", None)
+    inviter = getattr(invite, "inviter", None)
+    return InviteSnapshot(
+        guild_id=int(guild.id) if guild is not None else 0,
+        code=str(invite.code),
+        channel_id=int(channel.id) if channel is not None else None,
+        inviter_id=int(inviter.id) if inviter is not None else None,
+        uses=int(invite.uses) if invite.uses is not None else None,
+        max_uses=int(invite.max_uses) if invite.max_uses is not None else None,
+        max_age_seconds=int(invite.max_age) if invite.max_age is not None else None,
+        temporary=bool(invite.temporary) if invite.temporary is not None else None,
+        created_at=_ts(invite.created_at),
+        expires_at=_ts(invite.expires_at),
     )
 
 
@@ -207,9 +226,12 @@ class ModuleEventPublisher:
         for name, callback in (
             ("on_message", self.on_message),
             ("on_message_edit", self.on_message_edit),
+            ("on_raw_message_edit", self.on_raw_message_edit),
             ("on_message_delete", self.on_message_delete),
             ("on_raw_message_delete", self.on_raw_message_delete),
             ("on_raw_bulk_message_delete", self.on_raw_bulk_message_delete),
+            ("on_invite_create", self.on_invite_create),
+            ("on_invite_delete", self.on_invite_delete),
             ("on_member_join", self.on_member_join),
             ("on_member_remove", self.on_member_remove),
             ("on_member_update", self.on_member_update),
@@ -250,6 +272,27 @@ class ModuleEventPublisher:
                 before_content=before.content if before is not None else None,
                 after_content=after.content or "",
                 edited_at=_ts(after.edited_at) or 0.0,
+            ),
+        )
+
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        if payload.guild_id is None or payload.cached_message is not None:
+            return
+        data = payload.data
+        author = data.get("author")
+        author_id = author.get("id") if isinstance(author, dict) else None
+        content = data.get("content")
+        edited_at = discord.utils.parse_time(data.get("edited_timestamp"))
+        self._safe(
+            ev.TOPIC_MESSAGE_EDIT,
+            ev.MessageEditEvent(
+                ref=MessageRef(
+                    int(payload.guild_id), int(payload.channel_id), int(payload.message_id)
+                ),
+                author_id=int(author_id) if author_id is not None else None,
+                before_content=None,
+                after_content=str(content) if content is not None else None,
+                edited_at=_ts(edited_at) or 0.0,
             ),
         )
 
@@ -305,6 +348,16 @@ class ModuleEventPublisher:
                 )
             ),
         )
+
+    async def on_invite_create(self, invite: discord.Invite) -> None:
+        snapshot = invite_snapshot(invite)
+        if snapshot.guild_id:
+            self._safe(ev.TOPIC_INVITE_CREATE, ev.InviteCreateEvent(snapshot))
+
+    async def on_invite_delete(self, invite: discord.Invite) -> None:
+        snapshot = invite_snapshot(invite)
+        if snapshot.guild_id:
+            self._safe(ev.TOPIC_INVITE_DELETE, ev.InviteDeleteEvent(snapshot))
 
     async def on_member_join(self, member: discord.Member) -> None:
         self._safe(
@@ -364,6 +417,7 @@ __all__ = [
     "ModuleEventPublisher",
     "attachment_snapshot",
     "audit_entry_event",
+    "invite_snapshot",
     "member_snapshot",
     "message_ref",
     "message_snapshot",

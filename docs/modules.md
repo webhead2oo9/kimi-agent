@@ -88,6 +88,9 @@ feature that is meaningful only when core is configured to expose it. Missing
 activation capabilities soft-disable that module (and its dependents) without
 creating it, running migrations, or aborting bot startup; `/modules status`
 shows the reason. `requires_capabilities` remains a hard compatibility check.
+The intent-backed capabilities are `discord.members.v1` and
+`discord.message_content.v1`; they are advertised only when the corresponding
+gateway intent is enabled in the deployment.
 
 ## Package and schema contract
 
@@ -185,7 +188,8 @@ a malformed declaration aborts startup with a named reason:
 - `permissions.discord_actions`: the Discord operations the module will call
   (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`,
   `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`,
-  `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `can_view_channel`).
+  `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `fetch_invites`,
+  `can_view_channel`).
 - `permissions.event_topics`: core (`discord.*`) or sibling-module topics the
   module subscribes to. A module never declares its own namespace; it may
   publish only under `<module_name>.*`.
@@ -247,10 +251,15 @@ the ports are a contract and an audit surface, not a sandbox.
   requires the topic (or `<namespace>.*`) in `permissions.event_topics`.
   Core publishes normalized `discord.message`, `discord.message_edit`,
   `discord.message_delete`, `discord.message_bulk_delete`,
+  `discord.invite_create`, `discord.invite_delete`,
   `discord.member_join`, `discord.member_remove`, `discord.member_update`,
   and `discord.audit_log_entry` events
   (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
-  re-fetched, never SDK objects. `publish` returns immediately; each
+  re-fetched, never SDK objects. Discord emits invite create/delete events only
+  for channels where the bot has **Manage Channels**, so those events may be
+  incomplete without that permission. Uncached raw edit payloads may omit the
+  author or new content; subscribers that need the live message declare and
+  call `fetch_message`. `publish` returns immediately; each
   subscriber module has a bounded queue and a small worker pool with a
   per-handler timeout, failures are logged and counted in that module's
   health metrics, and a full queue drops its oldest pending event. Events
@@ -258,8 +267,8 @@ the ports are a contract and an audit surface, not a sandbox.
 - `ctx.discord`: the declared Discord operations (`send_message`,
   `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`,
   `fetch_message`, `fetch_member`, `fetch_channel`, paginated
-  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`, and
-  `can_view_channel`) on stable IDs, returning public
+  `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`,
+  `fetch_invites`, and `can_view_channel`) on stable IDs, returning public
   snapshots. Calling an undeclared action raises
   `UndeclaredDiscordAction`. `ban`, `kick`, and `timeout` refuse the bot,
   the acting user, other bots, and any member whose trust tier is not
@@ -270,6 +279,10 @@ the ports are a contract and an audit surface, not a sandbox.
   message. Discord caps audit-log reasons at 512 characters, so that limit
   includes the module prefix and core keeps the beginning of your reason (where
   correlation markers normally live). Outgoing messages never ping.
+  `fetch_invites` requires the bot's **Manage Server** permission and exposes
+  invite-use counters (including a guild vanity invite when available) for
+  best-effort join attribution; Discord's member-join event does not identify
+  the invite directly.
 - `ctx.guild_settings`: the module's typed per-guild settings, declared as
   `ModuleSpec.guild_settings` (fields of kind `int`, `id`, `id_list`, `str`,
   `str_list`, `enum`, `bool`, plus an optional validator). Values live in

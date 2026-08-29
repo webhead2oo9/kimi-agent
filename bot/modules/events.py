@@ -320,11 +320,13 @@ def _discord_event_guild_id(payload: object) -> int | None:
     ref = getattr(payload, "ref", None)
     message = getattr(payload, "message", None)
     member = getattr(payload, "member", None)
+    invite = getattr(payload, "invite", None)
     candidates = (
         direct,
         getattr(ref, "guild_id", None),
         getattr(getattr(message, "ref", None), "guild_id", None),
         getattr(member, "guild_id", None),
+        getattr(invite, "guild_id", None),
     )
     for value in candidates:
         if isinstance(value, int) and not isinstance(value, bool):

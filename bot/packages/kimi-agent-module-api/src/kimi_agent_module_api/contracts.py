@@ -71,6 +71,7 @@ type DiscordAction = Literal[
     "fetch_pins",
     "fetch_public_threads",
     "fetch_roles",
+    "fetch_invites",
     "can_view_channel",
 ]
 ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
@@ -89,6 +90,7 @@ ALL_DISCORD_ACTIONS: frozenset[str] = frozenset(
         "fetch_pins",
         "fetch_public_threads",
         "fetch_roles",
+        "fetch_invites",
         "can_view_channel",
     }
 )
@@ -728,6 +730,27 @@ class MessageSnapshot:
     embed_texts: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class InviteSnapshot:
+    """Discord invite metadata available through gateway events or a guild fetch.
+
+    Gateway delete events are intentionally partial, so every field except the
+    guild and code may be absent. ``fetch_invites`` returns the richer form used
+    for best-effort join attribution by comparing ``uses`` counters.
+    """
+
+    guild_id: int
+    code: str
+    channel_id: int | None = None
+    inviter_id: int | None = None
+    uses: int | None = None
+    max_uses: int | None = None
+    max_age_seconds: int | None = None
+    temporary: bool | None = None
+    created_at: float | None = None
+    expires_at: float | None = None
+
+
 type ChannelKind = Literal["text", "forum", "thread"]
 
 
@@ -859,6 +882,8 @@ class DiscordActions(Protocol):
     ) -> tuple[ChannelSnapshot, ...]: ...
 
     async def fetch_roles(self, guild_id: int) -> tuple[RoleSnapshot, ...]: ...
+
+    async def fetch_invites(self, guild_id: int) -> tuple[InviteSnapshot, ...]: ...
 
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool: ...
 

@@ -124,6 +124,20 @@ def test_empty_configuration_discovers_nothing(tmp_path: Path) -> None:
     assert manager.config_dir == tmp_path
 
 
+def test_module_capabilities_advertise_enabled_privileged_intents(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        config_dir=str(tmp_path),
+        members_intent=True,
+        message_content_intent=True,
+    )  # type: ignore[call-arg]
+
+    capabilities = module_runtime.module_capabilities(settings)
+
+    assert "discord.members.v1" in capabilities.available
+    assert "discord.message_content.v1" in capabilities.available
+
+
 def test_missing_activation_capability_soft_disables_module_and_dependents(
     tmp_path: Path,
 ) -> None:

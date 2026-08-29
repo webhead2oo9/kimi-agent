@@ -47,6 +47,9 @@ class _Guild:
         self._members = members
         self.bans: list[tuple[int, str | None, int]] = []
         self.kicks: list[tuple[int, str | None]] = []
+        self.invite_items: list[Any] = []
+        self.vanity_url_code: str | None = None
+        self.vanity_item: Any = None
 
     def get_member(self, user_id: int) -> _Member | None:
         return self._members.get(user_id)
@@ -61,6 +64,12 @@ class _Guild:
 
     async def kick(self, member: _Member, *, reason: str | None) -> None:
         self.kicks.append((member.id, reason))
+
+    async def invites(self) -> list[Any]:
+        return self.invite_items
+
+    async def vanity_invite(self) -> Any:
+        return self.vanity_item
 
 
 class _Channel:
@@ -407,3 +416,43 @@ async def test_trust_lookup_maps_core_tiers() -> None:
     impl, _, _ = _actions(staff={10})
     assert await impl._trust.tier(1, 10) == "staff"
     assert await impl._trust.tier(1, 20) == "member"
+
+
+@pytest.mark.asyncio
+async def test_fetch_invites_returns_public_snapshots_and_is_declaration_gated() -> None:
+    impl, guild, _ = _actions()
+    guild.invite_items.append(
+        SimpleNamespace(
+            guild=guild,
+            channel=SimpleNamespace(id=2),
+            inviter=SimpleNamespace(id=20),
+            code="welcome",
+            uses=3,
+            max_uses=10,
+            max_age=3600,
+            temporary=False,
+            created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            expires_at=None,
+        )
+    )
+    guild.vanity_url_code = "community"
+    guild.vanity_item = SimpleNamespace(
+        guild=guild,
+        channel=SimpleNamespace(id=2),
+        inviter=None,
+        code="community",
+        uses=20,
+        max_uses=0,
+        max_age=0,
+        temporary=False,
+        created_at=None,
+        expires_at=None,
+    )
+
+    gated = DeclaredDiscordActions(impl, "mod", frozenset({"fetch_invites"}))
+    invites = await gated.fetch_invites(1)
+
+    assert [invite.code for invite in invites] == ["community", "welcome"]
+    assert (invites[1].code, invites[1].inviter_id, invites[1].uses) == ("welcome", 20, 3)
+    with pytest.raises(UndeclaredDiscordAction):
+        await DeclaredDiscordActions(impl, "mod", frozenset()).fetch_invites(1)

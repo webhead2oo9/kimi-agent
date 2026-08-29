@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from discord import RawBulkMessageDeleteEvent, RawMessageDeleteEvent
+from discord import RawBulkMessageDeleteEvent, RawMessageDeleteEvent, RawMessageUpdateEvent
 
 from discord_adapter.module_events import (
     ModuleEventPublisher,
@@ -16,7 +16,12 @@ from discord_adapter.module_events import (
     message_snapshot,
 )
 from kimi_agent_module_api import events as ev
-from kimi_agent_module_api.contracts import Event, EventTopicError, ModulePermissions
+from kimi_agent_module_api.contracts import (
+    Event,
+    EventTopicError,
+    InviteSnapshot,
+    ModulePermissions,
+)
 from modules.events import EventBusImpl, ModuleEventView
 
 
@@ -117,12 +122,17 @@ async def test_discord_events_only_reach_modules_enabled_for_their_guild() -> No
         ev.TOPIC_MEMBER_JOIN,
         SimpleNamespace(member=SimpleNamespace(guild_id=1)),
     )
+    invite = InviteSnapshot(guild_id=1, code="welcome")
+    bus.publish_core(ev.TOPIC_INVITE_CREATE, ev.InviteCreateEvent(invite))
+    bus.publish_core(ev.TOPIC_INVITE_DELETE, ev.InviteDeleteEvent(invite))
     bus.publish_core(ev.TOPIC_AUDIT_LOG_ENTRY, SimpleNamespace(guild_id=1))
     await bus.drain()
 
     assert enabled_topics == [
         ev.TOPIC_MESSAGE,
         ev.TOPIC_MEMBER_JOIN,
+        ev.TOPIC_INVITE_CREATE,
+        ev.TOPIC_INVITE_DELETE,
         ev.TOPIC_AUDIT_LOG_ENTRY,
     ]
     assert disabled_topics == []
@@ -307,7 +317,7 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     bot = _Bot()
     publisher = ModuleEventPublisher(bot, lambda t, p: published.append((t, p)))  # type: ignore[arg-type]
     publisher.install()
-    assert len(bot.listeners) == 9
+    assert len(bot.listeners) == 12
 
     await publisher.on_message(_message())
     await publisher.on_message_delete(_message(content="gone"))
@@ -414,6 +424,84 @@ async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
     assert single.cached_content is None
     assert isinstance(bulk, ev.MessageBulkDeleteEvent)
     assert {ref.message_id for ref in bulk.refs} == {31, 32}
+
+
+@pytest.mark.asyncio
+async def test_publisher_normalizes_uncached_edits_and_invites() -> None:
+    published: list[tuple[str, Any]] = []
+    publisher = ModuleEventPublisher(
+        cast(Any, _Bot()), lambda topic, payload: published.append((topic, payload))
+    )
+
+    await publisher.on_raw_message_edit(
+        cast(
+            RawMessageUpdateEvent,
+            SimpleNamespace(
+                guild_id=1,
+                channel_id=2,
+                message_id=3,
+                cached_message=None,
+                data={
+                    "content": "after",
+                    "author": {"id": "4"},
+                    "edited_timestamp": "2026-01-02T00:00:00+00:00",
+                },
+            ),
+        )
+    )
+    invite = SimpleNamespace(
+        guild=SimpleNamespace(id=1),
+        channel=SimpleNamespace(id=2),
+        inviter=SimpleNamespace(id=4),
+        code="welcome",
+        uses=7,
+        max_uses=0,
+        max_age=3600,
+        temporary=False,
+        created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        expires_at=None,
+    )
+    await publisher.on_invite_create(invite)  # type: ignore[arg-type]
+    await publisher.on_invite_delete(invite)  # type: ignore[arg-type]
+
+    assert [topic for topic, _payload in published] == [
+        ev.TOPIC_MESSAGE_EDIT,
+        ev.TOPIC_INVITE_CREATE,
+        ev.TOPIC_INVITE_DELETE,
+    ]
+    edit = published[0][1]
+    assert isinstance(edit, ev.MessageEditEvent)
+    assert (edit.author_id, edit.before_content, edit.after_content) == (4, None, "after")
+    created = published[1][1]
+    assert isinstance(created, ev.InviteCreateEvent)
+    assert (created.invite.code, created.invite.inviter_id, created.invite.uses) == (
+        "welcome",
+        4,
+        7,
+    )
+
+
+@pytest.mark.asyncio
+async def test_raw_edit_defers_to_the_richer_cached_edit() -> None:
+    published: list[tuple[str, Any]] = []
+    publisher = ModuleEventPublisher(
+        cast(Any, _Bot()), lambda topic, payload: published.append((topic, payload))
+    )
+
+    await publisher.on_raw_message_edit(
+        cast(
+            RawMessageUpdateEvent,
+            SimpleNamespace(
+                guild_id=1,
+                channel_id=2,
+                message_id=3,
+                cached_message=_message(content="before"),
+                data={"content": "after"},
+            ),
+        )
+    )
+
+    assert published == []
 
 
 def test_audit_entry_maps_timeout_from_member_update() -> None:

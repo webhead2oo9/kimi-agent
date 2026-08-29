@@ -16,11 +16,12 @@ from typing import Any
 import discord
 from discord.ext import commands
 
-from discord_adapter.module_events import member_snapshot, message_snapshot
+from discord_adapter.module_events import invite_snapshot, member_snapshot, message_snapshot
 from discord_adapter.module_interactions import build_view
 from kimi_agent_module_api.contracts import (
     ChannelKind,
     ChannelSnapshot,
+    InviteSnapshot,
     MemberSnapshot,
     MessagePage,
     MessageRef,
@@ -448,6 +449,24 @@ class DiscordActionsImpl:
                 managed=bool(role.managed),
             )
             for role in sorted(guild.roles, key=lambda role: role.position, reverse=True)
+        )
+
+    async def fetch_invites(self, guild_id: int) -> tuple[InviteSnapshot, ...]:
+        guild = self._guild(guild_id)
+        try:
+            invites = await guild.invites()
+        except discord.HTTPException as exc:
+            raise DiscordActionError(f"invites for guild {guild_id} are unavailable") from exc
+        if getattr(guild, "vanity_url_code", None):
+            try:
+                vanity = await guild.vanity_invite()
+            except discord.HTTPException:
+                log.warning("vanity invite for guild %s is unavailable", guild_id)
+            else:
+                if vanity is not None and all(invite.code != vanity.code for invite in invites):
+                    invites.append(vanity)
+        return tuple(
+            sorted((invite_snapshot(invite) for invite in invites), key=lambda item: item.code)
         )
 
     async def can_view_channel(self, guild_id: int, user_id: int, channel_id: int) -> bool:

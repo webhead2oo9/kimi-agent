@@ -32,25 +32,25 @@ def _view(bus: EventBusImpl, name: str, *topics: str) -> ModuleEventView:
 @pytest.mark.asyncio
 async def test_publish_is_namespaced_and_subscriptions_need_declarations() -> None:
     bus = EventBusImpl()
-    mod = _view(bus, "community_moderation")
-    img = _view(bus, "image_fingerprints", "community_moderation.*")
+    producer = _view(bus, "case_manager")
+    consumer = _view(bus, "case_audit", "case_manager.*")
     seen: list[Event] = []
 
     async def handler(event: Event) -> None:
         seen.append(event)
 
-    img.subscribe("community_moderation.case_created", handler)
+    consumer.subscribe("case_manager.record_created", handler)
     with pytest.raises(EventTopicError):
-        img.subscribe("discord.message", handler)
+        consumer.subscribe("discord.message", handler)
     with pytest.raises(EventTopicError):
-        mod.publish("image_fingerprints.x", {})
+        producer.publish("case_audit.x", {})
     with pytest.raises(EventTopicError):
-        bus.publish_core("community_moderation.case_created", {})
+        bus.publish_core("case_manager.record_created", {})
 
-    mod.publish("community_moderation.case_created", {"case_id": 7})
+    producer.publish("case_manager.record_created", {"record_id": 7})
     await bus.drain()
     assert [(e.topic, e.payload, e.source_module) for e in seen] == [
-        ("community_moderation.case_created", {"case_id": 7}, "community_moderation")
+        ("case_manager.record_created", {"record_id": 7}, "case_manager")
     ]
     await bus.close()
 

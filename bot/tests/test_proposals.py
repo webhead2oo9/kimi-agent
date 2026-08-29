@@ -73,7 +73,7 @@ class _HostState:
             config_dir=lambda: self.config_dir,
             review_channel_id=lambda _guild_id: self.review_channel,
             channel_guild_id=self.channel_guild_id,
-            known_modules=lambda: ("config_admin", "moderation"),
+            known_modules=lambda: ("settings_admin", "moderation"),
             post_review=self.poster,
             on_applied=self.refresh,
             verify_guild=self.verify,
@@ -90,7 +90,7 @@ async def _service(tmp_path: Path, state: _HostState | None = None):
     await database.connect()
     host_state = state or _HostState(tmp_path / "config")
     service = ConfigProposalService(database, host_state.host())
-    return database, host_state, service, service.view_for("config_admin")
+    return database, host_state, service, service.view_for("settings_admin")
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_propose_persists_posts_and_uses_configured_channel(tmp_path: Path
         ) as cursor:
             row = await cursor.fetchone()
         assert tuple(row) == (
-            "config_admin",
+            "settings_admin",
             0,
             hashlib.sha256(b"").hexdigest(),
             hashlib.sha256(CONTENT.encode()).hexdigest(),
@@ -434,7 +434,7 @@ async def test_interrupted_write_is_recovered_by_second_service(tmp_path: Path) 
             custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
         )
         await router.components[("button", "approve")](interaction)
-        recovered = await restarted.view_for("config_admin").get(ref.proposal_id, actor=_actor())
+        recovered = await restarted.view_for("settings_admin").get(ref.proposal_id, actor=_actor())
         assert recovered is not None and recovered.state == "applied"
     finally:
         await database.close()
@@ -472,7 +472,7 @@ async def test_database_decision_failure_is_recoverable(tmp_path: Path) -> None:
             custom_id=build_custom_id("proposals", "approve", ref.proposal_id),
         )
         await recovered_router.components[("button", "approve")](second)
-        recovered = await restarted.view_for("config_admin").get(ref.proposal_id, actor=_actor())
+        recovered = await restarted.view_for("settings_admin").get(ref.proposal_id, actor=_actor())
         assert recovered is not None and recovered.state == "applied"
     finally:
         await database.close()

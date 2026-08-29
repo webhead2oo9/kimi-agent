@@ -13,6 +13,8 @@ import asyncio
 import contextlib
 import fnmatch
 import hashlib
+import math
+import sys
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -66,6 +68,7 @@ from kimi_agent_module_api import (
     ModuleLoadContext,
 )
 
+_MAX_FLOAT_LOG = math.log(sys.float_info.max)
 _T = TypeVar("_T")
 
 
@@ -233,9 +236,24 @@ class _FakeJob:
 
 
 def _retry_delay(backoff: Backoff, attempt: int) -> float:
-    return min(
-        backoff.max_seconds, backoff.base_seconds * backoff.multiplier ** max(0, attempt - 1)
-    )
+    exponent = max(0, attempt - 1)
+    base = backoff.base_seconds
+    cap = backoff.max_seconds
+    if base >= cap:
+        return cap
+    if exponent == 0 or backoff.multiplier == 1:
+        return base
+
+    growth_log = exponent * math.log(backoff.multiplier)
+    if growth_log >= math.log(cap) - math.log(base):
+        return cap
+
+    if growth_log <= _MAX_FLOAT_LOG:
+        try:
+            return base * (backoff.multiplier**exponent)
+        except OverflowError:
+            pass
+    return min(cap, math.exp(math.log(base) + growth_log))
 
 
 class FakeScheduler:

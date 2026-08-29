@@ -149,17 +149,17 @@ def test_render_manifest_lists_declarations_and_escapes() -> None:
             event_topics=("discord.message",),
             raw_bot=True,
         ),
-        provides=(ServiceDeclaration("moderation.cases", 1),),
-        table_aliases={"cases": "moderation_cases"},
+        provides=(ServiceDeclaration("records.cases", 1),),
+        table_aliases={"cases": "legacy_cases"},
     )
     text = render_manifest(
         {"guard": spec}, {"guard": ModuleHealth("healthy")}, lambda _n: ("tool_a",)
     )
-    assert "provides: moderation.cases@1" in text
+    assert "provides: records.cases@1" in text
     assert "discord actions: ban, send_message" in text
     assert "activation capabilities: discord.message_content.v1" in text
     assert "escape hatches: raw_bot" in text
-    assert "table aliases: cases→moderation_cases" in text
+    assert "table aliases: cases→legacy_cases" in text
     assert "llm tools: tool_a" in text
     assert render_status((), {}, {}).startswith("No application modules")
 

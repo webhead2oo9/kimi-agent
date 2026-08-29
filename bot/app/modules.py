@@ -92,6 +92,7 @@ class _LoadTimeToolRegistry:
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
         self._sealed = False
+        self._module_tools: dict[str, list[str]] = {}
         self.guild_active: dict[str, Callable[[int], bool]] = {}
 
     def seal(self) -> None:
@@ -99,6 +100,12 @@ class _LoadTimeToolRegistry:
 
     def for_module(self, module_name: str) -> _ModuleToolRegistrar:
         return _ModuleToolRegistrar(self, module_name)
+
+    def names_for(self, module_name: str) -> tuple[str, ...]:
+        return tuple(self._module_tools.get(module_name, ()))
+
+    def forget_module(self, module_name: str) -> None:
+        self._module_tools.pop(module_name, None)
 
     def register(
         self,
@@ -167,6 +174,7 @@ class _LoadTimeToolRegistry:
             ),
             available=available,
         )
+        self._module_tools.setdefault(module_name, []).append(name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +531,7 @@ class ModuleManager:
                 instance = spec.create(ctx)
             except Exception:
                 registry.remove_tools(set(registry.registered_names() - before))
+                tool_registry.forget_module(spec.name)
                 raise
             manager._modules[spec.name] = instance
             log.info("Kimi module composed: %s %s", spec.name, spec.version)
@@ -709,6 +718,11 @@ class ModuleManager:
 
     def host_rules(self, name: str) -> tuple[ResolvedHostRule, ...]:
         return self._host_rules.get(name, ())
+
+    def tool_names(self, name: str) -> tuple[str, ...]:
+        if self._tool_registry is None:
+            return ()
+        return self._tool_registry.names_for(name)
 
     def health_snapshot(self) -> Mapping[str, ModuleHealth]:
         return self.health.snapshot()

@@ -462,6 +462,10 @@ def validate_services(
 
 
 def validate_guild_settings_schema(module_name: str, schema: GuildSettingsSchema) -> None:
+    if schema.invalid_policy not in ("disable_module", "disable_guild"):
+        raise ModuleContractError(
+            f"module {module_name!r} guild settings has invalid policy {schema.invalid_policy!r}"
+        )
     names: set[str] = set()
     for field_spec in schema.fields:
         if not _SETTING_NAME_RE.match(field_spec.name):

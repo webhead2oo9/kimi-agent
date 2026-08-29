@@ -47,28 +47,86 @@ structure to begin a module of your own.
 
 ## Start a module with an LLM
 
-Give an LLM that can read the Kimi checkout this short brief:
+Give an LLM that can read the Kimi checkout the brief below. It works best
+when the LLM can also run commands in a scratch directory outside the
+checkout, because the finished module must not live inside it.
 
 ```text
 Build a Kimi application module that [DESCRIBE THE FEATURE].
 
-Before coding, read:
-- docs/modules.md
-- bot/modules/example/README.md
-- the complete bot/modules/example package, including its tests
-- bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/
-- CLAUDE.md
+Context. Kimi is a Discord bot. Application modules are separately installed
+Python packages that the host discovers through a `kimi_agent.modules` entry
+point and drives through a fixed lifecycle (preflight, settings, create,
+migrate, start, close). The checkout at [PATH] is reference material only: the
+module is its own package in [OUTPUT DIR], never a file inside the checkout.
 
-Follow the reference module's package structure and the current API rather than
-inventing new interfaces. Keep the module separately installable and do not
-import Kimi core implementation code. Ask me only for feature decisions that
-cannot be inferred safely.
+Before writing any code, read in this order:
+1. docs/modules.md (the contract: lifecycle, declarations, every runtime port)
+2. bot/modules/example/README.md, then the whole bot/modules/example package
+   in the order its README gives, including pyproject.toml and tests/
+3. bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/ (the only
+   package the module may import at runtime)
+4. CLAUDE.md, for code style and conventions
 
-Implement the module, its tests, and its README. The README must tell an
-operator how to install, enable, configure, restart, and verify it, and disclose
-stored data and external data flows. Run the module's lint, type, and test
-checks before handing it back.
+Rules that the host enforces, so do not work around them:
+- Depend only on `kimi-agent-module-api>=1,<2` at runtime. Never import
+  `bot/` core packages; tests may use the SDK fakes in
+  `kimi_agent_module_api.testing` and nothing from core.
+- Use the existing ports and contracts exactly as the reference module does.
+  Do not invent new interfaces, subclass host types, or reach for `raw_bot`
+  or `raw_storage`.
+- Declare before you use: every Discord action, subscribed event topic,
+  outbound HTTP host, and provided or consumed service goes in the
+  `ModuleSpec` permissions, or the call raises at runtime. Do not declare
+  what the module does not use.
+- All SQL goes through `ctx.storage.table()` and `write_transaction()`, with
+  forward-only migrations that create the tables the module reads.
+- Per-guild configuration is a typed `guild_settings` schema, read through
+  `ctx.guild_settings`; deployment settings are a `pydantic-settings` model
+  with an operator-exposed subset. Secrets stay environment-only.
+- Refuse guild-less callers for anything that targets guild data. Gate
+  privileged commands and components with `min_tier`; never rely on prompt
+  text or the LLM for authorization.
+- Durable or recurring work belongs in `ctx.scheduler`, not in tasks spawned
+  from `start()`. `close()` must be idempotent and let `CancelledError`
+  propagate.
+- Fail loudly: raise from `start()` on bad configuration and report
+  `degraded` or `failed` through `ctx.health` instead of logging and carrying
+  on.
+
+Ask me only about product decisions that cannot be inferred safely (for
+example which tier may use a command, or what to do with a member's rows when
+they leave). Make the routine engineering calls yourself.
+
+Deliver:
+- The package: `pyproject.toml` with the entry point and the dev extra,
+  `src/<package>/` with `py.typed`, a license file, and `README.md`, following the
+  reference module's file split (spec, settings, guild_settings, migrations,
+  storage, module).
+- Tests over the SDK fakes (`load_context()`, `FakeInteraction`,
+  `FakeScheduler.run_due()`, `MemoryStorage`, and the rest) covering each
+  tool, command, component, job, and event handler, plus a test that the spec
+  passes `kimi_agent_module_api.contracts` validation.
+- A README that tells an operator how to install into the environment that
+  runs Kimi, add the entry-point name to `KIMI_MODULES`, configure deployment
+  and per-guild settings (with the exact file paths), restart, and verify with
+  startup logs and `/modules status`. It must disclose every table and what
+  each row holds, retention and deletion, every external host contacted, and
+  whether the module observes messages or events not addressed to the bot.
+
+Before handing back, run from the module directory and fix everything they
+report: `uv sync --extra dev`, `uv run ruff check .`, `uv run ruff format
+--check .`, `uv run mypy .`, `uv run pytest`. Then install the module into
+the Kimi checkout's environment with `uv pip install --python
+.venv/bin/python --editable [OUTPUT DIR]` from `bot/`, set
+`KIMI_MODULES=<name>` in a dev dotenv, and confirm startup reaches the
+module's started message. Report exactly what you ran and what you saw.
 ```
+
+Replace the bracketed placeholders, and remove the final installation step if
+the LLM cannot run the bot. Review the module as you would any third-party
+code before activating it in production: it is trusted, in-process code with
+whatever database and Discord access it declared.
 
 ## Attach any module package
 

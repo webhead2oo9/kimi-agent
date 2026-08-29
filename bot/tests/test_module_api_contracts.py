@@ -119,15 +119,15 @@ def test_public_module_setting_fields_match_the_core_translation() -> None:
 
 
 def test_table_prefix_normalizes_hyphens() -> None:
-    assert table_prefix("image-fingerprints") == "image_fingerprints"
+    assert table_prefix("audit-log") == "audit_log"
 
 
 def test_selection_preflight_rejects_colliding_normalized_prefixes() -> None:
     installed = {
-        "image-fingerprints": _spec("image-fingerprints"),
-        "image_fingerprints": _spec("image_fingerprints"),
+        "audit-log": _spec("audit-log"),
+        "audit_log": _spec("audit_log"),
     }
-    with pytest.raises(RuntimeError, match="share normalized prefix 'image_fingerprints'"):
+    with pytest.raises(RuntimeError, match="share normalized prefix 'audit_log'"):
         validate_module_selection(
             tuple(installed),
             core_settings=_settings(),
@@ -163,7 +163,7 @@ def test_unsupported_module_api_version_is_rejected_clearly() -> None:
         )
 
 
-@pytest.mark.parametrize("topic", ["discord.message", "community_moderation.case_created"])
+@pytest.mark.parametrize("topic", ["discord.message", "case_manager.record_created"])
 def test_split_topic_accepts_namespace_dot_name(topic: str) -> None:
     namespace, name = split_topic(topic)
     assert f"{namespace}.{name}" == topic
@@ -181,28 +181,28 @@ def test_core_topics_live_under_discord_namespace() -> None:
 
 
 def test_publish_is_limited_to_own_namespace() -> None:
-    validate_publish_topic("community-moderation", "community_moderation.case_created")
+    validate_publish_topic("case-manager", "case_manager.record_created")
     with pytest.raises(EventTopicError):
-        validate_publish_topic("image_fingerprints", "community_moderation.case_created")
+        validate_publish_topic("case_audit", "case_manager.record_created")
     with pytest.raises(EventTopicError):
-        validate_publish_topic("image_fingerprints", "discord.message")
+        validate_publish_topic("case_audit", "discord.message")
 
 
 def test_subscription_needs_declaration_except_own_namespace() -> None:
-    perms = ModulePermissions(event_topics=("discord.message", "community_moderation.*"))
-    validate_subscription("image_fingerprints", perms, "image_fingerprints.anything")
-    validate_subscription("image_fingerprints", perms, "discord.message")
-    validate_subscription("image_fingerprints", perms, "community_moderation.case_created")
+    perms = ModulePermissions(event_topics=("discord.message", "case_manager.*"))
+    validate_subscription("case_audit", perms, "case_audit.anything")
+    validate_subscription("case_audit", perms, "discord.message")
+    validate_subscription("case_audit", perms, "case_manager.record_created")
     with pytest.raises(EventTopicError):
-        validate_subscription("image_fingerprints", perms, "discord.member_join")
+        validate_subscription("case_audit", perms, "discord.member_join")
     with pytest.raises(EventTopicError):
-        validate_subscription("image_fingerprints", ModulePermissions(), "discord.*")
+        validate_subscription("case_audit", ModulePermissions(), "discord.*")
 
 
 def test_custom_id_round_trips_and_is_bounded() -> None:
-    custom_id = build_custom_id("community_moderation", "ban_confirm", "123", "456")
-    assert custom_id == "m:community_moderation:ban_confirm:123:456"
-    assert parse_custom_id(custom_id) == ("community_moderation", "ban_confirm", ("123", "456"))
+    custom_id = build_custom_id("case_manager", "approve", "123", "456")
+    assert custom_id == "m:case_manager:approve:123:456"
+    assert parse_custom_id(custom_id) == ("case_manager", "approve", ("123", "456"))
     assert parse_custom_id("core:whatever") is None
     with pytest.raises(ModuleContractError):
         build_custom_id("m", "k", "a:b")
@@ -235,7 +235,7 @@ def test_target_policy_override_requires_a_targeted_action() -> None:
     [
         HttpHostRule(host="hub.example.org"),
         HttpHostRule(host="discord-cdn"),
-        HttpHostRule(host="${fingerprint_hub_base_url}", network="private"),
+        HttpHostRule(host="${api_base_url}", network="private"),
         HttpHostRule(host="localhost", schemes=("http",), ports=(8080,), network="private"),
     ],
 )
@@ -262,18 +262,18 @@ def test_host_rules_reject_wildcards_and_bad_transport(rule: HttpHostRule) -> No
 
 
 def test_consumed_service_must_come_from_a_declared_dependency() -> None:
-    requirement = ServiceRequirement("moderation.cases", 1, provider="community_moderation")
-    validate_services("image_fingerprints", ("community_moderation",), (), (requirement,))
+    requirement = ServiceRequirement("records.cases", 1, provider="case_manager")
+    validate_services("case_audit", ("case_manager",), (), (requirement,))
     with pytest.raises(ModuleContractError):
-        validate_services("image_fingerprints", (), (), (requirement,))
+        validate_services("case_audit", (), (), (requirement,))
     with pytest.raises(ModuleContractError):
         validate_services("x", ("x",), (), (ServiceRequirement("a", 1, provider="x"),))
 
 
 def test_provided_services_are_unique_and_versioned_from_one() -> None:
-    validate_services("m", (), (ServiceDeclaration("moderation.cases", 1),), ())
+    validate_services("m", (), (ServiceDeclaration("records.cases", 1),), ())
     with pytest.raises(ModuleContractError):
-        validate_services("m", (), (ServiceDeclaration("moderation.cases", 0),), ())
+        validate_services("m", (), (ServiceDeclaration("records.cases", 0),), ())
     with pytest.raises(ModuleContractError):
         validate_services(
             "m",
@@ -350,6 +350,16 @@ def test_guild_settings_schema_rules() -> None:
             validate_guild_settings_schema("m", GuildSettingsSchema(fields=bad))
 
 
+def test_guild_settings_schema_rejects_unknown_invalid_policy() -> None:
+    schema = GuildSettingsSchema(
+        fields=(),
+        invalid_policy="disable_everything",  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ModuleContractError, match="invalid policy"):
+        validate_guild_settings_schema("m", schema)
+
+
 # --- preflight integration -------------------------------------------------
 
 
@@ -360,11 +370,11 @@ def test_selection_preflight_rejects_invalid_declarations() -> None:
 
 
 def test_selection_preflight_accepts_full_declarations() -> None:
-    provider = _spec("provider", provides=(ServiceDeclaration("moderation.cases", 1),))
+    provider = _spec("provider", provides=(ServiceDeclaration("records.cases", 1),))
     consumer = _spec(
         "consumer",
         dependencies=("provider",),
-        consumes=(ServiceRequirement("moderation.cases", 1, provider="provider"),),
+        consumes=(ServiceRequirement("records.cases", 1, provider="provider"),),
         permissions=ModulePermissions(
             discord_actions=frozenset({"delete_message", "timeout"}),
             event_topics=("discord.message", "provider.*"),
@@ -455,6 +465,35 @@ async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> N
     assert scheduler.jobs["often"].run_at == 200.0 + 60.0
     assert scheduler.jobs["often"].attempt == 0
     assert attempts == [1, 1, 2, 2, 3, 3]
+
+
+@pytest.mark.asyncio
+async def test_fake_scheduler_caps_extreme_backoff_without_overflow() -> None:
+    from kimi_agent_module_api.contracts import Backoff, JobRun
+    from kimi_agent_module_api.testing import FakeScheduler
+
+    scheduler = FakeScheduler()
+    attempts: list[int] = []
+
+    async def always_fails(run: JobRun) -> None:
+        attempts.append(run.attempt)
+        raise RuntimeError("not yet")
+
+    scheduler.register("h", always_fails)
+    await scheduler.run_every(
+        "often",
+        60.0,
+        "h",
+        backoff=Backoff(base_seconds=1, max_seconds=5, multiplier=1e308),
+    )
+
+    assert await scheduler.run_due(now=0.0) == 1
+    assert scheduler.jobs["often"].run_at == 1.0
+    assert await scheduler.run_due(now=1.0) == 1
+    assert scheduler.jobs["often"].run_at == 6.0
+    assert await scheduler.run_due(now=6.0) == 1
+    assert scheduler.jobs["often"].run_at == 11.0
+    assert attempts == [1, 2, 3]
 
 
 def test_render_guild_settings_matches_the_host_document_format() -> None:

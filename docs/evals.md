@@ -310,4 +310,10 @@ How this runner differs from the harness eval:
 - Cassette replay bypasses the live tier/activation gates in `dispatch`. The recording was made under the same scenario config, so gating already shaped what got recorded.
 - Thread handoff registers against a null manager, so `move_to_thread` is fully graded and the three lifecycle tools are gradeable on selection only. The harness also passes `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` into the same ReAct advisory path as production, so a proactive-handoff scenario is prompted only after the configured amount of substantive work.
 - The chat-side coding controls register against an in-memory stub, so `start_coding_task` grades the delegation decision without queueing a job. The coding agent's own inner loop (`build_coding_registry`) is a separate registry and isn't exercised here.
-- `browser` and `run_code` scenarios declare `requires_tools:` and sit out on a host without a Linux sandbox, listed under **Skipped** in `report.md`. This isn't the same as the expected-tool check: an unregistered tool in `expect.should_use_tools` still aborts the run, because that's a real gap. `requires_tools:` is the declaration that this host was never expected to have it.
+- `browser` and `run_code` scenarios declare `requires_tools:` and sit out when
+  the scenario's caller cannot access the tool on the current host. The check
+  uses the scenario's trust tier, eval identity, guild/DM scope, operator
+  blocks, and runtime availability; skips are listed under **Skipped** in
+  `report.md`. This isn't the same as the expected-tool check: an unavailable
+  tool in `expect.should_use_tools` still aborts the run, because that's a real
+  gap. `requires_tools:` declares that the scenario may legitimately sit out.

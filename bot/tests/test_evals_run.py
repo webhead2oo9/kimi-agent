@@ -9,6 +9,7 @@ from evals.run import plan_matrix
 from evals.scenario import Expect, Scenario
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse
+from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
 
@@ -40,7 +41,7 @@ class _Stub(LLMProvider):
 
 class _FakeEvalRegistry:
     def __init__(self):
-        self.registry = object()
+        self.registry = ToolRegistry()
         self.preference_store = None
         self.memory_manager = self
         self.provider_manager = self
@@ -62,17 +63,38 @@ def _rubric():
     )
 
 
-def test_qualification_run_writes_report(monkeypatch, tmp_path):
-    scenario = Scenario(
-        id="s",
+async def _noop_tool(args, ctx):
+    return "{}"
+
+
+def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_path):
+    regular = Scenario(
+        id="regular-code",
         category="tooling",
-        trust_tier=TrustTier.MEMBER,
+        trust_tier=TrustTier.REGULAR,
         turns=["q"],
         expect=Expect(),
+        requires_tools=["run_code"],
+    )
+    staff = Scenario(
+        id="staff-code",
+        category="tooling",
+        trust_tier=TrustTier.STAFF,
+        turns=["q"],
+        expect=Expect(),
+        requires_tools=["run_code"],
     )
 
     async def _fake_registry(settings, *, gateway):
-        return _FakeEvalRegistry()
+        result = _FakeEvalRegistry()
+        result.registry.register(
+            "run_code",
+            "",
+            {},
+            _noop_tool,
+            min_tier=TrustTier.STAFF,
+        )
+        return result
 
     identities = []
 
@@ -106,7 +128,7 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
             judge=ModelSpec("judge", "openai_compat", "j", base_url="https://x"),
         ),
     )
-    monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [scenario])
+    monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [regular, staff])
     monkeypatch.setattr(evals_run, "load_rubric", lambda path: _rubric())
     monkeypatch.setattr(evals_run, "build_eval_provider", lambda spec: _Stub(spec.model))
     monkeypatch.setattr(evals_run, "build_eval_registry", _fake_registry)
@@ -126,6 +148,7 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
 
     report = (tmp_path / "report.md").read_text()
     assert "Candidate tokens: 10 | Baseline tokens: 10" in report
+    assert [identity.scenario_id for identity in identities] == ["staff-code", "staff-code"]
     assert len({identity.user_id for identity in identities}) == 2
     assert identities[0].arm == "candidate:cand"
     assert identities[1].arm == "baseline:base"

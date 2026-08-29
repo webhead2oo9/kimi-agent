@@ -89,9 +89,14 @@ The output should print `/opt/kimi/betterwright` exactly.
 You adopt a newer BetterWright or Mermaid release by editing `deploy/betterwright/package.json`, regenerating the lockfile, and rerunning the installer. Doing it deliberately avoids surprise upgrades.
 
 ### What to run
-1. Edit `VERSION` or `MERMAID_VERSION` in `deploy/betterwright/package.json`.
-2. Update `package-lock.json` to match (`npm install --package-lock-only` in that directory).
-3. Re-run the installer from Step 2.
+1. Update the `betterwright` or `mermaid` dependency in
+   `deploy/betterwright/package.json`.
+2. Update the matching `VERSION` or `MERMAID_VERSION` constant in
+   `deploy/betterwright/install.sh`. For Mermaid, also update
+   `_MERMAID_VERSION` in `web_browser/visual_service.py`.
+3. Regenerate `package-lock.json` with `npm install --package-lock-only` from
+   `deploy/betterwright/`.
+4. Re-run the installer from Step 2.
 
 Don't use an unbounded npm range in production. npm and network access are install-time requirements only; browser and visual-rendering calls do not install packages or load Mermaid from a CDN.
 

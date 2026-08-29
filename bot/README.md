@@ -155,8 +155,7 @@ keeps ignored instance files inside the checkout.
 git clone https://github.com/webhead2oo9/kimi-agent.git
 cd kimi-agent/bot
 python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements.lock
-.venv/bin/python -m pip install --no-deps \
+.venv/bin/python -m pip install \
   --editable ./packages/kimi-agent-module-api --editable .
 .venv/bin/python -m pip check
 
@@ -197,14 +196,14 @@ the public repository and what must remain private deployment state.
 .venv/bin/python -m compileall . # quick syntax check
 ```
 
-Dependencies are declared in `pyproject.toml`, resolved in `uv.lock`, and
-exported with hashes to `requirements.lock` and `requirements-dev.lock`. The
-standard developer setup is in [development.md](../docs/development.md). If uv
-is already installed, run `uv sync --locked --all-packages --extra dev` followed
-by `.venv/bin/python -m ensurepip`, then install the three local projects as
-shown in the developer guide. That keeps root metadata and later module-install
-commands available. Lock updates, dependency auditing, and release builds
-remain maintainer/CI tasks that require uv.
+Dependencies are declared in `pyproject.toml`; maintainers resolve and audit
+them through `uv.lock`. The standard developer setup is in
+[development.md](../docs/development.md). If uv is already installed, run
+`uv sync --locked --all-packages --extra dev` followed by
+`.venv/bin/python -m ensurepip`, then install the three local projects without
+resolving dependencies again as shown in the developer guide. That keeps root
+metadata and later module-install commands available. Lock updates, dependency
+auditing, and release builds remain maintainer/CI tasks that require uv.
 
 ## Project layout
 

@@ -15,7 +15,7 @@ from agent.core import ConversationRunRequest, run_conversation
 from agent.reply_context import ReplyContext
 from evals.capture import InstrumentedProvider, InstrumentedRegistry, ToolCallRecord
 from evals.identity import EVAL_USER_NAME, EvalIdentity, new_eval_run_nonce
-from evals.scenario import Scenario, TurnSpec
+from evals.scenario import Scenario, TurnSpec, scenario_blocked_tools
 from utils.image_types import sniff_image_media_type
 from memory.recall import recall_current_user_context
 from providers.types import ContentPart, ConversationMessage
@@ -95,7 +95,7 @@ def _seed_context(scenario: Scenario, identity: EvalIdentity) -> ConversationCon
         # Production masks Discord thread creation in DMs. Most scenarios do
         # not need a guild, so mirror that scope rule here instead of exposing a
         # core tool the same prompt would not receive in production.
-        blocked_tools=(frozenset() if scenario.guild_id else frozenset({"move_to_thread"})),
+        blocked_tools=scenario_blocked_tools(scenario),
     )
     messages: list[ConversationMessage] = []
     for role, name, text in scenario.seeded_history:

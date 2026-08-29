@@ -24,6 +24,7 @@ from evals.harness_run import (
 from evals.mechanical import MechanicalResult
 from evals.models import ModelsConfig, ModelSpec, load_models
 from evals.scenario import Expect, Scenario, TurnSpec
+from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 from usage.normalization import UsageBreakdown
 
@@ -103,12 +104,25 @@ def test_resolve_model_spec_finds_candidates_and_baseline_label():
     assert resolve_model_spec(models, "nope") is None
 
 
-def test_missing_expected_tools_flags_unregistered_only():
+async def _noop_tool(args, ctx):
+    return "{}"
+
+
+def test_missing_expected_tools_flags_unavailable_tools():
     scenarios = [
         _scenario("a", Expect(should_use_tools=["wolfram_alpha"])),
         _scenario("b", Expect(should_use_tools=["get_steam_game_info"])),
     ]
-    problems = missing_expected_tools(scenarios, registered={"wolfram_alpha"})
+    registry = ToolRegistry()
+    registry.register("wolfram_alpha", "", {}, _noop_tool)
+    identities = {
+        scenario.id: (EvalIdentity("run", "model", scenario.id, 0),) for scenario in scenarios
+    }
+    problems = missing_expected_tools(
+        scenarios,
+        registry=registry,
+        identities_by_scenario=identities,
+    )
     assert problems == {"b": ["get_steam_game_info"]}
 
 

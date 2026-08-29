@@ -5,23 +5,29 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${CONFIG_DIR}/runtime.env}"
+
 echo "Kimi Diagnostics"
 echo "================"
 echo
 
 echo "--- Git status ---"
-git -C "${HOME}/kimi-agent" status --short --branch || true
+git -C "$BOT_DIR" status --short --branch || true
 echo
 
 echo "--- Config and env file permissions ---"
 stat -c '%U:%G %a %n' \
-  "${HOME}/.config/kimi-agent" \
-  "${HOME}/.config/kimi-agent/kimi.env" \
-  "${HOME}/.config/kimi-agent/runtime.env" 2>/dev/null || true
+  "$CONFIG_DIR" \
+  "$ENV_FILE" \
+  "$RUNTIME_ENV" 2>/dev/null || true
 echo
 
 echo "--- namei for kimi.env ---"
-namei -l "${HOME}/.config/kimi-agent/kimi.env" 2>/dev/null || true
+namei -l "$ENV_FILE" 2>/dev/null || true
 echo
 
 echo "--- Service file ---"

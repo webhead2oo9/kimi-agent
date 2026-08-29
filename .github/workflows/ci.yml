@@ -30,10 +30,6 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: |
-            bot/requirements.lock
-            bot/requirements-dev.lock
 
       - name: Install the operator environment with stdlib venv and pip
         shell: bash
@@ -44,9 +40,7 @@ jobs:
           "$python_path" --version
           "${python_path}" -m venv .venv-pip
           .venv-pip/bin/python -m pip --disable-pip-version-check install \
-            --require-hashes --requirement requirements.lock
-          .venv-pip/bin/python -m pip --disable-pip-version-check install \
-            --no-deps --editable ./packages/kimi-agent-module-api --editable .
+            --editable ./packages/kimi-agent-module-api --editable .
           test ! -e build
           test ! -e packages/kimi-agent-module-api/build
           test ! -e modules/example/build
@@ -61,10 +55,8 @@ jobs:
           test -z "$(command -v uv || true)"
           "$python_path" -m venv .venv-pip-dev
           .venv-pip-dev/bin/python -m pip --disable-pip-version-check install \
-            --require-hashes --requirement requirements-dev.lock
-          .venv-pip-dev/bin/python -m pip --disable-pip-version-check install \
-            --no-deps --editable ./packages/kimi-agent-module-api \
-            --editable ./modules/example --editable .
+            --editable ./packages/kimi-agent-module-api \
+            --editable ./modules/example --editable ".[dev]"
           test ! -e build
           test ! -e packages/kimi-agent-module-api/build
           test ! -e modules/example/build
@@ -111,16 +103,6 @@ jobs:
       # deployment target rather than a dev host.
       - name: Set up Python
         run: uv python install 3.14
-
-      - name: Check pip lock exports
-        run: |
-          uv export --quiet --locked --no-dev --format requirements.txt \
-            --no-emit-project --no-emit-workspace \
-            --output-file requirements.lock
-          uv export --quiet --locked --all-packages --extra dev \
-            --format requirements.txt --no-emit-project --no-emit-workspace \
-            --output-file requirements-dev.lock
-          git diff --exit-code -- requirements.lock requirements-dev.lock
 
       # --locked fails if uv.lock is out of date with pyproject.toml, so a
       # dependency change that skipped a re-lock cannot merge.

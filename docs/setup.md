@@ -151,7 +151,9 @@ If you want a branch other than `main`, add `--branch <name>` to the clone comma
 
 ## 5. Create the Python Environment
 
-We'll create a virtual environment with hash-checked dependencies for safety. If you have `uv` installed, the same commands will use it automatically.
+We'll create a virtual environment and install the bot into it. If `uv` is
+already installed, it uses the repository lock; otherwise standard pip resolves
+the dependencies declared by the local projects.
 
 Run this as the deployment user:
 
@@ -162,14 +164,14 @@ if command -v uv >/dev/null 2>&1; then
   echo "Using installed uv"
   uv sync --locked
   .venv/bin/python -m ensurepip
+  .venv/bin/python -m pip --disable-pip-version-check install \
+    --no-deps --editable ./packages/kimi-agent-module-api --editable .
 else
   echo "Using standard venv and pip"
   python3 -m venv .venv
   .venv/bin/python -m pip --disable-pip-version-check install \
-    --require-hashes --requirement requirements.lock
+    --editable ./packages/kimi-agent-module-api --editable .
 fi
-.venv/bin/python -m pip --disable-pip-version-check install \
-  --no-deps --editable ./packages/kimi-agent-module-api --editable .
 
 test -x .venv/bin/python
 .venv/bin/python --version
@@ -180,7 +182,8 @@ test -x .venv/bin/python
 - `.venv/bin/python` exists and is Python 3.14+
 - pip says "No broken requirements found."
 
-The hash-checking step protects you from tampered packages. If you want `uv` later, install it with its official standalone installer (never with sudo).
+If you want `uv` later, install it with its official standalone installer
+(never with sudo).
 
 ---
 
@@ -218,7 +221,6 @@ Only continue once the value no longer starts with `|`.
 The browser and chart tools need a pinned Chromium runtime:
 
 ```sh
-cd kimi-agent/bot
 sudo sh ./deploy/betterwright/install.sh
 .venv/bin/python -m deploy.betterwright.smoke_test
 ```
@@ -239,6 +241,7 @@ Run this as the deployment user:
 umask 077
 install -d -m 700 \
   "$HOME/.config/kimi-agent/config" \
+  "$HOME/.config/kimi-agent/config/prompts/commands" \
   "$HOME/.config/kimi-agent/secrets" \
   "$HOME/.local/share/kimi-agent/data" \
   "$HOME/.local/share/kimi-agent/workspaces" \
@@ -251,7 +254,6 @@ install -d -m 700 \
 Copy the default prompt and model files:
 
 ```sh
-cd kimi-agent/bot
 install -m 600 config/prompt.md config/persona.md \
   "$HOME/.config/kimi-agent/config/"
 install -m 600 config/prompts/commands/*.md \
@@ -323,7 +325,7 @@ BROWSER_PROFILES_DIR=<home-directory>/.local/share/kimi-agent/browser_profiles
 BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
 
 # Separately installed application modules, by entry-point name.
-KIMI_MODULES=discord_logging
+KIMI_MODULES=
 EOF
 chmod 600 "$HOME/.config/kimi-agent/kimi.env"
 ```
@@ -409,7 +411,6 @@ Secrets stay in `kimi.env`; `models.yaml` just names the environment variable.
 If your model route uses `codex`, run the login helper:
 
 ```sh
-cd kimi-agent/bot
 ./scripts/codex-login
 ```
 
@@ -481,6 +482,12 @@ print("discord-logging-entry-point=present")
 PY
 ```
 
+Then set the installed entry-point name in `kimi.env` before startup:
+
+```dotenv
+KIMI_MODULES=discord_logging
+```
+
 After any later `uv sync`, repeat the editable install.
 
 Create a minimal guild config for the sandbox:
@@ -516,11 +523,11 @@ Follow the module's own README for the full field list and privacy notes.
 Run the preflight helper:
 
 ```sh
-cd kimi-agent/bot
 ./scripts/preflight
 ```
 
-It checks provider credentials, model routing, Codex authentication (if used), and the browser runtime.
+It checks provider credentials, model routing, Codex authentication (if used),
+and the browser runtime when `BROWSER_ENABLED=true`.
 
 A missing or revoked required Codex credential will cause the script to exit with an error. Temporary network problems will show a warning. The bot will retry automatically on first use.
 
@@ -600,17 +607,20 @@ systemctl --user stop kimi-agent.service
 ### 2. (Optional) Quick backup
 If you want a safety net:
 ```sh
+umask 077
 backup_dir="$HOME/kimi-agent-backups/$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$backup_dir"
+install -d -m 700 "$backup_dir"
 tar -C "$HOME" -czf "$backup_dir/private-state.tar.gz" \
   .config/kimi-agent \
   .config/systemd/user/kimi-agent.service \
   .local/share/kimi-agent
+chmod 600 "$backup_dir/private-state.tar.gz"
 ```
 
 ### 3. Update the code
 Make sure your checkout is clean, then pull:
 ```sh
+cd "$HOME/kimi-agent"
 git status --short --branch
 git pull --ff-only
 ```
@@ -619,15 +629,17 @@ Compare any prompt changes against your private copies.
 
 ### 4. Reinstall Python packages
 ```sh
-cd kimi-agent/bot
+cd "$HOME/kimi-agent/bot"
 if command -v uv >/dev/null 2>&1; then
   uv sync --locked
   .venv/bin/python -m ensurepip
+  .venv/bin/python -m pip install --no-deps \
+    --editable ./packages/kimi-agent-module-api --editable .
 else
   python3 -m venv .venv
-  .venv/bin/python -m pip install --require-hashes --requirement requirements.lock
+  .venv/bin/python -m pip install \
+    --editable ./packages/kimi-agent-module-api --editable .
 fi
-.venv/bin/python -m pip install --no-deps --editable ./packages/kimi-agent-module-api --editable .
 ```
 
 ### 5. Optional: discord-logging module
@@ -683,7 +695,6 @@ Make sure your persistent data survived.
 | `.venv/bin/python` is missing | Install `python3-venv` and repeat step 5. |
 | `uv: command not found` | uv is optional. Use the venv/pip path or install uv from its official site. |
 | `No module named pip` after `uv sync` | uv intentionally prunes pip. Run `.venv/bin/python -m ensurepip` before installing extra modules. |
-| Hash mismatch from pip | Stop. Don't disable hash checking. Confirm the checkout is clean and `requirements.lock` matches the revision. |
 | BetterWright says `unzip extract failed` | Install `unzip` and rerun the installer. |
 | Chromium can't create threads | Raise `BROWSER_MAX_TASKS` (test needed 128) and rerun the smoke test. |
 | Browser/code probe fails | Check `sysctl kernel.core_pattern`. A leading `|` bypasses the sandbox's zero-core limit. Also verify Bubblewrap, user manager, and workspace mounts. |

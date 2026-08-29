@@ -30,6 +30,10 @@ class LLMUsageCall:
     pricing_model: str | None = None
     est_cost_usd: float | None = None
     usage_present: bool = True
+    upstream_provider: str = ""
+    service_tier: str = ""
+    openrouter_charge_usd: float | None = None
+    is_byok: bool | None = None
 
 
 def normalize_usage(raw: dict[str, Any] | None) -> UsageBreakdown:

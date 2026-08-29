@@ -20,14 +20,29 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
     message = SimpleNamespace(content="done", tool_calls=None, images=None)
     native = SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        usage=SimpleNamespace(
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+            cost=0.014,
+        ),
         model="openai/gpt-4.1",
-        openrouter_metadata={"provider_name": "OpenAI"},
+        service_tier="priority",
+        openrouter_metadata={
+            "is_byok": False,
+            "endpoints": {
+                "available": [
+                    {"provider": "Other", "selected": False},
+                    {"provider": "OpenAI", "selected": True},
+                ]
+            },
+        },
     )
     provider = OpenRouterProvider(
         api_key="test",
         model="openai/gpt-4.1",
         provider_routing={"require_parameters": True, "data_collection": "deny"},
+        service_tier="priority",
         app_url="https://example.com",
         app_name="Kímí 🤖\r\nInjected: value",
     )
@@ -50,14 +65,21 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
 
     request = completions.calls[0]
     assert request["extra_headers"]["HTTP-Referer"] == "https://example.com"
+    assert request["extra_headers"]["X-OpenRouter-Title"] == "Kimi Injected- value"
     assert request["extra_headers"]["X-Title"] == "Kimi Injected- value"
+    assert request["extra_headers"]["X-OpenRouter-Metadata"] == "enabled"
+    assert request["service_tier"] == "priority"
     assert request["extra_body"]["provider"] == {
         "require_parameters": True,
         "data_collection": "deny",
     }
     assert request["modalities"] == ["image", "text"]
     assert response.content == "done"
-    assert response.provider_state["openrouter_metadata"]["provider_name"] == "OpenAI"
+    assert response.provider_state == {}
+    assert response.upstream_provider == "OpenAI"
+    assert response.service_tier == "priority"
+    assert response.openrouter_charge_usd == 0.014
+    assert response.is_byok is False
     assert response.model == "openai/gpt-4.1"
 
 
@@ -88,6 +110,63 @@ def test_openrouter_provider_does_not_send_openai_reasoning_effort() -> None:
     )
 
     assert "reasoning_effort" not in completions.calls[0]
+    assert completions.calls[0]["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
+
+
+def test_openrouter_provider_preserves_zero_charge_and_reads_additive_sdk_fields() -> None:
+    message = SimpleNamespace(content="done", tool_calls=None, images=None)
+    usage = SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        model_extra={"cost": 0},
+    )
+    native = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=usage,
+        model="x/y",
+        model_extra={
+            "openrouter_metadata": SimpleNamespace(
+                model_extra={
+                    "is_byok": True,
+                    "endpoints": SimpleNamespace(
+                        model_extra={
+                            "available": [
+                                SimpleNamespace(
+                                    model_extra={
+                                        "provider": "  Provider\nName  ",
+                                        "selected": True,
+                                    }
+                                )
+                            ]
+                        }
+                    ),
+                }
+            ),
+            "service_tier": "flex",
+        },
+    )
+    provider = OpenRouterProvider(api_key="test", model="x/y")
+    completions = FakeCompletions(native)
+    provider._client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+
+    response = asyncio.run(
+        provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("hi")],
+                tools=[],
+                max_tokens=128,
+            )
+        )
+    )
+
+    assert response.upstream_provider == "ProviderName"
+    assert response.service_tier == "flex"
+    assert response.openrouter_charge_usd == 0.0
+    assert response.is_byok is True
 
 
 def test_openrouter_provider_captures_reasoning_field() -> None:

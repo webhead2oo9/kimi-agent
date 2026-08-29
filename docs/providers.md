@@ -240,11 +240,11 @@ effective while doing nothing.
 | `keyless` | `false` | gateways | The endpoint injects its own upstream credentials, so no key is read. |
 | `models_endpoint` | `""` | OpenAI-compatible | A `/v1/models` URL used to filter selectable candidates at startup. |
 | `prompt_caching` | `true` | `anthropic_compat` | Send a rolling prompt-cache breakpoint. |
-| `provider_routing` | `{}` | `openrouter` | Structured OpenRouter routing object, serialized into the request. |
+| `provider_routing` | `{}` | `openrouter` | Typed OpenRouter privacy, filtering, ordering, price, quantization, and performance routing policy. |
 | `app_name` | `BOT_NAME` | OpenAI-compatible | Optional provider-facing identity override. By default the configured bot name becomes the `User-Agent`; OpenRouter also receives it as its attribution title. |
 | `app_url` | `""` | `openrouter` | Attribution header. |
-| `service_tier` | `""` | OpenAI only | Service tier such as `flex`. Dropped on non-OpenAI endpoints. |
-| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses` | SDK transport timeout. Ignored by `openrouter`. |
+| `service_tier` | `""` | OpenAI, OpenRouter | OpenAI service tier, or OpenRouter `flex`/`priority`. Dropped on non-OpenAI compatibility gateways. |
+| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses`, `openrouter` | SDK transport timeout. |
 | `max_output_tokens` | unset | all | Hard output-token ceiling for every model on this gateway. |
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
 | `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. OpenAI-compatible profiles send it as `reasoning_effort`; DeepSeek targets additionally receive `thinking.type=enabled`. |
@@ -254,11 +254,13 @@ purpose. It expresses a limit the *gateway* imposes, so it applies to
 everything routed through that gateway without lowering the global limit for
 anyone else.
 
-`service_tier` is an OpenAI-only kwarg. It is sent only when the profile's
-`base_url` is `https://api.openai.com` or is unset (meaning the SDK default
-endpoint). On any other gateway it is silently dropped, for both
-`openai_compat` and `openai_responses`, because forwarding it would be a
-guaranteed 400 from a gateway that has never heard of it.
+For `openai_compat` and `openai_responses`, `service_tier` is sent only when the
+profile's `base_url` is `https://api.openai.com` or is unset (meaning the SDK
+default endpoint). On any other gateway it is silently dropped because
+forwarding it would be a likely 400. OpenRouter validates `flex` or `priority`
+and sends the value to its fixed endpoint. See
+[OpenAI and OpenRouter](providers-openai.md#openrouter) for its routing and
+privacy schema.
 
 Two fields exist for gateways that hold their own upstream credentials.
 `keyless: true` declares that the endpoint injects them, so no API key is read
@@ -267,6 +269,9 @@ without one. A keyless profile must set `base_url` and must not set
 `api_key_env`; that combination would mean calling a vendor endpoint
 unauthenticated, which is a configuration mistake worth failing on rather than
 discovering as a 401 mid-conversation.
+
+OpenRouter is deliberately stricter: it requires `api_key_env`, rejects
+`keyless`, and rejects `base_url` because its endpoint is code-owned.
 
 #### Supported `api_key_env` values
 

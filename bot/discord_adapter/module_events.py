@@ -184,13 +184,19 @@ def audit_entry_event(
     if target_id is None:
         # discord.py keeps the raw id even when the target was never cached.
         target_id = getattr(entry, "_target_id", None)
+    try:
+        numeric_target_id = int(target_id) if target_id is not None else None
+    except (TypeError, ValueError):
+        # Some non-snowflake audit targets use domain identifiers. Discord
+        # invite entries, for example, expose the invite code as ``target.id``.
+        numeric_target_id = None
     return ev.AuditLogEntryEvent(
         guild_id=int(entry.guild.id),
         entry_id=int(entry.id),
         action=action,
         raw_action=str(getattr(entry.action, "name", entry.action)),
         actor_id=int(entry.user_id) if entry.user_id else None,
-        target_id=int(target_id) if target_id is not None else None,
+        target_id=numeric_target_id,
         reason=entry.reason,
         changes=tuple(changes),
         created_at=_ts(entry.created_at) or 0.0,

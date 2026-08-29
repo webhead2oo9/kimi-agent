@@ -524,3 +524,26 @@ def test_audit_entry_maps_timeout_from_member_update() -> None:
     assert event.action == "timeout" and event.actor_id == 7 and event.target_id == 8
     assert event.until == dt.datetime(2026, 1, 2, tzinfo=dt.UTC).timestamp()
     assert event.changes[0][0] == "timed_out_until"
+
+
+def test_audit_entry_ignores_non_snowflake_target_id() -> None:
+    import discord
+
+    entry = SimpleNamespace(
+        guild=SimpleNamespace(id=1),
+        id=56,
+        action=discord.AuditLogAction.invite_create,
+        user_id=7,
+        target=SimpleNamespace(id="mbTEmxjqk", name="mbTEmxjqk"),
+        reason=None,
+        before=None,
+        after=None,
+        created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+    )
+
+    event = audit_entry_event(entry)  # type: ignore[arg-type]
+
+    assert event is not None
+    assert event.raw_action == "invite_create"
+    assert event.target_id is None
+    assert event.target_display_name == "mbTEmxjqk"

@@ -1,176 +1,104 @@
 # Durable coding agent
 
-The optional coding agent takes on repository-scale, multi-file, and
-investigate-edit-verify work without holding the Discord response loop open
-while it runs. The ordinary assistant stays the generalist: it can still reach
-for `run_code` when a small calculation or script will do, and it calls
-`start_coding_task` when the work is big enough that it should carry on
-independently.
+The optional coding agent handles repository-scale, multi-file, and investigate-edit-verify work without holding the Discord response loop open. The ordinary assistant stays the generalist: it can still reach for `run_code` when a small calculation or script will do, and it calls `start_coding_task` when the work is big enough that it should carry on independently.
 
-The feature is off by default, and it registers only when all three of these
-hold:
+The feature is off by default. It only registers when all three of these are true:
 
-- `CODING_TASKS_ENABLED=true`;
-- `roles.coding` names a text-and-tool-calling model in `config/models.yaml`;
-- code execution is enabled and its complete Linux sandbox profile passes the
-  startup probe.
+- `CODING_TASKS_ENABLED=true`
+- `roles.coding` points to a text-and-tool-calling model in `config/models.yaml`
+- Code execution is enabled and its full Linux sandbox profile passes the startup probe
 
-There is no fallback to the chat model. If the dedicated role or the sandbox is
-missing, the coding controls simply aren't exposed.
+There is no fallback to the chat model. If the dedicated role or the sandbox is missing, the coding controls simply are not exposed.
 
-## Lifecycle and status
+## What you get
 
-`start_coding_task` durably queues the objective, acceptance criteria, selected
-context and starting files, Discord root, user, and workspace, and returns a
-task id straight away. The task is
-then held until the Discord boundary has worked out the reply's final channel
-or thread, delivered the acknowledgement there, attempted the initial status
-message, and released the worker. Workers are bounded globally and there is
-only ever one writer per workspace, so any excess work waits in FIFO order,
-subject to the per-user and per-workspace queue limits.
+A coding task runs in the background with its own ReAct loop. It can:
 
-Once the queue commit succeeds, the foreground ReAct turn ends
-deterministically. The bot posts a short task-id acknowledgement without making
-another chat-model call, then creates the editable status message before the
-worker becomes claimable; from there, progress and completion arrive through
-the durable task delivery path. A `move_to_thread` call later in the same tool
-batch can still supply the routing request, but every other later call is
-recorded as skipped, which keeps the provider transcript well-formed without
-doing any more foreground work. If the turn deadline expires right after a
-committed task acknowledgement, the acknowledgement wins. Queue rejection and
-cancellation stay ordinary tool errors, so the chat model can explain them to
-the user.
+- Read and write many files across the workspace
+- Run long builds and tests through managed command jobs
+- Use research tools (`internet_search`, `fetch_url`, `browser`) under the same gates as the foreground assistant
+- Maintain a visible plan that members can watch
+- Accept additional input when the operator or model asks for it
+- Survive bot restarts and resume where it left off
 
-When a reply is moved into a thread, whether explicitly or automatically, the
-status, acknowledgement, progress, and final report all go to that thread. If
-Discord can't create it, all four fall back to the original channel.
+In return, you accept longer latency, separate model spend, and the need to monitor a background worker. The foreground assistant is still the right choice for quick questions, small edits, or anything that should finish inside one Discord turn.
 
-The worker runs on a least-privilege registry: bounded workspace read/write
-tools, archive and document extraction, `coding_plan`, `coding_progress`,
-`coding_request_input`, and the managed command-job controls. It also borrows
-the assistant's research tools, `fetch_url`, `internet_search`, and `browser`,
-under the foreground's registration gates. If the assistant lacks a tool because
-of credentials, feature settings, or operator policy, the worker lacks it too.
-Search and browser budgets cover the whole worker run and reset when a task
-resumes after restart or requested input. The command prompt requires
-`coding_plan` before edits or jobs and directs the worker to research unfamiliar
-APIs instead of guessing. Plan and progress calls produce the user-visible
-milestones; there is no separate summarizer reading the worker's hidden reasoning.
+## Requirements and activation
 
-The worker's browser calls release their turn lease after every call because
-the run may last minutes and its managed jobs need the shared VPN namespace
-between calls. Browser screenshots queue as final-report attachments and appear
-inline to the worker only when the coding model accepts image input.
-Before the worker publishes a plan, the status uses a short summary supplied by
-the foreground assistant or derived from the objective. Once a plan exists,
-the plan replaces that summary so members see what the worker is actually doing.
-Discord gets one status message, edited no more often than the configured
-minimum interval, followed by one normal final reply. Final delivery is durable
-and retried after a transient Discord failure: retries use persisted
-exponential backoff, stop after ten attempts or 24 hours, and fail immediately
-if the channel is missing or permission has been lost. An authorized caller can
-use `coding_task_retry_delivery` to reset an exhausted delivery.
+You need three things before the tools appear:
 
-The status, message, cancel, and delivery-retry tools let the generalist inspect
-or steer a task, and recover a final report once the Discord target is
-restored. Steering is appended to the task journal and reaches the model at the
-next ReAct boundary, so it can't interrupt a provider call or a command
-midway. Text-only follow-up replies can still be delivered while the coding
-worker owns its workspace, but follow-ups that use workspace tools or deliver
-local attachments serialize behind that writer lease so concurrent file access
-stays safe.
+1. Enable the feature in your environment.
+2. Configure a dedicated `coding` role in `models.yaml` that supports text and tool calling. The coding model never inherits from `chat`.
+3. Have a working code execution sandbox (`CODE_EXEC_ENABLED=true` and a passing probe).
 
-Final attachments are preflighted against the destination guild's current
-Discord per-file upload limit, falling back to 10 MiB when it is unavailable.
-A mixed batch still delivers every fitting file within the existing per-response
-attachment cap and omits only oversized files during size preflight.
-The first reply chunk names omissions in plain text and corrects any stale claim
-in the worker's report that they were attached. The exact limit and notice are
-checkpointed before the send, exposed as sanitized task-status metadata, and
-reused on recovery. The delivered notice is also stored in the conversation
-transcript so the next model turn sees the actual outcome.
+If any of these are missing, `start_coding_task` and the related controls stay hidden. The ordinary `run_code` tool continues to work normally.
 
-## Context and starting files
+## How a task starts
 
-Delegation is explicit. The foreground assistant can include a bounded,
-text-only snapshot of the conversation and current turn, name non-image
-attachments from the triggering message, and point to existing workspace files.
-The snapshot includes useful reply and tool-read context but never system
-prompts, tool definitions, provider payloads, recalled long-term memories, or
-image bytes. It is stored with the task so the worker receives the same input
-after a restart.
+The foreground assistant calls `start_coding_task` with the objective, acceptance criteria, selected context, and starting files. The call returns a task id immediately. The task is durably queued, the foreground turn ends cleanly, and the bot posts a short acknowledgement with the task id.
 
-Selected attachments go through the same moderation and workspace limits as
-`import_attachment`, then become ordinary workspace files before the task is
-queued. Existing workspace inputs are validated and stored as relative paths.
-The worker is told that copied conversation text, filenames, paths, and file
-contents are untrusted and must be inspected rather than followed as instructions.
+The worker does not start until the Discord boundary has delivered that acknowledgement and created the initial status message. Workers are globally bounded, and only one writer may hold a workspace at a time, so extra tasks wait in FIFO order.
 
-Input preparation is all-or-nothing. If a named attachment is unavailable, a
-path is unsafe or missing, a quota is exceeded, or queue admission fails, no
-task is queued and files created by that attempt are removed. The foreground
-assistant receives a direct explanation naming the affected attachment or
-workspace-relative path so it can tell the member what to fix.
+Once the queue succeeds, the foreground assistant is done. Progress and completion arrive later through the durable delivery path.
+
+## Status messages and visibility
+
+Discord shows one editable status message. Before a plan exists, the status shows a short summary supplied by the foreground assistant or derived from the objective. Once the worker publishes a plan, that plan replaces the summary so members see what the worker is actually doing.
+
+The status updates no more often than the configured minimum interval. When the task finishes, one normal final reply is delivered. Both the status and the final reply are durable: they retry with exponential backoff, stop after ten attempts or 24 hours, and fail fast if the channel is gone or permissions are lost.
+
+When a reply is moved into a thread (explicitly or automatically), the status, acknowledgement, progress, and final report all follow. If Discord cannot create the thread, everything falls back to the original channel.
+
+## What the worker can do
+
+The worker runs on a least-privilege registry. It receives:
+
+- The bounded workspace read/write, archive, and document tools
+- `coding_plan`, `coding_progress`, `coding_request_input`, and the managed job controls
+- The assistant's research tools (`internet_search`, `fetch_url`, `browser`) when the foreground has them registered
+
+If the assistant lacks a tool because of credentials, settings, or policy, the worker lacks it too. Search and browser budgets cover the entire worker run and reset when a task resumes after a restart or requested input.
+
+The command prompt requires `coding_plan` before edits or jobs and directs the worker to research unfamiliar APIs instead of guessing. Plan and progress calls produce the user-visible milestones. There is no separate hidden summarizer.
 
 ## Managed command jobs
 
-The coding agent can't submit arbitrary inline commands directly. It first
-writes a script into the user's workspace, then starts that path through
-`coding_job_start`. The job runs through the same systemd, Bubblewrap, seccomp,
-rlimit, quota, network-mode, and workspace-lock boundary as `run_code`, with
-coding-specific wall and CPU ceilings. That includes the code-execution
-workspace-accounting policy: preflight and final scans, five-second in-flight
-polling by default, and bounded retries for transient disappearing-entry races.
-Without an explicit `wait_seconds`, `coding_job_status` does one event-driven
-wait for up to the configured job lifetime, so a long build doesn't burn
-repeated model iterations; passing `wait_seconds=0` gives a non-blocking status
-read instead.
+The coding agent cannot submit arbitrary inline commands. It first writes a script into the workspace, then starts that path with `coding_job_start`. The job runs through the exact same systemd, Bubblewrap, seccomp, rlimit, quota, network mode, and workspace lock boundary as `run_code`, with coding-specific wall and CPU ceilings.
 
-In `CODE_EXEC_NETWORK_MODE=netns`, a job shares the single VPN namespace with
-the same user's browser. Starting a job asks the browser service to close that
-user's idle worker immediately instead of after its idle TTL, then waits up to
-30 seconds for the lease; if someone else's browser turn or a foreground
-networked run still holds it, the job fails with a retryable error rather than
-blocking. While a job is queued or running the worker's `browser` calls are
-refused, and the flag clears when `coding_job_status` reports a terminal state
-or `coding_job_cancel` returns. Host and `none` modes fail fast on the shared
-execution semaphore.
+In `CODE_EXEC_NETWORK_MODE=netns`, a job shares the single VPN namespace with the same user's browser. Starting a job asks the browser service to close that user's idle worker immediately, then waits up to 30 seconds for the lease. If someone else's browser turn or a foreground networked run still holds it, the job fails with a retryable error. While a job is queued or running, the worker's own `browser` calls are refused.
 
-The application owns every job handle. Cancellation waits for the sandbox to
-tear down, and systemd also gets `RuntimeMaxSec` as a manager-side backstop. A
-process restart marks any running job whose fate is uncertain as
-`interrupted`, and the recovered agent is told to inspect the workspace rather
-than blindly replay it.
+The application owns every job handle. Cancellation waits for the sandbox to tear down. A process restart marks any running job whose fate is uncertain as `interrupted`, and the recovered worker is told to inspect the workspace rather than blindly replay it.
 
-## Recovery and cancellation
+## Input and context
 
-After every completed tool batch, the worker stores its conversation
-checkpoint, provider state, current plan, and event cursor. On startup,
-interrupted workers are requeued, while tasks paused for requested input stay
-paused. A steering message atomically resumes a paused task; an unanswered
-pause expires at the original total deadline. Only one worker may resume a
-given workspace at a time.
+Delegation is explicit. The foreground assistant can include a bounded, text-only snapshot of the conversation, name non-image attachments from the triggering message, and point to existing workspace files. The snapshot never includes system prompts, tool definitions, provider payloads, long-term memories, or image bytes.
 
-Members can use `/stop`, or send a bot-directed message containing exactly
-`stop`, `cancel`, or `abort` (case-insensitive). That lane runs before normal
-turn admission and cancels both the foreground response and any coding work in
-the current root. `/stop scope:all` covers all of that member's active work,
-and `task_id` targets one owned coding task. Partial workspace changes are
-preserved so they can be inspected or resumed later. `/privacy` cancellation
-goes through the same teardown path before deletion, and the privacy barrier
-keeps recovery from racing a pending deletion.
+Selected attachments go through the same moderation and workspace limits as `import_attachment`. Existing workspace inputs are validated and stored as relative paths. The worker is told that copied conversation text, filenames, paths, and file contents are untrusted and must be inspected.
 
-## Failure boundaries
+Input preparation is all-or-nothing. If a named attachment is unavailable, a path is unsafe, a quota is exceeded, or queue admission fails, no task is queued and any files created by that attempt are removed. The foreground assistant receives a direct explanation so it can tell the member what to fix.
 
-Provider calls have their own timeout inside the task's total deadline. A model
-failure, an exhausted iteration budget, a task deadline, a command failure, or
-an explicit cancel all produce a terminal durable state rather than wedging the
-Discord turn. Task usage is attributed to its own `coding:<task-id>` turn.
-Output text passes through the configured output moderation policy. Generic
-workspace attachments are delivery artifacts rather than moderation inputs;
-first-class native generated images and owned embed images remain moderated in
-ordinary turns.
+## Recovery, steering, and cancellation
 
-As an operator, watch the status message, the SQLite task/job rows, and the
-normal application logs. The raw checkpoint and command output are operational
-state, not a user-facing transcript.
+After every completed tool batch, the worker stores its conversation checkpoint, provider state, current plan, and event cursor. On startup, interrupted workers are requeued. Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the original total deadline. Only one worker may resume a given workspace at a time.
+
+Members can cancel with `/stop`, or by sending a bot-directed message containing exactly `stop`, `cancel`, or `abort` (case-insensitive). That lane runs before normal turn admission and cancels both the foreground response and any coding work in the current root. `/stop scope:all` covers all of that member's active work. Partial workspace changes are preserved so they can be inspected or resumed later.
+
+`/privacy` cancellation goes through the same teardown path before deletion, and the privacy barrier keeps recovery from racing a pending deletion.
+
+## Failure boundaries and monitoring
+
+Provider calls have their own timeout inside the task's total deadline. A model failure, exhausted iteration budget, task deadline, command failure, or explicit cancel all produce a terminal durable state rather than wedging the Discord turn. Task usage is attributed to its own `coding:<task-id>` turn.
+
+Output text passes through the configured output moderation policy. Generic workspace attachments are delivery artifacts rather than moderation inputs. First-class generated images remain moderated in ordinary turns.
+
+As an operator, watch the status message, the SQLite task and job rows, and the normal application logs. The raw checkpoint and command output are operational state, not a user-facing transcript.
+
+## Practical notes
+
+- Coding tasks use separate model spend from ordinary chat turns.
+- A long-running task can hold the workspace lock for minutes. Members who need to work in the same workspace will wait.
+- The foreground assistant can still answer questions and make small edits while a coding task runs, as long as it does not need the workspace lock.
+- If you expect frequent large jobs, consider a dedicated `coding` model with a generous context window and tool-calling reliability.
+- The durable delivery path means final reports can arrive hours later if Discord was unreachable. The retry budget is finite.
+
+When the work is small enough to finish inside one turn, keep using the ordinary assistant and `run_code`. When the work needs sustained focus, many files, or long builds, hand it to the coding agent.

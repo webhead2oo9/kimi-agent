@@ -81,13 +81,16 @@ restart.
 
 ## Verify the setup
 
-After restarting:
+To verify a chat route after restarting:
 
-1. Open `/models` and select the Z.AI model entry.
+1. Add the entry to `selectable_chat_models`, then open `/models` and select it.
 2. Send a short text prompt.
 3. Ask for an action that requires a Kimi tool.
 4. If the model declares `image_input`, attach an image and ask a simple
    question about it.
+
+For a coding-only route, start a coding task instead and confirm that its status
+and final report complete; `/models` changes the chat primary, not `roles.coding`.
 
 A `401` response usually means the key is missing, invalid, or inactive. If a
 request uses API balance instead of Coding Plan quota, confirm that the provider

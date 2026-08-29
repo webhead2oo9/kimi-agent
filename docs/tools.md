@@ -5,9 +5,9 @@ along with who can use each one and which runtime gates decide whether it gets
 registered at all. The schemas and the enforcement behind them live in
 `tools/`.
 
-Deployment plugins and operator-authored script-backed skill tools are dynamic
-rather than built in, so they get their own treatment under
-[Extensible tools](#extensible-tools).
+Deployment plugins, installed application modules, and operator-authored
+script-backed skill tools are dynamic rather than built in, so they get their
+own treatment under [Extensible tools](#extensible-tools).
 
 ## Discord application commands
 
@@ -18,6 +18,7 @@ them:
 | Command | Access | Purpose |
 |---|---|---|
 | `/memory status`, `/memory opt-in`, `/memory opt-out` | Member | Inspect or change the current user's long-term-memory preference. |
+| `/chat`, `/chat-reset` | User Install; `/chat` is ID-allowlisted | Use the optional personal chat surface, or clear the caller's personal transcript. Registered only when `USER_APP_CHAT_ENABLED` is true. |
 | `/privacy` | Member | Show the privacy summary and confirmed memory/full-data deletion controls. |
 | `/stop` | Member | Cancel the current response/coding work, all of the member's work, or one owned coding task. |
 | `/usage` | Member; expanded for staff | Show the current user's usage, or let staff inspect another user or server totals. |
@@ -130,9 +131,10 @@ and the moderation boundary.
 ## Workspace and files
 
 All of the workspace tools are member-tier and operate only inside the current
-user's per-guild sandbox. Paths, quotas, symlinks, archive expansion, downloads,
-output attachments, and cleanup all follow the containment rules documented in
-[Workspace Tools](workspace.md).
+user's scoped sandbox: per-guild in ordinary chat, or the user's shared personal
+workspace in `/chat` and personal DMs. Paths, quotas, symlinks, archive
+expansion, downloads, output attachments, and cleanup all follow the containment
+rules documented in [Workspace Tools](workspace.md).
 
 | Tool | Visibility | Purpose |
 |------|------------|---------|
@@ -163,7 +165,7 @@ share the same bounded attachment rail.
 
 | Tool | Visibility | Tier | Purpose and availability |
 |---|---|---|---|
-| `run_code` | Core | Member | Run inline Python/shell code or a workspace file inside the Linux systemd/Bubblewrap/seccomp sandbox. Registered only when `CODE_EXEC_ENABLED` is true and the selected `none`, `host`, or `netns` profile passes its startup probe. |
+| `run_code` | Core | Member by default; configurable | Run inline Python/shell code or a workspace file inside the Linux systemd/Bubblewrap/seccomp sandbox. `CODE_EXEC_MIN_TIER` can raise access to Regular or Staff. Registered only when `CODE_EXEC_ENABLED` is true and the selected `none`, `host`, or `netns` profile passes its startup probe. |
 
 The network mode is deployment configuration, and no individual call can change
 it. A networked mode can also install validated `pip_install` requirements into
@@ -305,7 +307,7 @@ persona and require `REGULAR` tier or higher. See
 
 ## Extensible tools
 
-The built-in catalog is not the ceiling for a deployment. Two more surfaces
+The built-in catalog is not the ceiling for a deployment. Three more surfaces
 can add tools:
 
 - **Script-backed skill tools** come from operator-authored `tools:`
@@ -323,13 +325,19 @@ can add tools:
 - **Plugin tools** come from modules explicitly allowlisted in
   `PLUGIN_MODULES`. Built-in tools register before plugins, so a duplicate name
   fails the plugin. The exceptions are the skill-management and Hindsight
-  memory tools, which register later; a plugin must not claim those names
-  either. See [Plugins](plugins.md).
+  memory tools, which register later; configured application-module tools also
+  register after plugins. A plugin must not claim any of those names either.
+  See [Plugins](plugins.md).
+- **Application-module tools** are registered during `ModuleSpec.create()` by
+  installed packages explicitly selected in `KIMI_MODULES`. They remain hidden
+  until their module starts and wherever that module is inactive. See
+  [Application modules](modules.md).
 
-Both surfaces enter the same `ToolRegistry` and get the same tier, guild,
-policy, activation, timeout, and dispatch enforcement as the built-ins. The
-exact dynamic catalog is deployment state, and you can see it at runtime
-through `browse_tools` and the startup capability logs.
+All three surfaces enter the same `ToolRegistry` and get the same tier, guild,
+policy, activation, and dispatch enforcement as the built-ins. The
+exact dynamic catalog is deployment state. `browse_tools` shows its searchable
+portion for the current caller; startup logs report plugin, module, and skill
+loading, and `/modules manifest` lists each configured module's tools.
 
 ## Operator reference
 

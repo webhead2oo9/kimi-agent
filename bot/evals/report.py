@@ -34,7 +34,13 @@ def render_report(
     baseline_model: str,
     reports: list[ScenarioReport],
     rubric: Rubric,
+    *,
+    selected_scenarios: list[str] | None = None,
+    skipped_scenarios: dict[str, list[str]] | None = None,
 ) -> str:
+    executed_scenarios = [report.scenario_id for report in reports]
+    selected_scenarios = selected_scenarios or executed_scenarios
+    skipped_scenarios = skipped_scenarios or {}
     wins = sum(1 for r in reports if r.judge.winner_label == "candidate")
     losses = sum(1 for r in reports if r.judge.winner_label == "baseline")
     ties = sum(1 for r in reports if r.judge.winner_label == "tie")
@@ -45,6 +51,10 @@ def render_report(
         f"# Eval: {candidate_model} (candidate) vs {baseline_model} (baseline)",
         "",
         f"**Scenarios:** {len(reports)} | **Candidate W/L/T:** {wins}/{losses}/{ties}",
+        (
+            f"**Coverage:** {len(selected_scenarios)} selected | "
+            f"{len(executed_scenarios)} executed | {len(skipped_scenarios)} skipped"
+        ),
         "",
         "## Per-dimension mean (candidate vs baseline)",
         "",
@@ -63,6 +73,16 @@ def render_report(
         f"- Candidate tool calls: {sum(r.candidate_mechanical.tool_call_count for r in reports)}",
         f"- Tool errors (candidate): {sum(r.candidate_mechanical.tool_errors for r in reports)}",
     ]
+    if skipped_scenarios:
+        lines += [
+            "",
+            "## Skipped scenarios",
+            "",
+            *[
+                f"- `{scenario_id}`: needs {', '.join(requirements)}"
+                for scenario_id, requirements in skipped_scenarios.items()
+            ],
+        ]
     lines += [
         "",
         "## Per-scenario detail",
@@ -93,7 +113,7 @@ def render_report(
     return "\n".join(lines)
 
 
-def _row(report: ScenarioReport, which: str) -> dict[str, Any]:
+def _row(report: ScenarioReport, which: str, *, coverage: dict[str, Any]) -> dict[str, Any]:
     run = report.candidate_run if which == "candidate" else report.baseline_run
     mech = report.candidate_mechanical if which == "candidate" else report.baseline_mechanical
     scores = report.judge.candidate_scores if which == "candidate" else report.judge.baseline_scores
@@ -122,12 +142,29 @@ def _row(report: ScenarioReport, which: str) -> dict[str, Any]:
         "latency_ms": run.total_latency_ms,
         "missing_tools": mech.missing_tools,
         "scores": scores,
+        "coverage": coverage,
     }
 
 
-def write_raw_jsonl(path: str | Path, reports: list[ScenarioReport]) -> None:
+def write_raw_jsonl(
+    path: str | Path,
+    reports: list[ScenarioReport],
+    *,
+    selected_scenarios: list[str] | None = None,
+    skipped_scenarios: dict[str, list[str]] | None = None,
+) -> None:
+    executed_scenarios = [report.scenario_id for report in reports]
+    coverage = {
+        "selected_scenarios": selected_scenarios or executed_scenarios,
+        "executed_scenarios": executed_scenarios,
+        "skipped_scenarios": skipped_scenarios or {},
+    }
     out = Path(path)
     with out.open("w") as handle:
         for report in reports:
-            handle.write(json.dumps(_row(report, "candidate"), default=str) + "\n")
-            handle.write(json.dumps(_row(report, "baseline"), default=str) + "\n")
+            handle.write(
+                json.dumps(_row(report, "candidate", coverage=coverage), default=str) + "\n"
+            )
+            handle.write(
+                json.dumps(_row(report, "baseline", coverage=coverage), default=str) + "\n"
+            )

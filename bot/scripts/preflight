@@ -1,0 +1,79 @@
+#!/bin/bash
+#
+# Run preflight checks before starting Kimi.
+# Verifies provider credentials and the browser runtime when enabled.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PYTHON_BIN="$BOT_DIR/.venv/bin/python"
+cd "$BOT_DIR"
+
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+
+echo "Kimi Preflight"
+echo "=============="
+echo "ENV_FILE:    $ENV_FILE"
+echo "RUNTIME_ENV: $RUNTIME_ENV"
+echo
+
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: $ENV_FILE not found" >&2
+    exit 1
+fi
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
+    echo "Create the bot virtual environment and install its dependencies first." >&2
+    exit 1
+fi
+
+if [[ ! -f "$RUNTIME_ENV" ]]; then
+    echo "WARNING: $RUNTIME_ENV not found (some features may be disabled)"
+fi
+
+echo "Checking provider credentials and model routing..."
+ENV_FILE="$ENV_FILE" RUNTIME_ENV="$RUNTIME_ENV" "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+runtime_env = Path(os.environ["RUNTIME_ENV"])
+if runtime_env.is_file():
+    # Match systemd EnvironmentFile semantics: values are literal and do not
+    # expand references to other variables.
+    values = dotenv_values(runtime_env, interpolate=False)
+    malformed = sorted(key for key, value in values.items() if value is None)
+    if malformed:
+        names = ", ".join(malformed)
+        raise SystemExit(f"invalid assignment(s) in {runtime_env}: {names}")
+    os.environ.update({key: value for key, value in values.items() if value is not None})
+
+from app.providers import ProviderManager, codex_startup_check
+from config.model_config import load_model_config
+from config.settings import settings
+
+models = load_model_config(Path(settings.config_dir) / "models.yaml")
+providers = ProviderManager(settings, model_config=models)
+if not providers.has_active_llm_credentials():
+    raise SystemExit("provider credential startup gate failed")
+codex_startup_check(settings, model_config=models)
+print("provider-startup-preflight=passed")
+
+if settings.browser_enabled:
+    print("\nRunning browser runtime smoke test...")
+    from deploy.betterwright.smoke_test import main as browser_smoke
+
+    asyncio.run(browser_smoke())
+else:
+    print("\nSkipping browser runtime smoke test (BROWSER_ENABLED=false).")
+PY
+
+echo
+echo "All preflight checks passed."
+echo "You can now start the service with: systemctl --user start kimi-agent.service"

@@ -209,7 +209,7 @@ Before enabling or after every runtime upgrade, run as the unprivileged bot
 account from `bot/`:
 
 ```sh
-uv run python -m deploy.betterwright.smoke_test
+.venv/bin/python -m deploy.betterwright.smoke_test
 ```
 
 The smoke test exercises the production browser boundary, persistent-profile

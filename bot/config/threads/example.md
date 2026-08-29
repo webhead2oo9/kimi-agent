@@ -40,10 +40,10 @@ thread really needs its own.
 ## What does not belong here
 
 Body only, no frontmatter. `pinned_tools`, `blocked_tools`, `thread_handoff`,
-`thread_auto_respond`, and the `auto_thread_*` keys are read only from
-`config/channels/<channel_id>.md` and `config/servers/<guild_id>.md`. Inside a
-thread they resolve against the parent channel, so keys placed here would look
-configured and do nothing.
+and `thread_auto_respond` are read from `config/channels/<channel_id>.md` and
+`config/servers/<guild_id>.md`; inside a thread, the channel scope is its parent.
+The `auto_thread_*` keys are channel-only and apply when a reply starts in that
+text channel. Keys placed here would look configured and do nothing.
 
 The body renders under a `## Thread Instructions` heading (a channel fragment
 renders under `## Channel Instructions`).

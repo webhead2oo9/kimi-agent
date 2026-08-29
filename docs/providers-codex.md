@@ -44,7 +44,7 @@ supplies no model at all; bot chat always uses the YAML model entry.
 ## Authentication
 
 ```bash
-uv run python scripts/codex_auth.py --token-file secrets/codex-auth.json
+.venv/bin/python scripts/codex_auth.py --token-file secrets/codex-auth.json
 ```
 
 The helper runs the Codex OAuth device flow and writes the token file
@@ -52,7 +52,7 @@ atomically with owner-only permissions.
 
 Startup validates Codex auth whenever a reachable enabled model role needs
 Codex. A revoked token then fails fast, and the message includes a
-`uv run python scripts/codex_auth.py` hint so you know what to run. Transient
+`python scripts/codex_auth.py` hint so you know what to run. Transient
 network errors during that check are tolerated and retried on first use,
 because a flaky network at boot should not be indistinguishable from a dead
 credential. The optional image tool validates OAuth on first use instead: a

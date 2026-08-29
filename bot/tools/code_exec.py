@@ -1,8 +1,9 @@
 """Workspace code execution, backed by the systemd-scope + bwrap sandbox.
 
 Registered when code exec is enabled and the sandbox profile can launch (see
-app/tools.py). The single tool is MEMBER tier, but the layer that matters is the
-sandbox itself (sandbox/runner.py): the *arguments* are model-generated, the
+app/tools.py). The single tool defaults to MEMBER tier and can be restricted to REGULAR or
+STAFF at registration, but the layer that matters is the sandbox itself
+(sandbox/runner.py): the *arguments* are model-generated, the
 model reads untrusted context, and the caller may be adversarial, so the
 namespace/cgroup/rlimit profile, not the registry tier, is what contains what
 actually runs. The executed file runs against the requesting user's own
@@ -165,6 +166,7 @@ def init_code_exec_tool(
     sandbox_config: SandboxConfig,
     *,
     locks: UserLocks,
+    min_tier: TrustTier = TrustTier.MEMBER,
     max_concurrency: int = 1,
     max_user_bytes: int = DEFAULT_MAX_USER_BYTES,
     network_weekly_limit: int = DEFAULT_NETWORK_WEEKLY_LIMIT,
@@ -589,7 +591,7 @@ def init_code_exec_tool(
             },
         },
         handler=_run_code,
-        min_tier=TrustTier.MEMBER,
+        min_tier=min_tier,
     )
 
 

@@ -3131,9 +3131,9 @@ class KimiApplication:
                     conv_id,
                 )
                 if handoff_thread is not None:
-                    # The reply becomes the thread's first message; a cross-channel
-                    # reply reference is not possible, and Discord's own "started a
-                    # thread" notice anchors it in the parent channel.
+                    # The reply is delivered inside the new thread after its
+                    # starter message. A cross-channel reply reference is not
+                    # possible, and the anchor remains in the target parent channel.
                     cross_channel = thread_request.target_channel_id is not None
                     target_channel = handoff_thread
                     reply_reference = None

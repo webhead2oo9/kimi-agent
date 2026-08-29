@@ -51,10 +51,12 @@ Four details decide whether this works:
   POSTs to `{base_url}/messages`, which is exactly the route ccflare parses.
 - **The model id needs the `anthropic/` family prefix.** ccflare strips the prefix and dispatches to the
   Claude Code or API-key accounts that deployment has configured.
-- **The profile is `keyless: true`.** ccflare deletes our `x-api-key`, sets
-  `Authorization: Bearer <oauth token>` itself, and adds the
-  `anthropic-version` and `anthropic-beta` headers. Sending a key would be
-  pointless, and the startup credential gate is satisfied without one.
+- **The profile is `keyless: true`.** ccflare replaces the client credential
+  with the selected account's credential: a Claude Code account gets
+  `Authorization: Bearer <oauth token>`, while an Anthropic API-key account gets
+  its `x-api-key`. It also adds the `anthropic-version` and `anthropic-beta`
+  headers. Supplying a Kimi-side key would be pointless, and the startup
+  credential gate is satisfied without one.
 - **The native `/v1/anthropic/*` prefix will not work here.** It forwards
   straight to api.anthropic.com and demands a real API key, which defeats the
   entire purpose of the route.

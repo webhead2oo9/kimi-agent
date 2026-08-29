@@ -220,10 +220,11 @@ class Settings(BaseSettings):
     # dispatch (none ship today; the registry mechanism stays for future
     # owner-only surfaces); empty fails closed. Distinct from staff.
     owner_user_id: str = ""
-    # --- Sandboxed code execution (MEMBER tier; docs/code-exec.md) ---
+    # --- Sandboxed code execution (MEMBER tier by default; docs/code-exec.md) ---
     # Disabled in tracked defaults. Enabling still requires the complete Linux
     # systemd-run/bwrap/prlimit/seccomp profile to pass an end-to-end startup probe.
     code_exec_enabled: bool = False
+    code_exec_min_tier: str = "member"
     code_exec_network_mode: str = "none"
     code_exec_python_bin: str = "/usr/bin/python3"
     # Optional packages venv mounted read-only, separate from the bot environment.
@@ -757,6 +758,14 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {"auto", "oauth", "api_key"}:
             raise ValueError("IMAGE_GEN_AUTH_MODE must be one of: auto, oauth, api_key")
+        return normalized
+
+    @field_validator("code_exec_min_tier")
+    @classmethod
+    def _validate_code_exec_min_tier(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"member", "regular", "staff"}:
+            raise ValueError("CODE_EXEC_MIN_TIER must be one of: member, regular, staff")
         return normalized
 
     @field_validator("code_exec_network_mode")

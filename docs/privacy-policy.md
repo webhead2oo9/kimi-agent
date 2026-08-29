@@ -6,6 +6,8 @@ _Last updated: 2026-08-29_
 > verify that its enabled services, retention periods, moderation features, and
 > contact route match the deployment, then update the date and host it at the
 > URL configured by `PRIVACY_POLICY_URL`.
+> This template covers Kimi core only. Separately installed application modules
+> must publish their own privacy notice.
 
 Kimi is a general-purpose assistant bot for Discord communities. This page
 explains, in plain language, what data a Kimi deployment handles when you talk
@@ -19,9 +21,6 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
   auto-responding threads, the optional user-installed `/chat` command, or—when
   enabled for your account—a direct message. Normal bot DMs are ignored by
   default. Personal DMs join the same private conversation as `/chat`.
-- Staff can separately opt specific channels into local known-bad image
-  matching. A match can delete the message and time out its author; images and
-  matches are not sent to the fingerprint service.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
   services receive the input needed for the feature you request. Browser tasks
   and network-enabled code can also contact sites or services chosen by the task.
@@ -59,17 +58,6 @@ transcript write, or provider call. `/chat-reset` clears that transcript but
 keeps long-term memory and workspace files; `/privacy` remains the full deletion
 control.
 
-**Staff log exception, if your server turns it on.** A server can temporarily
-store ordinary messages from channels the bot can read, even when nobody
-mentions Kimi, so a staff-only Discord log can show the before/after text of an
-edit or recover a deleted message and attachment links. The current logging
-module keeps these snapshots for up to **30 days**, skips its destination and
-operator-ignored channels, deletes a snapshot after a successful deletion log,
-and never sends this data to an LLM or service outside Discord. It can also log
-invite changes and member joins with best-effort invite attribution. The posted
-Discord log messages are controlled by server staff, so `/privacy` does not
-remove them.
-
 ## What Kimi collects
 
 Depending on the features a server enables, Kimi handles:
@@ -94,8 +82,6 @@ Depending on the features a server enables, Kimi handles:
   local and Google File/Interaction identifiers, model, owner/conversation
   scope, counts, and timestamps. Uploaded bytes, Discord CDN URLs, questions,
   and answers are not duplicated into local session tables.
-- **Images in enrolled safety channels**: supported images are read briefly for
-  the local comparison described above. The scanner does not keep them.
 - **Messages in channels Kimi can read**: when someone asks Kimi
   something, it may pull recent messages from that channel, or from channels
   the operator has configured for search. It may also retrieve an exact message
@@ -104,27 +90,17 @@ Depending on the features a server enables, Kimi handles:
   Kimi. They go to the AI provider as context for that one reply, and are not
   saved to Kimi's transcript or personal memory merely because they were
   retrieved.
-- **Messages staff teach to Kimi**: staff can deliberately turn a public
+- **Messages staff teach to Kimi**: staff can deliberately turn a server
   message into shared community knowledge or a reusable shared skill. The
   quoted message is sent to the AI provider for that task. What Kimi learns may
   be stored in community memory or a shared skill. If the server configures a
   staff learn-log channel, Kimi attempts to post a summary there; the log is
   optional and a failed post does not undo the learned item.
-- **Staff configuration proposals**: modules can store proposed configuration,
-  its exact baseline, staff proposer and decider IDs, a decision reason, and the
-  Discord review-message location. These operational records have no automatic
-  expiry and are not removed by `/privacy`. The review channel also receives a
-  Discord card with the proposer, summary, a bounded preview, and the decision.
-- **Temporary Discord logging snapshots, if enabled**: server, channel, parent
-  channel, message, and author identifiers; author display name and bot flag;
-  message text; attachment filename, Discord URL, size, and content type; and
-  creation/edit/expiry timestamps. Attachment bytes are not downloaded. The
-  snapshots exist only to reconstruct later edits and deletions for the staff
-  log and are not sent to a model.
-
-Kimi never reads your DMs. It may also check whether you hold a role or channel
-permission that a command depends on, such as the one that lets a moderator
-close a managed thread.
+When personal DMs are disabled, or you are not on the approved access list,
+messages sent directly to Kimi are ignored without being read into a turn,
+stored in its transcript, or sent to an AI provider. Kimi may also check whether
+you hold a role or channel permission that a command depends on, such as the one
+that lets a moderator close a managed thread.
 
 ## How Kimi uses your data, and who it's shared with
 
@@ -137,7 +113,9 @@ close a managed thread.
   or tool results the worker reads. This may be a different provider from chat.
 - **Long-term memory.** When enabled, conversation slices, durable facts, and
   recall queries are sent to the configured Hindsight service for users who
-  have not opted out.
+  have not opted out. That service may be self-hosted or hosted by a third
+  party. A self-hosted Hindsight deployment may also use a separate model
+  endpoint selected by the operator for memory processing.
 - **Safety checks.** If conversational content moderation is enabled, your
   message to Kimi and Kimi's draft reply may be checked by a moderation service
   before sending.
@@ -147,8 +125,8 @@ close a managed thread.
   used in your future chats until you clear it or delete your memory.
 - **Internet search and page reading.** If enabled, Kimi sends a search query,
   search filters, or URLs to the configured search provider. Built-in providers
-  include Exa and Brave. Opening a public URL also shows up as a normal web
-  request to that website.
+  include TinyFish, Exa, and Brave. Opening a public URL also shows up as a
+  normal web request to that website.
 - **Persistent browser.** If enabled, sites receive normal browser requests and
   anything entered or submitted during the task. They can set cookies and site
   storage in your private browser profile. Depending on operator configuration,
@@ -171,18 +149,9 @@ close a managed thread.
 - **Community learning.** Staff can use the process described above to store
   shared knowledge in Hindsight or in a shared skill. This is separate from
   your personal memory and is managed by staff.
-- **Staff moderation logs.** If enabled, selected server events are copied to a
-  staff-only Discord channel for moderation and audit purposes.
 - **Operator-added tools.** The server operator may install plugins or scripted
   tools that contact additional services when used. The operator is responsible
   for documenting those services and limiting the data each tool sends.
-- **Operator-installed modules.** The server operator may install application
-  modules that receive Discord events or content, including content not
-  addressed to Kimi when the module's function requires it. Before enabling
-  such a module, the operator is responsible for making its privacy disclosure
-  available to affected users, including what it processes, where it sends
-  data, and how long it retains the result.
-
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
 
@@ -196,8 +165,10 @@ the configured services and tools needed to answer you.
   retention with `/memory opt-out`, or wipe existing memory any time with
   `/privacy` (the **Delete memory** button).
 - **Files you create with Kimi: 7 days.** Files in your personal workspace are
-  removed after 7 days of inactivity. Your workspace is kept separate per
-  server, so files you make in one community aren't visible from another.
+  removed after 7 days of inactivity. Guild-chat workspaces are kept separate
+  per server, so files you make in one community aren't visible from another.
+  The optional personal user app instead uses one workspace shared across that
+  user's `/chat` and enabled DM conversations.
 - **Browser profile: 7 days.** If the interactive browser is enabled, the
   cookies, site storage, cache, history, and screenshots from tasks Kimi does
   for you live in a profile that is private to you. It is removed after 7 days
@@ -220,26 +191,16 @@ the configured services and tools needed to answer you.
   default mode records metadata only, though operators can choose modes that
   also record message and response text, retrieved channel context, and tool
   inputs and results. `/privacy` does not edit these files.
-- **Discord logging snapshots: up to 30 days.** If the server enables the
-  Discord logging module, temporary message copies expire after the configured
-  period, currently 30 days. A successfully logged deletion removes its snapshot
-  immediately. Clearing the logging destination or adding an ignored channel
-  also removes affected saved messages. Staff-log posts in Discord follow the
-  server's Discord retention policy instead.
 - **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting
   records (which contain no message text) are kept for cost tracking and are
   not on the 30-day clock.
-- **Moderation records: kept indefinitely.** If a moderator warns, times out,
-  kicks, or bans you (or a known-bad image match triggers enforcement), the
-  server keeps a case record with the reason, message/user identifiers, and
-  action outcome. These records are **not** removed by "Delete my data": a
-  moderation history you could erase yourself would not be much of a record.
-  Ordinary staff-written cases hold the moderator's reason rather than your
-  message text, and image-match cases hold fingerprint metadata, not the image.
-- **Discord staff records: controlled by server staff.** Moderation, learning,
-  and configuration-proposal cards are messages in Discord. They remain until
-  staff or Discord remove them and are not covered by Kimi's local retention
-  sweep or `/privacy`.
+- **Bot blocks: until removed.** If you or a moderator block the bot from
+  responding to you, Kimi keeps your user ID plus the block's creator, reason,
+  and timestamps until the block is removed. Blocks are not removed by
+  **Delete my data**.
+- **Discord staff records: controlled by server staff.** Learning cards are
+  messages in Discord. They remain until staff or Discord remove them and are
+  not covered by Kimi's local retention sweep or `/privacy`.
 
 ## Your controls
 
@@ -261,9 +222,8 @@ the configured services and tools needed to answer you.
   provider safety logs, legally required records, backups, and copies outside
   the stored Gemini video Interactions Kimi knows how to delete; diagnostic
   logs; community knowledge; shared or personal skills; usage and rate-limit
-  records; moderation cases, module configuration proposals, staff log messages,
-  and proposal-review cards; blocks; or your saved consent preference. Each has its own
-  lifecycle, described above.
+  records; learning messages; blocks; or your saved consent preference. Each
+  has its own lifecycle, described above.
 
 Deletion waits for any interaction already in progress, and blocks new activity
 for you until the required local deletion finishes. Your confirmation is saved
@@ -284,12 +244,11 @@ cleanup rows remain queued for later retry.
 ## Who can see your data
 
 The bot operator can access the database, workspace files, diagnostic logs, and
-Hindsight backend as the infrastructure administrator. Anyone can check their
-own usage totals with `/usage`. Discord staff can use `/moderation` and view
-other users' usage totals. Staff with access to configured moderation or
-learning log channels can see the event
-cards posted there. None of these commands expose private transcripts or
-personal memory.
+the configured Hindsight service through the deployment's credentials. Anyone
+can check their own usage totals with `/usage`. Discord staff can use `/moderation` and view
+other users' usage totals. Staff with access to configured learning channels can
+see the event cards posted there. None of these commands expose private
+transcripts or personal memory.
 
 ## Age
 

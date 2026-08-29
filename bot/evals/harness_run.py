@@ -15,7 +15,7 @@ falling through (CI determinism); `off` is fully live. Tapes are keyed by model
 (`<cassettes>/<model-key>/<scenario>.json`) over the read-only shared baseline
 in the flat tree, so a run never rewrites another arm's recordings.
 
-Run: uv run python -m evals.harness_run --model sol --repeat 3
+Run: .venv/bin/python -m evals.harness_run --model sol --repeat 3
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,8 +68,10 @@ from evals.scenario import (
     load_scenarios,
     split_gated_scenarios,
     split_image_scenarios,
+    unavailable_scenario_tools,
 )
 from evals.stub_gateway import StubGateway
+from tools.registry import ToolRegistry
 
 log = logging.getLogger("evals.harness")
 
@@ -220,15 +222,25 @@ def make_run_dir(base: Path, *, sha: str, now: datetime | None = None) -> Path:
     return run_dir
 
 
-def missing_expected_tools(scenarios: list[Scenario], registered: set[str]) -> dict[str, list[str]]:
-    """Expected tools that are not registered at all (env gate off, missing key...).
+def missing_expected_tools(
+    scenarios: list[Scenario],
+    *,
+    registry: ToolRegistry,
+    identities_by_scenario: Mapping[str, Sequence[EvalIdentity]],
+) -> dict[str, list[str]]:
+    """Expected tools unavailable at the scenario's actual tier and scope.
 
     This separates host capability gaps from model failures: without it, the
     optimization loop reacts to a missing capability as if the model had failed.
     """
     problems: dict[str, list[str]] = {}
     for scenario in scenarios:
-        missing = [t for t in scenario.expect.should_use_tools if t not in registered]
+        missing = unavailable_scenario_tools(
+            scenario,
+            scenario.expect.should_use_tools,
+            registry=registry,
+            identities=identities_by_scenario[scenario.id],
+        )
         if missing:
             problems[scenario.id] = missing
     return problems
@@ -710,57 +722,25 @@ async def _run(args: argparse.Namespace) -> int:
 
     cassette_dir = Path(args.cassettes)
     shared_fallback = args.cassette != "record" and not args.no_shared_cassettes
-
-    if args.dry_run:
-        print(f"Model:     {spec.label} ({spec.model})")
-        provider_display = spec.provider_name
-        if endpoint := safe_provider_endpoint(spec.base_url):
-            provider_display += f" ({endpoint})"
-        print(f"Provider:  {provider_display}")
-        max_tokens_note = f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
-        print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
-        print(f"Vision:    {vision_mode}")
-        if vision_mode == "caption" and models.image_captioner is not None:
-            print(
-                f"Image captions: {models.image_captioner.label} "
-                f"({models.image_captioner.model}; cache: {caption_cache_dir})"
-            )
-        print(f"Scenarios: {', '.join(s.id for s in scenarios)}")
-        print(f"Cassette:  {args.cassette} (dir: {cassette_dir}, tapes: {model_key})")
-        # Tape provenance before anything is spent: a scenario with no tape runs
-        # fully live, which is the one thing a dry run should be able to warn about.
-        for scenario in scenarios:
-            _, provenance = load_cassette(
-                cassette_dir, scenario.id, model_key, shared_fallback=shared_fallback
-            )
-            print(f"  {scenario.id}: {provenance}")
-        live = args.cassette in ("off", "record")
-        per_scenario = "all live" if live else "replayed where recorded"
-        print(
-            f"Total run_conversation calls: {len(scenarios) * args.repeat} "
-            f"({len(scenarios)} scenarios x {args.repeat} reps, tools {per_scenario})"
-        )
-        return 0
-
-    provider = InstrumentedProvider(
-        build_eval_provider(spec),
-        min_request_interval_seconds=spec.min_request_interval_seconds,
-        request_timeout_seconds=spec.timeout_seconds,
-    )
-    caption_provider = (
-        InstrumentedProvider(
-            build_eval_provider(models.image_captioner),
-            min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
-            request_timeout_seconds=models.image_captioner.timeout_seconds,
-        )
-        if vision_mode == "caption" and models.image_captioner is not None and has_visual
-        else None
-    )
     eval_run_nonce = new_eval_run_nonce()
+    identities_by_scenario = {
+        scenario.id: tuple(
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=spec.label,
+                scenario_id=scenario.id,
+                repetition=rep_index,
+            )
+            for rep_index in range(args.repeat)
+        )
+        for scenario in scenarios
+    }
     gateway = StubGateway()
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
     eval_registry = None
+    provider: InstrumentedProvider | None = None
+    caption_provider: InstrumentedProvider | None = None
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
         registry = eval_registry.registry
@@ -768,23 +748,78 @@ async def _run(args: argparse.Namespace) -> int:
         # Capability gate first: a scenario that DECLARED it needs a sandbox-only tool
         # sits out on a host without one. Everything left is expected to work here, so
         # missing_expected_tools keeps its hard failure for genuine gaps.
-        scenarios, gated = split_gated_scenarios(scenarios, registered)
+        scenarios, gated = split_gated_scenarios(
+            scenarios,
+            registry=registry,
+            identities_by_scenario=identities_by_scenario,
+        )
         for gated_scenario, missing in gated:
             log.warning(
-                "Skipping %s: this host does not register %s",
+                "Skipping %s: its eval caller cannot access %s at the declared tier/scope",
                 gated_scenario.id,
                 ", ".join(missing),
             )
             skipped[gated_scenario.id] = missing
         if not scenarios:
-            log.error("Every selected scenario needs a tool this host does not register.")
+            log.error("Every selected scenario needs a tool unavailable at its tier/scope.")
             return 2
-        problems = missing_expected_tools(scenarios, registered)
+        problems = missing_expected_tools(
+            scenarios,
+            registry=registry,
+            identities_by_scenario=identities_by_scenario,
+        )
         if problems:
             for scenario_id, tools in problems.items():
-                log.error("Scenario %s expects unregistered tools: %s", scenario_id, tools)
+                log.error("Scenario %s expects unavailable tools: %s", scenario_id, tools)
             log.error("Refusing to run against a partial tool surface (check .env gates).")
             return 2
+        if args.dry_run:
+            print(f"Model:     {spec.label} ({spec.model})")
+            provider_display = spec.provider_name
+            if endpoint := safe_provider_endpoint(spec.base_url):
+                provider_display += f" ({endpoint})"
+            print(f"Provider:  {provider_display}")
+            max_tokens_note = (
+                f" (requested {args.max_tokens})" if max_tokens != args.max_tokens else ""
+            )
+            print(f"Max tokens/call: {max_tokens}{max_tokens_note}")
+            print(f"Vision:    {vision_mode}")
+            if vision_mode == "caption" and models.image_captioner is not None:
+                print(
+                    f"Image captions: {models.image_captioner.label} "
+                    f"({models.image_captioner.model}; cache: {caption_cache_dir})"
+                )
+            print(f"Scenarios: {', '.join(s.id for s in scenarios)}")
+            print(f"Cassette:  {args.cassette} (dir: {cassette_dir}, tapes: {model_key})")
+            # Tape provenance before anything is spent: a scenario with no tape runs
+            # fully live, which is the one thing a dry run should be able to warn about.
+            for scenario in scenarios:
+                _, provenance = load_cassette(
+                    cassette_dir, scenario.id, model_key, shared_fallback=shared_fallback
+                )
+                print(f"  {scenario.id}: {provenance}")
+            live = args.cassette in ("off", "record")
+            per_scenario = "all live" if live else "replayed where recorded"
+            print(
+                f"Total run_conversation calls: {len(scenarios) * args.repeat} "
+                f"({len(scenarios)} scenarios x {args.repeat} reps, tools {per_scenario})"
+            )
+            return 0
+
+        provider = InstrumentedProvider(
+            build_eval_provider(spec),
+            min_request_interval_seconds=spec.min_request_interval_seconds,
+            request_timeout_seconds=spec.timeout_seconds,
+        )
+        caption_provider = (
+            InstrumentedProvider(
+                build_eval_provider(models.image_captioner),
+                min_request_interval_seconds=models.image_captioner.min_request_interval_seconds,
+                request_timeout_seconds=models.image_captioner.timeout_seconds,
+            )
+            if vision_mode == "caption" and models.image_captioner is not None and has_visual
+            else None
+        )
         compactor = eval_registry.provider_manager.build_compactor()
         for scenario in scenarios:
             # record must not inherit an underlay it will never rewrite: the point
@@ -822,12 +857,7 @@ async def _run(args: argparse.Namespace) -> int:
                     ),
                     compactor=compactor,
                     max_tokens=max_tokens,
-                    identity=EvalIdentity(
-                        run_nonce=eval_run_nonce,
-                        arm=spec.label,
-                        scenario_id=scenario.id,
-                        repetition=rep_index,
-                    ),
+                    identity=identities_by_scenario[scenario.id][rep_index],
                     image_captions=image_captions,
                 )
                 sources: dict[str, int] = {}
@@ -859,7 +889,8 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         if eval_registry is not None:
             await eval_registry.close()
-        await close_provider(provider)
+        if provider is not None:
+            await close_provider(provider)
         if caption_provider is not None:
             await close_provider(caption_provider)
 

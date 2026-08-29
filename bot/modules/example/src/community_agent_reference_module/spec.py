@@ -3,7 +3,7 @@
 This is the object the ``kimi_agent.modules`` entry point resolves to. The
 host reads it in two phases:
 
-1. **Preflight**, before any module code runs. It validates the declarations
+1. **Preflight**, before the module's ``create()`` runs. It validates the declarations
    below (permissions, services, guild-settings schema, settings definition)
    and aborts startup with a named reason if anything is malformed.
 2. **Load**, which calls ``create()`` with a ``ModuleLoadContext``. That is the

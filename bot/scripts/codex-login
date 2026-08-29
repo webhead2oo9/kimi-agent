@@ -1,0 +1,56 @@
+#!/bin/bash
+#
+# Simple interactive helper for Codex device authentication.
+# Uses the standard deployment paths unless overridden.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PYTHON_BIN="$BOT_DIR/.venv/bin/python"
+
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
+    echo "Create the bot virtual environment and install its dependencies first." >&2
+    exit 1
+fi
+
+cd "$BOT_DIR"
+
+if [[ -z "${TOKEN_FILE:-}" ]]; then
+    TOKEN_FILE="$(
+        ENV_FILE="$ENV_FILE" "$PYTHON_BIN" - <<'PY'
+from config.settings import settings
+
+print(settings.codex_token_file)
+PY
+    )"
+fi
+
+echo "Codex login helper"
+echo "------------------"
+echo "ENV_FILE:   $ENV_FILE"
+echo "TOKEN_FILE: $TOKEN_FILE"
+echo
+
+read -r -p "Continue with these paths? [y/N] " reply
+case "$reply" in
+    [yY][eE][sS]|[yY]) ;;
+    *) echo "Aborted."; exit 1 ;;
+esac
+
+echo
+echo "Starting device authentication flow..."
+echo
+
+ENV_FILE="$ENV_FILE" \
+    "$PYTHON_BIN" "$SCRIPT_DIR/codex_auth.py" --token-file "$TOKEN_FILE"
+
+chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+
+echo
+echo "Done. Token saved to $TOKEN_FILE"
+echo "You can now start or restart the bot."

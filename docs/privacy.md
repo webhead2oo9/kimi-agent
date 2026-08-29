@@ -6,6 +6,9 @@ The plain-language version written for community members lives in
 [privacy-policy.md](privacy-policy.md); when behavior changes, keep the two in
 sync.
 
+This document covers Kimi core only. Separately installed application modules
+must document their own data handling and publish a separate privacy notice.
+
 Two facts frame everything below:
 
 - **The bot ignores DMs unless personal chat explicitly opts in.** By default,
@@ -21,10 +24,10 @@ Two facts frame everything below:
   auto-responding managed thread. Paused managed threads use ordinary invocation
   rules. An enabled personal DM needs no extra trigger: sending the message is
   the invocation. Other channel chatter is not persisted as conversation
-  history. Four live, non-transcript exceptions are documented below: the
-  context tools, automatic resolution of Discord references in an invoked
-  message, opt-in known-bad image fingerprint enforcement, and the optional
-  staff moderation event feed.
+  history. Core can still read other channel content through explicit context
+  tools, automatic resolution of Discord references in an invoked message, and
+  staff-initiated teaching from a selected guild message; those paths are
+  documented below.
 
 ## What the bot stores, and where
 
@@ -35,8 +38,8 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 
 | Table | User data held |
 |---|---|
-| `messages` | The per-root transcript: `user_id`, `user_name`, message text, source timestamps, and up to `MAX_PERSISTED_CONVERSATION_IMAGES` (10) recent images per conversation stored inline as base64 (`storage/conversations.py`). One row per real Discord message the bot saw on an invoked turn. When the chat model cannot see images, the row also stores a machine-written description of that message's images, including OCR. That description is kept for the full retention window and outlives the image bytes, which are evicted once the conversation passes the image cap. |
-| `conversations` | Root metadata: `guild_id`, `channel_id`, `thread_id`, `channel_name`, root message id, explicit user owner where applicable, timestamps. |
+| `messages` | The per-root transcript: persisted user input and assistant output, including user attribution, message text, source timestamps, and up to `MAX_PERSISTED_CONVERSATION_IMAGES` (10) recent images per conversation stored inline as base64 (`storage/conversations.py`). Guild rows use real Discord message ids; `/chat` rows use identifiers derived from the interaction. When the chat model cannot see images, the user row also stores a machine-written description of that message's images, including OCR. That description is kept for the full retention window and outlives the image bytes, which are evicted once the conversation passes the image cap. |
+| `conversations` | Root metadata: `guild_id`, `channel_id`, `thread_id`, `channel_name`, root Discord message or interaction id, explicit user owner where applicable, timestamps. |
 | `message_contexts` | Maps Discord message ids → conversation roots so reply routing survives a reboot. |
 | `conversation_activated_tools`, `thread_conversations` | Per-root tool activation and thread-handoff enrollment, including the initiating user id used to authorize close/pause/resume. |
 | `image_distillations` | Conversation-scoped, model-produced descriptions of transcript images, including OCR, approximate normalized bounding boxes, and uncertainty. No additional image bytes. Rows cascade with deleted conversations and are invalidated when one participant's messages are scrubbed from a surviving shared conversation. This table is only a cache; the durable copy is the description stored on the `messages` row it describes, which a per-user scrub removes along with that user's rows. |
@@ -52,8 +55,6 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, and timestamps. The row contains no message content. |
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
-| `config_proposals` | Module configuration proposals and their exact baselines, summaries, guild and Discord message ids, staff proposer/decider ids, decision reasons, and timestamps. These operational records have no automatic TTL and `/privacy` does not scrub them. |
-| `discord_logging_message_snapshots` (when the Discord logging module is enabled) | Temporary copies of ordinary visible-channel messages used to reconstruct edits and deletions: guild/channel/parent/message and author identifiers, author display name and bot flag, message text, attachment metadata and Discord URLs (not bytes), and creation/edit/expiry timestamps. The deployment retains these for up to 30 days, excludes the logging destination and configured ignored channels, and removes a snapshot after a successful deletion log. Module data is not sent to an LLM. |
 
 The optional user-app surface stores one owner-only conversation per user under
 `userchat:<user_id>`. It deliberately has no guild scope even when invoked from
@@ -71,15 +72,16 @@ by default (plaintext), and it covers the SQLite store only: the workspace files
 described next are not encrypted at the application layer and rely on host disk
 encryption. See [database.md](database.md).
 
-### Workspace files (`workspaces/<user_id>__<guild_id>/`)
+### Workspace files (`workspaces/<owner_key>/`)
 
-Each (user, guild) pair gets its own sandboxed directory for the workspace tools
-(`workspace/manager.py`). Because a user's files are scoped to the community
-they were created in, they never bleed across guilds. Storage is bounded by a
-**7-day inactivity TTL** (`workspace_file_ttl`) and a size quota
-(`workspace_max_size_mb`, 150 MB) that applies **per (user, guild)**; the
-background workspace sweeper (`discord_adapter/lifecycle.py`) enforces both.
-None of this depends on the memory or consent settings.
+Ordinary guild chat gives each (user, guild) pair its own sandboxed directory
+for the workspace tools (`workspace/manager.py`), so files never bleed across
+guilds. Personal chat instead uses `<user_id>__userapp` across `/chat` and
+enabled DMs. Storage is bounded by a **7-day inactivity TTL**
+(`workspace_file_ttl`) and a size quota (`workspace_max_size_mb`, 150 MB) per
+scoped workspace; the background workspace sweeper
+(`discord_adapter/lifecycle.py`) enforces both. None of this depends on the
+memory or consent settings.
 
 The manager also writes per-conversation delivery artifacts under
 `workspaces/generated/<context_key>/<job_id>/`. Each job directory carries an
@@ -125,18 +127,20 @@ provider sees only the untrusted specialist result.
 Local sessions contain safe identifiers/scope metadata only and expire after at
 most 24 hours idle. Expiry, transcript retention, and full `/privacy` remove
 local access immediately and queue every known Gemini Interaction and uploaded
-File for deletion. Outboxes retry hourly. If provider access is unavailable
-during `/privacy`, local deletion completes, the user barrier is released, and
-provider deletion stays independently queued. Google documents paid-tier
+File for deletion. Outboxes retry at
+`TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` (hourly by default). If provider
+access is unavailable during `/privacy`, local deletion completes, the user
+barrier is released, and provider deletion stays independently queued. Google documents paid-tier
 Interaction retention up to 55 days and may separately retain limited
 safety/security records; local expiry is not a claim every provider copy has
 already disappeared. See [Video understanding](video-understanding.md).
 
 ### Long-term memory: Hindsight (optional)
 
-Long-term memory is backed by an operator-provided self-hosted
-[Hindsight](https://github.com/vectorize-io/hindsight) service and wired only
-when `HINDSIGHT_URL` is set. Per-user banks (`user:{discord_id}`) are written in
+Long-term memory is backed by an operator-configured
+[Hindsight](https://github.com/vectorize-io/hindsight) service, either
+self-hosted or hosted by a third party, and wired only when `HINDSIGHT_URL` is
+set. Per-user banks (`user:{discord_id}`) are written in
 two ways: explicit `remember_user_memory` calls, and the background auto-retain
 sweeper (`memory/auto_retain.py`, gated on `MEMORY_AUTO_RETAIN_ENABLED`, off by
 default), which flushes idle conversations into each **memory-enabled**
@@ -146,13 +150,13 @@ participants' messages. The per-user preference defaults to enabled;
 
 Per-guild community banks are separate shared stores, and only a STAFF `teach`
 tool call writes them. The staff-facing **Teach Kimi** context menu can quote a
-member's public message to the chat provider, which may then retain derived
-knowledge in that community bank or a shared skill. When the guild configures a
-learn-log channel, the bot attempts to post a bounded summary after a successful
-write. The log is optional and delivery failure does not roll back the write. A
-member's `/privacy` request does not delete community banks, shared skills, or
-Discord log messages. See [memory.md](memory.md) and
-[learning.md](learning.md).
+guild message visible to the invoking staff member to the chat provider, which
+may then retain derived knowledge in that community bank or a shared skill.
+When the guild configures a learn-log channel, the bot attempts to post a
+bounded summary after a successful write. The log is optional and delivery
+failure does not roll back the write. A member's `/privacy` request does not
+delete community banks, shared skills, or Discord log messages. See
+[memory.md](memory.md) and [learning.md](learning.md).
 
 ### Diagnostic logs (optional, off by default)
 
@@ -162,19 +166,22 @@ Discord log messages. See [memory.md](memory.md) and
   and model names, timing, success, usage, compaction counts, and moderation
   scores. `TOOL_EVENT_LOG_CONTENT_MODE=metadata` is the default and omits tool
   arguments/results plus request/response text. `redacted` and `full` also log
-  clamped tool arguments/results and a clamped request/response snapshot, and
-  that snapshot can include the system prompt, stored history, transient channel
-  context, the current message, and the reply. `redacted` masks known configured
-  secrets and sensitive-key fields; `full` is verbatim within the field cap.
-  Diagnostics are never on the response path.
+  clamped tool arguments/results and a clamped request/response snapshot. The
+  turn snapshot can include the system prompt, stored history, injected initial
+  context such as recalled memories and attachment or reference hints, the
+  current message, and the reply. Channel context fetched later by
+  `get_channel_context` can appear in that call's `tool_call.result`, not in the
+  iteration-0 turn snapshot. `redacted` masks known configured secrets and
+  sensitive-key fields; `full` is verbatim within the field cap. Diagnostics
+  are never on the response path.
 
 ## Retention and deletion
 
 Raw conversation transcripts are kept on a **rolling window**
 (`transcript_retention_days`, default **30**), enforced by the transcript
 retention sweeper (`discord_adapter/lifecycle.py:transcript_retention_sweeper`,
-started in `on_ready` and run hourly by
-`transcript_retention_sweep_interval_seconds`):
+started in `on_ready` and run at
+`transcript_retention_sweep_interval_seconds` (hourly by default)):
 
 - **Conversation transcripts**: a whole conversation is purged when its last
   activity falls outside the window. Deleting the conversation removes
@@ -196,9 +203,9 @@ A few stores are deliberately not on this clock:
   deletion, because a capacity limit anyone can reset by deleting their data is
   not a limit. A row records only that a bounded tool was used, with no code,
   arguments, results, or message content, and is pruned after eight days.
-- **Configured Discord learning and proposal-review cards** are ordinary
-  messages in staff channels. Their lifecycle belongs to server staff and
-  Discord, not to the local transcript sweep or `/privacy`.
+- **Configured Discord learning cards** are ordinary messages in staff
+  channels. Their lifecycle belongs to server staff and Discord, not to the
+  local transcript sweep or `/privacy`.
 - **Diagnostic logs** (the tool-event log) form an append-only JSONL file at
   `TOOL_EVENT_LOG_PATH` (default `logs/events.jsonl`) that rotates at 50 MB and
   keeps only the current file and one `.1` predecessor. Rotation deletes
@@ -218,9 +225,7 @@ Everything else keeps its own lifecycle, by design:
 | Personal skills (`data/personal_skills/<user_id>/`) | User-authored instruction documents; retained until the user removes them. |
 | Preferences (consent, memory on/off, persona) | Retained as settings. `persona_prompt` is cleared by the memory-forget path. |
 | Moderation blocks | Retained until unblocked. |
-| Configured Discord moderation, learning, and proposal-review messages | Retained under the server's Discord-channel lifecycle; not deleted by `/privacy`. |
-| Module configuration proposals | Pending rows can be discarded by the proposal workflow. Decided rows remain until the operator removes them from the database; `/privacy` does not scrub them. |
-| Discord logging snapshots (optional module) | Up to 30 days; successful deletion logs remove the matching snapshot immediately, and destination/ignore-setting changes reconcile existing rows. Posted Discord audit messages follow the staff channel's lifecycle and are not removed by `/privacy`. |
+| Configured Discord learning messages | Retained under the server's Discord-channel lifecycle; not deleted by `/privacy`. |
 
 ### Deletion controls
 
@@ -246,8 +251,9 @@ Everything else keeps its own lifecycle, by design:
     covers another participant's already-running model turn, Discord delivery,
     and assistant-transcript persistence, so a shared-root reply derived from
     the deleted rows cannot land after deletion. It then purges the SQLite
-    transcript, the user's per-guild workspace files, their persistent browser
-    profile, and every video-specialist session they initiated, then deletes
+    transcript, all of the user's per-guild and personal-chat workspace files,
+    their persistent browser profile, and every video-specialist session they
+    initiated, then deletes
     long-term memory without waiting for automatic expiry. Transcripts go through
     `ConversationStore.delete_user_data`, which deletes whole conversations the
     user rooted (tracked explicitly at root creation, including timeout
@@ -256,12 +262,13 @@ Everything else keeps its own lifecycle, by design:
     leaving other participants intact. A surviving thread whose initiator
     marker was cleared then requires STAFF or Discord Manage Threads for
     lifecycle changes. Workspace files go through
-    `WorkspaceManager.delete_owner_dirs`, which removes every per-(user, guild)
-    directory for that user (`<user_id>__*`) plus every generated job directory
-    whose `.owner-user-id` marker names them. Memory goes through the same
-    `forget_user_memory` path described below. A transcript deletion error
-    aborts before later stores are touched. Workspace, browser-profile, or memory
-    failures leave the durable request pending for retry.
+    `WorkspaceManager.delete_owner_dirs`, which removes every workspace
+    directory for that user (`<user_id>__*`, including `__userapp`) plus every
+    generated job directory whose `.owner-user-id` marker names them. Memory
+    goes through the same `forget_user_memory` path described below. A
+    transcript deletion error aborts before later stores are touched. Workspace,
+    browser-profile, or memory failures leave the durable request pending for
+    retry.
     A provider-side video deletion failure does not: local video metadata is
     already gone, its content-free deletion outbox remains durable, the result
     reports pending provider cleanup, and the user barrier is released.
@@ -274,8 +281,7 @@ Everything else keeps its own lifecycle, by design:
     provider safety logs, backups, or legally required records. The action also
     cannot delete Discord messages, other provider-side copies or logs, backups,
     the tool-event log, community memory, shared skills, usage ledgers/markers,
-    moderation cases, module configuration proposals, Discord staff-log and
-    proposal-review messages, blocks, the retained consent choice, or the
+    Discord learning messages, blocks, the retained consent choice, or the
     non-content bank-state marker.
   - **Delete memory** runs `forget_user_memory` only; the transcript is left to
     the retention sweep.
@@ -324,37 +330,33 @@ supplied public HTTPS target and sends no stored transcript or memory.
 | Persistent browser | Requested sites receive normal browser traffic, values entered during the task, and cookies or site storage kept in the user's profile. Host mode uses the service host's routes; netns mode uses the operator-provisioned network boundary. | `BROWSER_ENABLED` | off |
 | Network-enabled `run_code` and coding jobs | Generated code can send task inputs and readable workspace data to destinations it chooses. Host mode can reach anything allowed by the service host's routes; netns mode uses the operator-provisioned network boundary. | `CODE_EXEC_ENABLED` + `CODE_EXEC_NETWORK_MODE` set to `host` or `netns` | off |
 
-**Operator-hosted services** (data stays on infrastructure the operator runs):
+**Operator-configured services:**
 
 | Service | What it receives | Gate |
 |---|---|---|
 | Hindsight (long-term memory) | Conversation slices + metadata for users who have not opted out | `HINDSIGHT_URL` |
-Application modules, operator plugins, and script-backed skill tools are
-trusted deployment code and may add their own egress. Skill scripts run inside
-the Linux Bubblewrap boundary with network denied by default and only the
-per-call output workspace writable. A tool whose declaration opts into
-`network: true` shares the service host's public, private, and loopback
-reachability without a destination allowlist, so each operator-added tool must
-document the services and data it uses.
 
-Optional application modules may also add database tables, retention rules,
-Discord events, and external services; their package documentation is the
-source of truth for those additions. An empty `KIMI_MODULES` loads no module
-code, but existing module tables remain until the operator explicitly removes
-them. Disabling a module is not data deletion.
+The Hindsight endpoint may be self-hosted, including through the provided
+Compose deployment, or hosted by a third party. A self-hosted deployment may
+also use a separate third-party LLM endpoint for memory processing. The
+deployment's published policy must identify the Hindsight host and any separate
+downstream provider and describe their data handling.
+
+Operator plugins and script-backed skill tools are trusted deployment code and
+may add their own egress. Skill scripts run inside the Linux Bubblewrap boundary
+with network denied by default and only the per-call output workspace writable.
+A tool whose declaration opts into `network: true` shares the service host's
+public, private, and loopback reachability without a destination allowlist, so
+each operator-added tool must document the services and data it uses.
 
 Retrieved and third-party text is always framed to the model as untrusted
 context and, by default, is not written into the persisted transcript.
 
-Discord itself is also a data destination, both for normal replies and for the
-optional staff audit feeds. The moderation feed can copy edited/deleted message
-content, attachment names, member joins/leaves, role updates, and moderation
-actions into a configured staff channel. When configured and reachable, the
-learning feed receives a bounded summary of shared knowledge or skill content
-that staff caused the bot to store. A module's proposal-review channel receives
-the staff proposer id, summary, bounded configuration preview, and any decision
-and decider id. Those cards are Discord messages, not rows in the local
-transcript, and `/privacy` does not remove them.
+Discord itself is also a data destination, both for normal replies and for
+optional learning messages. When configured and reachable, the learning feed
+receives a bounded summary of shared knowledge or skill content that staff
+caused the bot to store. Those messages are not rows in the local transcript,
+and `/privacy` does not remove them.
 
 ### Channel context and linked messages from other members
 
@@ -390,8 +392,8 @@ member their own token and cost windows (viewing another user or the server
 totals is staff-only), the staff-only `/moderation` manages blocks and reasons,
 and `/models` is bot-owner-only. None of these commands expose
 conversation transcripts or private memory. Staff with access to configured
-moderation or learning log channels can also read the event cards posted there.
-The privilege gate is the trust check at the command boundary, not prompt text.
+learning channels can also read the event cards posted there. The privilege
+gate is the trust check at the command boundary, not prompt text.
 
 ## Diagnostic logging
 
@@ -446,10 +448,10 @@ has decided the bot would respond and **before** it acquires the response lock,
 persists the triggering message, or calls the provider:
 
 ```
-image-fingerprint offer (guild channels only; returns immediately for DMs)
-eligibility + DM reject
+eligibility + personal-DM gate
 should_respond (mention / "hey <bot_name>" / managed-thread gate)
 block check
+stop/cancel lane (returns before admission and consent when it handles a stop)
 ── if the bot can't post in this channel: return (skip a turn we can't deliver) ──
 turn-admission gate (concurrency cap; may post a busy notice)
 per-user privacy-barrier activity lease

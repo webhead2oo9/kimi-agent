@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 
 from evals import run as evals_run
 from evals.harness import ScenarioRun, TurnRecord
@@ -9,6 +10,7 @@ from evals.run import plan_matrix
 from evals.scenario import Expect, Scenario
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse
+from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
 
@@ -40,7 +42,7 @@ class _Stub(LLMProvider):
 
 class _FakeEvalRegistry:
     def __init__(self):
-        self.registry = object()
+        self.registry = ToolRegistry()
         self.preference_store = None
         self.memory_manager = self
         self.provider_manager = self
@@ -62,17 +64,38 @@ def _rubric():
     )
 
 
-def test_qualification_run_writes_report(monkeypatch, tmp_path):
-    scenario = Scenario(
-        id="s",
+async def _noop_tool(args, ctx):
+    return "{}"
+
+
+def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_path, capsys):
+    regular = Scenario(
+        id="regular-code",
         category="tooling",
-        trust_tier=TrustTier.MEMBER,
+        trust_tier=TrustTier.REGULAR,
         turns=["q"],
         expect=Expect(),
+        requires_tools=["run_code"],
+    )
+    staff = Scenario(
+        id="staff-code",
+        category="tooling",
+        trust_tier=TrustTier.STAFF,
+        turns=["q"],
+        expect=Expect(),
+        requires_tools=["run_code"],
     )
 
     async def _fake_registry(settings, *, gateway):
-        return _FakeEvalRegistry()
+        result = _FakeEvalRegistry()
+        result.registry.register(
+            "run_code",
+            "",
+            {},
+            _noop_tool,
+            min_tier=TrustTier.STAFF,
+        )
+        return result
 
     identities = []
 
@@ -106,7 +129,7 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
             judge=ModelSpec("judge", "openai_compat", "j", base_url="https://x"),
         ),
     )
-    monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [scenario])
+    monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [regular, staff])
     monkeypatch.setattr(evals_run, "load_rubric", lambda path: _rubric())
     monkeypatch.setattr(evals_run, "build_eval_provider", lambda spec: _Stub(spec.model))
     monkeypatch.setattr(evals_run, "build_eval_registry", _fake_registry)
@@ -126,6 +149,34 @@ def test_qualification_run_writes_report(monkeypatch, tmp_path):
 
     report = (tmp_path / "report.md").read_text()
     assert "Candidate tokens: 10 | Baseline tokens: 10" in report
+    assert "**Coverage:** 2 selected | 1 executed | 1 skipped" in report
+    assert "`regular-code`: needs run_code" in report
+    rows = [json.loads(line) for line in (tmp_path / "raw.jsonl").read_text().splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["coverage"] == {
+        "selected_scenarios": ["regular-code", "staff-code"],
+        "executed_scenarios": ["staff-code"],
+        "skipped_scenarios": {"regular-code": ["run_code"]},
+    }
+    assert [identity.scenario_id for identity in identities] == ["staff-code", "staff-code"]
     assert len({identity.user_id for identity in identities}) == 2
     assert identities[0].arm == "candidate:cand"
     assert identities[1].arm == "baseline:base"
+
+    capsys.readouterr()
+    identities.clear()
+    args.dry_run = True
+    monkeypatch.setattr(
+        evals_run,
+        "build_eval_provider",
+        lambda spec: (_ for _ in ()).throw(AssertionError("dry-run built a model provider")),
+    )
+    assert asyncio.run(evals_run._run(args)) == 0
+    plan = capsys.readouterr().out
+    assert "Scenarios: staff-code" in plan
+    assert "regular-code" not in plan
+    assert "Total live run_conversation calls: 2" in plan
+    assert identities == []
+
+    monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [regular])
+    assert asyncio.run(evals_run._run(args)) == 2

@@ -59,11 +59,16 @@ transcript write, or provider call. `/chat-reset` clears that transcript but
 keeps long-term memory and workspace files; `/privacy` remains the full deletion
 control.
 
-**Staff log exception, if your server turns it on.** A server can send edited
-or deleted message text and attachment names to a staff-only Discord log
-channel. It can also log member joins, departures, role changes, and moderation
-actions. These are Discord log messages controlled by the server staff, so
-`/privacy` does not remove them.
+**Staff log exception, if your server turns it on.** A server can temporarily
+store ordinary messages from channels the bot can read, even when nobody
+mentions Kimi, so a staff-only Discord log can show the before/after text of an
+edit or recover a deleted message and attachment links. The current logging
+module keeps these snapshots for up to **30 days**, skips its destination and
+operator-ignored channels, deletes a snapshot after a successful deletion log,
+and never sends this data to an LLM or service outside Discord. It can also log
+invite changes and member joins with best-effort invite attribution. The posted
+Discord log messages are controlled by server staff, so `/privacy` does not
+remove them.
 
 ## What Kimi collects
 
@@ -110,6 +115,12 @@ Depending on the features a server enables, Kimi handles:
   Discord review-message location. These operational records have no automatic
   expiry and are not removed by `/privacy`. The review channel also receives a
   Discord card with the proposer, summary, a bounded preview, and the decision.
+- **Temporary Discord logging snapshots, if enabled**: server, channel, parent
+  channel, message, and author identifiers; author display name and bot flag;
+  message text; attachment filename, Discord URL, size, and content type; and
+  creation/edit/expiry timestamps. Attachment bytes are not downloaded. The
+  snapshots exist only to reconstruct later edits and deletions for the staff
+  log and are not sent to a model.
 
 Kimi never reads your DMs. It may also check whether you hold a role or channel
 permission that a command depends on, such as the one that lets a moderator
@@ -209,6 +220,12 @@ the configured services and tools needed to answer you.
   default mode records metadata only, though operators can choose modes that
   also record message and response text, retrieved channel context, and tool
   inputs and results. `/privacy` does not edit these files.
+- **Discord logging snapshots: up to 30 days.** If the server enables the
+  Discord logging module, temporary message copies expire after the configured
+  period, currently 30 days. A successfully logged deletion removes its snapshot
+  immediately. Clearing the logging destination or adding an ignored channel
+  also removes affected saved messages. Staff-log posts in Discord follow the
+  server's Discord retention policy instead.
 - **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting
   records (which contain no message text) are kept for cost tracking and are
   not on the 30-day clock.

@@ -6,6 +6,11 @@
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 
+> **Name and affiliation:** This project is an independent open-source Discord
+> assistant. It is not affiliated with, endorsed by, or sponsored by Moonshot AI
+> or its Kimi products and language models. “Kimi” is simply the name of this bot,
+> and the software can be configured to use many different model providers.
+
 Kimi is a bot for communities that want an AI helper without reinventing the wheel.
 You point it at whatever LLM you like (OpenAI-compatible,
 Anthropic, OpenRouter, Codex, and more providers to come) in one YAML file, give each server or channel its

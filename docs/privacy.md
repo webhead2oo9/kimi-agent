@@ -53,6 +53,7 @@ This is the primary store: async SQLite in WAL mode, with the schema owned by
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 | `config_proposals` | Module configuration proposals and their exact baselines, summaries, guild and Discord message ids, staff proposer/decider ids, decision reasons, and timestamps. These operational records have no automatic TTL and `/privacy` does not scrub them. |
+| `discord_logging_message_snapshots` (when the Discord logging module is enabled) | Temporary copies of ordinary visible-channel messages used to reconstruct edits and deletions: guild/channel/parent/message and author identifiers, author display name and bot flag, message text, attachment metadata and Discord URLs (not bytes), and creation/edit/expiry timestamps. The deployment retains these for up to 30 days, excludes the logging destination and configured ignored channels, and removes a snapshot after a successful deletion log. Module data is not sent to an LLM. |
 
 The optional user-app surface stores one owner-only conversation per user under
 `userchat:<user_id>`. It deliberately has no guild scope even when invoked from
@@ -219,6 +220,7 @@ Everything else keeps its own lifecycle, by design:
 | Moderation blocks | Retained until unblocked. |
 | Configured Discord moderation, learning, and proposal-review messages | Retained under the server's Discord-channel lifecycle; not deleted by `/privacy`. |
 | Module configuration proposals | Pending rows can be discarded by the proposal workflow. Decided rows remain until the operator removes them from the database; `/privacy` does not scrub them. |
+| Discord logging snapshots (optional module) | Up to 30 days; successful deletion logs remove the matching snapshot immediately, and destination/ignore-setting changes reconcile existing rows. Posted Discord audit messages follow the staff channel's lifecycle and are not removed by `/privacy`. |
 
 ### Deletion controls
 

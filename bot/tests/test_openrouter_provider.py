@@ -227,3 +227,41 @@ def test_openrouter_provider_extracts_generated_images() -> None:
     )
 
     assert response.generated_assets[0].data_base64 == "abc"
+
+
+def test_openrouter_provider_extracts_generated_images_from_sdk_extra_dicts() -> None:
+    message = SimpleNamespace(
+        content="made one",
+        tool_calls=None,
+        model_extra={
+            "images": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,ZGljdA=="},
+                }
+            ]
+        },
+    )
+    native = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+        openrouter_metadata={},
+    )
+    provider = OpenRouterProvider(api_key="test", model="google/gemini-image")
+    completions = FakeCompletions(native)
+    provider._client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+
+    response = asyncio.run(
+        provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("make image")],
+                tools=[],
+                max_tokens=128,
+            )
+        )
+    )
+
+    assert response.generated_assets[0].data_base64 == "ZGljdA=="

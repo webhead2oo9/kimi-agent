@@ -89,7 +89,7 @@ class OpenRouterProvider(OpenAIChatProvider):
             base,
             reasoning_content=reasoning_content,
             provider_state={},
-            generated_assets=self._parse_images(getattr(message, "images", None)),
+            generated_assets=self._parse_images(self._native_field(message, "images")),
             upstream_provider=self._selected_provider(metadata),
             service_tier=self._bounded_text(self._native_field(response, "service_tier")),
             openrouter_charge_usd=self._non_negative_number(self._native_field(usage, "cost")),
@@ -136,12 +136,12 @@ class OpenRouterProvider(OpenAIChatProvider):
     def _optional_bool(value: Any) -> bool | None:
         return value if isinstance(value, bool) else None
 
-    @staticmethod
-    def _parse_images(images: Any) -> list[GeneratedAsset]:
+    @classmethod
+    def _parse_images(cls, images: Any) -> list[GeneratedAsset]:
         assets: list[GeneratedAsset] = []
         for index, image in enumerate(images or [], start=1):
-            image_url = getattr(image, "image_url", None)
-            url = getattr(image_url, "url", None)
+            image_url = cls._native_field(image, "image_url")
+            url = cls._native_field(image_url, "url")
             if not isinstance(url, str):
                 continue
             # Only data URLs carry inline base64. A plain http(s) URL is not

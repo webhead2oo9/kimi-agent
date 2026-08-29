@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,8 +68,10 @@ from evals.scenario import (
     load_scenarios,
     split_gated_scenarios,
     split_image_scenarios,
+    unavailable_scenario_tools,
 )
 from evals.stub_gateway import StubGateway
+from tools.registry import ToolRegistry
 
 log = logging.getLogger("evals.harness")
 
@@ -220,15 +222,25 @@ def make_run_dir(base: Path, *, sha: str, now: datetime | None = None) -> Path:
     return run_dir
 
 
-def missing_expected_tools(scenarios: list[Scenario], registered: set[str]) -> dict[str, list[str]]:
-    """Expected tools that are not registered at all (env gate off, missing key...).
+def missing_expected_tools(
+    scenarios: list[Scenario],
+    *,
+    registry: ToolRegistry,
+    identities_by_scenario: Mapping[str, Sequence[EvalIdentity]],
+) -> dict[str, list[str]]:
+    """Expected tools unavailable at the scenario's actual tier and scope.
 
     This separates host capability gaps from model failures: without it, the
     optimization loop reacts to a missing capability as if the model had failed.
     """
     problems: dict[str, list[str]] = {}
     for scenario in scenarios:
-        missing = [t for t in scenario.expect.should_use_tools if t not in registered]
+        missing = unavailable_scenario_tools(
+            scenario,
+            scenario.expect.should_use_tools,
+            registry=registry,
+            identities=identities_by_scenario[scenario.id],
+        )
         if missing:
             problems[scenario.id] = missing
     return problems
@@ -757,6 +769,18 @@ async def _run(args: argparse.Namespace) -> int:
         else None
     )
     eval_run_nonce = new_eval_run_nonce()
+    identities_by_scenario = {
+        scenario.id: tuple(
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=spec.label,
+                scenario_id=scenario.id,
+                repetition=rep_index,
+            )
+            for rep_index in range(args.repeat)
+        )
+        for scenario in scenarios
+    }
     gateway = StubGateway()
     tapes: dict[str, str] = {}
     results: dict[str, tuple[Scenario, list[RepResult]]] = {}
@@ -768,21 +792,29 @@ async def _run(args: argparse.Namespace) -> int:
         # Capability gate first: a scenario that DECLARED it needs a sandbox-only tool
         # sits out on a host without one. Everything left is expected to work here, so
         # missing_expected_tools keeps its hard failure for genuine gaps.
-        scenarios, gated = split_gated_scenarios(scenarios, registered)
+        scenarios, gated = split_gated_scenarios(
+            scenarios,
+            registry=registry,
+            identities_by_scenario=identities_by_scenario,
+        )
         for gated_scenario, missing in gated:
             log.warning(
-                "Skipping %s: this host does not register %s",
+                "Skipping %s: its eval caller cannot access %s at the declared tier/scope",
                 gated_scenario.id,
                 ", ".join(missing),
             )
             skipped[gated_scenario.id] = missing
         if not scenarios:
-            log.error("Every selected scenario needs a tool this host does not register.")
+            log.error("Every selected scenario needs a tool unavailable at its tier/scope.")
             return 2
-        problems = missing_expected_tools(scenarios, registered)
+        problems = missing_expected_tools(
+            scenarios,
+            registry=registry,
+            identities_by_scenario=identities_by_scenario,
+        )
         if problems:
             for scenario_id, tools in problems.items():
-                log.error("Scenario %s expects unregistered tools: %s", scenario_id, tools)
+                log.error("Scenario %s expects unavailable tools: %s", scenario_id, tools)
             log.error("Refusing to run against a partial tool surface (check .env gates).")
             return 2
         compactor = eval_registry.provider_manager.build_compactor()
@@ -822,12 +854,7 @@ async def _run(args: argparse.Namespace) -> int:
                     ),
                     compactor=compactor,
                     max_tokens=max_tokens,
-                    identity=EvalIdentity(
-                        run_nonce=eval_run_nonce,
-                        arm=spec.label,
-                        scenario_id=scenario.id,
-                        repetition=rep_index,
-                    ),
+                    identity=identities_by_scenario[scenario.id][rep_index],
                     image_captions=image_captions,
                 )
                 sources: dict[str, int] = {}

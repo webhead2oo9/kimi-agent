@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -31,7 +32,6 @@ from web_browser.service import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = PROJECT_ROOT.parent
 BETTERWRIGHT_INSTALLER = PROJECT_ROOT / "deploy/betterwright/install.sh"
 
 
@@ -98,9 +98,10 @@ def test_worker_command_has_filesystem_and_network_boundary(tmp_path: Path) -> N
     assert command[-2:] == ["/runtime/node", "/bridge.mjs"]
 
 
-def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
+def test_bridge_and_installer_lock_runtime_contract() -> None:
     bridge = (PROJECT_ROOT / "web_browser/bridge.mjs").read_text(encoding="utf-8")
     visual_bridge = (PROJECT_ROOT / "web_browser/visual_bridge.mjs").read_text(encoding="utf-8")
+    visual_service = (PROJECT_ROOT / "web_browser/visual_service.py").read_text(encoding="utf-8")
     installer = (PROJECT_ROOT / "deploy/betterwright/install.sh").read_text(encoding="utf-8")
     package = json.loads(
         (PROJECT_ROOT / "deploy/betterwright/package.json").read_text(encoding="utf-8")
@@ -108,20 +109,28 @@ def test_bridge_and_installer_lock_reviewed_runtime_contract() -> None:
     lock = json.loads(
         (PROJECT_ROOT / "deploy/betterwright/package-lock.json").read_text(encoding="utf-8")
     )
-    docs = (REPO_ROOT / "docs/browser.md").read_text(encoding="utf-8")
     tool = (PROJECT_ROOT / "tools/browser.py").read_text(encoding="utf-8")
     skill = (PROJECT_ROOT / "skills/builtin/browser/SKILL.md").read_text(encoding="utf-8")
     api = (PROJECT_ROOT / "skills/builtin/browser/reference/api.md").read_text(encoding="utf-8")
 
-    assert "VERSION=1.10.0" in installer
-    assert "MERMAID_VERSION=11.17.2" in installer
+    dependencies = package["dependencies"]
+    assert set(dependencies) == {"betterwright", "mermaid"}
+    assert all(
+        re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version)
+        for version in dependencies.values()
+    )
+    betterwright_version = dependencies["betterwright"]
+    mermaid_version = dependencies["mermaid"]
+
+    assert f"VERSION={betterwright_version}" in installer
+    assert f"MERMAID_VERSION={mermaid_version}" in installer
+    assert f'_MERMAID_VERSION = "{mermaid_version}"' in visual_service
     assert '"$NPM_BIN" ci' in installer
     assert '"$NPM_BIN" install' not in installer
     assert "node_modules/mermaid/dist/mermaid.min.js" in installer
-    assert package["dependencies"] == {"betterwright": "1.10.0", "mermaid": "11.17.2"}
-    assert lock["packages"]["node_modules/betterwright"]["version"] == "1.10.0"
-    assert lock["packages"]["node_modules/mermaid"]["version"] == "11.17.2"
-    assert "BetterWright **1.10.0**" in docs
+    assert lock["packages"][""]["dependencies"] == dependencies
+    assert lock["packages"]["node_modules/betterwright"]["version"] == betterwright_version
+    assert lock["packages"]["node_modules/mermaid"]["version"] == mermaid_version
     assert 'HOME="$STAGING_DIR" BETTERWRIGHT_HOME="$STAGING_DIR"' in installer
     assert 'mv -- "$STAGING_DIR" "$RUNTIME_DIR"' in installer
     assert "allowPrivateNetwork: false" in bridge

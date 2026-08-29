@@ -5,9 +5,21 @@
 #
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/.config/kimi-agent"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PYTHON_BIN="$BOT_DIR/.venv/bin/python"
+
+CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
 ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
 TOKEN_FILE="${TOKEN_FILE:-${CONFIG_DIR}/secrets/codex-auth.json}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
+    echo "Create the bot virtual environment and install its dependencies first." >&2
+    exit 1
+fi
+
+cd "$BOT_DIR"
 
 echo "Codex login helper"
 echo "------------------"
@@ -26,7 +38,7 @@ echo "Starting device authentication flow..."
 echo
 
 ENV_FILE="$ENV_FILE" \
-    python3 scripts/codex_auth.py --token-file "$TOKEN_FILE"
+    "$PYTHON_BIN" "$SCRIPT_DIR/codex_auth.py" --token-file "$TOKEN_FILE"
 
 chmod 600 "$TOKEN_FILE" 2>/dev/null || true
 

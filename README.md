@@ -78,8 +78,7 @@ standard `venv` module already installed.
 ```bash
 cd bot
 python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements.lock
-.venv/bin/python -m pip install --no-deps \
+.venv/bin/python -m pip install \
   --editable ./packages/kimi-agent-module-api --editable .
 .venv/bin/python -m pip check
 cp .env.example .env
@@ -99,9 +98,9 @@ Then fill in two files:
 
 If uv is already installed, the equivalent block is `uv sync --locked`, then
 `.venv/bin/python -m ensurepip`, followed by the same editable local-project
-install and `pip check` above. `ensurepip` retains compatibility with later
-module-install commands. In either case, use the explicit project interpreter;
-a bare `python` or `pytest` may find a different environment.
+install with `--no-deps` and `pip check` above. `ensurepip` retains compatibility
+with later module-install commands. In either case, use the explicit project
+interpreter; a bare `python` or `pytest` may find a different environment.
 [docs/development.md](docs/development.md) shows how to run a second instance
 against a test guild without touching production state.
 

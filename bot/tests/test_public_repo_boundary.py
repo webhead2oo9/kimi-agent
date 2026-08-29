@@ -290,7 +290,6 @@ def test_tracked_discord_ids_are_synthetic() -> None:
         [
             "git",
             "grep",
-            "--cached",
             "-h",
             "-I",
             "-o",
@@ -299,8 +298,6 @@ def test_tracked_discord_ids_are_synthetic() -> None:
             "--",
             # Dependency hashes contain arbitrary digit runs.
             ":!bot/uv.lock",
-            ":!bot/requirements.lock",
-            ":!bot/requirements-dev.lock",
         ],
         cwd=REPO_ROOT,
         check=False,

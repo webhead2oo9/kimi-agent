@@ -16,7 +16,12 @@ from evals.mechanical import compute_mechanical
 from evals.models import ModelsConfig, build_eval_provider, load_models
 from evals.registry import EvalRegistry, build_eval_registry
 from evals.report import ScenarioReport, render_report, write_raw_jsonl
-from evals.scenario import load_scenarios, split_image_scenarios
+from evals.scenario import (
+    load_scenarios,
+    split_gated_scenarios,
+    split_image_scenarios,
+    unavailable_scenario_tools,
+)
 from evals.stub_gateway import StubGateway
 
 log = logging.getLogger("evals")
@@ -108,8 +113,54 @@ async def _run(args: argparse.Namespace) -> int:
     eval_registry: EvalRegistry | None = None
     reports: list[ScenarioReport] = []
     eval_run_nonce = new_eval_run_nonce()
+    identities_by_scenario = {
+        scenario.id: (
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=f"candidate:{candidate_spec.label}",
+                scenario_id=scenario.id,
+                repetition=0,
+            ),
+            EvalIdentity(
+                run_nonce=eval_run_nonce,
+                arm=f"baseline:{models.baseline.label}",
+                scenario_id=scenario.id,
+                repetition=0,
+            ),
+        )
+        for scenario in scenarios
+    }
     try:
         eval_registry = await build_eval_registry(settings, gateway=gateway)
+        scenarios, gated = split_gated_scenarios(
+            scenarios,
+            registry=eval_registry.registry,
+            identities_by_scenario=identities_by_scenario,
+        )
+        for gated_scenario, missing in gated:
+            log.warning(
+                "Skipping %s: its eval callers cannot access %s at the declared tier/scope",
+                gated_scenario.id,
+                ", ".join(missing),
+            )
+        if not scenarios:
+            log.error("Every selected scenario needs a tool unavailable at its tier/scope.")
+            return 2
+        expected_problems: dict[str, list[str]] = {}
+        for scenario in scenarios:
+            missing = unavailable_scenario_tools(
+                scenario,
+                scenario.expect.should_use_tools,
+                registry=eval_registry.registry,
+                identities=identities_by_scenario[scenario.id],
+            )
+            if missing:
+                expected_problems[scenario.id] = missing
+        if expected_problems:
+            for scenario_id, tools in expected_problems.items():
+                log.error("Scenario %s expects unavailable tools: %s", scenario_id, tools)
+            log.error("Refusing to run against a partial tool surface (check .env gates).")
+            return 2
         # Production parity: every chat turn runs with the mandatory compactor
         # (same wiring as app/runtime.py).
         compactor = eval_registry.provider_manager.build_compactor()
@@ -136,12 +187,7 @@ async def _run(args: argparse.Namespace) -> int:
                     settings.thread_handoff_suggest_after_tool_calls
                 ),
                 compactor=compactor,
-                identity=EvalIdentity(
-                    run_nonce=eval_run_nonce,
-                    arm=f"candidate:{candidate_spec.label}",
-                    scenario_id=scenario.id,
-                    repetition=0,
-                ),
+                identity=identities_by_scenario[scenario.id][0],
                 image_captions=image_captions,
             )
             base_run = await run_scenario_for_model(
@@ -156,12 +202,7 @@ async def _run(args: argparse.Namespace) -> int:
                     settings.thread_handoff_suggest_after_tool_calls
                 ),
                 compactor=compactor,
-                identity=EvalIdentity(
-                    run_nonce=eval_run_nonce,
-                    arm=f"baseline:{models.baseline.label}",
-                    scenario_id=scenario.id,
-                    repetition=0,
-                ),
+                identity=identities_by_scenario[scenario.id][1],
                 image_captions=image_captions,
             )
             judge_result = await judge_pair(

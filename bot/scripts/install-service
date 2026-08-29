@@ -1,24 +1,31 @@
 #!/bin/bash
 #
 # Installs the user systemd service for Kimi.
-# Run this from the bot/ directory as your normal deployment user.
+# Run this as your normal deployment user.
 #
 set -euo pipefail
 
-if [[ ! -f "bot.py" ]]; then
-    echo "ERROR: Run this script from the bot/ directory." >&2
-    exit 1
-fi
-
-BOT_DIR="$(pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PYTHON_BIN="$BOT_DIR/.venv/bin/python"
 USER_NAME="$(id -un)"
-USER_ID="$(id -u)"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 SERVICE_FILE="${SERVICE_DIR}/kimi-agent.service"
 
-CONFIG_DIR="${HOME}/.config/kimi-agent"
-ENV_FILE="${CONFIG_DIR}/kimi.env"
-RUNTIME_ENV="${CONFIG_DIR}/runtime.env"
+CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${CONFIG_DIR}/runtime.env}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
+    echo "Create the bot virtual environment and install its dependencies first." >&2
+    exit 1
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: $ENV_FILE not found" >&2
+    exit 1
+fi
 
 echo "Kimi systemd service installer"
 echo "=============================="
@@ -55,8 +62,8 @@ UMask=0077
 WorkingDirectory=$BOT_DIR
 Environment=PYTHONUNBUFFERED=1
 Environment=ENV_FILE=$ENV_FILE
-EnvironmentFile=$RUNTIME_ENV
-ExecStart=$BOT_DIR/.venv/bin/python bot.py
+EnvironmentFile=-$RUNTIME_ENV
+ExecStart=$PYTHON_BIN bot.py
 TasksMax=128
 MemoryHigh=1536M
 MemoryMax=2G

@@ -21,18 +21,16 @@ their data.
 ## First-time setup
 
 Development requires Python 3.14 or newer and its standard `venv` module.
-Install the hashed application and development dependencies, then install the
-three local workspace projects without resolving them again:
+Install the three local workspace projects and their application and development
+dependencies in one resolver run:
 
 ```bash
 cd bot
 python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes \
-  --requirement requirements-dev.lock
-.venv/bin/python -m pip install --no-deps \
+.venv/bin/python -m pip install \
   --editable ./packages/kimi-agent-module-api \
   --editable ./modules/example \
-  --editable .
+  --editable ".[dev]"
 .venv/bin/python -m pip check
 ```
 
@@ -69,12 +67,10 @@ The complete standard PowerShell setup is:
 ```powershell
 Set-Location bot
 py -3.14 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --require-hashes `
-  --requirement requirements-dev.lock
-.\.venv\Scripts\python.exe -m pip install --no-deps `
+.\.venv\Scripts\python.exe -m pip install `
   --editable ./packages/kimi-agent-module-api `
   --editable ./modules/example `
-  --editable .
+  --editable ".[dev]"
 .\.venv\Scripts\python.exe -m pip check
 ```
 
@@ -277,9 +273,8 @@ The equivalent Python checks in Windows PowerShell are:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-CI also proves the standard venv/pip install and fails when either exported pip
-lock differs from `uv.lock`. Maintainer lock auditing and distribution builds
-still require uv:
+CI also proves the standard venv/pip install. Maintainer lock auditing and
+distribution builds still require uv:
 
 ```bash
 uv sync --locked --all-packages --extra dev

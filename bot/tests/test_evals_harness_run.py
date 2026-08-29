@@ -1,3 +1,5 @@
+import argparse
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -155,6 +157,68 @@ def test_native_vision_skips_are_preserved_for_mixed_text_and_image_suite():
     assert [scenario.id for scenario in runnable] == ["plain"]
     assert mode == "native"
     assert skipped == {"visual": ["image_input"]}
+
+
+def test_dry_run_applies_runtime_tool_gate_before_printing_plan(monkeypatch, tmp_path, capsys):
+    regular = Scenario(
+        id="regular-code",
+        category="tooling",
+        trust_tier=TrustTier.REGULAR,
+        turns=["q"],
+        requires_tools=["run_code"],
+    )
+    staff = Scenario(
+        id="staff-code",
+        category="tooling",
+        trust_tier=TrustTier.STAFF,
+        turns=["q"],
+        requires_tools=["run_code"],
+    )
+
+    class _FakeEvalRegistry:
+        def __init__(self):
+            self.registry = ToolRegistry()
+            self.registry.register("run_code", "", {}, _noop_tool, min_tier=TrustTier.STAFF)
+
+        async def close(self):
+            return None
+
+    async def _fake_registry(settings, *, gateway):
+        return _FakeEvalRegistry()
+
+    monkeypatch.setattr(harness_run, "load_models", lambda path: _models())
+    monkeypatch.setattr(harness_run, "load_scenarios", lambda path: [regular, staff])
+    monkeypatch.setattr(harness_run, "build_eval_registry", _fake_registry)
+    monkeypatch.setattr(
+        harness_run,
+        "build_eval_provider",
+        lambda spec: (_ for _ in ()).throw(AssertionError("dry-run built a model provider")),
+    )
+
+    args = argparse.Namespace(
+        model="sol",
+        repeat=1,
+        max_tokens=65_536,
+        models="models.yaml",
+        scenarios="scenarios",
+        scenario=[],
+        cassettes=str(tmp_path / "cassettes"),
+        captions=str(tmp_path / "captions"),
+        vision_mode="auto",
+        cassette="strict",
+        no_shared_cassettes=False,
+        out=str(tmp_path / "out"),
+        dry_run=True,
+    )
+
+    assert asyncio.run(harness_run._run(args)) == 0
+    plan = capsys.readouterr().out
+    assert "Scenarios: staff-code" in plan
+    assert "regular-code" not in plan
+    assert "Total run_conversation calls: 1" in plan
+
+    monkeypatch.setattr(harness_run, "load_scenarios", lambda path: [regular])
+    assert asyncio.run(harness_run._run(args)) == 2
 
 
 def test_build_summary_aggregates_scores_and_pass_rate():

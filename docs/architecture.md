@@ -8,7 +8,7 @@ People talk to Kimi in a few different ways. Under the hood they all use the sam
 
 ### Community chat
 
-This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in a thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
+This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
 ### Personal chat (optional)
 

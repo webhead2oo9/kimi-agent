@@ -61,7 +61,7 @@ The database is one main file plus its `-wal` and `-shm` sidecars. Back them up 
 Two ways to do it safely:
 
 - **Stop the bot, then copy the three files.** This is the simplest option and always consistent.
-- **Use SQLite's online backup API while the bot is running.** WAL mode lets readers see a consistent snapshot. From the `sqlite3` CLI: `sqlite3 data/bot.db ".backup data/bot.backup.db"`.
+- **For a plaintext database, use SQLite's online backup API while the bot is running.** WAL mode lets readers see a consistent snapshot. From the `sqlite3` CLI: `sqlite3 data/bot.db ".backup data/bot.backup.db"`. The ordinary `sqlite3` CLI cannot open a SQLCipher-encrypted database; use the stopped-copy method above or a keyed SQLCipher client for one of those.
 
 Whatever you do, test the backup. Open it with the bot's environment, run `/usage`, send a quick message, and confirm the rows look right. A backup you've never restored is a backup you don't have.
 

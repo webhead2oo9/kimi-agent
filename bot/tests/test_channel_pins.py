@@ -50,7 +50,6 @@ def test_load_pins_without_frontmatter_is_empty(tmp_path: Path) -> None:
 
 def test_load_pins_rejects_non_snowflake_ids(tmp_path: Path) -> None:
     _write_fragment(tmp_path, "100", "---\npinned_tools: [move_to_thread]\n---\nbody\n")
-    _write_fragment(tmp_path, "100\n", "---\npinned_tools: [move_to_thread]\n---\nbody\n")
 
     assert load_channel_pinned_tools("", config_dir=tmp_path) == frozenset()
     assert load_channel_pinned_tools("abc", config_dir=tmp_path) == frozenset()

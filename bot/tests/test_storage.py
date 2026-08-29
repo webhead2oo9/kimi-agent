@@ -23,6 +23,7 @@ from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX mode bits")
 @pytest.mark.asyncio
 async def test_database_and_sidecars_are_owner_only_under_permissive_umask(tmp_path) -> None:
     data_dir = tmp_path / "private-data"
@@ -42,6 +43,7 @@ async def test_database_and_sidecars_are_owner_only_under_permissive_umask(tmp_p
         await db.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX mode bits")
 @pytest.mark.asyncio
 async def test_existing_database_is_tightened_without_changing_parent_mode(tmp_path) -> None:
     data_dir = tmp_path / "shared-data"

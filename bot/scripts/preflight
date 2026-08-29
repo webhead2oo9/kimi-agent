@@ -10,9 +10,9 @@ BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON_BIN="$BOT_DIR/.venv/bin/python"
 cd "$BOT_DIR"
 
-CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
-RUNTIME_ENV="${RUNTIME_ENV:-${CONFIG_DIR}/runtime.env}"
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
 
 echo "Kimi Preflight"
 echo "=============="

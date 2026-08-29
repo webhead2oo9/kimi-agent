@@ -9,9 +9,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON_BIN="$BOT_DIR/.venv/bin/python"
 
-CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
-TOKEN_FILE="${TOKEN_FILE:-${CONFIG_DIR}/secrets/codex-auth.json}"
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
@@ -20,6 +19,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 cd "$BOT_DIR"
+
+if [[ -z "${TOKEN_FILE:-}" ]]; then
+    TOKEN_FILE="$(
+        ENV_FILE="$ENV_FILE" "$PYTHON_BIN" - <<'PY'
+from config.settings import settings
+
+print(settings.codex_token_file)
+PY
+    )"
+fi
 
 echo "Codex login helper"
 echo "------------------"

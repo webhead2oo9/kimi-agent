@@ -12,9 +12,26 @@ USER_NAME="$(id -un)"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 SERVICE_FILE="${SERVICE_DIR}/kimi-agent.service"
 
-CONFIG_DIR="${CONFIG_DIR:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${CONFIG_DIR}/kimi.env}"
-RUNTIME_ENV="${RUNTIME_ENV:-${CONFIG_DIR}/runtime.env}"
+KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
+ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+
+systemd_quote() {
+    local value="$1"
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        echo "ERROR: systemd paths cannot contain newlines" >&2
+        return 1
+    fi
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '"%s"' "$value"
+}
+
+systemd_exec_quote() {
+    local value="${1//\$/\$\$}"
+    systemd_quote "$value"
+}
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "ERROR: Project Python not found at $PYTHON_BIN" >&2
@@ -26,6 +43,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
     echo "ERROR: $ENV_FILE not found" >&2
     exit 1
 fi
+
+SYSTEMD_WORKING_DIRECTORY="$(systemd_quote "$BOT_DIR")"
+SYSTEMD_ENV_FILE="$(systemd_quote "ENV_FILE=$ENV_FILE")"
+SYSTEMD_RUNTIME_ENV="$(systemd_quote "-$RUNTIME_ENV")"
+SYSTEMD_EXECUTABLE="$(systemd_exec_quote "$PYTHON_BIN")"
 
 echo "Kimi systemd service installer"
 echo "=============================="
@@ -59,11 +81,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 UMask=0077
-WorkingDirectory=$BOT_DIR
+WorkingDirectory=$SYSTEMD_WORKING_DIRECTORY
 Environment=PYTHONUNBUFFERED=1
-Environment=ENV_FILE=$ENV_FILE
-EnvironmentFile=-$RUNTIME_ENV
-ExecStart=$PYTHON_BIN bot.py
+Environment=$SYSTEMD_ENV_FILE
+EnvironmentFile=$SYSTEMD_RUNTIME_ENV
+ExecStart=$SYSTEMD_EXECUTABLE bot.py
 TasksMax=128
 MemoryHigh=1536M
 MemoryMax=2G

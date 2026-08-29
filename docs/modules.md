@@ -166,10 +166,10 @@ A module may separately declare `activation_capabilities` for an optional featur
 For repeatable deployments, keep third-party module requirements in
 deployment-owned lock data and install them after the core environment. Private
 Git access or a local wheelhouse works without involving core CI. Each module
-owns its release process, tests, configuration docs, and privacy disclosures.
-Before activating a module, the operator must make those disclosures reachable
-from the deployment's public privacy notice. A module that observes events or
-content not addressed to the bot must say so explicitly, including what it
+owns its release process, tests, configuration docs, and separate privacy
+notice. Before activating a module, the operator must publish that notice
+alongside the deployment's core privacy notice. A module that observes events
+or content not addressed to the bot must say so explicitly, including what it
 processes, why, where it sends data, and how long it retains the result.
 
 ## Publishing the API

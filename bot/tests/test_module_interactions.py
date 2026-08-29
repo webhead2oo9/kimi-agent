@@ -228,6 +228,17 @@ def test_module_commands_cannot_replace_an_existing_owner() -> None:
         router.add_command(CommandSpec(name="thing", description="module", group="admin"), handler)
 
 
+def test_duplicate_module_command_registration_is_rejected() -> None:
+    router, _, _ = _router()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    router.add_command(CommandSpec(name="thing", description="first", group="admin"), handler)
+    with pytest.raises(ModuleContractError, match="already registered"):
+        router.add_command(CommandSpec(name="thing", description="second", group="admin"), handler)
+
+
 def test_thread_options_reduce_to_stable_ids() -> None:
     thread = object.__new__(discord.Thread)
     thread.id = 123  # type: ignore[attr-defined]
@@ -265,6 +276,88 @@ def test_close_removes_owned_commands_and_components() -> None:
     assert dispatcher.registered("mod") == ()
     with pytest.raises(RuntimeError):
         router.add_command(CommandSpec(name="late", description="l"), handler)
+    with pytest.raises(RuntimeError):
+        router.register_component("button", "late", handler)
+
+
+def test_duplicate_component_registration_is_rejected() -> None:
+    router, _, dispatcher = _router()
+
+    async def first(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def second(_interaction: ModuleInteraction) -> None:
+        pass
+
+    router.register_component("button", "confirm", first)
+    with pytest.raises(ModuleContractError, match="already registered"):
+        router.register_component("button", "confirm", second)
+    assert dispatcher._handlers[("mod", "button", "confirm")].handler is first
+
+
+@pytest.mark.asyncio
+async def test_old_registration_handles_cannot_remove_reloaded_handlers() -> None:
+    first_router, bot, dispatcher = _router()
+
+    async def first(_interaction: ModuleInteraction) -> None:
+        pass
+
+    old_command = first_router.add_command(CommandSpec(name="ping", description="p"), first)
+    old_component = first_router.register_component("button", "confirm", first)
+    first_router.close()
+
+    second_router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    hits: list[str] = []
+
+    async def second(_interaction: ModuleInteraction) -> None:
+        hits.append("second")
+
+    second_router.add_command(CommandSpec(name="ping", description="p"), second)
+    second_router.register_component("button", "confirm", second)
+
+    old_command.close()
+    old_component.close()
+
+    assert "ping" in bot.tree.commands
+    interaction = _Interaction(data={"custom_id": second_router.custom_id("confirm")})
+    await dispatcher.dispatch(interaction, "button")  # type: ignore[arg-type]
+    assert hits == ["second"]
+
+
+@pytest.mark.asyncio
+async def test_closing_old_router_cannot_remove_reloaded_component() -> None:
+    first_router, bot, dispatcher = _router()
+
+    async def first(_interaction: ModuleInteraction) -> None:
+        pass
+
+    old_component = first_router.register_component("button", "confirm", first)
+    old_component.close()
+
+    second_router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    hits: list[str] = []
+
+    async def second(_interaction: ModuleInteraction) -> None:
+        hits.append("second")
+
+    second_router.register_component("button", "confirm", second)
+    first_router.close()
+
+    interaction = _Interaction(data={"custom_id": second_router.custom_id("confirm")})
+    await dispatcher.dispatch(interaction, "button")  # type: ignore[arg-type]
+    assert hits == ["second"]
 
 
 @pytest.mark.asyncio

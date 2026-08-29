@@ -955,18 +955,49 @@ class Database:
             or any(not (char.islower() or char.isdigit() or char in "_-") for char in module_name)
         ):
             raise ValueError(f"Invalid module schema name {module_name!r}")
+        migration_names: list[str] = []
+        for version, (migration_name, migrate) in enumerate(migrations, start=1):
+            if not isinstance(migration_name, str) or not migration_name.strip():
+                raise ValueError(
+                    f"Module {module_name!r} migration v{version} must have a non-empty name"
+                )
+            if migration_name in migration_names:
+                raise ValueError(
+                    f"Module {module_name!r} declares duplicate migration name {migration_name!r}"
+                )
+            if not callable(migrate):
+                raise ValueError(
+                    f"Module {module_name!r} migration {migration_name!r} is not callable"
+                )
+            migration_names.append(migration_name)
         async with self._write_lock:
             async with self.conn.execute(
-                "SELECT MAX(version) FROM module_schema_versions WHERE module_name = ?",
+                "SELECT version, name FROM module_schema_versions "
+                "WHERE module_name = ? ORDER BY version",
                 (module_name,),
             ) as cursor:
-                row = await cursor.fetchone()
-            current = int(row[0]) if row and row[0] else 0
+                applied = [(int(row[0]), str(row[1])) for row in await cursor.fetchall()]
+            applied_versions = [version for version, _name in applied]
+            expected_versions = list(range(1, len(applied) + 1))
+            if applied_versions != expected_versions:
+                raise RuntimeError(
+                    f"Module {module_name!r} database migration ledger is not contiguous: "
+                    f"found versions {applied_versions!r}"
+                )
+            current = len(applied)
             if current > len(migrations):
                 raise RuntimeError(
                     f"Module {module_name!r} database schema v{current} is newer than "
                     f"supported v{len(migrations)}"
                 )
+            for version, applied_name in applied:
+                declared_name = migration_names[version - 1]
+                if applied_name != declared_name:
+                    raise RuntimeError(
+                        f"Module {module_name!r} migration history diverged at v{version}: "
+                        f"database recorded {applied_name!r}, module declares "
+                        f"{declared_name!r}"
+                    )
             for target in range(current + 1, len(migrations) + 1):
                 migration_name, migrate = migrations[target - 1]
                 try:

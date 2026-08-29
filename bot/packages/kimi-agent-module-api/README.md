@@ -28,5 +28,7 @@ dependencies = ["kimi-agent-module-api>=1,<2"]
 my_module = "my_module_package:SPEC"
 ```
 
-The main repository's reference module (`bot/modules/example`) is a complete,
-commented example that exercises every port; start there.
+The [module guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/modules.md)
+documents installation, declarations, lifecycle, and every runtime port. The
+[reference module](https://github.com/webhead2oo9/kimi-agent/tree/main/bot/modules/example)
+is a complete, commented example that exercises every port; start there.

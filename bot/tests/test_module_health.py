@@ -177,9 +177,10 @@ def test_render_status_explains_soft_disabled_modules() -> None:
         },
     )
 
-    assert "`discord_rag` 0.1.0" in text
-    assert "disabled" in text
-    assert "discord.message_content.v1" in text
+    assert text.splitlines()[1] == (
+        "• ⏸️ `discord_rag` 0.1.0 — disabled: "
+        "missing activation capability discord.message_content.v1"
+    )
 
 
 def test_keyed_reports_are_independent_concerns() -> None:

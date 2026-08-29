@@ -43,6 +43,7 @@ from kimi_agent_module_api.contracts import (
     table_prefix,
     validate_guild_settings_schema,
     validate_host_rule,
+    validate_module_name,
     validate_permissions,
     validate_publish_topic,
     validate_services,
@@ -146,11 +147,43 @@ def test_selection_preflight_accepts_one_hyphenated_name() -> None:
 
 
 def test_proposals_is_a_reserved_core_module_name() -> None:
+    with pytest.raises(ModuleContractError, match="reserved by core"):
+        validate_module_name("proposals")
     with pytest.raises(RuntimeError, match="reserved by core"):
         validate_module_selection(
             ("proposals",),
             core_settings=_settings(),
             installed={"proposals": _spec("proposals")},
+        )
+
+
+def test_discord_is_a_reserved_core_module_name_and_event_namespace() -> None:
+    with pytest.raises(ModuleContractError, match="reserved by core"):
+        validate_module_name("discord")
+    with pytest.raises(RuntimeError, match="reserved by core"):
+        validate_module_selection(
+            ("discord",),
+            core_settings=_settings(),
+            installed={"discord": _spec("discord")},
+        )
+    with pytest.raises(EventTopicError, match="reserved by core"):
+        validate_publish_topic("discord", "discord.message")
+
+
+def test_module_settings_name_must_match_module_name() -> None:
+    spec = _spec(
+        settings=ModuleSettingsDefinition(
+            name="other",
+            label="Other settings",
+            model=Settings,
+            exposed=(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="settings name 'other' does not match"):
+        validate_module_selection(
+            (spec.name,),
+            core_settings=_settings(),
+            installed={spec.name: spec},
         )
 
 
@@ -561,6 +594,26 @@ def test_fake_interaction_exposes_the_component_message() -> None:
     ref = MessageRef(1, 2, 3)
     assert FakeInteraction(message=ref).message == ref
     assert FakeInteraction().message is None
+
+
+def test_fake_interactions_reject_duplicate_and_invalid_registrations() -> None:
+    from kimi_agent_module_api.contracts import CommandSpec, ModuleContractError
+    from kimi_agent_module_api.testing import FakeInteractions
+
+    router = FakeInteractions("example")
+
+    async def handler(_interaction: object) -> None:
+        pass
+
+    router.add_command(CommandSpec(name="ping", description="Ping"), handler)
+    with pytest.raises(ModuleContractError, match="already registered"):
+        router.add_command(CommandSpec(name="ping", description="Ping again"), handler)
+
+    router.register_component("button", "confirm", handler)
+    with pytest.raises(ModuleContractError, match="already registered"):
+        router.register_component("button", "confirm", handler)
+    with pytest.raises(ModuleContractError, match="unsupported component kind"):
+        router.register_component("modal", "confirm", handler)
 
 
 @pytest.mark.asyncio

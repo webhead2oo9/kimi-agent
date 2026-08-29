@@ -152,9 +152,10 @@ def test_chat_commands_are_user_install_only() -> None:
     assert set(parameters) == {"message", "attachment", "visibility"}
     assert parameters["visibility"].required is False
     assert parameters["visibility"].default == "private"
-    assert [
-        (choice.name, choice.value) for choice in parameters["visibility"].choices
-    ] == [("Only me", "private"), ("Everyone", "public")]
+    assert [(choice.name, choice.value) for choice in parameters["visibility"].choices] == [
+        ("Only me", "private"),
+        ("Everyone", "public"),
+    ]
     for name in ("chat", "chat-reset"):
         command = bot.tree.get_command(name)
         assert command is not None

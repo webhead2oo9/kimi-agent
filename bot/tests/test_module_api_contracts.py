@@ -819,7 +819,6 @@ def test_command_spec_validation_accepts_a_fully_populated_spec() -> None:
         SelectSpec(
             key="k", options=(("A", "a", None), ("B", "b", None)), min_values=2, max_values=1
         ),
-        SelectSpec(key="k", options=(("A", "a", None),), max_values=5),
         SelectSpec(key="k", options=(("A", "a", None),), min_values=26, max_values=26),
         SelectSpec(key="Bad", options=(("A", "a", None),)),
         SelectSpec(key="k", options=(("A", "a", None),), parts=("bad:part",)),

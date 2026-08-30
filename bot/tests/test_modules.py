@@ -40,7 +40,7 @@ from kimi_agent_module_api.testing import (
 )
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.events import EventBusImpl
-from modules.testing import fake_ports
+from modules.testing import build_test_runtime, fake_ports
 from config.settings import Settings
 from storage.db import Database
 from tools.registry import ToolRegistry
@@ -139,6 +139,32 @@ def test_module_capabilities_advertise_enabled_privileged_intents(tmp_path: Path
     assert "discord.components_v2.v1" in capabilities.available
     assert "discord.members.v1" in capabilities.available
     assert "discord.message_content.v1" in capabilities.available
+
+
+@pytest.mark.asyncio
+async def test_integration_harness_advertises_exactly_what_production_does(
+    tmp_path: Path,
+) -> None:
+    # ModuleManager.load gates on the real advertisement, so a harness that
+    # advertises less lets a module load and then take the wrong branch against
+    # ctx.capabilities with nothing in production to reproduce it.
+    seen: list[ModuleCapabilities] = []
+
+    class CapabilityRecordingModule(FakeModule):
+        async def start(self, ctx: ModuleRuntimeContext) -> None:
+            seen.append(ctx.capabilities)
+
+    runtime = await build_test_runtime(
+        tmp_path,
+        ("demo",),
+        installed={"demo": _spec("demo", CapabilityRecordingModule("demo", []))},
+        env={"MEMBERS_INTENT": "true", "MESSAGE_CONTENT_INTENT": "true"},
+    )
+    try:
+        assert seen == [module_runtime.module_capabilities(runtime.settings)]
+        assert "discord.modals.v1" in seen[0].available
+    finally:
+        await runtime.close()
 
 
 def test_missing_activation_capability_soft_disables_module_and_dependents(

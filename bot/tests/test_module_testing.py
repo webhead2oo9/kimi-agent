@@ -16,6 +16,7 @@ from kimi_agent_module_api.contracts import (
     CommandSpec,
     GuildCommand,
     MigrationContext,
+    ModuleContractError,
     ScopedModuleMigration,
     UndeclaredDiscordAction,
 )
@@ -165,3 +166,47 @@ async def test_fake_interactions_replace_guild_command_sets() -> None:
 
     await interactions.replace_guild_commands(7, ())
     assert 7 not in interactions.guild_commands
+
+
+@pytest.mark.asyncio
+async def test_fake_interactions_reject_the_top_name_collisions_production_rejects() -> None:
+    # Global commands are stored by qualified name, but Discord owns the top-level
+    # name. A fake that only compares qualified names accepts registrations the
+    # real command tree refuses, so a module passes its tests and fails at boot.
+    async def handler(_interaction: object) -> None:
+        pass
+
+    grouped = FakeInteractions("demo")
+    grouped.add_command(
+        CommandSpec(name="run", description="run", group="tools"),
+        handler,  # type: ignore[arg-type]
+    )
+    with pytest.raises(ModuleContractError, match="shadow a global command"):
+        await grouped.replace_guild_commands(
+            7,
+            (
+                GuildCommand(  # type: ignore[arg-type]
+                    CommandSpec(name="go", description="go", group="tools"), handler
+                ),
+            ),
+        )
+    with pytest.raises(ModuleContractError, match="both a command and a group"):
+        grouped.add_command(
+            CommandSpec(name="tools", description="tools"),
+            handler,  # type: ignore[arg-type]
+        )
+
+    guild_first = FakeInteractions("demo")
+    await guild_first.replace_guild_commands(
+        7,
+        (
+            GuildCommand(  # type: ignore[arg-type]
+                CommandSpec(name="go", description="go", group="tools"), handler
+            ),
+        ),
+    )
+    with pytest.raises(ModuleContractError, match="shadow a guild command"):
+        guild_first.add_command(
+            CommandSpec(name="run", description="run", group="tools"),
+            handler,  # type: ignore[arg-type]
+        )

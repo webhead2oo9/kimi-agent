@@ -987,6 +987,7 @@ class TrustLookup(Protocol):
 
 
 type CommandOptionKind = Literal["string", "integer", "boolean", "user", "channel", "role"]
+_OPTION_KINDS = frozenset({"string", "integer", "boolean", "user", "channel", "role"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1145,6 +1146,129 @@ class ModalSpec:
     title: str
     inputs: tuple[TextInputSpec, ...]
     parts: tuple[str, ...] = ()
+
+
+_OPTIONS_WITH_CHOICES = frozenset({"string", "integer"})
+
+
+def validate_command_spec(spec: CommandSpec) -> None:
+    """Validate the Discord limits a command payload must satisfy.
+
+    A whole ``tree.sync()`` is one bulk PUT, so a single malformed command
+    rejects every command in that scope. Discord.py checks command and group
+    *names* itself and reorders required options ahead of optional ones; these
+    are the limits nothing else enforces before the payload reaches Discord.
+    """
+
+    if not isinstance(spec.description, str) or not 1 <= len(spec.description) <= 100:
+        raise ModuleContractError("a command description must contain 1 to 100 characters")
+    if spec.group is not None and (
+        not isinstance(spec.group_description, str) or len(spec.group_description) > 100
+    ):
+        raise ModuleContractError("a command group description cannot exceed 100 characters")
+    if len(spec.options) > 25:
+        raise ModuleContractError("a command cannot declare more than 25 options")
+
+    names: set[str] = set()
+    for option in spec.options:
+        if not isinstance(option.name, str) or not 1 <= len(option.name) <= 32:
+            raise ModuleContractError(f"invalid command option name {option.name!r}")
+        if option.name in names:
+            raise ModuleContractError("command option names must be unique")
+        names.add(option.name)
+        if option.kind not in _OPTION_KINDS:
+            raise ModuleContractError(f"unsupported command option kind {option.kind!r}")
+        if not isinstance(option.description, str) or not 1 <= len(option.description) <= 100:
+            raise ModuleContractError(
+                f"the description for option {option.name!r} must contain 1 to 100 characters"
+            )
+        if option.choices and option.autocomplete:
+            # Discord rejects a payload carrying both, and discord.py emits both.
+            raise ModuleContractError(
+                f"option {option.name!r} cannot use choices and autocomplete together"
+            )
+        if (option.choices or option.autocomplete) and option.kind not in _OPTIONS_WITH_CHOICES:
+            raise ModuleContractError(
+                f"option {option.name!r} cannot use choices or autocomplete on a "
+                f"{option.kind} option"
+            )
+        if len(option.choices) > 25:
+            raise ModuleContractError(f"option {option.name!r} cannot declare more than 25 choices")
+        values: set[str | int] = set()
+        for name, value in option.choices:
+            if not isinstance(name, str) or not 1 <= len(name) <= 100:
+                raise ModuleContractError(f"invalid choice name {name!r} on option {option.name!r}")
+            if isinstance(value, bool) or not isinstance(value, str | int):
+                raise ModuleContractError(
+                    f"invalid choice value {value!r} on option {option.name!r}"
+                )
+            if isinstance(value, str) and not 1 <= len(value) <= 100:
+                raise ModuleContractError(
+                    f"a choice value on option {option.name!r} must contain 1 to 100 characters"
+                )
+            if value in values:
+                raise ModuleContractError(f"choice values on option {option.name!r} must be unique")
+            values.add(value)
+        for bound in (option.min_value, option.max_value):
+            if bound is None:
+                continue
+            if isinstance(bound, bool) or not isinstance(bound, int):
+                raise ModuleContractError(f"option {option.name!r} bounds must be integers")
+            if option.kind != "integer":
+                # Only integer options carry the bounds through to Discord, so a
+                # bound anywhere else would be silently dropped.
+                raise ModuleContractError(
+                    f"option {option.name!r} cannot set min_value or max_value on a "
+                    f"{option.kind} option"
+                )
+        if (
+            option.min_value is not None
+            and option.max_value is not None
+            and option.min_value > option.max_value
+        ):
+            raise ModuleContractError(f"option {option.name!r} min_value cannot exceed max_value")
+
+
+def validate_select_spec(select: SelectSpec) -> None:
+    """Validate Discord's hard select-menu limits."""
+
+    if not isinstance(select.key, str) or not _TOPIC_SEGMENT_RE.fullmatch(select.key):
+        raise ModuleContractError(f"invalid select key {select.key!r}")
+    if any(not isinstance(part, str) or ":" in part for part in select.parts):
+        raise ModuleContractError("select custom_id parts must be strings without ':'")
+    if select.placeholder is not None and (
+        not isinstance(select.placeholder, str) or len(select.placeholder) > 150
+    ):
+        raise ModuleContractError("a select placeholder cannot exceed 150 characters")
+    if not 1 <= len(select.options) <= 25:
+        raise ModuleContractError("a select must contain between one and 25 options")
+
+    values: set[str] = set()
+    for label, value, description in select.options:
+        if not isinstance(label, str) or not 1 <= len(label) <= 100:
+            raise ModuleContractError("a select option label must contain 1 to 100 characters")
+        if not isinstance(value, str) or not 1 <= len(value) <= 100:
+            raise ModuleContractError("a select option value must contain 1 to 100 characters")
+        if value in values:
+            raise ModuleContractError("select option values must be unique")
+        values.add(value)
+        if description is not None and (
+            not isinstance(description, str) or not 1 <= len(description) <= 100
+        ):
+            raise ModuleContractError(
+                "a select option description must contain 1 to 100 characters"
+            )
+
+    for name, bound, low in (
+        ("min_values", select.min_values, 0),
+        ("max_values", select.max_values, 1),
+    ):
+        if isinstance(bound, bool) or not isinstance(bound, int) or not low <= bound <= 25:
+            raise ModuleContractError(f"select {name} must be between {low} and 25")
+    if select.min_values > select.max_values:
+        raise ModuleContractError("select min_values cannot exceed max_values")
+    if select.max_values > len(select.options):
+        raise ModuleContractError("select max_values cannot exceed the number of options")
 
 
 def validate_modal_spec(modal: ModalSpec) -> None:

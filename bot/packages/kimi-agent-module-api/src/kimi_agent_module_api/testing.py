@@ -62,6 +62,7 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     UndeclaredDiscordAction,
     build_custom_id,
+    validate_command_spec,
     validate_modal_spec,
     validate_layout_components,
     validate_outgoing_layout,
@@ -738,6 +739,7 @@ class FakeInteractions:
         *,
         autocomplete: Callable[..., Any] | None = None,
     ) -> _Closable:
+        validate_command_spec(spec)
         qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
         if qualified in self.commands:
             raise ModuleContractError(
@@ -774,6 +776,8 @@ class FakeInteractions:
         autocompletes: dict[str, Callable[..., Any]] = {}
         top_kinds: dict[str, str] = {}
         global_top_kinds = self._global_top_kinds()
+        for command in commands:
+            validate_command_spec(command.spec)
         for command in commands:
             top_name = command.spec.group or command.spec.name
             kind = "group" if command.spec.group else "command"

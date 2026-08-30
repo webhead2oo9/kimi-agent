@@ -1160,3 +1160,90 @@ async def test_dynamic_item_routes_buttons_and_selects_without_template_collisio
     await select.callback(_Interaction(data={"custom_id": select_id}))  # type: ignore[arg-type]
 
     assert hits == ["button", "select"]
+
+
+@pytest.mark.asyncio
+async def test_drain_waits_for_an_in_flight_component_handler() -> None:
+    # discord.py dispatches interactions in tasks it never cancels, so without
+    # tracking, shutdown would close modules and SQLite under a running handler.
+    dispatcher = ComponentDispatcher()
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        await release.wait()
+        finished.append("done")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    draining = asyncio.create_task(dispatcher.drain(timeout=5.0))
+    await asyncio.sleep(0)
+    assert not draining.done()
+
+    release.set()
+    await asyncio.wait_for(draining, timeout=1.0)
+    assert finished == ["done"]
+    await running
+
+
+@pytest.mark.asyncio
+async def test_drain_cancels_a_handler_that_outlasts_the_bound() -> None:
+    dispatcher = ComponentDispatcher()
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    router.register_component("button", "hang", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("hang")})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    await dispatcher.drain(timeout=0.01)
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+
+@pytest.mark.asyncio
+async def test_runtime_drain_refuses_new_interactions_before_waiting() -> None:
+    runtime = InteractionRuntime(_Bot())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    ran: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        ran.append("ran")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    await runtime.drain()
+
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    assert await runtime.dispatcher.dispatch(interaction, "button") is True  # type: ignore[arg-type]
+
+    assert ran == []
+    assert runtime.dispatcher.admitting is False
+    assert interaction.response.sent[0]["content"] == "This control is temporarily unavailable."

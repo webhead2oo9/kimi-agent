@@ -18,7 +18,8 @@ import inspect
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
 
@@ -90,6 +91,7 @@ _COMPONENT_TEMPLATE = (
     rf"{CUSTOM_ID_PREFIX}:(?P<module>[a-z][a-z0-9_-]*):(?P<key>[a-z][a-z0-9_]*)(?::(?P<rest>.*))?"
 )
 _VIEW_CACHE_TIMEOUT_SECONDS = 180.0
+INTERACTION_DRAIN_SECONDS = 5.0
 
 
 def build_embed(spec: OutgoingEmbed) -> discord.Embed:
@@ -475,6 +477,51 @@ class ComponentDispatcher:
         self._is_available = is_available
         self._handlers: dict[tuple[str, str, str], _ComponentRegistration] = {}
         self._routers: dict[str, InteractionRouterImpl] = {}
+        self._in_flight: set[asyncio.Task[Any]] = set()
+        self._admitting = True
+
+    @property
+    def admitting(self) -> bool:
+        """Whether a new interaction may still enter a module handler."""
+
+        return self._admitting
+
+    def stop_admitting(self) -> None:
+        self._admitting = False
+
+    @contextmanager
+    def track_in_flight(self) -> Iterator[None]:
+        """Register the running handler so shutdown can wait for it.
+
+        Discord.py dispatches interactions in tasks it owns and never cancels,
+        so without this the application would close its modules and database
+        underneath a handler that is still running.
+        """
+
+        task = asyncio.current_task()
+        if task is None:
+            yield
+            return
+        self._in_flight.add(task)
+        try:
+            yield
+        finally:
+            self._in_flight.discard(task)
+
+    async def drain(self, timeout: float = INTERACTION_DRAIN_SECONDS) -> None:
+        """Let admitted handlers finish, then cancel whatever outlasts the bound."""
+
+        pending = {task for task in self._in_flight if task is not asyncio.current_task()}
+        if not pending:
+            return
+        done, running = await asyncio.wait(pending, timeout=timeout)
+        for task in done:
+            with suppress(BaseException):
+                task.result()
+        for task in running:
+            task.cancel()
+        if running:
+            log.warning("Timed out draining %d module interaction handler(s)", len(running))
 
     def register(
         self,
@@ -527,7 +574,7 @@ class ComponentDispatcher:
             await _quiet_reply(interaction, "This control is no longer active.")
             return True
         try:
-            available = self._is_available()
+            available = self._admitting and self._is_available()
         except Exception:
             log.exception("Dynamic component availability check failed")
             available = False
@@ -545,9 +592,10 @@ class ComponentDispatcher:
             )
             return True
         try:
-            await registration.handler(
-                ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
-            )
+            with self.track_in_flight():
+                await registration.handler(
+                    ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
+                )
         except Exception:
             log.exception("Module %s component %s/%s failed", module_name, kind, key)
             await _quiet_reply(interaction, "Something went wrong handling that control.")
@@ -826,8 +874,12 @@ class InteractionRouterImpl:
                     "Staff only." if spec.min_tier == "staff" else "Not allowed.", ephemeral=True
                 )
                 return
+            if not self._dispatcher.admitting:
+                await _quiet_reply(interaction, "This command is temporarily unavailable.")
+                return
             try:
-                await handler(adapter)
+                with self._dispatcher.track_in_flight():
+                    await handler(adapter)
             except Exception:
                 log.exception("Module %s command %s failed", module_name, spec.name)
                 await _quiet_reply(interaction, "Something went wrong running that command.")
@@ -892,11 +944,14 @@ class InteractionRouterImpl:
             if not await self._allowed(interaction, min_tier):
                 return []
             try:
-                results = await handler(
-                    ModuleInteractionAdapter(interaction, module_name, dispatcher=self._dispatcher),
-                    option_name,
-                    current,
-                )
+                with self._dispatcher.track_in_flight():
+                    results = await handler(
+                        ModuleInteractionAdapter(
+                            interaction, module_name, dispatcher=self._dispatcher
+                        ),
+                        option_name,
+                        current,
+                    )
             except Exception:
                 log.exception("Module %s autocomplete for %s failed", module_name, option_name)
                 return []
@@ -1009,6 +1064,16 @@ class InteractionRuntime:
     def unregister_router(self, router: InteractionRouterImpl) -> None:
         if router in self._routers:
             self._routers.remove(router)
+
+    async def drain(self) -> None:
+        """Stop admitting interactions and wait out the handlers already running.
+
+        The caller runs this while the Discord HTTP session is still open, so a
+        handler can finish its reply before its module and the database close.
+        """
+
+        self.dispatcher.stop_admitting()
+        await self.dispatcher.drain()
 
     def guild_command_owner(self, top_name: str) -> str | None:
         for router in self._routers:

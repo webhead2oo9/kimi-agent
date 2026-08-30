@@ -1319,3 +1319,57 @@ async def test_workspace_sweeper_waits_for_active_workspace_lease(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_bot_close_drains_module_interactions_before_disconnecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A module handler must get its bounded chance to reply while the HTTP
+    # session is still open, and before its module and SQLite are torn down.
+    app = _build_test_app(monkeypatch)
+    events: list[str] = []
+
+    class RecordingRuntime:
+        async def drain(self) -> None:
+            events.append("drain")
+
+    app._module_interaction_runtime = cast(Any, RecordingRuntime())
+
+    async def close_application() -> None:
+        events.append("application")
+
+    async def close_discord(_bot: object) -> None:
+        events.append("discord")
+
+    monkeypatch.setattr(app, "close", close_application)
+    monkeypatch.setattr(app_runtime.commands.Bot, "close", close_discord)
+
+    await app.bot.close()
+
+    assert events == ["drain", "discord", "application"]
+
+
+@pytest.mark.asyncio
+async def test_overlapping_ready_events_publish_commands_once_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two READY events can overlap on reconnect; concurrent global PUTs would
+    # double this deployment's rate-limit exposure for no benefit.
+    app = _build_test_app(monkeypatch)
+    concurrent = 0
+    peak = 0
+
+    async def slow_sync(**_kwargs: Any) -> list[Any]:
+        nonlocal concurrent, peak
+        concurrent += 1
+        peak = max(peak, concurrent)
+        await asyncio.sleep(0)
+        concurrent -= 1
+        return []
+
+    monkeypatch.setattr(app.bot.tree, "sync", slow_sync)
+
+    await asyncio.gather(app._sync_global_commands(), app._sync_global_commands())
+
+    assert peak == 1

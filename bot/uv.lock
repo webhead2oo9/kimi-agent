@@ -546,7 +546,7 @@ wheels = [
 
 [[package]]
 name = "kimi-agent"
-version = "1.1.0"
+version = "1.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -602,7 +602,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "kimi-agent-module-api"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "packages/kimi-agent-module-api" }
 dependencies = [
     { name = "pydantic-settings" },

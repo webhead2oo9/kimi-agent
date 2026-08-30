@@ -17,6 +17,7 @@ from discord_adapter.module_interactions import (
     ModuleInteractionAdapter,
     _option_value,
     build_view,
+    build_layout_view,
 )
 from kimi_agent_module_api.contracts import (
     ButtonSpec,
@@ -24,10 +25,17 @@ from kimi_agent_module_api.contracts import (
     CommandOption,
     CommandSpec,
     GuildCommand,
+    LayoutGallery,
+    LayoutSection,
+    LayoutSeparator,
+    LayoutText,
+    ModalSpec,
     ModuleContractError,
     ModuleInteraction,
     OutgoingEmbed,
+    OutgoingLayout,
     SelectSpec,
+    TextInputSpec,
     TrustTierName,
 )
 from kimi_agent_module_api.testing import FakeTrust
@@ -39,14 +47,25 @@ class _Tree:
         self.guild_commands: dict[int, dict[str, Any]] = {}
         self.sync_calls: list[int | None] = []
         self.sync_error: Exception | None = None
+        self.command_limit_on_name: str | None = None
 
     def add_command(self, command: Any, *, guild: Any = None, **_kwargs: Any) -> None:
+        if command.name == self.command_limit_on_name:
+            self.command_limit_on_name = None
+            raise app_commands.CommandLimitReached(
+                None if guild is None else guild.id,
+                100,
+            )
         target = self.commands if guild is None else self.guild_commands.setdefault(guild.id, {})
         target[command.name] = command
 
     def get_command(self, name: str, *, guild: Any = None) -> Any:
         target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
         return target.get(name)
+
+    def get_commands(self, *, guild: Any = None, type: Any = None) -> list[Any]:
+        target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
+        return list(target.values())
 
     def remove_command(self, name: str, *, guild: Any = None) -> Any:
         target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
@@ -89,6 +108,8 @@ class _Response:
         self.sent: list[dict[str, Any]] = []
         self.deferred: list[bool] = []
         self._done = False
+        self.modals: list[Any] = []
+        self.edits: list[dict[str, Any]] = []
 
     def is_done(self) -> bool:
         return self._done
@@ -101,15 +122,31 @@ class _Response:
         self._done = True
         self.deferred.append(ephemeral)
 
+    async def send_modal(self, modal: Any) -> None:
+        self._done = True
+        self.modals.append(modal)
+
+    async def edit_message(self, **kwargs: Any) -> None:
+        self._done = True
+        self.edits.append(kwargs)
+
 
 class _Interaction:
     def __init__(
-        self, *, user_id: int = 10, guild_id: int | None = 1, data: dict[str, Any] | None = None
+        self,
+        *,
+        user_id: int = 10,
+        guild_id: int | None = 1,
+        data: dict[str, Any] | None = None,
+        type: discord.InteractionType = discord.InteractionType.application_command,
+        message: Any = None,
     ) -> None:
         self.user = SimpleNamespace(id=user_id)
         self.guild_id = guild_id
         self.channel_id = 2
         self.data = data or {}
+        self.type = type
+        self.message = message
         self.response = _Response()
         self.followups: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
@@ -355,6 +392,65 @@ async def test_guild_commands_reject_global_shadow_and_same_guild_collision() ->
 
 
 @pytest.mark.asyncio
+async def test_guild_command_replacement_preflights_the_discord_limit() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    bot.tree.guild_commands[1] = {
+        f"external_{index}": SimpleNamespace(name=f"external_{index}") for index in range(99)
+    }
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="before", description="before"), handler),),
+    )
+
+    with pytest.raises(ModuleContractError, match="would have 101 slash commands"):
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(CommandSpec(name="after_one", description="one"), handler),
+                GuildCommand(CommandSpec(name="after_two", description="two"), handler),
+            ),
+        )
+
+    assert "before" in bot.tree.guild_commands[1]
+    assert "after_one" not in bot.tree.guild_commands[1]
+    assert "after_two" not in bot.tree.guild_commands[1]
+
+
+@pytest.mark.asyncio
+async def test_guild_command_limit_exception_is_normalized_and_rolled_back() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="before", description="before"), handler),),
+    )
+    previous = bot.tree.guild_commands[1]["before"]
+    bot.tree.command_limit_on_name = "after_two"
+
+    with pytest.raises(ModuleContractError, match="limit of 100"):
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(CommandSpec(name="after_one", description="one"), handler),
+                GuildCommand(CommandSpec(name="after_two", description="two"), handler),
+            ),
+        )
+
+    assert bot.tree.guild_commands[1] == {"before": previous}
+
+
+@pytest.mark.asyncio
 async def test_guild_command_sync_failure_keeps_desired_state_and_retries_on_ready() -> None:
     bot = _Bot()
     store = _ScopeStore()
@@ -594,8 +690,9 @@ async def test_components_dispatch_by_custom_id_and_expire() -> None:
     assert "expired" in expired.response.sent[0]["content"]
     assert dispatcher.registered("mod") == ()
 
+    router.register_component("modal", "edit", handler)
     with pytest.raises(ModuleContractError):
-        router.register_component("modal", "x", handler)
+        router.register_component("other", "x", handler)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -731,6 +828,185 @@ def test_build_view_renders_buttons_and_selects_with_module_ids() -> None:
         build_view((object(),), "mod")
 
 
+def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
+    view = build_layout_view(
+        OutgoingLayout(
+            items=(
+                LayoutText("Heading"),
+                LayoutSeparator(spacing="large"),
+                LayoutGallery(("https://example.test/one.png", "https://example.test/two.png")),
+                LayoutSection(("Body", "More"), "https://example.test/thumb.png"),
+            ),
+            accent_color=0x123456,
+        ),
+        (
+            ButtonSpec(key="back", label="Back"),
+            ButtonSpec(key="next", label="Next"),
+            SelectSpec(key="page", options=(("One", "1", None),)),
+        ),
+        "mod",
+    )
+
+    assert isinstance(view, discord.ui.LayoutView)
+    container, button_row, select_row = view.children
+    assert isinstance(container, discord.ui.Container)
+    assert container.accent_colour == 0x123456
+    assert [type(item) for item in container.children] == [
+        discord.ui.TextDisplay,
+        discord.ui.Separator,
+        discord.ui.MediaGallery,
+        discord.ui.Section,
+    ]
+    assert len(button_row.children) == 2
+    assert button_row.children[0].custom_id == "m:mod:back"
+    assert select_row.children[0].custom_id == "m:mod:page"
+
+
+@pytest.mark.asyncio
+async def test_modal_show_submit_values_and_validation() -> None:
+    router, _, dispatcher = _router()
+    submitted: list[dict[str, str]] = []
+
+    async def handler(interaction: ModuleInteraction) -> None:
+        submitted.append(dict(interaction.text_values))
+
+    router.register_component("modal", "edit", handler, min_tier="staff")
+    opening = _Interaction(data={"custom_id": router.custom_id("open")})
+    adapter = ModuleInteractionAdapter(
+        opening,
+        "mod",
+        dispatcher=dispatcher,  # type: ignore[arg-type]
+    )
+    await adapter.show_modal(
+        ModalSpec(
+            key="edit",
+            title="Edit command",
+            inputs=(
+                TextInputSpec("title", "Title"),
+                TextInputSpec("body", "Body", style="paragraph", max_length=1000),
+            ),
+            parts=("42",),
+        )
+    )
+
+    modal = opening.response.modals[0]
+    assert modal.custom_id == "m:mod:edit:42"
+    assert modal.timeout == 30 * 60
+    assert [child.custom_id for child in modal.children] == ["title", "body"]
+
+    submit = _Interaction(
+        type=discord.InteractionType.modal_submit,
+        data={
+            "custom_id": "m:mod:edit:42",
+            "components": [
+                {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Hi"}]},
+                {
+                    "type": 18,
+                    "component": {"type": 4, "custom_id": "body", "value": "There"},
+                },
+                {"type": 2, "custom_id": "ignore", "value": "not text"},
+            ],
+        },
+    )
+    assert await dispatcher.dispatch(submit, "modal") is True  # type: ignore[arg-type]
+    assert submitted == [{"title": "Hi", "body": "There"}]
+
+    invalid = _Interaction()
+    invalid_adapter = ModuleInteractionAdapter(
+        invalid,
+        "mod",
+        dispatcher=dispatcher,  # type: ignore[arg-type]
+    )
+    with pytest.raises(ModuleContractError, match="unique"):
+        await invalid_adapter.show_modal(
+            ModalSpec(
+                key="edit",
+                title="Bad",
+                inputs=(TextInputSpec("same", "A"), TextInputSpec("same", "B")),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "modal",
+    [
+        ModalSpec("edit", "", (TextInputSpec("value", "Value"),)),
+        ModalSpec("edit", "x" * 46, (TextInputSpec("value", "Value"),)),
+        ModalSpec("edit", "Edit", ()),
+        ModalSpec(
+            "edit",
+            "Edit",
+            tuple(TextInputSpec(f"value_{index}", "Value") for index in range(6)),
+        ),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", ""),)),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "x" * 46),)),
+        ModalSpec(
+            "edit",
+            "Edit",
+            (TextInputSpec("value", "Value", style="invalid"),),  # type: ignore[arg-type]
+        ),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "Value", min_length=-1),)),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "Value", max_length=0),)),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "Value", max_length=4_001),)),
+        ModalSpec("Invalid", "Edit", (TextInputSpec("value", "Value"),)),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "Value"),), ("bad:part",)),
+        ModalSpec(
+            "edit",
+            "Edit",
+            (TextInputSpec("value", "Value", min_length=2, max_length=1),),
+        ),
+        ModalSpec(
+            "edit",
+            "Edit",
+            (TextInputSpec("value", "Value", placeholder="x" * 101),),
+        ),
+        ModalSpec("edit", "Edit", (TextInputSpec("value", "Value", default="x" * 4_001),)),
+    ],
+)
+@pytest.mark.asyncio
+async def test_modal_structural_validation_raises_contract_errors(modal: ModalSpec) -> None:
+    _, _, dispatcher = _router()
+    adapter = ModuleInteractionAdapter(
+        _Interaction(),
+        "mod",
+        dispatcher=dispatcher,  # type: ignore[arg-type]
+    )
+    with pytest.raises(ModuleContractError):
+        await adapter.show_modal(modal)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        OutgoingLayout(()),
+        OutgoingLayout(tuple(LayoutText("x") for _ in range(41))),
+        OutgoingLayout((LayoutText(""),)),
+        OutgoingLayout((LayoutText("x" * 4_001),)),
+        OutgoingLayout((LayoutText("x" * 2_001), LayoutText("y" * 2_000))),
+        OutgoingLayout((LayoutSeparator(spacing="invalid"),)),  # type: ignore[arg-type]
+        OutgoingLayout((LayoutGallery(()),)),
+        OutgoingLayout((LayoutGallery(tuple(f"https://example.test/{i}" for i in range(11))),)),
+        OutgoingLayout((LayoutGallery(("",)),)),
+        OutgoingLayout((LayoutSection((), "https://example.test/thumb.png"),)),
+        OutgoingLayout((LayoutSection(("1", "2", "3", "4"), "thumb"),)),
+        OutgoingLayout((LayoutSection(("Body",), ""),)),
+        OutgoingLayout((LayoutText("Body"),), accent_color=0x1000000),
+    ],
+)
+def test_layout_structural_validation_raises_contract_errors(layout: OutgoingLayout) -> None:
+    with pytest.raises(ModuleContractError):
+        build_layout_view(layout, (), "mod")
+
+
+def test_layout_controls_cannot_exceed_five_action_rows() -> None:
+    controls = tuple(
+        SelectSpec(key=f"select_{index}", options=(("One", "1", None),)) for index in range(6)
+    )
+
+    with pytest.raises(ModuleContractError, match="five action rows"):
+        build_layout_view(OutgoingLayout((LayoutText("Preview"),)), controls, "mod")
+
+
 @pytest.mark.asyncio
 async def test_adapter_respond_edit_and_follow_up() -> None:
     interaction = _Interaction()
@@ -746,6 +1022,43 @@ async def test_adapter_respond_edit_and_follow_up() -> None:
     assert interaction.edits[0]["content"] == "edited" and interaction.edits[0]["view"] is None
     await adapter.follow_up("more", ephemeral=True)
     assert interaction.followups[-1]["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_layout_exclusivity_and_modal_edit_response() -> None:
+    interaction = _Interaction(type=discord.InteractionType.modal_submit, message=object())
+    adapter = ModuleInteractionAdapter(interaction, "mod")  # type: ignore[arg-type]
+    layout = OutgoingLayout((LayoutText("Preview"),))
+
+    with pytest.raises(ModuleContractError, match="cannot be combined"):
+        await adapter.respond("legacy", layout=layout)
+    with pytest.raises(ModuleContractError, match="cannot be combined"):
+        await adapter.respond(embed=OutgoingEmbed(title="legacy"), layout=layout)
+
+    await adapter.edit_original(layout=layout)
+    assert interaction.response.edits[0]["content"] is None
+    assert interaction.response.edits[0]["embed"] is None
+    assert isinstance(interaction.response.edits[0]["view"], discord.ui.LayoutView)
+    assert interaction.edits == []
+    with pytest.raises(ModuleContractError, match="must continue to use layout"):
+        await adapter.edit_original("legacy")
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_legacy_edit_of_existing_components_v2_message() -> None:
+    message = SimpleNamespace(flags=SimpleNamespace(components_v2=True))
+    interaction = _Interaction(type=discord.InteractionType.component, message=message)
+    adapter = ModuleInteractionAdapter(interaction, "mod")  # type: ignore[arg-type]
+
+    with pytest.raises(ModuleContractError, match="must continue to use layout"):
+        await adapter.edit_original("legacy")
+
+    unanchored = _Interaction(type=discord.InteractionType.modal_submit)
+    unanchored_adapter = ModuleInteractionAdapter(unanchored, "mod")  # type: ignore[arg-type]
+    with pytest.raises(ModuleContractError, match="unanchored modal"):
+        await unanchored_adapter.edit_original("cannot repaint")
+    assert unanchored.response.edits == []
+    assert unanchored.edits == []
 
 
 def test_interaction_runtime_installs_dynamic_items_once() -> None:

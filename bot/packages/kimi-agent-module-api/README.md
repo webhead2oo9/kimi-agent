@@ -37,3 +37,8 @@ Guild-scoped live command replacement was added in 1.1. Modules using
 `InteractionRouter.replace_guild_commands()` should depend on
 `kimi-agent-module-api>=1.1,<2` and require the host capability
 `discord.guild_commands.v1`.
+
+Version 1.2 adds typed modal forms and a narrow Components V2 layout model. Once a response uses
+that layout model, Discord requires every later edit of the same message to remain a layout.
+Modules using them should depend on `kimi-agent-module-api>=1.2,<2` and require
+`discord.modals.v1` and/or `discord.components_v2.v1`.

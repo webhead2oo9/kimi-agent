@@ -135,6 +135,8 @@ def test_module_capabilities_advertise_enabled_privileged_intents(tmp_path: Path
     capabilities = module_runtime.module_capabilities(settings)
 
     assert "discord.guild_commands.v1" in capabilities.available
+    assert "discord.modals.v1" in capabilities.available
+    assert "discord.components_v2.v1" in capabilities.available
     assert "discord.members.v1" in capabilities.available
     assert "discord.message_content.v1" in capabilities.available
 

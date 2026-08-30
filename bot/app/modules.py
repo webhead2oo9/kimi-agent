@@ -215,6 +215,8 @@ def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     """Build the stable capability advertisement for one core configuration."""
     available = set(BASELINE_CAPABILITIES)
     available.add("discord.guild_commands.v1")
+    available.add("discord.modals.v1")
+    available.add("discord.components_v2.v1")
     if core_settings.members_intent:
         available.add("discord.members.v1")
     if core_settings.message_content_intent:

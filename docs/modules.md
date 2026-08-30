@@ -344,7 +344,11 @@ the ports are a contract and an audit surface, not a sandbox.
   also give a registration an expiry. One persistent dispatcher routes clicks,
   so a button still works after a restart as long as the module re-registers
   its key in `start()`. Registrations are removed when the module closes; core
-  syncs the command tree once per READY. Hosts advertising
+  syncs the command tree once per READY, and overlapping READY events publish
+  one at a time. On shutdown core stops admitting interactions and gives the
+  handlers already running a bounded window to finish replying before Discord
+  disconnects and your module and the database close; a handler still running
+  after that window is cancelled, so keep them short. Hosts advertising
   `discord.guild_commands.v1` also expose
   `replace_guild_commands(guild_id, Sequence[GuildCommand])`. The sequence is
   that module's complete desired command set for the guild; an empty sequence

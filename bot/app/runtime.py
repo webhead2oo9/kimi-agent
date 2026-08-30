@@ -262,6 +262,12 @@ class KimiBot(commands.Bot):
 
     async def close(self) -> None:
         try:
+            if self._agent_application is not None:
+                # Hoisted ahead of the disconnect: discord.py never cancels the
+                # tasks it dispatches interactions in, so a module handler must
+                # be given its bounded chance to reply while the HTTP session
+                # is still open. Teardown order below is otherwise unchanged.
+                await self._agent_application.drain_interactions()
             await super().close()
         finally:
             if self._agent_application is not None:
@@ -408,6 +414,7 @@ class KimiApplication:
     user_app_access: UserAppAccess = field(init=False)
     _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
     _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
+    _global_sync_lock: asyncio.Lock = field(init=False, repr=False)
     _ready_event_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
     _user_app_chat_generations: dict[str, int] = field(
         default_factory=dict,
@@ -443,6 +450,7 @@ class KimiApplication:
         )
         self._guild_activation_cache.refresh()
         self._ready_init_lock = asyncio.Lock()
+        self._global_sync_lock = asyncio.Lock()
 
     def gateway_interactions_ready(self) -> bool:
         """Whether a new Discord interaction may enter application code."""
@@ -616,8 +624,23 @@ class KimiApplication:
                 "Timed out waiting for %d READY event task(s) during shutdown", len(pending)
             )
 
+    async def drain_interactions(self) -> None:
+        """Stop admitting module interactions and wait for in-flight handlers.
+
+        Idempotent, because the Discord client runs it before disconnecting and
+        teardown repeats it for callers that close the application directly.
+        """
+
+        if self._module_interaction_runtime is None:
+            return
+        try:
+            await self._module_interaction_runtime.drain()
+        except Exception:
+            log.exception("Error draining module interaction handlers")
+
     async def _close_resources(self) -> None:
         self.gateway_ready = False
+        await self.drain_interactions()
         if self._module_event_publisher is not None:
             self._module_event_publisher.uninstall()
             self._module_event_publisher = None
@@ -845,18 +868,22 @@ class KimiApplication:
 
     async def _sync_global_commands(self) -> None:
         """Best-effort command propagation, kept outside the lifecycle lock."""
-        try:
-            synced = await self.bot.tree.sync()
-            log.info("Synced %d slash command(s)", len(synced))
-        except Exception:
-            # Command propagation is retried on the next READY, but a transient
-            # transport failure must not prevent local sweepers from starting.
-            log.warning("Failed to sync global slash commands", exc_info=True)
-        if self._module_interaction_runtime is not None:
+        # Overlapping READY events would otherwise issue two concurrent global
+        # PUTs. A lock of its own keeps publication single-flight without letting
+        # a slow or failing sync hold up the sweepers the lifecycle lock guards.
+        async with self._global_sync_lock:
             try:
-                await self._module_interaction_runtime.sync_ready()
+                synced = await self.bot.tree.sync()
+                log.info("Synced %d slash command(s)", len(synced))
             except Exception:
-                log.warning("Failed to prepare guild slash command sync", exc_info=True)
+                # Command propagation is retried on the next READY, but a transient
+                # transport failure must not prevent local sweepers from starting.
+                log.warning("Failed to sync global slash commands", exc_info=True)
+            if self._module_interaction_runtime is not None:
+                try:
+                    await self._module_interaction_runtime.sync_ready()
+                except Exception:
+                    log.warning("Failed to prepare guild slash command sync", exc_info=True)
 
     async def _start_filesystem_sweepers_locked(self) -> None:
         """Install filesystem maintenance tasks once after best-effort cleanup."""

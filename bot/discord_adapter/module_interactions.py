@@ -35,13 +35,23 @@ from kimi_agent_module_api.contracts import (
     CommandSpec,
     CommandSyncError,
     GuildCommand,
+    LayoutGallery,
+    LayoutSection,
+    LayoutSeparator,
+    LayoutText,
+    ModalSpec,
     ModuleContractError,
     OutgoingEmbed,
+    OutgoingLayout,
     SelectSpec,
+    TextInputSpec,
     TrustLookup,
     TrustTierName,
     build_custom_id,
     parse_custom_id,
+    validate_modal_spec,
+    validate_layout_components,
+    validate_outgoing_layout,
 )
 
 log = logging.getLogger(__name__)
@@ -92,38 +102,146 @@ def build_embed(spec: OutgoingEmbed) -> discord.Embed:
     return embed
 
 
+def _build_control(component: Any, module_name: str) -> discord.ui.Item[Any]:
+    if isinstance(component, ButtonSpec):
+        return discord.ui.Button(
+            label=component.label,
+            style=_BUTTON_STYLES[component.style],
+            custom_id=build_custom_id(module_name, component.key, *component.parts),
+            disabled=component.disabled,
+            emoji=component.emoji,
+        )
+    if isinstance(component, SelectSpec):
+        return discord.ui.Select(
+            custom_id=build_custom_id(module_name, component.key, *component.parts),
+            placeholder=component.placeholder,
+            min_values=component.min_values,
+            max_values=component.max_values,
+            options=[
+                discord.SelectOption(label=label, value=value, description=description)
+                for label, value, description in component.options
+            ],
+        )
+    raise ModuleContractError(f"unsupported component {component!r}")
+
+
 def build_view(components: Sequence[Any], module_name: str) -> discord.ui.View | None:
     """Turn ``ButtonSpec``/``SelectSpec`` values into a persistent view."""
     if not components:
         return None
     view = discord.ui.View(timeout=None)
     for component in components:
-        if isinstance(component, ButtonSpec):
-            view.add_item(
-                discord.ui.Button(
-                    label=component.label,
-                    style=_BUTTON_STYLES[component.style],
-                    custom_id=build_custom_id(module_name, component.key, *component.parts),
-                    disabled=component.disabled,
-                    emoji=component.emoji,
-                )
+        view.add_item(_build_control(component, module_name))
+    return view
+
+
+def build_layout_view(
+    layout: OutgoingLayout, components: Sequence[Any], module_name: str
+) -> discord.ui.LayoutView:
+    """Turn the narrow public layout model into one Components V2 container."""
+    validate_outgoing_layout(layout)
+    validate_layout_components(components, layout=layout)
+    children: list[discord.ui.Item[Any]] = []
+    for item in layout.items:
+        if isinstance(item, LayoutText):
+            children.append(discord.ui.TextDisplay(item.content))
+        elif isinstance(item, LayoutSeparator):
+            spacing = (
+                discord.SeparatorSpacing.large
+                if item.spacing == "large"
+                else discord.SeparatorSpacing.small
             )
-        elif isinstance(component, SelectSpec):
-            view.add_item(
-                discord.ui.Select(
-                    custom_id=build_custom_id(module_name, component.key, *component.parts),
-                    placeholder=component.placeholder,
-                    min_values=component.min_values,
-                    max_values=component.max_values,
-                    options=[
-                        discord.SelectOption(label=label, value=value, description=description)
-                        for label, value, description in component.options
-                    ],
+            children.append(discord.ui.Separator(visible=item.visible, spacing=spacing))
+        elif isinstance(item, LayoutGallery):
+            children.append(
+                discord.ui.MediaGallery(*(discord.MediaGalleryItem(url) for url in item.urls))
+            )
+        elif isinstance(item, LayoutSection):
+            children.append(
+                discord.ui.Section(
+                    *item.texts,
+                    accessory=discord.ui.Thumbnail(item.thumbnail_url),
                 )
             )
         else:
-            raise ModuleContractError(f"unsupported component {component!r}")
+            raise ModuleContractError(f"unsupported layout item {item!r}")
+
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(discord.ui.Container(*children, accent_color=layout.accent_color))
+
+    row_items: list[discord.ui.Item[Any]] = []
+    for component in components:
+        control = _build_control(component, module_name)
+        if isinstance(control, discord.ui.Select):
+            if row_items:
+                view.add_item(discord.ui.ActionRow(*row_items))
+                row_items = []
+            view.add_item(discord.ui.ActionRow(control))
+            continue
+        if len(row_items) == 5:
+            view.add_item(discord.ui.ActionRow(*row_items))
+            row_items = []
+        row_items.append(control)
+    if row_items:
+        view.add_item(discord.ui.ActionRow(*row_items))
     return view
+
+
+def _text_values(data: Any) -> dict[str, str]:
+    found: dict[str, str] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            key = value.get("custom_id")
+            text = value.get("value")
+            if value.get("type") == int(discord.ComponentType.text_input) and key is not None:
+                found[str(key)] = str(text)
+            for child in value.get("components", ()) or ():
+                visit(child)
+            component = value.get("component")
+            if component is not None:
+                visit(component)
+        elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            for child in value:
+                visit(child)
+
+    visit(data)
+    return found
+
+
+class _ModuleModal(discord.ui.Modal):
+    def __init__(
+        self,
+        spec: ModalSpec,
+        module_name: str,
+        dispatcher: ComponentDispatcher,
+    ) -> None:
+        validate_modal_spec(spec)
+        super().__init__(
+            title=spec.title,
+            timeout=30 * 60,
+            custom_id=build_custom_id(module_name, spec.key, *spec.parts),
+        )
+        self._dispatcher = dispatcher
+        for input_spec in spec.inputs:
+            self.add_item(_build_text_input(input_spec))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._dispatcher.dispatch(interaction, "modal")
+
+
+def _build_text_input(spec: TextInputSpec) -> discord.ui.TextInput[Any]:
+    style = discord.TextStyle.paragraph if spec.style == "paragraph" else discord.TextStyle.short
+    return discord.ui.TextInput(
+        label=spec.label,
+        style=style,
+        custom_id=spec.key,
+        placeholder=spec.placeholder,
+        default=spec.default,
+        required=spec.required,
+        min_length=spec.min_length,
+        max_length=spec.max_length,
+    )
 
 
 class ModuleInteractionAdapter:
@@ -135,10 +253,17 @@ class ModuleInteractionAdapter:
         module_name: str,
         *,
         options: Mapping[str, Any] | None = None,
+        dispatcher: ComponentDispatcher | None = None,
     ) -> None:
         self._interaction = interaction
         self._module_name = module_name
         self._options = dict(options or {})
+        self._dispatcher = dispatcher
+        message = getattr(interaction, "message", None)
+        flags = getattr(message, "flags", None)
+        self._original_uses_layout = bool(
+            flags is not None and getattr(flags, "components_v2", False)
+        )
 
     @property
     def guild_id(self) -> int:
@@ -174,6 +299,11 @@ class ModuleInteractionAdapter:
         return tuple(str(v) for v in values) if values else ()
 
     @property
+    def text_values(self) -> Mapping[str, str]:
+        data = getattr(self._interaction, "data", None) or {}
+        return _text_values(data)
+
+    @property
     def message(self) -> MessageRef | None:
         """The message a component lives on. Slash commands have none."""
         message = self._interaction.message
@@ -192,16 +322,23 @@ class ModuleInteractionAdapter:
         self,
         content: str | None,
         embed: OutgoingEmbed | None,
+        layout: OutgoingLayout | None,
         components: Sequence[Any],
         *,
         ephemeral: bool | None,
     ) -> dict[str, Any]:
+        if layout is not None and (content is not None or embed is not None):
+            raise ModuleContractError("layout cannot be combined with content or embed")
         kwargs: dict[str, Any] = {"allowed_mentions": discord.AllowedMentions.none()}
         if content is not None:
             kwargs["content"] = content
         if embed is not None:
             kwargs["embed"] = build_embed(embed)
-        view = build_view(components, self._module_name)
+        view = (
+            build_layout_view(layout, components, self._module_name)
+            if layout is not None
+            else build_view(components, self._module_name)
+        )
         if view is not None or components == ():
             kwargs["view"] = view
         if ephemeral is not None:
@@ -213,36 +350,73 @@ class ModuleInteractionAdapter:
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         ephemeral: bool = False,
         components: Sequence[Any] = (),
     ) -> None:
-        kwargs = self._kwargs(content, embed, components, ephemeral=ephemeral)
+        kwargs = self._kwargs(content, embed, layout, components, ephemeral=ephemeral)
         if kwargs.get("view") is None:
             kwargs.pop("view", None)
         if self._interaction.response.is_done():
             await self._interaction.followup.send(**kwargs)
         else:
             await self._interaction.response.send_message(**kwargs)
+            self._original_uses_layout = layout is not None
 
     async def defer(self, *, ephemeral: bool = False) -> None:
         if not self._interaction.response.is_done():
             await self._interaction.response.defer(ephemeral=ephemeral)
+
+    async def show_modal(self, modal: ModalSpec) -> None:
+        if self._dispatcher is None:
+            raise RuntimeError("modal support requires a module interaction router")
+        if self._interaction.response.is_done():
+            raise ModuleContractError("a modal must be the interaction's initial response")
+        await self._interaction.response.send_modal(
+            _ModuleModal(modal, self._module_name, self._dispatcher)
+        )
 
     async def edit_original(
         self,
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         components: Sequence[Any] = (),
     ) -> None:
-        kwargs = self._kwargs(content, embed, components, ephemeral=None)
+        if self._original_uses_layout and layout is None:
+            raise ModuleContractError(
+                "a Components V2 message must continue to use layout when edited"
+            )
+        kwargs = self._kwargs(content, embed, layout, components, ephemeral=None)
+        if layout is not None:
+            # Discord requires explicit nulls when replacing a legacy message
+            # body with Components V2.
+            kwargs.setdefault("content", None)
+            kwargs.setdefault("embed", None)
         kwargs.setdefault("view", None)
-        await self._interaction.edit_original_response(**kwargs)
+        interaction_type = getattr(self._interaction, "type", None)
+        if not self._interaction.response.is_done() and interaction_type in (
+            discord.InteractionType.component,
+            discord.InteractionType.modal_submit,
+        ):
+            if getattr(self._interaction, "message", None) is not None:
+                await self._interaction.response.edit_message(**kwargs)
+            elif interaction_type is discord.InteractionType.modal_submit:
+                raise ModuleContractError(
+                    "cannot edit the original message from an unanchored modal submission"
+                )
+            else:
+                await self._interaction.edit_original_response(**kwargs)
+        else:
+            await self._interaction.edit_original_response(**kwargs)
+        if layout is not None:
+            self._original_uses_layout = True
 
     async def follow_up(
         self, content: str, *, embed: OutgoingEmbed | None = None, ephemeral: bool = False
     ) -> None:
-        kwargs = self._kwargs(content, embed, (), ephemeral=ephemeral)
+        kwargs = self._kwargs(content, embed, None, (), ephemeral=ephemeral)
         kwargs.pop("view", None)
         await self._interaction.followup.send(**kwargs)
 
@@ -363,7 +537,9 @@ class ComponentDispatcher:
             )
             return True
         try:
-            await registration.handler(ModuleInteractionAdapter(interaction, module_name))
+            await registration.handler(
+                ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
+            )
         except Exception:
             log.exception("Module %s component %s/%s failed", module_name, kind, key)
             await _quiet_reply(interaction, "Something went wrong handling that control.")
@@ -581,10 +757,37 @@ class InteractionRouterImpl:
                     )
                 prepared[spec.name] = command
 
+        existing_chat_commands = self._bot.tree.get_commands(
+            guild=guild, type=discord.AppCommandType.chat_input
+        )
+        other_command_count = sum(
+            command.name not in old_top_names for command in existing_chat_commands
+        )
+        projected_count = other_command_count + len(prepared)
+        if projected_count > 100:
+            raise ModuleContractError(
+                f"guild {guild_id} would have {projected_count} slash commands; "
+                "Discord allows at most 100"
+            )
+
+        old_commands = {
+            name: existing_command
+            for name in old_top_names
+            if (existing_command := self._bot.tree.get_command(name, guild=guild)) is not None
+        }
         for name in old_top_names:
             self._bot.tree.remove_command(name, guild=guild)
-        for top_command in prepared.values():
-            self._bot.tree.add_command(top_command, guild=guild)
+        try:
+            for top_command in prepared.values():
+                self._bot.tree.add_command(top_command, guild=guild)
+        except app_commands.CommandLimitReached as exc:
+            for name in prepared:
+                self._bot.tree.remove_command(name, guild=guild)
+            for old_command in old_commands.values():
+                self._bot.tree.add_command(old_command, guild=guild)
+            raise ModuleContractError(
+                f"guild {guild_id} slash commands exceed Discord's limit of 100"
+            ) from exc
         if prepared:
             self._guild_top_names[guild_id] = set(prepared)
         else:
@@ -618,7 +821,9 @@ class InteractionRouterImpl:
 
         async def callback(interaction: discord.Interaction, **kwargs: Any) -> None:
             options = {name: _option_value(kwargs.get(name)) for name in option_names}
-            adapter = ModuleInteractionAdapter(interaction, module_name, options=options)
+            adapter = ModuleInteractionAdapter(
+                interaction, module_name, options=options, dispatcher=self._dispatcher
+            )
             if not await self._allowed(interaction, spec.min_tier):
                 await adapter.respond(
                     "Staff only." if spec.min_tier == "staff" else "Not allowed.", ephemeral=True
@@ -691,7 +896,9 @@ class InteractionRouterImpl:
                 return []
             try:
                 results = await handler(
-                    ModuleInteractionAdapter(interaction, module_name), option_name, current
+                    ModuleInteractionAdapter(interaction, module_name, dispatcher=self._dispatcher),
+                    option_name,
+                    current,
                 )
             except Exception:
                 log.exception("Module %s autocomplete for %s failed", module_name, option_name)
@@ -722,7 +929,7 @@ class InteractionRouterImpl:
     ) -> _Registration:
         if self._closed:
             raise RuntimeError(f"module {self._module_name!r} interactions are closed")
-        if kind not in ("button", "select"):
+        if kind not in ("button", "select", "modal"):
             raise ModuleContractError(f"unsupported component kind {kind!r}")
         build_custom_id(self._module_name, key)  # validates the key
         component = self._dispatcher.register(
@@ -876,6 +1083,7 @@ __all__ = [
     "InteractionRuntime",
     "ModuleInteractionAdapter",
     "build_embed",
+    "build_layout_view",
     "build_view",
     "make_dynamic_items",
 ]

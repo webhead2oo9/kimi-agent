@@ -819,6 +819,82 @@ class OutgoingEmbed:
     timestamp: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class LayoutText:
+    content: str
+
+
+type LayoutSeparatorSpacing = Literal["small", "large"]
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutSeparator:
+    visible: bool = True
+    spacing: LayoutSeparatorSpacing = "small"
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutGallery:
+    urls: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutSection:
+    texts: tuple[str, ...]
+    thumbnail_url: str
+
+
+type LayoutItem = LayoutText | LayoutSeparator | LayoutGallery | LayoutSection
+
+
+@dataclass(frozen=True, slots=True)
+class OutgoingLayout:
+    """One Components V2 container, optionally followed by interactive controls."""
+
+    items: tuple[LayoutItem, ...]
+    accent_color: int | None = None
+
+
+def validate_outgoing_layout(layout: OutgoingLayout) -> None:
+    """Validate the Discord hard limits represented by ``OutgoingLayout``."""
+    if not 1 <= len(layout.items) <= 40:
+        raise ModuleContractError("a layout must contain between one and 40 items")
+    if layout.accent_color is not None and (
+        isinstance(layout.accent_color, bool) or not 0 <= layout.accent_color <= 0xFFFFFF
+    ):
+        raise ModuleContractError("layout accent_color must be between 0 and 0xFFFFFF")
+
+    def validate_text(text: Any, label: str) -> None:
+        if not isinstance(text, str) or not 1 <= len(text) <= 4_000:
+            raise ModuleContractError(f"{label} must contain between one and 4000 characters")
+
+    text_length = 0
+    for item in layout.items:
+        if isinstance(item, LayoutText):
+            validate_text(item.content, "layout text")
+            text_length += len(item.content)
+        elif isinstance(item, LayoutSeparator):
+            if item.spacing not in ("small", "large"):
+                raise ModuleContractError(f"invalid layout separator spacing {item.spacing!r}")
+        elif isinstance(item, LayoutGallery):
+            if not 1 <= len(item.urls) <= 10:
+                raise ModuleContractError("a layout gallery must contain between one and 10 URLs")
+            if any(not isinstance(url, str) or not url for url in item.urls):
+                raise ModuleContractError("layout gallery URLs must be non-empty strings")
+        elif isinstance(item, LayoutSection):
+            if not 1 <= len(item.texts) <= 3:
+                raise ModuleContractError("a layout section must contain between one and 3 texts")
+            for text in item.texts:
+                validate_text(text, "layout section text")
+                text_length += len(text)
+            if not isinstance(item.thumbnail_url, str) or not item.thumbnail_url:
+                raise ModuleContractError("a layout section thumbnail URL must be non-empty")
+        else:
+            raise ModuleContractError(f"unsupported layout item {item!r}")
+    if text_length > 4_000:
+        raise ModuleContractError("layout text cannot exceed 4000 characters in total")
+
+
 class DiscordActions(Protocol):
     """Declared Discord operations on stable IDs.
 
@@ -958,6 +1034,9 @@ class ModuleInteraction(Protocol):
     def values(self) -> tuple[str, ...]: ...
 
     @property
+    def text_values(self) -> Mapping[str, str]: ...
+
+    @property
     def message(self) -> MessageRef | None:
         """The message a button or select lives on; ``None`` for slash commands."""
         ...
@@ -967,17 +1046,21 @@ class ModuleInteraction(Protocol):
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         ephemeral: bool = False,
         components: Sequence[Any] = (),
     ) -> None: ...
 
     async def defer(self, *, ephemeral: bool = False) -> None: ...
 
+    async def show_modal(self, modal: ModalSpec) -> None: ...
+
     async def edit_original(
         self,
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         components: Sequence[Any] = (),
     ) -> None: ...
 
@@ -1013,11 +1096,114 @@ class SelectSpec:
     max_values: int = 1
 
 
+def validate_layout_components(
+    components: Sequence[Any], *, layout: OutgoingLayout | None = None
+) -> None:
+    """Validate control rows and the full Components V2 descendant limit."""
+    rows = 0
+    buttons_in_row = 0
+    for component in components:
+        if isinstance(component, ButtonSpec):
+            if buttons_in_row == 0:
+                rows += 1
+            buttons_in_row = (buttons_in_row + 1) % 5
+        elif isinstance(component, SelectSpec):
+            buttons_in_row = 0
+            rows += 1
+        else:
+            raise ModuleContractError(f"unsupported component {component!r}")
+    if rows > 5:
+        raise ModuleContractError("layout controls cannot require more than five action rows")
+    if layout is not None:
+        descendants = 1 + rows + len(components)
+        for item in layout.items:
+            descendants += len(item.texts) + 2 if isinstance(item, LayoutSection) else 1
+        if descendants > 40:
+            raise ModuleContractError("a layout cannot exceed 40 components in total")
+
+
+type TextInputStyle = Literal["short", "paragraph"]
+
+
+@dataclass(frozen=True, slots=True)
+class TextInputSpec:
+    key: str
+    label: str
+    style: TextInputStyle = "short"
+    default: str | None = None
+    placeholder: str | None = None
+    required: bool = True
+    min_length: int | None = None
+    max_length: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModalSpec:
+    """A modal whose submit handler is registered under ``key``."""
+
+    key: str
+    title: str
+    inputs: tuple[TextInputSpec, ...]
+    parts: tuple[str, ...] = ()
+
+
+def validate_modal_spec(modal: ModalSpec) -> None:
+    """Validate Discord's hard modal and text-input limits."""
+    if not isinstance(modal.key, str) or not _TOPIC_SEGMENT_RE.fullmatch(modal.key):
+        raise ModuleContractError(f"invalid modal key {modal.key!r}")
+    if any(not isinstance(part, str) or ":" in part for part in modal.parts):
+        raise ModuleContractError("modal custom_id parts must be strings without ':'")
+    if not isinstance(modal.title, str) or not 1 <= len(modal.title) <= 45:
+        raise ModuleContractError("a modal title must contain between one and 45 characters")
+    if not 1 <= len(modal.inputs) <= 5:
+        raise ModuleContractError("a modal must contain between one and five text inputs")
+
+    keys: set[str] = set()
+    for input_spec in modal.inputs:
+        if not isinstance(input_spec.key, str) or not _TOPIC_SEGMENT_RE.fullmatch(input_spec.key):
+            raise ModuleContractError(f"invalid modal text input key {input_spec.key!r}")
+        if input_spec.key in keys:
+            raise ModuleContractError("modal text input keys must be unique")
+        keys.add(input_spec.key)
+        if not isinstance(input_spec.label, str) or not 1 <= len(input_spec.label) <= 45:
+            raise ModuleContractError(
+                "a modal text input label must contain between one and 45 characters"
+            )
+        if input_spec.style not in ("short", "paragraph"):
+            raise ModuleContractError(f"invalid modal text input style {input_spec.style!r}")
+        if input_spec.placeholder is not None and (
+            not isinstance(input_spec.placeholder, str) or len(input_spec.placeholder) > 100
+        ):
+            raise ModuleContractError("a modal text input placeholder cannot exceed 100 characters")
+        if input_spec.default is not None and (
+            not isinstance(input_spec.default, str) or len(input_spec.default) > 4_000
+        ):
+            raise ModuleContractError("a modal text input default cannot exceed 4000 characters")
+        if input_spec.min_length is not None and (
+            isinstance(input_spec.min_length, bool)
+            or not isinstance(input_spec.min_length, int)
+            or not 0 <= input_spec.min_length <= 4_000
+        ):
+            raise ModuleContractError("modal text input min_length must be between 0 and 4000")
+        if input_spec.max_length is not None and (
+            isinstance(input_spec.max_length, bool)
+            or not isinstance(input_spec.max_length, int)
+            or not 1 <= input_spec.max_length <= 4_000
+        ):
+            raise ModuleContractError("modal text input max_length must be between 1 and 4000")
+        if (
+            input_spec.min_length is not None
+            and input_spec.max_length is not None
+            and input_spec.min_length > input_spec.max_length
+        ):
+            raise ModuleContractError("modal text input min_length cannot exceed max_length")
+
+
 type CommandHandler = Callable[[ModuleInteraction], Awaitable[None]]
 type AutocompleteHandler = Callable[
     [ModuleInteraction, str, str], Awaitable[Sequence[tuple[str, str | int]]]
 ]
-type ComponentKind = Literal["button", "select"]
+type ComponentKind = Literal["button", "select", "modal"]
 
 
 @dataclass(frozen=True, slots=True)

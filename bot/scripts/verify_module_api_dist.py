@@ -69,6 +69,8 @@ def _verify_consumer() -> None:
     contracts = import_module("kimi_agent_module_api.contracts")
     assert hasattr(contracts, "CommandSyncError")
     assert hasattr(contracts, "GuildCommand")
+    assert hasattr(contracts, "ModalSpec")
+    assert hasattr(contracts, "OutgoingLayout")
 
     assert api.MODULE_API_VERSION == 1
     matches = [

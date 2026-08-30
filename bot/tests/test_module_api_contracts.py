@@ -17,6 +17,7 @@ from app.modules import validate_module_selection
 from config.plugin_settings import PluginSetting, PluginSettingsDefinition
 from config.settings import Settings
 from kimi_agent_module_api import (
+    BASELINE_CAPABILITIES,
     MODULE_API_VERSION,
     GuildSettingsSchema,
     ModuleLoadContext,
@@ -59,6 +60,10 @@ SDK_ROOT = (
     / "src"
     / "kimi_agent_module_api"
 )
+
+
+def test_sdk_baseline_capabilities_remain_host_independent() -> None:
+    assert frozenset({"discord.history.v1", "proposals.v2"}) == BASELINE_CAPABILITIES
 
 
 def _spec(name: str = "demo", **overrides: object) -> ModuleSpec:
@@ -596,6 +601,55 @@ def test_fake_interaction_exposes_the_component_message() -> None:
     assert FakeInteraction().message is None
 
 
+@pytest.mark.asyncio
+async def test_fake_interaction_records_modal_values_and_layouts() -> None:
+    from kimi_agent_module_api.contracts import (
+        LayoutText,
+        ModalSpec,
+        OutgoingLayout,
+        SelectSpec,
+        TextInputSpec,
+    )
+    from kimi_agent_module_api.testing import FakeInteraction
+
+    interaction = FakeInteraction(text_values={"title": "Hello"})
+    modal = ModalSpec("edit", "Edit", (TextInputSpec("title", "Title"),))
+    layout = OutgoingLayout((LayoutText("Preview"),))
+
+    await interaction.show_modal(modal)
+    await interaction.respond(layout=layout)
+
+    assert interaction.text_values == {"title": "Hello"}
+    assert interaction.shown_modals == [modal]
+    assert interaction.last.layout == layout
+
+    with pytest.raises(ModuleContractError, match="must continue to use layout"):
+        await interaction.edit_original("legacy")
+
+    with pytest.raises(ModuleContractError):
+        await interaction.show_modal(ModalSpec("edit", "", modal.inputs))
+    with pytest.raises(ModuleContractError):
+        await interaction.respond(layout=OutgoingLayout(()))
+    with pytest.raises(ModuleContractError, match="five action rows"):
+        await interaction.respond(
+            layout=layout,
+            components=tuple(
+                SelectSpec(f"select_{index}", (("One", "1", None),)) for index in range(6)
+            ),
+        )
+    from kimi_agent_module_api.contracts import LayoutSection
+
+    with pytest.raises(ModuleContractError, match="40 components"):
+        await interaction.respond(
+            layout=OutgoingLayout(
+                tuple(
+                    LayoutSection((str(index),), "https://example.com/thumb.png")
+                    for index in range(14)
+                )
+            )
+        )
+
+
 def test_fake_interactions_reject_duplicate_and_invalid_registrations() -> None:
     from kimi_agent_module_api.contracts import CommandSpec, ModuleContractError
     from kimi_agent_module_api.testing import FakeInteractions
@@ -612,8 +666,9 @@ def test_fake_interactions_reject_duplicate_and_invalid_registrations() -> None:
     router.register_component("button", "confirm", handler)
     with pytest.raises(ModuleContractError, match="already registered"):
         router.register_component("button", "confirm", handler)
+    router.register_component("modal", "edit", handler)
     with pytest.raises(ModuleContractError, match="unsupported component kind"):
-        router.register_component("modal", "confirm", handler)
+        router.register_component("other", "confirm", handler)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

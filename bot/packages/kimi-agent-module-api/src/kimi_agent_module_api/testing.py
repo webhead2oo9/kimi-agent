@@ -45,11 +45,13 @@ from kimi_agent_module_api.contracts import (
     MessagePage,
     MessageRef,
     MessageSnapshot,
+    ModalSpec,
     TABLE_NAME_RE,
     MigrationContext,
     ModuleContractError,
     ModuleHealth,
     OutgoingEmbed,
+    OutgoingLayout,
     ProposalActor,
     ProposalError,
     ProposalRef,
@@ -60,6 +62,9 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     UndeclaredDiscordAction,
     build_custom_id,
+    validate_modal_spec,
+    validate_layout_components,
+    validate_outgoing_layout,
     validate_publish_topic,
 )
 from kimi_agent_module_api.tools import ModuleToolHandler
@@ -568,6 +573,7 @@ class FakeResponse:
     ephemeral: bool
     components: tuple[Any, ...]
     kind: str
+    layout: OutgoingLayout | None = None
 
 
 class FakeInteraction:
@@ -580,8 +586,10 @@ class FakeInteraction:
         options: Mapping[str, Any] | None = None,
         custom_id: str | None = None,
         values: Sequence[str] = (),
+        text_values: Mapping[str, str] | None = None,
         guild_name: str | None = "Test Guild",
         message: MessageRef | None = None,
+        message_uses_layout: bool = False,
     ) -> None:
         self._message = message
         self._guild_name = guild_name
@@ -591,8 +599,11 @@ class FakeInteraction:
         self._options = dict(options or {})
         self._custom_id = custom_id
         self._values = tuple(values)
+        self._text_values = dict(text_values or {})
         self.responses: list[FakeResponse] = []
+        self.shown_modals: list[ModalSpec] = []
         self.deferred: bool | None = None
+        self._original_uses_layout = message_uses_layout
 
     @property
     def guild_id(self) -> int:
@@ -623,6 +634,10 @@ class FakeInteraction:
         return self._values
 
     @property
+    def text_values(self) -> Mapping[str, str]:
+        return self._text_values
+
+    @property
     def message(self) -> MessageRef | None:
         return self._message
 
@@ -631,22 +646,49 @@ class FakeInteraction:
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         ephemeral: bool = False,
         components: Sequence[Any] = (),
     ) -> None:
-        self.responses.append(FakeResponse(content, embed, ephemeral, tuple(components), "respond"))
+        if layout is not None and (content is not None or embed is not None):
+            raise ModuleContractError("layout cannot be combined with content or embed")
+        if layout is not None:
+            validate_outgoing_layout(layout)
+            validate_layout_components(components, layout=layout)
+        self.responses.append(
+            FakeResponse(content, embed, ephemeral, tuple(components), "respond", layout=layout)
+        )
+        self._original_uses_layout = layout is not None
 
     async def defer(self, *, ephemeral: bool = False) -> None:
         self.deferred = ephemeral
+
+    async def show_modal(self, modal: ModalSpec) -> None:
+        validate_modal_spec(modal)
+        self.shown_modals.append(modal)
 
     async def edit_original(
         self,
         content: str | None = None,
         *,
         embed: OutgoingEmbed | None = None,
+        layout: OutgoingLayout | None = None,
         components: Sequence[Any] = (),
     ) -> None:
-        self.responses.append(FakeResponse(content, embed, False, tuple(components), "edit"))
+        if self._original_uses_layout and layout is None:
+            raise ModuleContractError(
+                "a Components V2 message must continue to use layout when edited"
+            )
+        if layout is not None and (content is not None or embed is not None):
+            raise ModuleContractError("layout cannot be combined with content or embed")
+        if layout is not None:
+            validate_outgoing_layout(layout)
+            validate_layout_components(components, layout=layout)
+        self.responses.append(
+            FakeResponse(content, embed, False, tuple(components), "edit", layout=layout)
+        )
+        if layout is not None:
+            self._original_uses_layout = True
 
     async def follow_up(
         self, content: str, *, embed: OutgoingEmbed | None = None, ephemeral: bool = False
@@ -742,7 +784,7 @@ class FakeInteractions:
         expires_after_seconds: float | None = None,
         min_tier: TrustTierName = "member",
     ) -> _Closable:
-        if kind not in ("button", "select"):
+        if kind not in ("button", "select", "modal"):
             raise ModuleContractError(f"unsupported component kind {kind!r}")
         build_custom_id(self.module_name, key)
         identity = (kind, key)

@@ -836,6 +836,80 @@ async def test_execute_turn_distills_images_for_text_model_and_reuses_cache(
 
 
 @pytest.mark.asyncio
+async def test_execute_turn_records_distillation_usage_with_router_attribution(
+    tmp_path: Path,
+) -> None:
+    # Distillation shares the turn's usage sink, so its row must carry the same
+    # routing attribution the primary chat call records.
+    class RoutedDistillingProvider(StubProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                provider_key="vision",
+                model="vision-model",
+                capabilities={ProviderCapability.TEXT, ProviderCapability.IMAGE_INPUT},
+            )
+
+        async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
+            del request
+            return ProviderResponse(
+                content="Image 1: A red sign reading STOP [1, 2, 3, 4], confidence high.",
+                model="vision-served",
+                usage={"input_tokens": 40, "output_tokens": 18},
+                upstream_provider="Moonshot AI",
+                service_tier="flex",
+                openrouter_charge_usd=0.004,
+                is_byok=True,
+            )
+
+    class UsageStore:
+        def __init__(self) -> None:
+            self.rows: list[dict[str, Any]] = []
+
+        async def record_turn(self, **kwargs: Any) -> None:
+            self.rows.append(kwargs)
+
+    store = UsageStore()
+    text_provider = StubProvider(
+        provider_key="text",
+        model="text-model",
+        capabilities={ProviderCapability.TEXT},
+    )
+    image_provider = RoutedDistillingProvider()
+    image_part = ContentPart.from_image_url(
+        url="data:image/png;base64,YWJj",
+        media_type="image/png",
+    )
+
+    await execute_turn(
+        _turn_request(
+            ConversationContext(key="guild:100:main", db_conversation_id=55),
+            image_part=image_part,
+        ),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path,
+            run_conversation=RecordingRunConversation(ConversationRunResult(text="ok")),
+            provider=text_provider,
+            chat_provider_resolver=(
+                lambda *, images=False: image_provider if images else text_provider
+            ),
+            chat_model_name_resolver=lambda *, images=False: "vision" if images else "text",
+            image_distillation_store=RecordingImageDistillationCache(),
+            usage_store=store,
+        ),
+        config=_config(),
+    )
+
+    distillation = [
+        call for row in store.rows for call in row["calls"] if call.role == "image_distillation"
+    ]
+    assert len(distillation) == 1
+    assert distillation[0].upstream_provider == "Moonshot AI"
+    assert distillation[0].service_tier == "flex"
+    assert distillation[0].openrouter_charge_usd == 0.004
+    assert distillation[0].is_byok is True
+
+
+@pytest.mark.asyncio
 async def test_execute_turn_skips_images_already_carrying_a_stored_caption(
     tmp_path: Path,
 ) -> None:
@@ -1282,7 +1356,7 @@ async def test_execute_turn_writes_generated_assets_and_clears_pending_outputs(
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="YWJj",
+        data_base64="iVBORw0KGgo=",
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(
@@ -1337,7 +1411,7 @@ async def test_execute_turn_offloads_asset_writes_off_event_loop(tmp_path: Path)
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="YWJj",
+        data_base64="iVBORw0KGgo=",
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(
@@ -1382,7 +1456,7 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="YWJj",
+        data_base64="iVBORw0KGgo=",
         suggested_filename="late.png",
     )
 
@@ -1574,7 +1648,7 @@ async def test_execute_turn_blocks_output_before_asset_writes_and_clears_pending
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="YWJj",
+        data_base64="iVBORw0KGgo=",
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(

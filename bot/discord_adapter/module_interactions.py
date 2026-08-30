@@ -172,7 +172,10 @@ def build_layout_view(
             raise ModuleContractError(f"unsupported layout item {item!r}")
 
     view = discord.ui.LayoutView(timeout=_VIEW_CACHE_TIMEOUT_SECONDS)
-    view.add_item(discord.ui.Container(*children, accent_color=layout.accent_color))
+    # Discord.py drops a falsy accent, so a raw 0 would silently lose a black
+    # accent the contract explicitly permits. A Color instance is always truthy.
+    accent = None if layout.accent_color is None else discord.Color(layout.accent_color)
+    view.add_item(discord.ui.Container(*children, accent_color=accent))
 
     row_items: list[discord.ui.Item[Any]] = []
     for component in components:
@@ -1046,6 +1049,12 @@ class InteractionRuntime:
 
     async def _sync_one(self, guild_id: int) -> Exception | None:
         has_commands = any(router.has_guild_commands(guild_id) for router in self._routers)
+        if has_commands:
+            # Track before publishing, not after. The scope store exists so a later
+            # startup can clean up commands nobody stages any more; a guild whose
+            # publish succeeded but whose track was skipped would be orphaned with
+            # no way back. Over-tracking self-heals on the next empty sync.
+            await self._track(guild_id)
         try:
             synced = await self.bot.tree.sync(guild=discord.Object(id=guild_id))
         except Exception as exc:

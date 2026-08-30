@@ -13,6 +13,7 @@ from providers.types import (
     ProviderRequest,
     ProviderResponse,
 )
+from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, supported_image_media_type
 
 log = logging.getLogger(__name__)
 
@@ -150,13 +151,22 @@ class OpenRouterProvider(OpenAIChatProvider):
             if not (url.startswith("data:") and "," in url):
                 log.warning("Skipping non-data image URL from OpenRouter: %s", url[:80])
                 continue
-            data_base64 = url.split(",", 1)[1]
+            header, data_base64 = url.split(",", 1)
+            # OpenRouter returns JPEG and WebP alongside PNG. The declared type
+            # picks the extension; an unsupported one is dropped rather than
+            # relabelled as a PNG that neither Discord nor the user can trust.
+            media_type = supported_image_media_type(header.removeprefix("data:"))
+            if media_type is None:
+                log.warning("Skipping unsupported OpenRouter image type: %s", header[:80])
+                continue
             assets.append(
                 GeneratedAsset(
                     kind="image",
-                    media_type="image/png",
+                    media_type=media_type,
                     data_base64=data_base64,
-                    suggested_filename=f"openrouter-image-{index}.png",
+                    suggested_filename=(
+                        f"openrouter-image-{index}{IMAGE_MEDIA_TYPE_SUFFIXES[media_type]}"
+                    ),
                 )
             )
         return assets

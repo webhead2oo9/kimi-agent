@@ -11,6 +11,17 @@ from kimi_agent_module_api.images import (
 )
 
 
+# Canonical suffix per supported type. Indexing this directly is deliberate: a
+# type that gains support without a suffix must fail loudly, not get an
+# extension that misrepresents the bytes to whoever opens the file.
+IMAGE_MEDIA_TYPE_SUFFIXES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
 def supported_image_media_type(value: str | None) -> str | None:
     if not value:
         return None

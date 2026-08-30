@@ -1604,6 +1604,10 @@ async def _describe_images(
             role="image_distillation",
             usage=normalize_usage(response.usage),
             usage_present=response.has_reported_usage,
+            upstream_provider=response.upstream_provider,
+            service_tier=response.service_tier,
+            openrouter_charge_usd=response.openrouter_charge_usd,
+            is_byok=response.is_byok,
         )
     )
     try:

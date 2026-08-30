@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import itertools
 import logging
 import re
 import time
@@ -50,9 +51,11 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     build_custom_id,
     parse_custom_id,
+    validate_command_spec,
     validate_modal_spec,
     validate_layout_components,
     validate_outgoing_layout,
+    validate_select_spec,
 )
 
 log = logging.getLogger(__name__)
@@ -115,6 +118,7 @@ def _build_control(component: Any, module_name: str) -> discord.ui.Item[Any]:
             emoji=component.emoji,
         )
     if isinstance(component, SelectSpec):
+        validate_select_spec(component)
         return discord.ui.Select(
             custom_id=build_custom_id(module_name, component.key, *component.parts),
             placeholder=component.placeholder,
@@ -219,6 +223,30 @@ def _text_values(data: Any) -> dict[str, str]:
     return found
 
 
+# Discord.py keys open modals by custom_id alone, so two people opening the same
+# module action would share one entry: the second open evicts the first, and
+# whichever submits first removes the survivor. A per-open suffix keeps them
+# apart. A counter, not randomness: uniqueness within the process is exactly
+# what is needed, and the ID is not a secret. The table now holds one entry per
+# open until it is submitted or times out, rather than one per module action.
+_modal_opens = itertools.count()
+
+
+def _strip_modal_nonce(custom_id: str) -> str:
+    """Return the ID the module described, without the per-open suffix.
+
+    An ID we did not mint has no suffix to remove and is passed through.
+    """
+
+    parsed = parse_custom_id(custom_id)
+    if parsed is None:
+        return custom_id
+    module_name, key, parts = parsed
+    if not parts:
+        return custom_id
+    return build_custom_id(module_name, key, *parts[:-1])
+
+
 class _ModuleModal(discord.ui.Modal):
     def __init__(
         self,
@@ -230,7 +258,9 @@ class _ModuleModal(discord.ui.Modal):
         super().__init__(
             title=spec.title,
             timeout=30 * 60,
-            custom_id=build_custom_id(module_name, spec.key, *spec.parts),
+            custom_id=build_custom_id(
+                module_name, spec.key, *spec.parts, format(next(_modal_opens), "x")
+            ),
         )
         self._dispatcher = dispatcher
         for input_spec in spec.inputs:
@@ -300,7 +330,12 @@ class ModuleInteractionAdapter:
     def custom_id(self) -> str | None:
         data = getattr(self._interaction, "data", None) or {}
         value = data.get("custom_id") if isinstance(data, dict) else None
-        return str(value) if value else None
+        if not value:
+            return None
+        if getattr(self._interaction, "type", None) is discord.InteractionType.modal_submit:
+            # The per-open suffix is ours; the module gets back the ID it described.
+            return _strip_modal_nonce(str(value))
+        return str(value)
 
     @property
     def values(self) -> tuple[str, ...]:
@@ -690,6 +725,7 @@ class InteractionRouterImpl:
     ) -> _Registration:
         if self._closed:
             raise RuntimeError(f"module {self._module_name!r} interactions are closed")
+        validate_command_spec(spec)
         qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
         if (spec.group, spec.name) in self._commands:
             raise ModuleContractError(
@@ -758,6 +794,10 @@ class InteractionRouterImpl:
         old_top_names = self._guild_top_names.get(guild_id, set())
         prepared: dict[str, app_commands.Command[Any, ..., None] | app_commands.Group] = {}
         qualified_names: set[str] = set()
+        # Validate the whole desired set before touching the tree: one malformed
+        # command would otherwise reject this guild's entire bulk sync.
+        for binding in commands:
+            validate_command_spec(binding.spec)
         for binding in commands:
             spec = binding.spec
             qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name

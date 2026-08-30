@@ -366,6 +366,12 @@ the ports are a contract and an audit surface, not a sandbox.
   rows below it. A layout cannot be mixed with content or an embed. Discord's
   Components V2 transition is permanent for that message, so every later
   `edit_original` must also provide a layout.
+  Command and component specs are checked against Discord's payload limits when
+  you register them — at most 25 options and 25 choices, descriptions of 1 to
+  100 characters, choices and autocomplete never together and only on string or
+  integer options, integer-only bounds, and 1 to 25 unique select options within
+  `min_values`/`max_values` — so a malformed spec raises `ModuleContractError`
+  at registration instead of rejecting a whole scope's bulk synchronization.
   Not supported: attachment/number option kinds, context menus, localization.
 - `ctx.http`: outbound HTTP limited to the hosts in
   `permissions.http_hosts`. A rule names an exact host, the `discord-cdn`

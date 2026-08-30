@@ -950,14 +950,15 @@ async def test_modal_show_submit_values_and_validation() -> None:
     )
 
     modal = opening.response.modals[0]
-    assert modal.custom_id == "m:mod:edit:42"
+    # The wire ID carries a per-open suffix; the module still sees its own ID.
+    assert modal.custom_id.startswith("m:mod:edit:42:")
     assert modal.timeout == 30 * 60
     assert [child.custom_id for child in modal.children] == ["title", "body"]
 
     submit = _Interaction(
         type=discord.InteractionType.modal_submit,
         data={
-            "custom_id": "m:mod:edit:42",
+            "custom_id": modal.custom_id,
             "components": [
                 {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Hi"}]},
                 {
@@ -1247,3 +1248,122 @@ async def test_runtime_drain_refuses_new_interactions_before_waiting() -> None:
     assert ran == []
     assert runtime.dispatcher.admitting is False
     assert interaction.response.sent[0]["content"] == "This control is temporarily unavailable."
+
+
+@pytest.mark.asyncio
+async def test_concurrent_modal_opens_survive_each_other_in_the_real_view_store() -> None:
+    # Discord.py keys open modals by custom_id, so identical IDs made the second
+    # open evict the first and the first submit remove the survivor, silently
+    # dropping the other person's submission.
+    router, _, dispatcher = _router()
+    submitted: list[str] = []
+
+    async def handler(interaction: ModuleInteraction) -> None:
+        submitted.append(str(interaction.custom_id))
+
+    router.register_component("modal", "edit", handler, min_tier="staff")
+    spec = ModalSpec(
+        key="edit",
+        title="Edit",
+        inputs=(TextInputSpec("title", "Title"),),
+        parts=("42",),
+    )
+
+    async def open_for(user_id: int) -> Any:
+        opening = _Interaction(user_id=user_id)
+        await ModuleInteractionAdapter(
+            opening,  # type: ignore[arg-type]
+            "mod",
+            dispatcher=dispatcher,
+        ).show_modal(spec)
+        return opening.response.modals[0]
+
+    first = await open_for(10)
+    second = await open_for(11)
+    assert first.custom_id != second.custom_id
+
+    store = discord.ui.view.ViewStore(None)  # type: ignore[arg-type]
+    store.add_view(first)
+    store.add_view(second)
+    assert store._modals[first.custom_id] is first
+    assert store._modals[second.custom_id] is second
+
+    # The first submitter's modal completing must not unregister the second's.
+    first.stop()
+    assert first.custom_id not in store._modals
+    assert store._modals[second.custom_id] is second
+
+    for modal in (first, second):
+        interaction = _Interaction(
+            type=discord.InteractionType.modal_submit,
+            data={
+                "custom_id": modal.custom_id,
+                "components": [
+                    {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Hi"}]}
+                ],
+            },
+        )
+        assert await dispatcher.dispatch(interaction, "modal") is True  # type: ignore[arg-type]
+
+    # Both submissions reached the handler, each seeing the ID the module described.
+    assert submitted == ["m:mod:edit:42", "m:mod:edit:42"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_command_specs_are_refused_before_the_tree_is_touched() -> None:
+    # A whole guild scope syncs as one bulk PUT, so a malformed command has to be
+    # rejected at registration rather than rejecting every sibling command later.
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    bad = CommandSpec(
+        name="broken",
+        description="d",
+        options=(CommandOption("a", "string", "d", choices=(("N", "v"),), autocomplete=True),),
+    )
+    with pytest.raises(ModuleContractError, match="choices and autocomplete"):
+        router.add_command(bad, handler)
+    assert bot.tree.commands == {}
+
+    router.add_command(CommandSpec(name="good", description="d"), handler)
+    with pytest.raises(ModuleContractError, match="more than 25 options"):
+        await router.replace_guild_commands(
+            7,
+            (
+                GuildCommand(CommandSpec(name="fine", description="d"), handler),
+                GuildCommand(
+                    CommandSpec(
+                        name="huge",
+                        description="d",
+                        options=tuple(CommandOption(f"o{i}", "string", "d") for i in range(26)),
+                    ),
+                    handler,
+                ),
+            ),
+        )
+    # The valid sibling in the same batch must not have been staged either.
+    assert bot.tree.guild_commands.get(7, {}) == {}
+    assert router.has_guild_commands(7) is False
+
+
+def test_invalid_select_specs_are_refused_when_a_view_is_built() -> None:
+    with pytest.raises(ModuleContractError, match="between one and 25 options"):
+        build_view((SelectSpec(key="pick", options=()),), "mod")
+    with pytest.raises(ModuleContractError, match="min_values cannot exceed max_values"):
+        build_view(
+            (
+                SelectSpec(
+                    key="pick",
+                    options=(("A", "a", None), ("B", "b", None)),
+                    min_values=2,
+                    max_values=1,
+                ),
+            ),
+            "mod",
+        )

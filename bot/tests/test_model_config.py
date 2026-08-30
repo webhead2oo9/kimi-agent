@@ -491,6 +491,123 @@ roles:
         )
 
 
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "timeout_seconds: true",
+        "max_output_tokens: true",
+        "circuit_breaker:\n      outage_cooldown_seconds: true",
+        "circuit_breaker:\n      quota_cooldown_seconds: true",
+        "circuit_breaker:\n      rate_limit_cooldown_seconds: true",
+        "provider_routing:\n      max_price:\n        prompt: true",
+        "provider_routing:\n      max_price:\n        completion: true",
+        "provider_routing:\n      max_price:\n        image: true",
+        "provider_routing:\n      max_price:\n        audio: true",
+        "provider_routing:\n      max_price:\n        request: true",
+        "provider_routing:\n      preferred_max_latency: true",
+        "provider_routing:\n      preferred_min_throughput: true",
+        "provider_routing:\n      preferred_max_latency:\n        p50: true",
+        "provider_routing:\n      preferred_max_latency:\n        p75: true",
+        "provider_routing:\n      preferred_max_latency:\n        p90: true",
+        "provider_routing:\n      preferred_max_latency:\n        p99: true",
+    ],
+)
+def test_numeric_profile_fields_reject_yaml_booleans(profile: str) -> None:
+    # bool subclasses int, so lax coercion would turn `true` into 1 and boot with
+    # an unintended limit instead of aborting startup.
+    with pytest.raises(ValidationError, match="not a boolean"):
+        parse_model_config_text(
+            f"""
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    {profile}
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+roles:
+  chat: chat
+  compaction: chat
+"""
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "context_window: true",
+        "pricing:\n      input: true",
+        "pricing:\n      output: true",
+        "pricing:\n      cached_read: true",
+        "pricing:\n      cache_write: true",
+    ],
+)
+def test_numeric_model_entry_fields_reject_yaml_booleans(entry: str) -> None:
+    with pytest.raises(ValidationError, match="not a boolean"):
+        parse_model_config_text(
+            f"""
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+    {entry}
+roles:
+  chat: chat
+  compaction: chat
+"""
+        )
+
+
+def test_numeric_config_fields_still_accept_ints_and_floats() -> None:
+    config = parse_model_config_text(
+        """
+providers:
+  router:
+    type: openrouter
+    api_key_env: MODEL_API_KEY
+    timeout_seconds: 30
+    max_output_tokens: 4096
+    circuit_breaker:
+      outage_cooldown_seconds: 12.5
+    provider_routing:
+      max_price:
+        prompt: 0
+      preferred_max_latency: 2
+      preferred_min_throughput:
+        p50: 40.5
+models:
+  chat:
+    provider: router
+    model: openai/gpt-5
+    context_window: 200000
+    pricing:
+      input: 1.25
+      output: 0
+roles:
+  chat: chat
+  compaction: chat
+"""
+    )
+    profile = config.providers["router"]
+    assert profile.timeout_seconds == 30.0
+    assert profile.max_output_tokens == 4096
+    assert profile.circuit_breaker.outage_cooldown_seconds == 12.5
+    routing = profile.provider_routing
+    assert routing.max_price is not None and routing.max_price.prompt == 0.0
+    assert routing.preferred_max_latency == 2.0
+    assert getattr(routing.preferred_min_throughput, "p50", None) == 40.5
+    entry = config.models["chat"]
+    assert entry.context_window == 200000
+    assert entry.pricing is not None
+    assert (entry.pricing.input, entry.pricing.output) == (1.25, 0.0)
+
+
 def test_openrouter_requires_api_key_reference() -> None:
     with pytest.raises(ValidationError, match="must set api_key_env"):
         parse_model_config_text(

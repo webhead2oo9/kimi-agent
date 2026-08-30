@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from providers.types import GeneratedAsset
+from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, sniff_image_media_type
 
 log = logging.getLogger(__name__)
 
@@ -47,15 +48,32 @@ def write_generated_assets(
         if total_bytes + len(raw) > _MAX_TOTAL_GENERATED_ASSET_BYTES:
             log.warning("Skipping generated asset %d: aggregate asset bytes exceed cap", index)
             continue
-        filename = _safe_filename(asset.suggested_filename or f"asset-{index}.png")
+        # The provider's declared type is untrusted upstream data, and these files
+        # are handed straight to Discord as attachments. Magic bytes decide both
+        # whether the payload is an image at all and what extension it gets.
+        sniffed = sniff_image_media_type(raw)
+        if sniffed is None:
+            log.warning("Skipping generated asset %d: bytes are not a supported image", index)
+            continue
+        if sniffed != asset.media_type:
+            log.warning(
+                "Generated asset %d declared %s but its bytes are %s",
+                index,
+                asset.media_type,
+                sniffed,
+            )
+        filename = _safe_filename(asset.suggested_filename or f"asset-{index}", sniffed)
         path = _write_unique_asset(output_dir / filename, raw)
         paths.append(path)
         total_bytes += len(raw)
     return paths
 
 
-def _safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "asset.png"
+def _safe_filename(value: str, media_type: str) -> str:
+    """Sanitize the provider's name and give it the suffix the bytes earned."""
+
+    stem = Path(re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")).stem or "asset"
+    return f"{stem}{IMAGE_MEDIA_TYPE_SUFFIXES[media_type]}"
 
 
 def _write_unique_asset(path: Path, raw: bytes) -> Path:

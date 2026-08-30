@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from providers.openrouter import OpenRouterProvider
 from providers.types import ContentPart, ProviderCapability, ProviderRequest
 
@@ -265,3 +267,42 @@ def test_openrouter_provider_extracts_generated_images_from_sdk_extra_dicts() ->
     )
 
     assert response.generated_assets[0].data_base64 == "ZGljdA=="
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_media_type", "expected_suffix"),
+    [
+        ("data:image/jpeg;base64,abc", "image/jpeg", ".jpg"),
+        ("data:image/webp;base64,abc", "image/webp", ".webp"),
+        ("data:image/gif;base64,abc", "image/gif", ".gif"),
+        ("data:image/png;charset=binary;base64,abc", "image/png", ".png"),
+    ],
+)
+def test_openrouter_provider_keeps_the_declared_image_media_type(
+    url: str, expected_media_type: str, expected_suffix: str
+) -> None:
+    # OpenRouter returns more than PNG; labelling everything .png hands Discord a
+    # file whose extension contradicts its bytes.
+    [asset] = OpenRouterProvider._parse_images(
+        [SimpleNamespace(image_url=SimpleNamespace(url=url))]
+    )
+
+    assert asset.media_type == expected_media_type
+    assert asset.suggested_filename == f"openrouter-image-1{expected_suffix}"
+    assert asset.data_base64 == "abc"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "data:text/html;base64,abc",
+        "data:image/svg+xml;base64,abc",
+        "data:;base64,abc",
+        "https://example.test/image.png",
+    ],
+)
+def test_openrouter_provider_skips_image_urls_it_cannot_vouch_for(url: str) -> None:
+    assert (
+        OpenRouterProvider._parse_images([SimpleNamespace(image_url=SimpleNamespace(url=url))])
+        == []
+    )

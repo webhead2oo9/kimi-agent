@@ -169,6 +169,53 @@ async def test_persona_set_compiles_and_stores_for_current_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persona_compile_usage_carries_router_attribution() -> None:
+    # The sink is the same list the turn event renders as provider_calls, so a
+    # nested compile through OpenRouter must carry its routing attribution too.
+    class RoutedCompiler(FakeCompiler):
+        async def compile(
+            self,
+            *,
+            request: str,
+            user_name: str,
+            on_response: Any | None = None,
+        ) -> str:
+            self.calls.append({"request": request, "user_name": user_name})
+            if on_response is not None:
+                await on_response(
+                    ProviderResponse(
+                        usage={"input_tokens": 12, "output_tokens": 3},
+                        model="moonshotai/kimi-k2",
+                        upstream_provider="Moonshot AI",
+                        service_tier="flex",
+                        openrouter_charge_usd=0.0125,
+                        is_byok=False,
+                    ),
+                    "moonshotai/kimi-k2",
+                )
+            return self.persona
+
+    store = FakePersonaStore()
+    registry = _register(store, RoutedCompiler())
+    ctx = make_message_context(
+        activated={"persona_set"},
+        user_id="123",
+        user_name="Alice",
+        trust_tier=TrustTier.REGULAR,
+    )
+    ctx.usage_sink = []
+
+    await registry.dispatch("persona_set", {"request": "Be a space mechanic."}, ctx)
+
+    assert ctx.usage_sink is not None
+    [usage_call] = ctx.usage_sink
+    assert usage_call.upstream_provider == "Moonshot AI"
+    assert usage_call.service_tier == "flex"
+    assert usage_call.openrouter_charge_usd == 0.0125
+    assert usage_call.is_byok is False
+
+
+@pytest.mark.asyncio
 async def test_persona_set_surfaces_compiler_rejection() -> None:
     store = FakePersonaStore()
     registry = _register(store, RejectingCompiler())

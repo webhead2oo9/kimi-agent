@@ -522,6 +522,36 @@ async def test_ready_clears_stale_scopes_and_forgets_disconnected_guilds() -> No
 
 
 @pytest.mark.asyncio
+async def test_ready_retracks_a_guild_it_forgot_while_disconnected() -> None:
+    # A scope forgotten while the guild was away must come back when the staged
+    # commands are actually published, or a later restart can never clean them up.
+    bot = _Bot()
+    bot.guilds = []
+    store = _ScopeStore()
+    runtime = InteractionRuntime(bot, scope_store=store)  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        7,
+        (GuildCommand(CommandSpec(name="staged", description="staged"), handler),),
+    )
+    assert store.tracked == {7}
+
+    await runtime.sync_ready()
+    assert store.tracked == set()
+    assert router.has_guild_commands(7) is True
+
+    bot.guilds = [SimpleNamespace(id=7)]
+    await runtime.sync_ready()
+
+    assert bot.tree.sync_calls == [7]
+    assert store.tracked == {7}
+
+
+@pytest.mark.asyncio
 async def test_router_close_releases_local_guild_command_ownership() -> None:
     bot = _Bot()
     runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
@@ -852,7 +882,7 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
     assert view.timeout == 180.0
     container, button_row, select_row = view.children
     assert isinstance(container, discord.ui.Container)
-    assert container.accent_colour == 0x123456
+    assert container.to_component_dict()["accent_color"] == 0x123456
     assert [type(item) for item in container.children] == [
         discord.ui.TextDisplay,
         discord.ui.Separator,
@@ -868,6 +898,28 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
     assert isinstance(page_select, discord.ui.Select)
     assert first_button.custom_id == "m:mod:back"
     assert page_select.custom_id == "m:mod:page"
+
+
+def test_build_layout_view_keeps_a_black_accent_colour() -> None:
+    # Discord.py drops a falsy accent, so a raw 0 would serialize as absent even
+    # though the contract admits it. Only the serialized payload proves it survived.
+    black = build_layout_view(
+        OutgoingLayout(items=(LayoutText("Heading"),), accent_color=0),
+        (),
+        "mod",
+    )
+    container = black.children[0]
+    assert isinstance(container, discord.ui.Container)
+    assert container.to_component_dict()["accent_color"] == 0
+
+    absent = build_layout_view(
+        OutgoingLayout(items=(LayoutText("Heading"),), accent_color=None),
+        (),
+        "mod",
+    )
+    unaccented = absent.children[0]
+    assert isinstance(unaccented, discord.ui.Container)
+    assert unaccented.to_component_dict()["accent_color"] is None
 
 
 @pytest.mark.asyncio

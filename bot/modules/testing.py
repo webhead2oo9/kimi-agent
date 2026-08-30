@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.modules import ModuleManager, ModuleRuntimeBase, ModuleRuntimeContext, ModuleSpec
+from app.modules import (
+    ModuleManager,
+    ModuleRuntimeBase,
+    ModuleRuntimeContext,
+    ModuleSpec,
+    module_capabilities,
+)
 from config.settings import Settings
 from kimi_agent_module_api import ModuleCapabilities
 from kimi_agent_module_api.testing import (
@@ -125,12 +131,15 @@ async def build_test_runtime(
     active_guilds: Callable[[int], bool] | None = None,
     trust: FakeTrust | None = None,
     http_routes: Mapping[str, Any] | None = None,
+    capabilities: ModuleCapabilities | None = None,
 ) -> TestRuntime:
     """Load, migrate, and start ``names`` against a fresh database in ``tmp_path``.
 
     ``env`` is applied to ``os.environ`` for the duration of module settings
     construction only; callers that need it to persist should use monkeypatch.
     ``installed`` bypasses entry-point discovery, as ``ModuleManager.load`` does.
+    ``capabilities`` overrides what the host advertises, for a test that needs to
+    simulate a narrower deployment than the one these settings describe.
     """
     config_dir = tmp_path / "config"
     config_dir.mkdir(exist_ok=True)
@@ -180,11 +189,10 @@ async def build_test_runtime(
         bot=bot,
         is_guild_active=active_guilds or (lambda _guild_id: True),
         current_config_dir=lambda: config_dir,
-        capabilities=ModuleCapabilities(
-            available=frozenset({"proposals.v2"}),
-            members_intent=False,
-            message_content_intent=False,
-        ),
+        # The same advertisement build_app makes. A narrower set here would let a
+        # module pass ModuleManager.load's capability gate and then take the wrong
+        # branch against ctx.capabilities, with nothing in production to match it.
+        capabilities=capabilities if capabilities is not None else module_capabilities(settings),
         trust=trust_lookup,
     )
 

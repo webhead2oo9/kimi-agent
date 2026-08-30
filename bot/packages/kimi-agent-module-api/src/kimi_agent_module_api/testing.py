@@ -712,6 +712,25 @@ class FakeInteractions:
         self.component_min_tiers: dict[tuple[str, str], TrustTierName] = {}
         self.autocompletes: dict[str, Callable[..., Any]] = {}
 
+    def _global_top_kinds(self) -> dict[str, str]:
+        """Top-level names the host tree would hold, derived so close() cannot drift.
+
+        Commands are stored by qualified name, but Discord and the host tree own
+        the *top* name, so every collision check has to look at that instead.
+        """
+
+        return {
+            (spec.group or spec.name): ("group" if spec.group else "command")
+            for spec, _handler in self.commands.values()
+        }
+
+    def _guild_top_names(self) -> set[str]:
+        return {
+            spec.group or spec.name
+            for commands in self.guild_commands.values()
+            for spec, _handler in commands.values()
+        }
+
     def add_command(
         self,
         spec: CommandSpec,
@@ -723,6 +742,19 @@ class FakeInteractions:
         if qualified in self.commands:
             raise ModuleContractError(
                 f"module {self.module_name!r} command {qualified!r} is already registered"
+            )
+        top_name = spec.group or spec.name
+        if self._global_top_kinds().get(top_name) not in (
+            None,
+            "group" if spec.group else "command",
+        ):
+            raise ModuleContractError(
+                f"module {self.module_name!r} command {top_name!r} is both a command and a group"
+            )
+        if top_name in self._guild_top_names():
+            raise ModuleContractError(
+                f"module {self.module_name!r} global command {top_name!r} "
+                "would shadow a guild command"
             )
         self.commands[qualified] = (spec, handler)
         if autocomplete is not None:
@@ -741,10 +773,11 @@ class FakeInteractions:
         desired: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
         autocompletes: dict[str, Callable[..., Any]] = {}
         top_kinds: dict[str, str] = {}
+        global_top_kinds = self._global_top_kinds()
         for command in commands:
             top_name = command.spec.group or command.spec.name
             kind = "group" if command.spec.group else "command"
-            if top_name in self.commands:
+            if top_name in global_top_kinds:
                 raise ModuleContractError(
                     f"module {self.module_name!r} guild command {top_name!r} "
                     "would shadow a global command"

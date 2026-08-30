@@ -819,6 +819,7 @@ def test_build_view_renders_buttons_and_selects_with_module_ids() -> None:
         "mod",
     )
     assert view is not None
+    assert view.timeout == 180.0
     button, select = view.children
     assert isinstance(button, discord.ui.Button) and button.custom_id == "m:mod:confirm:7"
     assert isinstance(select, discord.ui.Select) and select.custom_id == "m:mod:pick"
@@ -848,6 +849,7 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
     )
 
     assert isinstance(view, discord.ui.LayoutView)
+    assert view.timeout == 180.0
     container, button_row, select_row = view.children
     assert isinstance(container, discord.ui.Container)
     assert container.accent_colour == 0x123456
@@ -857,9 +859,15 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
         discord.ui.MediaGallery,
         discord.ui.Section,
     ]
+    assert isinstance(button_row, discord.ui.ActionRow)
+    assert isinstance(select_row, discord.ui.ActionRow)
     assert len(button_row.children) == 2
-    assert button_row.children[0].custom_id == "m:mod:back"
-    assert select_row.children[0].custom_id == "m:mod:page"
+    first_button = button_row.children[0]
+    page_select = select_row.children[0]
+    assert isinstance(first_button, discord.ui.Button)
+    assert isinstance(page_select, discord.ui.Select)
+    assert first_button.custom_id == "m:mod:back"
+    assert page_select.custom_id == "m:mod:page"
 
 
 @pytest.mark.asyncio
@@ -873,9 +881,9 @@ async def test_modal_show_submit_values_and_validation() -> None:
     router.register_component("modal", "edit", handler, min_tier="staff")
     opening = _Interaction(data={"custom_id": router.custom_id("open")})
     adapter = ModuleInteractionAdapter(
-        opening,
+        opening,  # type: ignore[arg-type]
         "mod",
-        dispatcher=dispatcher,  # type: ignore[arg-type]
+        dispatcher=dispatcher,
     )
     await adapter.show_modal(
         ModalSpec(
@@ -913,9 +921,9 @@ async def test_modal_show_submit_values_and_validation() -> None:
 
     invalid = _Interaction()
     invalid_adapter = ModuleInteractionAdapter(
-        invalid,
+        invalid,  # type: ignore[arg-type]
         "mod",
-        dispatcher=dispatcher,  # type: ignore[arg-type]
+        dispatcher=dispatcher,
     )
     with pytest.raises(ModuleContractError, match="unique"):
         await invalid_adapter.show_modal(
@@ -967,9 +975,9 @@ async def test_modal_show_submit_values_and_validation() -> None:
 async def test_modal_structural_validation_raises_contract_errors(modal: ModalSpec) -> None:
     _, _, dispatcher = _router()
     adapter = ModuleInteractionAdapter(
-        _Interaction(),
+        _Interaction(),  # type: ignore[arg-type]
         "mod",
-        dispatcher=dispatcher,  # type: ignore[arg-type]
+        dispatcher=dispatcher,
     )
     with pytest.raises(ModuleContractError):
         await adapter.show_modal(modal)

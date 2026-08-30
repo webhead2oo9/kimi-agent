@@ -89,6 +89,7 @@ _BUTTON_STYLES = {
 _COMPONENT_TEMPLATE = (
     rf"{CUSTOM_ID_PREFIX}:(?P<module>[a-z][a-z0-9_-]*):(?P<key>[a-z][a-z0-9_]*)(?::(?P<rest>.*))?"
 )
+_VIEW_CACHE_TIMEOUT_SECONDS = 180.0
 
 
 def build_embed(spec: OutgoingEmbed) -> discord.Embed:
@@ -126,10 +127,14 @@ def _build_control(component: Any, module_name: str) -> discord.ui.Item[Any]:
 
 
 def build_view(components: Sequence[Any], module_name: str) -> discord.ui.View | None:
-    """Turn ``ButtonSpec``/``SelectSpec`` values into a persistent view."""
+    """Turn ``ButtonSpec``/``SelectSpec`` values into a Discord view.
+
+    The process-wide dynamic item supplies persistence. A finite local timeout
+    lets discord.py release its per-message ViewStore entry after sending.
+    """
     if not components:
         return None
-    view = discord.ui.View(timeout=None)
+    view = discord.ui.View(timeout=_VIEW_CACHE_TIMEOUT_SECONDS)
     for component in components:
         view.add_item(_build_control(component, module_name))
     return view
@@ -166,7 +171,7 @@ def build_layout_view(
         else:
             raise ModuleContractError(f"unsupported layout item {item!r}")
 
-    view = discord.ui.LayoutView(timeout=None)
+    view = discord.ui.LayoutView(timeout=_VIEW_CACHE_TIMEOUT_SECONDS)
     view.add_item(discord.ui.Container(*children, accent_color=layout.accent_color))
 
     row_items: list[discord.ui.Item[Any]] = []

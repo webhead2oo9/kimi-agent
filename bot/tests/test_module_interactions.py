@@ -763,7 +763,7 @@ async def test_dynamic_components_reject_unavailable_runtime_before_trust_or_han
     router.register_component("button", "confirm", handler, min_tier="staff")
     custom_id = router.custom_id("confirm")
     interaction = _Interaction(data={"custom_id": custom_id})
-    dynamic_button = bot.dynamic_items[0](custom_id)
+    dynamic_button = bot.dynamic_items[0](discord.ui.Button(label="Confirm", custom_id=custom_id))
 
     await dynamic_button.callback(interaction)  # type: ignore[arg-type]
 
@@ -1066,6 +1066,37 @@ def test_interaction_runtime_installs_dynamic_items_once() -> None:
     runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
     runtime.install()
     runtime.install()
-    assert len(bot.dynamic_items) == 2
+    assert len(bot.dynamic_items) == 1
     router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
     assert router.custom_id("k") == "m:mod:k"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_item_routes_buttons_and_selects_without_template_collision() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
+    runtime.install()
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    hits: list[str] = []
+
+    async def button_handler(_interaction: ModuleInteraction) -> None:
+        hits.append("button")
+
+    async def select_handler(_interaction: ModuleInteraction) -> None:
+        hits.append("select")
+
+    router.register_component("button", "confirm", button_handler)
+    router.register_component("select", "choose", select_handler)
+    dynamic_type = bot.dynamic_items[0]
+
+    button_id = router.custom_id("confirm")
+    button = dynamic_type(discord.ui.Button(label="Confirm", custom_id=button_id))
+    await button.callback(_Interaction(data={"custom_id": button_id}))  # type: ignore[arg-type]
+
+    select_id = router.custom_id("choose")
+    select = dynamic_type(discord.ui.Select(custom_id=select_id))
+    await select.callback(_Interaction(data={"custom_id": select_id}))  # type: ignore[arg-type]
+
+    assert hits == ["button", "select"]

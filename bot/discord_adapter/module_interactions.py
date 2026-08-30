@@ -557,15 +557,24 @@ async def _quiet_reply(interaction: discord.Interaction, text: str) -> None:
 
 
 def make_dynamic_items(bound: ComponentDispatcher) -> tuple[type[Any], ...]:
-    """Build the DynamicItem classes bound to one dispatcher (call once per bot)."""
+    """Build the DynamicItem class bound to one dispatcher (call once per bot).
 
-    class ModuleButton(
-        discord.ui.DynamicItem[discord.ui.Button[Any]], template=_COMPONENT_TEMPLATE
+    Discord.py keys dynamic items by their compiled regex. Buttons and selects
+    share our custom-id format, so registering separate classes with the same
+    template makes the latter silently replace the former. One wrapper keeps a
+    single template registered and chooses the dispatcher kind from the item
+    Discord reconstructed for the interaction.
+    """
+
+    class ModuleComponent(
+        discord.ui.DynamicItem[discord.ui.Item[Any]], template=_COMPONENT_TEMPLATE
     ):
         dispatcher: ClassVar[ComponentDispatcher] = bound
 
-        def __init__(self, custom_id: str) -> None:
-            super().__init__(discord.ui.Button(label="​", custom_id=custom_id))
+        def __init__(self, item: discord.ui.Item[Any]) -> None:
+            if not isinstance(item, discord.ui.Button | discord.ui.Select):
+                raise TypeError("module dynamic components must be buttons or selects")
+            super().__init__(item)
 
         @classmethod
         async def from_custom_id(
@@ -574,34 +583,14 @@ def make_dynamic_items(bound: ComponentDispatcher) -> tuple[type[Any], ...]:
             item: discord.ui.Item[Any],
             match: re.Match[str],
             /,
-        ) -> ModuleButton:
-            return cls(match.string)
+        ) -> ModuleComponent:
+            return cls(item)
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            await self.dispatcher.dispatch(interaction, "button")
+            kind = "button" if isinstance(self.item, discord.ui.Button) else "select"
+            await self.dispatcher.dispatch(interaction, kind)
 
-    class ModuleSelect(
-        discord.ui.DynamicItem[discord.ui.Select[Any]], template=_COMPONENT_TEMPLATE
-    ):
-        dispatcher: ClassVar[ComponentDispatcher] = bound
-
-        def __init__(self, custom_id: str) -> None:
-            super().__init__(discord.ui.Select(custom_id=custom_id))
-
-        @classmethod
-        async def from_custom_id(
-            cls,
-            interaction: discord.Interaction,
-            item: discord.ui.Item[Any],
-            match: re.Match[str],
-            /,
-        ) -> ModuleSelect:
-            return cls(match.string)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            await self.dispatcher.dispatch(interaction, "select")
-
-    return (ModuleButton, ModuleSelect)
+    return (ModuleComponent,)
 
 
 class InteractionRouterImpl:

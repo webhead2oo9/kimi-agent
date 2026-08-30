@@ -167,6 +167,7 @@ from storage.coding_tasks import (
 )
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
+from storage.module_commands import GuildCommandScopeStore
 from storage.conversations import OWNER_ONLY, ChannelMessageRecord, ConversationStore
 from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
@@ -376,6 +377,7 @@ class KimiApplication:
     coding_task_store: CodingTaskStore | None = None
     coding_tasks: CodingTaskService | None = None
     _module_event_publisher: ModuleEventPublisher | None = None
+    _module_interaction_runtime: InteractionRuntime | None = None
     privacy_deletion_store: PrivacyDeletionRequestStore | None = None
     user_memory_bank_state_store: UserMemoryBankStateStore | None = None
     privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier)
@@ -850,6 +852,11 @@ class KimiApplication:
             # Command propagation is retried on the next READY, but a transient
             # transport failure must not prevent local sweepers from starting.
             log.warning("Failed to sync global slash commands", exc_info=True)
+        if self._module_interaction_runtime is not None:
+            try:
+                await self._module_interaction_runtime.sync_ready()
+            except Exception:
+                log.warning("Failed to prepare guild slash command sync", exc_info=True)
 
     async def _start_filesystem_sweepers_locked(self) -> None:
         """Install filesystem maintenance tasks once after best-effort cleanup."""
@@ -1136,7 +1143,9 @@ class KimiApplication:
         interaction_runtime = InteractionRuntime(
             self.bot,
             is_available=self.gateway_interactions_ready,
+            scope_store=GuildCommandScopeStore(self.database),
         )
+        self._module_interaction_runtime = interaction_runtime
         interaction_runtime.install()
         proposal_actions = DiscordActionsImpl(
             bot=self.bot,

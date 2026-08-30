@@ -20,8 +20,10 @@ from discord_adapter.module_interactions import (
 )
 from kimi_agent_module_api.contracts import (
     ButtonSpec,
+    CommandSyncError,
     CommandOption,
     CommandSpec,
+    GuildCommand,
     ModuleContractError,
     ModuleInteraction,
     OutgoingEmbed,
@@ -34,24 +36,52 @@ from kimi_agent_module_api.testing import FakeTrust
 class _Tree:
     def __init__(self) -> None:
         self.commands: dict[str, Any] = {}
+        self.guild_commands: dict[int, dict[str, Any]] = {}
+        self.sync_calls: list[int | None] = []
+        self.sync_error: Exception | None = None
 
-    def add_command(self, command: Any, **_kwargs: Any) -> None:
-        self.commands[command.name] = command
+    def add_command(self, command: Any, *, guild: Any = None, **_kwargs: Any) -> None:
+        target = self.commands if guild is None else self.guild_commands.setdefault(guild.id, {})
+        target[command.name] = command
 
-    def get_command(self, name: str) -> Any:
-        return self.commands.get(name)
+    def get_command(self, name: str, *, guild: Any = None) -> Any:
+        target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
+        return target.get(name)
 
-    def remove_command(self, name: str) -> Any:
-        return self.commands.pop(name, None)
+    def remove_command(self, name: str, *, guild: Any = None) -> Any:
+        target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
+        return target.pop(name, None)
+
+    async def sync(self, *, guild: Any = None) -> list[Any]:
+        self.sync_calls.append(None if guild is None else guild.id)
+        if self.sync_error is not None:
+            raise self.sync_error
+        target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
+        return list(target.values())
 
 
 class _Bot:
     def __init__(self) -> None:
         self.tree = _Tree()
         self.dynamic_items: list[Any] = []
+        self.guilds = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
 
     def add_dynamic_items(self, *items: Any) -> None:
         self.dynamic_items.extend(items)
+
+
+class _ScopeStore:
+    def __init__(self, guild_ids: set[int] | None = None) -> None:
+        self.tracked = set(guild_ids or set())
+
+    async def track(self, guild_id: int) -> None:
+        self.tracked.add(guild_id)
+
+    async def guild_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self.tracked))
+
+    async def forget(self, guild_id: int) -> None:
+        self.tracked.discard(guild_id)
 
 
 class _Response:
@@ -237,6 +267,181 @@ def test_duplicate_module_command_registration_is_rejected() -> None:
     router.add_command(CommandSpec(name="thing", description="first", group="admin"), handler)
     with pytest.raises(ModuleContractError, match="already registered"):
         router.add_command(CommandSpec(name="thing", description="second", group="admin"), handler)
+
+
+@pytest.mark.asyncio
+async def test_guild_commands_stage_then_replace_and_remove_live() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    runtime = InteractionRuntime(bot, scope_store=store)  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    hits: list[str] = []
+
+    async def first(_interaction: ModuleInteraction) -> None:
+        hits.append("first")
+
+    async def second(_interaction: ModuleInteraction) -> None:
+        hits.append("second")
+
+    await router.replace_guild_commands(
+        1,
+        (
+            GuildCommand(CommandSpec(name="hello", description="hello"), first),
+            GuildCommand(
+                CommandSpec(
+                    name="grouped",
+                    description="grouped",
+                    group="tools",
+                    group_description="Guild tools",
+                ),
+                first,
+            ),
+        ),
+    )
+    assert bot.tree.sync_calls == []
+    assert set(bot.tree.guild_commands[1]) == {"hello", "tools"}
+    assert bot.tree.guild_commands[1]["tools"].get_command("grouped") is not None
+    assert store.tracked == {1}
+
+    await runtime.sync_ready()
+    assert bot.tree.sync_calls == [1]
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="goodbye", description="goodbye"), second),),
+    )
+    assert set(bot.tree.guild_commands[1]) == {"goodbye"}
+    assert bot.tree.sync_calls == [1, 1]
+
+    interaction = _Interaction()
+    await bot.tree.guild_commands[1]["goodbye"].callback(interaction)
+    assert hits == ["second"]
+
+    await router.replace_guild_commands(1, ())
+    assert bot.tree.guild_commands[1] == {}
+    assert store.tracked == set()
+
+
+@pytest.mark.asyncio
+async def test_guild_commands_reject_global_shadow_and_same_guild_collision() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    first = runtime.router_for("first", trust=FakeTrust(), is_guild_active=lambda _g: True)
+    second = runtime.router_for("second", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    bot.tree.commands["privacy"] = SimpleNamespace(name="privacy")
+    with pytest.raises(ModuleContractError, match="shadow a global command"):
+        await first.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="privacy", description="p"), handler),),
+        )
+
+    command = GuildCommand(CommandSpec(name="local", description="local"), handler)
+    await first.replace_guild_commands(1, (command,))
+    with pytest.raises(ModuleContractError, match="already owned"):
+        await second.replace_guild_commands(1, (command,))
+
+    await second.replace_guild_commands(2, (command,))
+    assert "local" in bot.tree.guild_commands[1]
+    assert "local" in bot.tree.guild_commands[2]
+
+    with pytest.raises(ModuleContractError, match="shadow a guild command"):
+        first.add_command(CommandSpec(name="local", description="global"), handler)
+
+
+@pytest.mark.asyncio
+async def test_guild_command_sync_failure_keeps_desired_state_and_retries_on_ready() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="before", description="before"), handler),),
+    )
+    await runtime.sync_ready()
+
+    bot.tree.sync_error = RuntimeError("offline")
+    with pytest.raises(CommandSyncError):
+        await router.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="after", description="after"), handler),),
+        )
+    assert set(bot.tree.guild_commands[1]) == {"after"}
+    assert store.tracked == {1}
+
+    bot.tree.sync_error = None
+    await runtime.sync_ready()
+    assert bot.tree.sync_calls == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_startup_guild_sync_failure_stays_tracked_without_raising() -> None:
+    bot = _Bot()
+    bot.tree.sync_error = RuntimeError("offline")
+    store = _ScopeStore()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+
+    await runtime.sync_ready()
+
+    assert set(bot.tree.guild_commands[1]) == {"pending"}
+    assert store.tracked == {1}
+
+
+@pytest.mark.asyncio
+async def test_ready_clears_stale_scopes_and_forgets_disconnected_guilds() -> None:
+    bot = _Bot()
+    bot.guilds = [SimpleNamespace(id=1)]
+    store = _ScopeStore({1, 99})
+    runtime = InteractionRuntime(bot, scope_store=store)  # type: ignore[arg-type]
+
+    await runtime.sync_ready()
+
+    assert bot.tree.sync_calls == [1]
+    assert store.tracked == set()
+
+
+@pytest.mark.asyncio
+async def test_router_close_releases_local_guild_command_ownership() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="released", description="released"), handler),),
+    )
+    router.close()
+
+    assert bot.tree.guild_commands[1] == {}
+    assert runtime.guild_command_owner("released") is None
 
 
 def test_thread_options_reduce_to_stable_ids() -> None:

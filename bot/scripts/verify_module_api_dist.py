@@ -66,6 +66,10 @@ def _verify_consumer() -> None:
     for module in _EXPECTED_API_MODULES:
         import_module(f"kimi_agent_module_api.{module}")
 
+    contracts = import_module("kimi_agent_module_api.contracts")
+    assert hasattr(contracts, "CommandSyncError")
+    assert hasattr(contracts, "GuildCommand")
+
     assert api.MODULE_API_VERSION == 1
     matches = [
         point

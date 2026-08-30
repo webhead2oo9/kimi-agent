@@ -19,6 +19,7 @@ from storage.conversations import OWNER_ONLY, ChannelMessageRecord, Conversation
 from storage.db import Database
 from storage.image_distillations import ImageDistillationStore
 from storage.memory_banks import UserMemoryBankStateStore
+from storage.module_commands import GuildCommandScopeStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
 
@@ -91,6 +92,23 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
             "ORDER BY name"
         ) as cur:
             assert [row["name"] for row in await cur.fetchall()] == ["config_proposals"]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_guild_command_scope_store_tracks_and_forgets_guilds(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = GuildCommandScopeStore(db)
+        await store.track(20)
+        await store.track(10)
+        await store.track(20)
+        assert set(await store.guild_ids()) == {10, 20}
+
+        await store.forget(10)
+        assert await store.guild_ids() == (20,)
     finally:
         await db.close()
 

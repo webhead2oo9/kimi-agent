@@ -29,6 +29,7 @@ from kimi_agent_module_api.contracts import (
     Backoff,
     ChannelSnapshot,
     CommandSpec,
+    GuildCommand,
     ConfigSnapshot,
     Event,
     EventHandler,
@@ -663,6 +664,8 @@ class FakeInteractions:
     def __init__(self, module_name: str) -> None:
         self.module_name = module_name
         self.commands: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
+        self.guild_commands: dict[int, dict[str, tuple[CommandSpec, Callable[..., Any]]]] = {}
+        self.guild_autocompletes: dict[int, dict[str, Callable[..., Any]]] = {}
         self.components: dict[tuple[str, str], Callable[..., Any]] = {}
         self.component_min_tiers: dict[tuple[str, str], TrustTierName] = {}
         self.autocompletes: dict[str, Callable[..., Any]] = {}
@@ -685,6 +688,50 @@ class FakeInteractions:
         return _Closable(
             lambda: (self.commands.pop(qualified, None), self.autocompletes.pop(qualified, None))
         )
+
+    async def replace_guild_commands(
+        self,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
+        if guild_id <= 0:
+            raise ModuleContractError("guild_id must be a positive Discord snowflake")
+        desired: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
+        autocompletes: dict[str, Callable[..., Any]] = {}
+        top_kinds: dict[str, str] = {}
+        for command in commands:
+            top_name = command.spec.group or command.spec.name
+            kind = "group" if command.spec.group else "command"
+            if top_name in self.commands:
+                raise ModuleContractError(
+                    f"module {self.module_name!r} guild command {top_name!r} "
+                    "would shadow a global command"
+                )
+            previous_kind = top_kinds.setdefault(top_name, kind)
+            if previous_kind != kind:
+                raise ModuleContractError(
+                    f"module {self.module_name!r} guild command {top_name!r} "
+                    "is both a command and a group"
+                )
+            qualified = (
+                f"{command.spec.group}.{command.spec.name}"
+                if command.spec.group
+                else command.spec.name
+            )
+            if qualified in desired:
+                raise ModuleContractError(
+                    f"module {self.module_name!r} guild command {qualified!r} "
+                    "is registered more than once"
+                )
+            desired[qualified] = (command.spec, command.handler)
+            if command.autocomplete is not None:
+                autocompletes[qualified] = command.autocomplete
+        if desired:
+            self.guild_commands[guild_id] = desired
+            self.guild_autocompletes[guild_id] = autocompletes
+        else:
+            self.guild_commands.pop(guild_id, None)
+            self.guild_autocompletes.pop(guild_id, None)
 
     def register_component(
         self,

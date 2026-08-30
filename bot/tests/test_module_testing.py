@@ -13,11 +13,13 @@ from kimi_agent_module_api import (
     ModuleSpec,
 )
 from kimi_agent_module_api.contracts import (
+    CommandSpec,
+    GuildCommand,
     MigrationContext,
     ScopedModuleMigration,
     UndeclaredDiscordAction,
 )
-from kimi_agent_module_api.testing import FakeInteraction, FakeScheduler
+from kimi_agent_module_api.testing import FakeInteraction, FakeInteractions, FakeScheduler
 from modules.testing import build_test_runtime, write_guild_config
 
 
@@ -140,3 +142,26 @@ async def test_harness_writes_guild_config_and_exposes_fakes(tmp_path: Path) -> 
         assert interaction.last.ephemeral is True
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_fake_interactions_replace_guild_command_sets() -> None:
+    interactions = FakeInteractions("demo")
+
+    async def handler(_interaction: object) -> None:
+        pass
+
+    await interactions.replace_guild_commands(
+        7,
+        (GuildCommand(CommandSpec(name="first", description="first"), handler),),  # type: ignore[arg-type]
+    )
+    assert set(interactions.guild_commands[7]) == {"first"}
+
+    await interactions.replace_guild_commands(
+        7,
+        (GuildCommand(CommandSpec(name="second", description="second"), handler),),  # type: ignore[arg-type]
+    )
+    assert set(interactions.guild_commands[7]) == {"second"}
+
+    await interactions.replace_guild_commands(7, ())
+    assert 7 not in interactions.guild_commands

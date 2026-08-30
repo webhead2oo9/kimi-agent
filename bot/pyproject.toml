@@ -7,7 +7,7 @@ authors = [{ name = "Webhead" }]
 license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
-    "kimi-agent-module-api>=1.0.0,<2",
+    "kimi-agent-module-api>=1.1.0,<2",
     "aiohttp>=3.14.3",
     "discord.py>=2.7",
     "aiosqlite",

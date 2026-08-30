@@ -52,6 +52,10 @@ class ServiceUnavailable(RuntimeError):
     """Raised through a service proxy after its provider module closed."""
 
 
+class CommandSyncError(RuntimeError):
+    """Discord did not accept a live guild-command synchronization."""
+
+
 # --------------------------------------------------------------------------
 # Declarations carried on ModuleSpec
 # --------------------------------------------------------------------------
@@ -1016,6 +1020,15 @@ type AutocompleteHandler = Callable[
 type ComponentKind = Literal["button", "select"]
 
 
+@dataclass(frozen=True, slots=True)
+class GuildCommand:
+    """One command in a module's desired command set for a guild."""
+
+    spec: CommandSpec
+    handler: CommandHandler
+    autocomplete: AutocompleteHandler | None = None
+
+
 class Registration(Protocol):
     def close(self) -> None: ...
 
@@ -1028,6 +1041,14 @@ class InteractionRouter(Protocol):
         *,
         autocomplete: AutocompleteHandler | None = None,
     ) -> Registration: ...
+
+    async def replace_guild_commands(
+        self,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
+        """Replace this module's complete command set for one guild."""
+        ...
 
     def register_component(
         self,

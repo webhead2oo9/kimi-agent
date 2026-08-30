@@ -32,3 +32,8 @@ The [module guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/modu
 documents installation, declarations, lifecycle, and every runtime port. The
 [reference module](https://github.com/webhead2oo9/kimi-agent/tree/main/bot/modules/example)
 is a complete, commented example that exercises most ports; start there.
+
+Guild-scoped live command replacement was added in 1.1. Modules using
+`InteractionRouter.replace_guild_commands()` should depend on
+`kimi-agent-module-api>=1.1,<2` and require the host capability
+`discord.guild_commands.v1`.

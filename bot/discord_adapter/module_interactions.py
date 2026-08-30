@@ -7,18 +7,20 @@ persistent components (``m:<module>:<key>:...`` custom IDs) through one
 ``DynamicItem`` class per kind so buttons survive restarts.
 
 Ownership is per module: every command and component registration is tracked
-and removed on close. Core performs one ``tree.sync`` after modules start.
+and removed on close. Core syncs global commands and the tracked guild command
+sets after modules start.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
 import discord
 from discord import app_commands
@@ -31,6 +33,8 @@ from kimi_agent_module_api.contracts import (
     ButtonSpec,
     CommandHandler,
     CommandSpec,
+    CommandSyncError,
+    GuildCommand,
     ModuleContractError,
     OutgoingEmbed,
     SelectSpec,
@@ -44,6 +48,14 @@ log = logging.getLogger(__name__)
 
 _TIER_ORDER: dict[TrustTierName, int] = {"member": 0, "regular": 1, "staff": 2}
 type InteractionAvailability = Callable[[], bool]
+
+
+class GuildCommandScopeStore(Protocol):
+    async def track(self, guild_id: int) -> None: ...
+
+    async def guild_ids(self) -> tuple[int, ...]: ...
+
+    async def forget(self, guild_id: int) -> None: ...
 
 
 def _always_available() -> bool:
@@ -427,14 +439,17 @@ class InteractionRouterImpl:
         trust: TrustLookup,
         dispatcher: ComponentDispatcher,
         is_guild_active: Callable[[int], bool],
+        runtime: InteractionRuntime | None = None,
     ) -> None:
         self._bot = bot
         self._module_name = module_name
         self._trust = trust
         self._dispatcher = dispatcher
         self._is_guild_active = is_guild_active
+        self._runtime = runtime
         self._groups: dict[str, app_commands.Group] = {}
         self._commands: list[tuple[str | None, str]] = []
+        self._guild_top_names: dict[int, set[str]] = {}
         self._registrations: list[_Registration] = []
         self._closed = False
 
@@ -458,6 +473,12 @@ class InteractionRouterImpl:
         if (spec.group, spec.name) in self._commands:
             raise ModuleContractError(
                 f"module {self._module_name!r} command {qualified!r} is already registered"
+            )
+        top_name = spec.group or spec.name
+        if self._runtime is not None and self._runtime.guild_command_owner(top_name) is not None:
+            raise ModuleContractError(
+                f"module {self._module_name!r} global command {top_name!r} "
+                "would shadow a guild command"
             )
         command = self._build_command(spec, handler, autocomplete)
         if spec.group:
@@ -488,6 +509,86 @@ class InteractionRouterImpl:
         registration = _Registration(self, close)
         self._registrations.append(registration)
         return registration
+
+    async def replace_guild_commands(
+        self,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
+        if self._runtime is None:
+            raise RuntimeError("guild command replacement requires an interaction runtime")
+        await self._runtime.replace_guild_commands(self, guild_id, commands)
+
+    def _replace_guild_commands_local(
+        self,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
+        if self._closed:
+            raise RuntimeError(f"module {self._module_name!r} interactions are closed")
+        if guild_id <= 0:
+            raise ModuleContractError("guild_id must be a positive Discord snowflake")
+        if commands and not self._is_guild_active(guild_id):
+            raise ModuleContractError(
+                f"module {self._module_name!r} is not active in guild {guild_id}"
+            )
+
+        guild = discord.Object(id=guild_id)
+        old_top_names = self._guild_top_names.get(guild_id, set())
+        prepared: dict[str, app_commands.Command[Any, ..., None] | app_commands.Group] = {}
+        qualified_names: set[str] = set()
+        for binding in commands:
+            spec = binding.spec
+            qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
+            if qualified in qualified_names:
+                raise ModuleContractError(
+                    f"module {self._module_name!r} guild command {qualified!r} "
+                    "is registered more than once"
+                )
+            qualified_names.add(qualified)
+            top_name = spec.group or spec.name
+            if self._bot.tree.get_command(top_name) is not None:
+                raise ModuleContractError(
+                    f"module {self._module_name!r} guild command {top_name!r} "
+                    "would shadow a global command"
+                )
+            existing = self._bot.tree.get_command(top_name, guild=guild)
+            if existing is not None and top_name not in old_top_names:
+                raise ModuleContractError(
+                    f"module {self._module_name!r} guild command {top_name!r} is already owned"
+                )
+
+            command = self._build_command(spec, binding.handler, binding.autocomplete)
+            if spec.group:
+                top = prepared.get(spec.group)
+                if top is None:
+                    top = app_commands.Group(
+                        name=spec.group,
+                        description=spec.group_description or spec.group,
+                    )
+                    prepared[spec.group] = top
+                if not isinstance(top, app_commands.Group):
+                    raise ModuleContractError(
+                        f"module {self._module_name!r} guild command {spec.group!r} "
+                        "is both a command and a group"
+                    )
+                top.add_command(command)
+            else:
+                if spec.name in prepared:
+                    raise ModuleContractError(
+                        f"module {self._module_name!r} guild command {spec.name!r} "
+                        "is both a command and a group"
+                    )
+                prepared[spec.name] = command
+
+        for name in old_top_names:
+            self._bot.tree.remove_command(name, guild=guild)
+        for top_command in prepared.values():
+            self._bot.tree.add_command(top_command, guild=guild)
+        if prepared:
+            self._guild_top_names[guild_id] = set(prepared)
+        else:
+            self._guild_top_names.pop(guild_id, None)
 
     def _forget_registration(self, registration: _Registration) -> None:
         if registration in self._registrations:
@@ -642,11 +743,27 @@ class InteractionRouterImpl:
     def owned_commands(self) -> tuple[str, ...]:
         return tuple(f"{g}.{n}" if g else n for g, n in self._commands)
 
+    def guild_command_ids(self) -> tuple[int, ...]:
+        return tuple(self._guild_top_names)
+
+    def has_guild_commands(self, guild_id: int) -> bool:
+        return bool(self._guild_top_names.get(guild_id))
+
+    def owns_guild_top_name(self, top_name: str) -> bool:
+        return any(top_name in names for names in self._guild_top_names.values())
+
     def close(self) -> None:
         self._closed = True
         for registration in list(self._registrations):
             registration.close()
+        for guild_id, names in list(self._guild_top_names.items()):
+            guild = discord.Object(id=guild_id)
+            for name in names:
+                self._bot.tree.remove_command(name, guild=guild)
+        self._guild_top_names.clear()
         self._dispatcher.unregister_module(self)
+        if self._runtime is not None:
+            self._runtime.unregister_router(self)
 
 
 @dataclass(slots=True)
@@ -655,8 +772,12 @@ class InteractionRuntime:
 
     bot: commands.Bot
     is_available: InteractionAvailability = _always_available
+    scope_store: GuildCommandScopeStore | None = None
     dispatcher: ComponentDispatcher = field(init=False)
     installed: bool = False
+    _live: bool = False
+    _sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _routers: list[InteractionRouterImpl] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.dispatcher = ComponentDispatcher(is_available=self.is_available)
@@ -670,13 +791,83 @@ class InteractionRuntime:
     def router_for(
         self, module_name: str, *, trust: TrustLookup, is_guild_active: Callable[[int], bool]
     ) -> InteractionRouterImpl:
-        return InteractionRouterImpl(
+        router = InteractionRouterImpl(
             bot=self.bot,
             module_name=module_name,
             trust=trust,
             dispatcher=self.dispatcher,
             is_guild_active=is_guild_active,
+            runtime=self,
         )
+        self._routers.append(router)
+        return router
+
+    def unregister_router(self, router: InteractionRouterImpl) -> None:
+        if router in self._routers:
+            self._routers.remove(router)
+
+    def guild_command_owner(self, top_name: str) -> str | None:
+        for router in self._routers:
+            if router.owns_guild_top_name(top_name):
+                return router.module_name
+        return None
+
+    async def replace_guild_commands(
+        self,
+        router: InteractionRouterImpl,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
+        async with self._sync_lock:
+            router._replace_guild_commands_local(guild_id, commands)
+            await self._track(guild_id)
+            if not self._live:
+                return
+            error = await self._sync_one(guild_id)
+            if error is not None:
+                raise CommandSyncError(
+                    f"could not synchronize guild commands for guild {guild_id}"
+                ) from error
+
+    async def sync_ready(self) -> None:
+        """Publish staged commands and retry every persisted guild scope."""
+        async with self._sync_lock:
+            self._live = True
+            tracked = set(await self._tracked_guild_ids())
+            local = {
+                guild_id for router in self._routers for guild_id in router.guild_command_ids()
+            }
+            connected = {int(guild.id) for guild in self.bot.guilds}
+            for guild_id in tracked - connected:
+                await self._forget(guild_id)
+            for guild_id in sorted((tracked | local) & connected):
+                await self._sync_one(guild_id)
+
+    async def _sync_one(self, guild_id: int) -> Exception | None:
+        has_commands = any(router.has_guild_commands(guild_id) for router in self._routers)
+        try:
+            synced = await self.bot.tree.sync(guild=discord.Object(id=guild_id))
+        except Exception as exc:
+            log.warning("Failed to sync slash commands for guild %s", guild_id, exc_info=True)
+            return exc
+
+        if not has_commands:
+            await self._forget(guild_id)
+        log.info("Synced %d guild slash command(s) for guild %s", len(synced), guild_id)
+        return None
+
+    async def _track(self, guild_id: int) -> None:
+        if self.scope_store is not None:
+            await self.scope_store.track(guild_id)
+
+    async def _tracked_guild_ids(self) -> tuple[int, ...]:
+        if self.scope_store is None:
+            return ()
+        return await self.scope_store.guild_ids()
+
+    async def _forget(self, guild_id: int) -> None:
+        if self.scope_store is not None:
+            await self.scope_store.forget(guild_id)
 
 
 __all__ = [

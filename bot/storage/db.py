@@ -829,6 +829,11 @@ async def _ensure_module_runtime_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         "INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) VALUES (1, NULL, 0)"
     )
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS module_command_guilds (
+            guild_id TEXT PRIMARY KEY
+        )"""
+    )
 
 
 def _sql_quote(value: str) -> str:

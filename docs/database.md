@@ -74,6 +74,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 - The `schema_version` table tracks which schema changes have been applied and when.
 - **`module_scheduler_runner`** is the module scheduler's singleton lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second process against the same file pauses instead of running jobs.
 - **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt and last error). Core owns it. Modules reach it through `ctx.scheduler`.
+- **`module_command_guilds`** stores only guild IDs where modules have published guild-scoped commands. Core uses the set to remove stale Discord commands after a module is disabled or removed.
 - **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and exact pre-change baseline needed for conflict detection and rollback. The runtime never reads `control_proposals` or `control_proposal_events`, and v4 doesn't create them.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
 - Stores under `storage/` can assume `Database.connect()` has already brought the database to the current supported schema.
@@ -142,6 +143,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`model_selection`** is a singleton holding the owner-selected global chat model, so a `/models` switch survives a restart. NULL means the normal `config/models.yaml` role and scope routing applies.
 - **`provider_circuits`** stores active model- or account-scoped provider cooldowns, including the normalized reason, optional status/provider code, and retry time. Persisting them prevents a restart from immediately retrying a provider that is still unhealthy. Successful recovery or an owner reset removes the affected rows.
 - **`image_distillations`** caches visual descriptions for text-only chat models. The key covers the image set, the vision model, and the prompt version. The cache is scoped to a single conversation so descriptions never cross a privacy or guild boundary, and deleting the parent conversation removes them by cascade. It's just a cache; the durable copy lives on the message row it describes.
+- **`module_command_guilds`** is the cleanup set for module-owned guild commands. A row contains only a Discord guild ID and is removed after a successful synchronization leaves that guild with no module commands.
 - **`schema_version`** records the version the database has reached.
 
 ## Model, paid-tool, and bounded-tool usage

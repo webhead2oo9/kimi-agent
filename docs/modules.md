@@ -159,7 +159,7 @@ After installation, activation, and any deployment or per-guild configuration, r
 
 An empty `KIMI_MODULES` doesn't import module entry points or run module migrations. Existing module tables remain in the shared database while their modules are disabled or absent; disabling isn't data deletion.
 
-A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a hard compatibility check. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
+A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a hard compatibility check. The core also advertises `discord.guild_commands.v1` for live guild-scoped command replacement. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
 
 ## Package and schema contract
 
@@ -183,7 +183,7 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, versioned from `1.0.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `1.1.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
 Before the first tag, reserve the `kimi-agent-module-api` project through PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi`. A name lookup isn't a reservation, so confirm availability again immediately before the first release.
 
@@ -344,9 +344,17 @@ the ports are a contract and an audit surface, not a sandbox.
   also give a registration an expiry. One persistent dispatcher routes clicks,
   so a button still works after a restart as long as the module re-registers
   its key in `start()`. Registrations are removed when the module closes; core
-  syncs the command tree once per READY.
+  syncs the command tree once per READY. Hosts advertising
+  `discord.guild_commands.v1` also expose
+  `replace_guild_commands(guild_id, Sequence[GuildCommand])`. The sequence is
+  that module's complete desired command set for the guild; an empty sequence
+  removes it. Calls from `start()` are staged until every module has started,
+  while later calls synchronize that guild immediately. Guild command names
+  cannot shadow global commands or another module's top-level command in the
+  same guild. A live Discord synchronization failure raises `CommandSyncError`
+  while retaining the desired set for retry on the next READY.
   Not supported: modals, attachment/number option kinds, context menus,
-  per-guild command scoping, localization.
+  localization.
 - `ctx.http`: outbound HTTP limited to the hosts in
   `permissions.http_hosts`. A rule names an exact host, the `discord-cdn`
   token, or `${setting_name}` resolved from the module's settings at load

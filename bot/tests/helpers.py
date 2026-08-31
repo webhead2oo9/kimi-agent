@@ -51,6 +51,17 @@ VALID_JPEG_BYTES = base64.b64decode(
     "/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAA"
     "AAAAAAAAAAAAAP/aAAgBAQABPxB//9k="
 )
+
+
+class NobodyBlocked:
+    """Blocked-user store stand-in: the runtime's block gate raises on an
+    uninitialised store, so tests that bypass _first_init_core and do not care
+    about blocks give it this real answer instead of None."""
+
+    async def is_blocked(self, user_id: str) -> bool:
+        return False
+
+
 PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"
 
 

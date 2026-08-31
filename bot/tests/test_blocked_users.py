@@ -133,17 +133,25 @@ async def _blocked_app(
             staff_user_ids=str(BLOCKED_USER_ID),
         )
     )
-    await app._first_init_core()
-    app.gateway_ready = True
-    store = _BlockedStore({str(BLOCKED_USER_ID)})
-    app.blocked_user_store = cast(Any, store)
-    app.privacy_barrier = cast(Any, _NeverLeased())
+    try:
+        await app._first_init_core()
+        app.gateway_ready = True
+        store = _BlockedStore({str(BLOCKED_USER_ID)})
+        app.blocked_user_store = cast(Any, store)
+        app.privacy_barrier = cast(Any, _NeverLeased())
 
-    async def never_runs(**_kwargs: object) -> None:
-        raise AssertionError("a blocked user reached the provider")
+        async def never_runs(**_kwargs: object) -> None:
+            raise AssertionError("a blocked user reached the provider")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", never_runs)
+        monkeypatch.setattr(app_runtime, "run_conversation", never_runs)
+    except BaseException:
+        await app._close_resources()
+        raise
     return app, store
+
+
+class _ReachedPastGate(Exception):
+    """Raised by the patched next step after the block gate on the guild path."""
 
 
 async def _via_guild_message(app: Any, monkeypatch: pytest.MonkeyPatch) -> str | None:
@@ -157,6 +165,13 @@ async def _via_guild_message(app: Any, monkeypatch: pytest.MonkeyPatch) -> str |
         raise AssertionError("handle_message ran for a blocked user")
 
     monkeypatch.setattr(app, "handle_message", handled)
+
+    # The stop-message check is the statement directly after the block gate, so
+    # reaching it means the gate passed; a blocked user must return before it.
+    def reached(_message: object) -> bool:
+        raise _ReachedPastGate
+
+    monkeypatch.setattr(app, "_is_stop_message", reached)
     message = _guild_message()
     await app.on_message(message)
     assert message.reactions == []
@@ -219,3 +234,20 @@ async def test_every_entry_point_refuses_a_blocked_user_before_any_work(
 
     assert reply == refusal
     assert store.asked == [str(BLOCKED_USER_ID)]
+
+
+@pytest.mark.asyncio
+async def test_the_guild_gate_sits_directly_before_the_stop_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Positive control: an unblocked user passes the gate and reaches the
+    very next statement, so the refusal above is the gate and not some other
+    failure of the fake message."""
+    app, store = await _blocked_app(tmp_path, monkeypatch)
+    app.blocked_user_store = cast(Any, _BlockedStore(set()))
+    try:
+        with pytest.raises(_ReachedPastGate):
+            await _via_guild_message(app, monkeypatch)
+    finally:
+        await app._close_resources()

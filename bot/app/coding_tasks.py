@@ -59,7 +59,7 @@ BlockedToolsResolver = Callable[[str, str], frozenset[str]]
 ToolConfigResolver = Callable[[Any], dict[str, dict[str, Any]]]
 
 
-type UserBlockedCheck = Callable[[str], Awaitable[bool]]
+UserBlockedCheck = Callable[[str], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,17 +826,42 @@ class CodingTaskService:
         A block that lands while a task is queued, or while the process is down
         and the task waits for recovery, has to hold when the task would start.
         The claim has already moved the row to running, so a refused task is
-        finished as cancelled here rather than handed to a worker.
+        finished as cancelled here rather than handed to a worker. The stored
+        text is neutral because it is published to the channel the task was
+        started in; the block itself is only logged. Delivery is left to the
+        pending-delivery sweeper so the scheduler loop never awaits Discord.
         """
         while True:
             task = await self._store.claim_next()
-            if task is None or not await self._runtime.user_blocked(task.user_id):
-                return task
+            if task is None:
+                return None
+            try:
+                blocked = await self._runtime.user_blocked(task.user_id)
+            except BaseException:
+                # An unanswered block question must not orphan a running row
+                # with no worker; put the claim back and surface the failure.
+                await self._store.release_claim(task.id)
+                raise
+            if not blocked:
+                refreshed = await self._store.get_task(task.id)
+                if refreshed is None:
+                    continue
+                if refreshed.cancel_requested:
+                    # A /stop or /privacy cancel landed during the block check,
+                    # before any worker existed to observe it. Settle the row
+                    # here instead of leaving a workerless 'cancelling' claim
+                    # for restart recovery.
+                    await self._store.finish(task.id, CodingTaskStatus.CANCELLED)
+                    continue
+                if refreshed.status is not CodingTaskStatus.RUNNING:
+                    continue
+                return refreshed
             logger.info("Cancelling coding task %s: user %s is blocked", task.id, task.user_id)
             await self._store.finish(
-                task.id, CodingTaskStatus.CANCELLED, error_text="User is blocked"
+                task.id,
+                CodingTaskStatus.CANCELLED,
+                error_text="This task was cancelled before it started.",
             )
-            await self._notify_id(task.id)
 
     async def _retry_pending_delivery(self, task: CodingTask) -> None:
         async with self._delivery_semaphore:

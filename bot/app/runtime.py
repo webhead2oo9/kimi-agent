@@ -1948,11 +1948,12 @@ class KimiApplication:
 
         Guild messages, personal chat, the teach context menu, and coding-task
         claim all route through here so a block cannot be honoured on one path
-        and missed on another. A store that is not initialised yet means the
-        database is not ready, and nothing that reaches a user runs before it.
+        and missed on another. Every entry point registers inside
+        _first_init_core after the store exists, so an absent store is a wiring
+        bug, and a privilege gate does not guess in that state.
         """
         if self.blocked_user_store is None:
-            return False
+            raise RuntimeError("blocked_user_store is not initialised; no entry point may run yet")
         return await self.blocked_user_store.is_blocked(user_id)
 
     async def _run_learn_turn(

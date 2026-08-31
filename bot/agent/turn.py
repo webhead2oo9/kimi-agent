@@ -1220,21 +1220,26 @@ async def execute_turn(
         # backend nor reach the workspace writer.
         original_assets = run_result.generated_assets
         validated_assets = await asyncio.to_thread(validate_generated_assets, original_assets)
-        if len(validated_assets) != len(original_assets):
-            run_result = replace(run_result, generated_assets=validated_assets)
-            if not validated_assets and run_result.text == generated_assets_response_text(
-                original_assets
-            ):
-                # The loop synthesized "Generated image attached." for an
-                # asset-only reply; with nothing surviving validation that
-                # text would be a false claim.
-                run_result = replace(
-                    run_result,
-                    text=(
+        synthesized = run_result.text == generated_assets_response_text(original_assets)
+        # Always adopt the validated list: even at equal length it carries the
+        # canonical media types the bytes earned, which moderation and the
+        # writer must both see.
+        run_result = replace(run_result, generated_assets=validated_assets)
+        if synthesized and len(validated_assets) != len(original_assets):
+            # The loop synthesized "Generated image(s) attached." for an
+            # asset-only reply; keep that claim matched to what will actually
+            # be attached, or replace it when nothing survived.
+            run_result = replace(
+                run_result,
+                text=(
+                    generated_assets_response_text(validated_assets)
+                    if validated_assets
+                    else (
                         "I generated a file, but it did not survive validation "
                         "and was not attached."
-                    ),
-                )
+                    )
+                ),
+            )
 
     await _stage_pending_response_files(
         turn,

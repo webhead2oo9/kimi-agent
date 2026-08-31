@@ -16,6 +16,7 @@ _MAX_GENERATED_ASSETS = 8
 _MAX_GENERATED_ASSET_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_GENERATED_ASSET_BYTES = 25 * 1024 * 1024
 _MAX_GENERATED_ASSET_ENCODED_BYTES = ((_MAX_GENERATED_ASSET_BYTES + 2) // 3) * 4
+_MAX_TOTAL_GENERATED_ASSET_ENCODED_BYTES = ((_MAX_TOTAL_GENERATED_ASSET_BYTES + 2) // 3) * 4
 
 
 def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAsset]:
@@ -31,6 +32,7 @@ def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAss
 
     kept: list[GeneratedAsset] = []
     total_bytes = 0
+    processed_encoded = 0
     if len(assets) > _MAX_GENERATED_ASSETS:
         log.warning(
             "Skipping %d generated assets beyond the asset-count cap",
@@ -43,6 +45,13 @@ def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAss
         if len(asset.data_base64) > _MAX_GENERATED_ASSET_ENCODED_BYTES:
             log.warning("Skipping generated asset %d: encoded data exceeds byte cap", index)
             continue
+        if processed_encoded + len(asset.data_base64) > _MAX_TOTAL_GENERATED_ASSET_ENCODED_BYTES:
+            # The encoded budget bounds decode work itself: without it, a
+            # provider could hand over eight near-cap payloads and have every
+            # one of them base64- and Pillow-decoded despite the aggregate cap.
+            log.warning("Stopping generated-asset validation at the aggregate encoded cap")
+            break
+        processed_encoded += len(asset.data_base64)
         try:
             raw = base64.b64decode(asset.data_base64, validate=True)
         except binascii.Error, ValueError:
@@ -52,8 +61,8 @@ def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAss
             log.warning("Skipping generated asset %d: decoded data exceeds byte cap", index)
             continue
         if total_bytes + len(raw) > _MAX_TOTAL_GENERATED_ASSET_BYTES:
-            log.warning("Skipping generated asset %d: aggregate asset bytes exceed cap", index)
-            continue
+            log.warning("Stopping generated-asset validation at the aggregate byte cap")
+            break
         # Charge the budget before validating, so rejected candidates consume
         # it too and eight invalid near-cap payloads cannot each be decoded.
         total_bytes += len(raw)

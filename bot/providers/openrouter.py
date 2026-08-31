@@ -187,36 +187,29 @@ class OpenRouterProvider(OpenAIChatProvider):
             # data must not repeat full scans/decodes outside the total response
             # processing budget.
             processed_encoded_chars += encoded_length
-            remaining_bytes = _MAX_TOTAL_INLINE_IMAGE_BYTES - processed_bytes
-            remaining_encoded_bytes = ((remaining_bytes + 2) // 3) * 4
-            if encoded_length > remaining_encoded_bytes:
-                log.warning("Stopping OpenRouter image parsing at the aggregate byte cap")
-                break
             data_base64 = url[comma_index + 1 :]
+            # Parsing runs on the event loop, so the payload is never decoded
+            # here: a 32-character prefix is enough for the signature sniff,
+            # the exact decoded size falls out of the encoded form, and full
+            # base64 validation plus the decode-level image check run in a
+            # worker thread before moderation (agent/turn.py ->
+            # providers/assets.py:validate_generated_assets).
             try:
-                raw = base64.b64decode(data_base64, validate=True)
+                prefix = base64.b64decode(data_base64[:32], validate=False)
             except binascii.Error, ValueError:
-                log.warning("Skipping OpenRouter image %d: data is not valid base64", index)
-                continue
-            if len(raw) > _MAX_INLINE_IMAGE_BYTES:
+                prefix = b""
+            decoded_length = (encoded_length * 3) // 4 - (
+                2 if data_base64.endswith("==") else 1 if data_base64.endswith("=") else 0
+            )
+            if decoded_length > _MAX_INLINE_IMAGE_BYTES:
                 log.warning("Skipping OpenRouter image %d: decoded data exceeds byte cap", index)
                 continue
-            if processed_bytes + len(raw) > _MAX_TOTAL_INLINE_IMAGE_BYTES:
-                # Padding can make the encoded upper-bound check conservative by
-                # two bytes. Keep the exact decoded bound authoritative.
+            if processed_bytes + decoded_length > _MAX_TOTAL_INLINE_IMAGE_BYTES:
                 log.warning("Stopping OpenRouter image parsing at the aggregate byte cap")
                 break
-            # Invalid candidates consume the processing budget too. Otherwise a
-            # provider could make every rejected image perform a full local decode
-            # while evading the aggregate cap reserved for this response.
-            processed_bytes += len(raw)
+            processed_bytes += decoded_length
 
-            # Both the declared media type and payload are untrusted provider
-            # data. Response parsing runs on the event loop, so it applies only
-            # the caps and a signature sniff here; the decode-level check every
-            # provider shares runs in a worker thread before moderation
-            # (agent/turn.py -> providers/assets.py:validate_generated_assets).
-            media_type = sniff_image_media_type(raw)
+            media_type = sniff_image_media_type(prefix)
             if media_type is None:
                 log.warning("Skipping OpenRouter image %d: bytes are not a supported image", index)
                 continue

@@ -47,13 +47,16 @@ class ImageGenService:
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.generate(request)
-        # Full-decode validation is CPU work; keep it off the event loop.
-        return replace(result, image_bytes=await asyncio.to_thread(self._verify, result))
+            # Verify inside the permit, off the event loop: max_concurrency
+            # bounds decoded images in flight, not just backend calls.
+            verified = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified)
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.edit(request)
-        return replace(result, image_bytes=await asyncio.to_thread(self._verify, result))
+            verified = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified)
 
     def _verify(self, result: ImageResult) -> bytes:
         """Rejects bodies that are not decodable PNG data within the size cap.

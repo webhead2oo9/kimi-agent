@@ -309,9 +309,11 @@ def _append_image_url(
 
 
 def _generated_asset_data_url(asset: GeneratedAsset) -> str:
-    data_url = f"data:{asset.media_type};base64,{asset.data_base64}"
-    normalized, _media_type = normalize_image_data_url(data_url, asset.media_type)
-    return normalized
+    """Assets reach moderation only after validate_generated_assets, which
+    fully decoded the bytes and made media_type canonical; re-normalizing here
+    would decode multi-megabyte payloads on the event loop for nothing."""
+
+    return f"data:{asset.media_type};base64,{asset.data_base64}"
 
 
 def _embed_text(embed: EmbedSpec) -> str:

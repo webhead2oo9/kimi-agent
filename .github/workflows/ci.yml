@@ -172,7 +172,8 @@ jobs:
       - name: Install the sandbox boundary
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap libseccomp2 util-linux
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap libseccomp2 util-linux dbus-user-session apparmor-profiles
 
       - name: Configure the host like a deployment
         shell: bash
@@ -181,19 +182,21 @@ jobs:
           # sandbox refuses Apport's pipe pattern by design.
           sudo sysctl -w kernel.core_pattern=core
           # Ubuntu 24.04 strips capabilities from unprivileged user namespaces
-          # unless the creating process is confined by an AppArmor profile that
-          # allows them. The runner image has no such profile loaded for bwrap,
-          # so the jail failed with "loopback: Failed RTM_NEWADDR: Operation not
-          # permitted" and "Creating new namespace failed". A deployment gets
-          # this from the bubblewrap package's own profile; the runner gets it
-          # from the sysctl.
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          # unless the creating binary is confined by an AppArmor profile that
+          # grants them, and the bubblewrap package ships no such profile; the
+          # jail failed here with "loopback: Failed RTM_NEWADDR: Operation not
+          # permitted". Install the same profile a real host uses and keep the
+          # restriction on, so CI proves the production posture rather than a
+          # relaxed one (docs/code-exec.md, Host requirements).
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
           # systemd-run --user needs a lingering user manager and its bus; this
           # is the same recipe as the "Host requirements" section.
           uid=$(id -u)
-          sudo loginctl enable-linger "$USER"
+          sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@${uid}.service"
           for _ in $(seq 1 30); do
             [ -S "/run/user/${uid}/bus" ] && break
@@ -202,7 +205,10 @@ jobs:
           test -S "/run/user/${uid}/bus"
           echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
-          state=$(XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user is-system-running || true)
+          # --wait blocks until the manager leaves initializing/starting, so a
+          # slow boot is not read as failure; the exit code is dropped only so
+          # the accept-list below is the single verdict.
+          state=$(XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user is-system-running --wait || true)
           echo "user manager: ${state}"
           case "${state}" in
             running|degraded) ;;

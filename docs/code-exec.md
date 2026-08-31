@@ -164,7 +164,17 @@ When both code execution and the [persistent browser](browser.md) use `netns`, t
 
 Every mode needs Linux, Bubblewrap, util-linux `prlimit`, libseccomp, `systemd-run`, a working user systemd manager, unprivileged user namespaces, and a Bubblewrap version that can disable nested user namespaces.
 
-Unprivileged user namespaces must keep their capabilities. Ubuntu 24.04 strips them (`kernel.apparmor_restrict_unprivileged_userns=1`) unless the creating binary is confined by an AppArmor profile that allows them, which the distribution's `bubblewrap` package provides. Where that profile is not loaded, `bwrap` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted` or `Creating new namespace failed`, and `run_code` stays unavailable; `python -m scripts.sandbox_probe` prints the relevant sysctls next to the failure.
+Unprivileged user namespaces must keep their capabilities. Ubuntu 24.04 strips them (`kernel.apparmor_restrict_unprivileged_userns=1`) unless the creating binary is confined by an AppArmor profile that grants `userns`, and the `bubblewrap` package ships no such profile. Install the one from `apparmor-profiles` and keep the restriction on:
+
+```bash
+sudo apt-get install -y apparmor-profiles
+sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+Without it `bwrap` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted` or `Creating new namespace failed`, and `run_code` stays unavailable; `python -m scripts.sandbox_probe` prints the relevant sysctls next to the failure. The CI `sandbox` job installs the same profile and asserts the restriction stays on.
+
+The user bus that `systemd-run --user` connects through comes from `dbus-user-session`; minimal server images may not have it installed.
 
 Kimi must run as a normal Unix user. UID 0 is rejected during startup and again before every run. Container root does not count as unprivileged.
 
@@ -208,11 +218,14 @@ An incomplete netns configuration fails settings validation. A complete setup wh
 
 Before exposing the tool:
 
-1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`.
-   It runs the same prerequisite checks as startup and names the first one
-   that fails; exit status 0 means a jailed process actually started. Then run
-   the live-jail tests with `KIMI_REQUIRE_SANDBOX_TESTS=1` so an unavailable
-   sandbox fails instead of skipping:
+1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`
+   with the same `ENV_FILE` the service uses. It builds the profile startup
+   builds from your `CODE_EXEC_*` and `WORKSPACE_DIR` settings, runs the
+   prerequisite checks in startup's order, and names the first one that
+   fails; exit status 0 means a jailed process actually started with that
+   profile (including the network legs of `netns` or `host`). Then run the
+   live-jail tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, under which any skip
+   in those files is a failure:
    `KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py`.
    CI runs the same job on a provisioned `ubuntu-latest` runner
    (`.github/workflows/ci.yml`, job `sandbox`).

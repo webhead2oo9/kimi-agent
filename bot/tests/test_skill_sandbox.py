@@ -174,7 +174,10 @@ def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
     mounts = sandbox_module._runtime_mounts((venv_bin / "python3").absolute())
 
     alias_bin = store / "cpython-1.2" / "bin"
-    for needed in (venv_bin, alias_bin, real_bin):
+    # The stdlib lives next to the executable's path, so the alias tree must
+    # be covered as a whole, not just its bin directory.
+    alias_lib = store / "cpython-1.2" / "lib"
+    for needed in (venv_bin, alias_bin, alias_lib, real_bin):
         assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
             f"{needed} is not covered by {mounts}"
         )

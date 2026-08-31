@@ -159,6 +159,39 @@ def _covered_by_base_mount(path: Path) -> bool:
 
 
 _SYMLINK_HOP_LIMIT = 40
+# A symlinked ancestor this shallow (/, /home, /tmp) must never become a
+# whole-tree bind; those layouts fall back to the plain parent mount.
+_MIN_SYMLINKED_ANCESTOR_PARTS = 3
+
+
+def _deepest_symlinked_ancestor(path: Path) -> Path | None:
+    probe = Path(path.anchor or "/")
+    found: Path | None = None
+    for component in path.parts[len(probe.parts) :]:
+        probe = probe / component
+        try:
+            if probe.is_symlink():
+                found = probe
+        except OSError:
+            break
+    return found
+
+
+def _hop_candidates(hop_dir: Path) -> list[Path]:
+    """The directory a hop needs, plus the symlinked ancestor that names it.
+
+    Binding only the hop's literal parent is not enough for a runtime reached
+    through a directory symlink: python-build-standalone finds its stdlib
+    relative to the executable's path, so the alias directory needs its whole
+    tree (bin and lib) present, which binding the ancestor itself provides -
+    bwrap resolves the bind source through the symlink on the host.
+    """
+
+    candidates = [hop_dir]
+    ancestor = _deepest_symlinked_ancestor(hop_dir)
+    if ancestor is not None and len(ancestor.parts) >= _MIN_SYMLINKED_ANCESTOR_PARTS:
+        candidates.append(ancestor)
+    return candidates
 
 
 def _runtime_mounts(interpreter: Path) -> list[Path]:
@@ -170,11 +203,12 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
     the jail. Mounting only the fully resolved target broke any interpreter
     reached through a symlinked directory - uv's version-alias layout
     (``cpython-3.14 -> cpython-3.14.7``) made ``execvp`` fail with ENOENT on a
-    chain whose every visible component existed - so each hop's parent is a
-    candidate mount of its own.
+    chain whose every visible component existed - so each hop contributes its
+    parent and, when that parent sits under a directory symlink, the symlinked
+    ancestor itself.
     """
 
-    candidates = [interpreter.parent]
+    candidates = _hop_candidates(interpreter.parent)
     current = interpreter
     for _ in range(_SYMLINK_HOP_LIMIT):
         try:
@@ -185,7 +219,7 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
             break
         current = target if target.is_absolute() else current.parent / target
         current = Path(os.path.normpath(current))
-        candidates.append(current.parent)
+        candidates.extend(_hop_candidates(current.parent))
     resolved_interpreter = interpreter.resolve()
     candidates.append(resolved_interpreter.parent)
     if resolved_interpreter == Path(sys.executable).resolve():

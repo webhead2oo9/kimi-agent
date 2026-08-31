@@ -61,7 +61,9 @@ def _reset_tool_surfaces() -> None:
     reset_surface_tools()
 
 
-@pytest.hookimpl(hookwrapper=True)
+# tryfirst on a hookwrapper means the post-yield half runs LAST, so no
+# competing wrapper can rewrite the converted outcome after this one.
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Generator[None]:
     outcome = yield
     if os.environ.get(_REQUIRE_SANDBOX_ENV) != "1":

@@ -252,8 +252,14 @@ def main() -> int:
     # The real gate, with its debug logging routed to stderr so the start
     # probe's own failure text (bwrap, prlimit, systemd-run) is not swallowed.
     # A netns or host profile runs its network legs here too.
-    logging.basicConfig(level=logging.DEBUG, stream=sys.stderr, format="%(name)s: %(message)s")
-    logging.getLogger("sandbox").setLevel(logging.DEBUG)
+    # basicConfig is a no-op when any root handler exists and would route the
+    # gate's diagnostics wherever that handler points; attach a dedicated
+    # stderr handler to the sandbox logger instead.
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    sandbox_logger = logging.getLogger("sandbox")
+    sandbox_logger.addHandler(handler)
+    sandbox_logger.setLevel(logging.DEBUG)
 
     def gate() -> tuple[bool, str]:
         return sandbox_available(config), f"{config.network_mode} profile start probe"

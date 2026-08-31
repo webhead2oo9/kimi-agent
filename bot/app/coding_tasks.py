@@ -674,6 +674,12 @@ class CodingTaskService:
             refreshed = await self._store.get_task(task_id)
             if refreshed is not None and refreshed.status == CodingTaskStatus.CANCELLED:
                 await self._notify(refreshed)
+            elif refreshed is not None and refreshed.status is CodingTaskStatus.CANCELLING:
+                # Claimed but not yet registered: the scheduler is inside its
+                # block check and there is no worker to observe the cancel.
+                # Settle the row; the claim loop treats the terminal status as
+                # the expected outcome and the sweeper announces it.
+                await self._store.finish(task_id, CodingTaskStatus.CANCELLED)
         self._wake.set()
         return True
 
@@ -864,6 +870,10 @@ class CodingTaskService:
                 refreshed = await self._store.get_task(task.id)
                 if refreshed is None:
                     logger.warning("Coding task %s vanished between claim and start", task.id)
+                    continue
+                if refreshed.status not in ACTIVE_TASK_STATUSES:
+                    # A concurrent /stop settled the claim while the block
+                    # check ran; this is the expected shape, not an anomaly.
                     continue
                 if refreshed.cancel_requested:
                     # A /stop or /privacy cancel landed during the block check,

@@ -288,50 +288,40 @@ jobs:
           print("rc:", done.returncode)
           print("stdout:", done.stdout)
           print("stderr:", done.stderr)
-          # Same jail, known-good interpreter: report what the jail actually
-          # sees at every component of the venv interpreter path.
-          probe_code = (
-              "import os
-"
-              "paths = [
-"
-              f"    {str(interp)!r},
-"
-              f"    {str(interp.parent)!r},
-"
-              f"    {str(interp.resolve())!r},
-"
-              f"    {str(interp.resolve().parent)!r},
-"
-              "]
-"
-              "for path in paths:
-"
-              "    print(path, 'exists=', os.path.exists(path), 'lexists=', os.path.lexists(path))
-"
-              "    if os.path.islink(path):
-"
-              "        print('   ->', os.readlink(path))
-"
-              "part = ''
-"
-              f"for component in {str(interp)!r}.split('/')[1:]:
-"
-              "    part += '/' + component
-"
-              "    print('component', part, os.path.lexists(part))
-"
-              "print('--- mountinfo home entries ---')
-"
-              "for line in open('/proc/self/mountinfo'):
-"
-              "    if '/home' in line or 'uv-python' in line:
-"
-              "        print(line.rstrip())
-"
+          # Same jail, known-good interpreter: write an introspection script
+          # into the skill dir (visible at /skill inside the jail) and print
+          # what the jail actually sees at each component of the venv path.
+          introspect = skill / "scripts" / "introspect.py"
+          introspect.write_text(
+              "import os\n"
+              "targets = os.environ.get('PROBE_TARGETS', '').split(os.pathsep)\n"
+              "for target in targets:\n"
+              "    part = ''\n"
+              "    for component in target.split('/')[1:]:\n"
+              "        part += '/' + component\n"
+              "        note = ''\n"
+              "        if os.path.islink(part):\n"
+              "            note = ' -> ' + os.readlink(part)\n"
+              "        print('seen', os.path.lexists(part), part, note)\n"
+              "print('--- mountinfo (home/uv) ---')\n"
+              "for line in open('/proc/self/mountinfo'):\n"
+              "    if '/home' in line or 'uv-python' in line:\n"
+              "        print(line.rstrip())\n",
+              encoding="utf-8",
           )
-          introspect = command[:-2] + ["/usr/bin/python3", "-I", "-c", probe_code]
-          seen = subprocess.run(introspect, capture_output=True, text=True, timeout=30)
+          # bwrap clears the environment, so smuggle the targets through argv
+          # by regenerating the command with env -i style: use a wrapper that
+          # sets PROBE_TARGETS before the jail is entered (prlimit passes env
+          # through; bwrap without --clearenv inherits it).
+          import os as _os
+          env = dict(_os.environ)
+          env["PROBE_TARGETS"] = _os.pathsep.join(
+              [str(interp), str(interp.resolve())]
+          )
+          introspect_cmd = command[:-2] + ["/usr/bin/python3", "-I", "/skill/scripts/introspect.py"]
+          seen = subprocess.run(
+              introspect_cmd, capture_output=True, text=True, timeout=30, env=env
+          )
           print("introspection rc:", seen.returncode)
           print(seen.stdout)
           print("introspection stderr:", seen.stderr)

@@ -176,8 +176,38 @@ async def test_claim_cancels_a_queued_task_whose_user_is_now_blocked(tmp_path) -
         refreshed = await store.get_task(blocked.id)
         assert refreshed is not None
         assert refreshed.status is CodingTaskStatus.CANCELLED
-        assert refreshed.error_text == "User is blocked"
-        assert notified == ["cancelled"]
+        # Neutral text: it is published into the channel the task was started
+        # in, so the block itself stays in the logs.
+        assert refreshed.error_text == "This task was cancelled before it started."
+        assert "blocked" not in refreshed.error_text.lower()
+        # The scheduler loop never awaits Discord; the pending-delivery sweeper
+        # owns the announcement.
+        assert notified == []
+        assert blocked.id in {task.id for task in await store.list_pending_delivery()}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_releases_the_row_when_the_block_check_fails(tmp_path) -> None:
+    """An unanswered block question must not orphan a running row."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-error")
+
+        async def broken_user_blocked(_user_id: str) -> bool:
+            raise RuntimeError("blocked store unavailable")
+
+        service = _start_service(store, tmp_path, user_blocked=broken_user_blocked)
+
+        with pytest.raises(RuntimeError, match="blocked store unavailable"):
+            await service._claim_next_runnable()
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.QUEUED
     finally:
         await db.close()
 

@@ -34,7 +34,7 @@ from storage.conversations import (
     ConversationRecord,
     ConversationStore,
 )
-from tests.helpers import StubProviderManager
+from tests.helpers import NobodyBlocked, StubProviderManager
 
 
 def test_user_memory_recall_types_parses_comma_separated_values():
@@ -225,6 +225,9 @@ def _build_test_app(monkeypatch):
         )
     )
     app.gateway_ready = True
+    # The runtime's block gate raises on an uninitialised store rather than
+    # guessing; these tests bypass _first_init_core, so give it a real answer.
+    app.blocked_user_store = NobodyBlocked()  # type: ignore[assignment]
     return app
 
 
@@ -1127,7 +1130,7 @@ def test_on_message_mapped_reply_with_mention_continues_existing_root(monkeypatc
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1184,7 +1187,7 @@ def test_on_message_text_invocation_reply_continues_existing_root(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1235,7 +1238,7 @@ def test_on_message_mapped_reply_without_mention_is_ignored(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1287,7 +1290,7 @@ def test_on_message_consent_gate_runs_before_conversation_row_write(monkeypatch)
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1336,7 +1339,7 @@ def test_on_message_no_turn_result_adds_no_success_reaction(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1364,7 +1367,7 @@ def test_on_message_unmapped_reply_without_mention_is_ignored(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -1508,7 +1511,7 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
 ) -> None:
     app = _build_test_app(monkeypatch)
     app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.turn_admission = TurnAdmissionController(
         max_active=2,
         max_active_per_user=1,
@@ -1572,7 +1575,7 @@ async def test_stop_cancels_turn_between_admission_and_root_registration(
 ) -> None:
     app = _build_test_app(monkeypatch)
     app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
     monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
@@ -1610,7 +1613,7 @@ async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
 ) -> None:
     app = _build_test_app(monkeypatch)
     app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.turn_admission = TurnAdmissionController(max_active=2, max_active_per_user=2)
     monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
@@ -2793,7 +2796,7 @@ def test_on_message_delivery_failure_adds_failure_reaction(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
@@ -2824,7 +2827,7 @@ def test_on_message_attachment_error_adds_failure_reaction(monkeypatch):
     store = RecordingStore()
     app.context_manager = ContextManager(cast(ConversationStore, store))
     app.conversation_store = cast(ConversationStore, store)
-    app.blocked_user_store = None
+    app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}

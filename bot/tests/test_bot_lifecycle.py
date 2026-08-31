@@ -24,7 +24,7 @@ from storage.conversations import ConversationStore, UserDataDeletion
 from storage.db import Database
 from storage.preferences import PreferenceStore
 from storage.privacy import PrivacyDeletionRequestStore
-from tests.helpers import StubProviderManager
+from tests.helpers import NobodyBlocked, StubProviderManager
 from tools.workspace.common import UserLocks
 
 
@@ -96,7 +96,12 @@ def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.KimiApplicat
         "build_provider_manager",
         lambda settings: StubProviderManager(settings),
     )
-    return app_runtime.build_app(_settings(discord_bot_token="discord-token"))
+    app = app_runtime.build_app(_settings(discord_bot_token="discord-token"))
+
+    # The runtime's block gate raises on an uninitialised store rather than
+    # guessing; lifecycle tests that drive on_message bypass _first_init_core.
+    app.blocked_user_store = NobodyBlocked()  # type: ignore[assignment]
+    return app
 
 
 @pytest.mark.asyncio
@@ -831,7 +836,7 @@ async def test_application_close_drains_active_message_before_resources(
     app = _build_test_app(monkeypatch)
     app.gateway_ready = True
     app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = None
+    app.blocked_user_store = cast(Any, NobodyBlocked())
     events: list[str] = []
     entered = asyncio.Event()
 

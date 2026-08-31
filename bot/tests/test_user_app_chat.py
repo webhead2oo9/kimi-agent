@@ -32,7 +32,7 @@ from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
 from tools.registry import MessageContext
 from workspace import user_app_workspace_key
-from tests.helpers import StubProviderManager
+from tests.helpers import StubProviderManager, make_settings
 
 
 _PNG_1X1 = base64.b64decode(
@@ -76,7 +76,7 @@ def test_user_app_settings_are_off_by_default_and_require_access() -> None:
 
 
 def test_owner_is_automatically_user_app_staff() -> None:
-    settings = Settings(
+    settings = make_settings(
         user_app_chat_enabled=True,
         owner_user_id="42",
         user_app_member_ids="",
@@ -1215,7 +1215,7 @@ def test_dm_surface_requires_the_chat_commands() -> None:
     """A DM-only deployment would hand out a personal transcript with no way to
     clear, cancel, or delete it: those commands ride on the /chat surface."""
     with pytest.raises(ValidationError, match="USER_APP_DM_ENABLED requires"):
-        Settings(
+        make_settings(
             user_app_chat_enabled=False,
             user_app_dm_enabled=True,
             owner_user_id="42",
@@ -1223,7 +1223,7 @@ def test_dm_surface_requires_the_chat_commands() -> None:
             user_app_regular_ids="",
             user_app_staff_ids="",
         )
-    ok = Settings(
+    ok = make_settings(
         user_app_chat_enabled=True,
         user_app_dm_enabled=True,
         owner_user_id="42",

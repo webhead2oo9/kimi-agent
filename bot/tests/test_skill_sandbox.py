@@ -262,7 +262,9 @@ def _live_linux_sandbox_unavailable() -> bool:
         return True
     try:
         # The configured ceilings, not the dataclass defaults: a gate that
-        # passes at limits real invocations never use certifies nothing.
+        # passes at limits real invocations never use certifies nothing. This
+        # runs at collection time, so it deliberately reads the live profile
+        # (allowlisted in test_settings_isolation.py).
         validate_sandbox_runtime(build_script_sandbox_limits(Settings()))  # type: ignore[call-arg]
     except SandboxUnavailableError:
         return True

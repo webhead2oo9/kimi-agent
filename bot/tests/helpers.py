@@ -65,6 +65,12 @@ PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"
 VALID_PNG_BASE64 = base64.b64encode(VALID_PNG_BYTES).decode("ascii")
 
 
+def make_settings(**overrides: Any) -> Settings:
+    """Build test settings without consulting the checkout's dotenv file."""
+
+    return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
+
+
 def corrupt_png_idat_stream(png: bytes) -> bytes:
     """Valid chunk framing and CRCs around a garbage DEFLATE payload.
 

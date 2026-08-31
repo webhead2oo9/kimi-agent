@@ -255,8 +255,14 @@ has actually loaded.
 
 ## Tests
 
-The Python suite needs no dotenv file, Discord connection, or network. After the
-first-time standard environment setup, run these checks from `bot/`:
+The Python suite needs no dotenv file, Discord connection, or network. Tests
+construct `Settings` through `tests.helpers.make_settings` (or pass
+`_env_file=None` explicitly), and an autouse fixture removes ambient settings
+variables before each test; `tests/test_settings_isolation.py` enforces both.
+A test that intentionally reads the live operator profile carries the
+`uses_live_settings_env` marker. `KIMI_REQUIRE_SANDBOX_TESTS` is not a setting
+and is never removed. After the first-time standard environment setup, run these
+checks from `bot/`:
 
 ```bash
 .venv/bin/ruff check .

@@ -206,6 +206,13 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
     chain whose every visible component existed - so each hop contributes its
     parent and, when that parent sits under a directory symlink, the symlinked
     ancestor itself.
+
+    Known limitation, held fail-closed: a relative ``..`` link that crosses an
+    unresolved directory symlink normalizes lexically here, which is how the
+    jail's bind layout resolves it but not how the host does. Such a layout
+    fails the existence check below with a named error instead of binding the
+    wrong directory; recreating every symlink component inside the jail would
+    lift it if a real deployment ever needs that shape.
     """
 
     candidates = _hop_candidates(interpreter.parent)
@@ -225,6 +232,7 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
     if resolved_interpreter == Path(sys.executable).resolve():
         candidates.extend((Path(sys.prefix), Path(sys.base_prefix)))
 
+    home = Path.home()
     mounts: list[Path] = []
     for candidate in candidates:
         normalized = Path(os.path.normpath(candidate))
@@ -232,6 +240,14 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
         if resolved == Path("/") or normalized == Path("/"):
             raise SandboxUnavailableError(
                 "Refusing to expose the host root as an interpreter mount"
+            )
+        if normalized == home or home.is_relative_to(normalized) or resolved == home:
+            # An interpreter sitting directly in (or above) the service home
+            # would ro-bind the whole home - credentials, config, databases -
+            # into every skill jail. A venv or runtime tree under the home is
+            # fine; the home itself never is.
+            raise SandboxUnavailableError(
+                f"Refusing to expose the service home as an interpreter mount: {normalized}"
             )
         if _covered_by_base_mount(normalized) and _covered_by_base_mount(resolved):
             continue

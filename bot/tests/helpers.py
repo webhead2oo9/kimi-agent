@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+import zlib
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -63,6 +64,24 @@ class NobodyBlocked:
 
 
 PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"
+VALID_PNG_BASE64 = base64.b64encode(VALID_PNG_BYTES).decode("ascii")
+
+
+def corrupt_png_idat_stream(png: bytes) -> bytes:
+    """Valid chunk framing and CRCs around a garbage DEFLATE payload.
+
+    The container walk passes (every CRC checks out); only an actual decode
+    notices the stream is not zlib data. This is the fixture that proves the
+    Pillow layer runs at all.
+    """
+
+    idat = png.index(b"IDAT")
+    length = int.from_bytes(png[idat - 4 : idat], "big")
+    data_start = idat + 4
+    data_end = data_start + length
+    junk = bytes((i * 37 + 11) % 251 for i in range(length))
+    crc = zlib.crc32(junk, zlib.crc32(b"IDAT")).to_bytes(4, "big")
+    return png[:data_start] + junk + crc + png[data_end + 4 :]
 
 
 def corrupt_png_crc(png: bytes) -> bytes:

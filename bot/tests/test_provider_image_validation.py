@@ -21,13 +21,33 @@ from image_gen.types import ImageEditRequest, ImageGenError, ImageGenRequest, Im
 from providers.assets import write_generated_assets
 from providers.codex import CodexProvider
 from providers.openrouter import OpenRouterProvider
-from tests.helpers import PNG_SIGNATURE_ONLY, VALID_PNG_BYTES, corrupt_png_crc
+from tests.helpers import (
+    PNG_SIGNATURE_ONLY,
+    VALID_PNG_BYTES,
+    corrupt_png_crc,
+    corrupt_png_idat_stream,
+)
+from kimi_agent_module_api.images import SUPPORTED_IMAGE_MEDIA_TYPES
+from utils import image_types
 
 BAD_PNGS = [
     pytest.param(PNG_SIGNATURE_ONLY + b"not really a png", id="signature-only"),
     pytest.param(corrupt_png_crc(VALID_PNG_BYTES), id="crc-corrupt"),
     pytest.param(VALID_PNG_BYTES[:-8], id="truncated"),
+    pytest.param(corrupt_png_idat_stream(VALID_PNG_BYTES), id="undecodable-idat"),
 ]
+
+
+def test_the_idat_fixture_is_caught_only_by_the_decode_layer() -> None:
+    payload = corrupt_png_idat_stream(VALID_PNG_BYTES)
+    assert image_types.structurally_valid_image_media_type(payload) == "image/png"
+    assert image_types.decoded_image_media_type(payload) is None
+
+
+def test_every_sniffable_type_has_a_container_validator() -> None:
+    # An unknown-but-sniffable type fails closed at runtime; this is the CI
+    # tripwire that turns SDK drift into a red build instead.
+    assert set(image_types._CONTAINER_VALIDATORS) == set(SUPPORTED_IMAGE_MEDIA_TYPES)
 
 
 def _b64(payload: bytes) -> str:

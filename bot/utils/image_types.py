@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Callable
 from io import BytesIO
 import mimetypes
 import warnings
@@ -93,15 +94,22 @@ def structurally_valid_image_media_type(payload: bytes) -> str | None:
     """
 
     media_type = sniff_image_media_type(payload)
-    validators = {
-        "image/png": _valid_png_container,
-        "image/jpeg": _valid_jpeg_container,
-        "image/gif": _valid_gif_container,
-        "image/webp": _valid_webp_container,
-    }
-    if media_type is None or not validators[media_type](payload):
+    if media_type is None:
+        return None
+    validator = _CONTAINER_VALIDATORS.get(media_type)
+    if validator is None:
+        # The sniffer learned a type this module has no container walk for
+        # (SDK drift). Untrusted bytes fail closed rather than raising;
+        # tests/test_provider_image_validation.py pins the two sets together.
+        return None
+    if not validator(payload):
         return None
     return media_type
+
+
+# Bound at module level so the mapping cannot be rebuilt per call and so the
+# key set is a testable constant.
+_CONTAINER_VALIDATORS: dict[str, Callable[[bytes], bool]]
 
 
 def _reasonable_dimensions(width: int, height: int) -> bool:
@@ -123,7 +131,7 @@ def _valid_png_container(payload: bytes) -> bool:
         if chunk_end > len(payload):
             return False
         expected_crc = int.from_bytes(payload[data_end:chunk_end], "big")
-        if zlib.crc32(chunk_type + payload[data_start:data_end]) != expected_crc:
+        if zlib.crc32(payload[data_start:data_end], zlib.crc32(chunk_type)) != expected_crc:
             return False
         if first:
             if chunk_type != b"IHDR" or length != 13:
@@ -175,7 +183,12 @@ def _valid_jpeg_container(payload: bytes) -> bool:
         if payload[offset] != 0xFF:
             if not saw_scan:
                 return False
-            offset += 1
+            # Entropy-coded data: skip to the next marker candidate in C
+            # rather than walking bytes in Python.
+            next_marker = payload.find(b"\xff", offset)
+            if next_marker < 0:
+                return False
+            offset = next_marker
             continue
         while offset < len(payload) and payload[offset] == 0xFF:
             offset += 1
@@ -363,3 +376,11 @@ def normalize_image_data_url(value: str, media_type: str | None = None) -> tuple
     if sniffed is None:
         return value, supported_image_media_type(media_type) or media_type
     return f"data:{sniffed};base64,{payload}", sniffed
+
+
+_CONTAINER_VALIDATORS = {
+    "image/png": _valid_png_container,
+    "image/jpeg": _valid_jpeg_container,
+    "image/gif": _valid_gif_container,
+    "image/webp": _valid_webp_container,
+}

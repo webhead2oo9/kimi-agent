@@ -206,7 +206,14 @@ An incomplete netns configuration fails settings validation. A complete setup wh
 
 Before exposing the tool:
 
-1. Run the repository CI suite on Linux.
+1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`.
+   It runs the same prerequisite checks as startup and names the first one
+   that fails; exit status 0 means a jailed process actually started. Then run
+   the live-jail tests with `KIMI_REQUIRE_SANDBOX_TESTS=1` so an unavailable
+   sandbox fails instead of skipping:
+   `KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py`.
+   CI runs the same job on a provisioned `ubuntu-latest` runner
+   (`.github/workflows/ci.yml`, job `sandbox`).
 2. Confirm `run_code` appears in the startup capability summary at the tier you selected.
 3. Run an offline profile and confirm network connections fail.
 4. If using `host`, verify the public egress IP and audit every private route available to the server.

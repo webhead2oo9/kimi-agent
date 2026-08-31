@@ -8,7 +8,7 @@ from storage.preferences import PreferenceStore
 
 
 class UserAppConsentView(discord.ui.View):
-    """Ephemeral consent prompt that resumes the retained /chat request."""
+    """Ephemeral consent prompt that resumes a retained interaction request."""
 
     def __init__(
         self,

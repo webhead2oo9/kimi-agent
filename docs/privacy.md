@@ -423,21 +423,28 @@ memory opt-out (`/memory opt-out`, which only governs Hindsight long-term
 memory). The distinction is that memory opt-out controls retention, while the
 consent gate controls whether the provider call happens at all.
 
+The gate covers responding message entry points such as mentions, personal
+`/chat`, and the staff **Teach <bot>** message context menu. For the teach menu,
+the staff member invoking the model turn is the person who must consent; quoting
+a member's message does not transfer that responsibility to its author.
+
 ### Behavior
 
 On a user's first interaction after the feature is enabled, the bot posts a
 privacy notice as an embed with **Accept** / **Decline** buttons and does
 **not** run the model yet:
 
-- **Accept** → consent is recorded in SQLite, the prompt updates to a
-  confirmation, and the user's original message is then answered through the
-  normal path. The user is never prompted again.
+- **Accept** → consent is recorded in SQLite and the retained request continues.
+  A message-path prompt updates to a confirmation and re-dispatches the original
+  message; `/chat` and **Teach <bot>** defer the button interaction and resume
+  there. The user is never prompted again.
 - **Decline** → the prompt updates to a dismissal and the message is dropped.
   Nothing is sent to the provider and nothing is written to the local
   transcript. Decline is **not** a permanent block; the gate reappears on the
   user's next mention.
-- **Ignore / timeout** → after `PRIVACY_CONSENT_TIMEOUT` seconds the buttons
-  are disabled and the message is dropped; the gate reappears next mention.
+- **Ignore / timeout** → after `PRIVACY_CONSENT_TIMEOUT` seconds the request is
+  dropped and the gate reappears next time. Message-path prompts remove their
+  buttons; interaction prompts expire with Discord's view timeout.
 
 Only the user who triggered the prompt can use its buttons; another member's
 click gets an ephemeral rejection.
@@ -470,6 +477,14 @@ the gate and is answered with no special-case code. If the consent check itself
 errors, the gate **fails closed** and treats the message as gated rather than
 letting it through.
 
+`/chat` and the **Teach <bot>** menu share
+`KimiApplication._prompt_consent_if_needed`. Each performs its own access,
+block, and input validation first, then consults consent before deferring the
+interaction or running a provider turn. Accepting records consent, defers the
+button interaction, and resumes the retained request on that interaction; both
+prompts are ephemeral, while `/chat` may still deliver the resumed answer
+publicly when the user selected public visibility.
+
 ### Components
 
 - `app/consent.py` is the Discord boundary. `PrivacyConsentGate` holds all the
@@ -478,6 +493,10 @@ letting it through.
   only on the `ConsentPreferenceStore` protocol plus a redispatch callback, so
   it is unit-testable without a live connection. `PrivacyConsentView` is the
   thin two-button `discord.ui.View`.
+- `app/user_app_consent.py:UserAppConsentView` is the ephemeral interaction
+  prompt shared by `/chat` and **Teach <bot>**. It records consent, defers the
+  accept-button interaction with the requested response visibility, and invokes
+  the retained callback exactly once.
 - `storage/preferences.py` provides `has_consented(user_id)` (defaults
   **False**, because consent must be explicit) and
   `set_consent(user_id, granted)`.

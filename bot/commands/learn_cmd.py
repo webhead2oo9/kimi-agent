@@ -42,6 +42,8 @@ _NO_REPORT = "I finished, but had nothing to report back."
 
 LearnRunner = Callable[[LearnTarget, discord.Interaction], Awaitable[str]]
 BlockedUserCheck = Callable[[str], Awaitable[bool]]
+LearnResume = Callable[[discord.Interaction], Awaitable[None]]
+ConsentRequest = Callable[[discord.Interaction, LearnResume], Awaitable[bool]]
 
 
 def learn_menu_name(bot_name: str) -> str:
@@ -57,14 +59,14 @@ def register_learn_command(
     *,
     run_learn: LearnRunner,
     is_blocked: BlockedUserCheck,
+    request_consent: ConsentRequest,
     bot_name: str = DEFAULT_BOT_NAME,
 ) -> None:
     """Install the context menu.
 
-    ``run_learn`` and ``is_blocked`` are injected so this module never reaches
-    into the application: ``app/runtime.py`` binds them to the scoped turn with
-    the live provider, registry, and skills index, and to the blocked-user
-    store every other entry point consults.
+    The turn runner and entry gates are injected so this module never reaches
+    into the application: ``app/runtime.py`` binds them to the scoped turn,
+    blocked-user store, and shared privacy-consent flow.
     """
 
     @app_commands.context_menu(name=learn_menu_name(bot_name))
@@ -91,24 +93,30 @@ def register_learn_command(
             await _send_message(interaction, _EMPTY)
             return
 
+        async def run(resume_interaction: discord.Interaction) -> None:
+            target = LearnTarget(
+                content=message.content or "",
+                author_name=getattr(message.author, "display_name", str(message.author)),
+                author_id=str(message.author.id),
+                jump_url=message.jump_url,
+                message_id=str(message.id),
+                channel_id=str(message.channel.id),
+                attachment_names=tuple(attachment.filename for attachment in message.attachments),
+            )
+            try:
+                report = await run_learn(target, resume_interaction)
+            except Exception:
+                log.exception("Learn turn failed for message %s", message.id)
+                await _send_message(resume_interaction, _FAILED)
+                return
+            await _send_message(resume_interaction, report.strip() or _NO_REPORT)
+
+        if await request_consent(interaction, run):
+            return
+
         # Learning runs a full model turn with tool calls; defer before it starts
         # so the interaction token does not expire mid-thought.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        target = LearnTarget(
-            content=message.content or "",
-            author_name=getattr(message.author, "display_name", str(message.author)),
-            author_id=str(message.author.id),
-            jump_url=message.jump_url,
-            message_id=str(message.id),
-            channel_id=str(message.channel.id),
-            attachment_names=tuple(attachment.filename for attachment in message.attachments),
-        )
-        try:
-            report = await run_learn(target, interaction)
-        except Exception:
-            log.exception("Learn turn failed for message %s", message.id)
-            await _send_message(interaction, _FAILED)
-            return
-        await _send_message(interaction, report.strip() or _NO_REPORT)
+        await run(interaction)
 
     bot.tree.add_command(teach_from_message, override=True)

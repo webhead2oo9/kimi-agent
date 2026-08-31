@@ -776,7 +776,7 @@ async def test_on_ready_waits_for_first_startup_before_reconnect_ready_continues
     assert not any(isinstance(result, BaseException) for result in results), results
     assert init_calls == 1
     assert len(manager.ensure_calls) == 2
-    assert sync_count == 2
+    assert sync_count == 1
     assert events.index("init-finish") < events.index("memory")
 
 
@@ -1364,9 +1364,11 @@ async def test_overlapping_ready_events_publish_commands_once_at_a_time(
     app = _build_test_app(monkeypatch)
     concurrent = 0
     peak = 0
+    calls = 0
 
     async def slow_sync(**_kwargs: Any) -> list[Any]:
-        nonlocal concurrent, peak
+        nonlocal calls, concurrent, peak
+        calls += 1
         concurrent += 1
         peak = max(peak, concurrent)
         await asyncio.sleep(0)
@@ -1378,3 +1380,285 @@ async def test_overlapping_ready_events_publish_commands_once_at_a_time(
     await asyncio.gather(app._sync_global_commands(), app._sync_global_commands())
 
     assert peak == 1
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_fast_command_sync_is_cached_for_the_overlapping_ready_cohort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    calls = 0
+
+    async def fast_sync(**_kwargs: Any) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(app.bot.tree, "sync", fast_sync)
+    release = asyncio.Event()
+
+    async def cohort_member() -> None:
+        await release.wait()
+
+    first_ready = asyncio.create_task(cohort_member())
+    second_ready = asyncio.create_task(cohort_member())
+    app._ready_event_tasks.update({first_ready, second_ready})
+    try:
+        await app._sync_global_commands()
+        app._ready_event_tasks.discard(first_ready)
+
+        # The first child task is already complete, but the second overlapping
+        # READY member must observe its cached result rather than issue another PUT.
+        await app._sync_global_commands()
+    finally:
+        app._ready_event_tasks.clear()
+        app._release_completed_command_sync()
+        release.set()
+        await asyncio.gather(first_ready, second_ready)
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_command_sync_cache_is_never_shared_across_gateway_generations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    calls = 0
+
+    async def fast_sync(**_kwargs: Any) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(app.bot.tree, "sync", fast_sync)
+    release = asyncio.Event()
+
+    async def cohort_member() -> None:
+        await release.wait()
+
+    old_ready = asyncio.create_task(cohort_member())
+    app._ready_event_tasks.add(old_ready)
+    app._ready_event_generations[old_ready] = 0
+    await app._sync_global_commands(0)
+    assert app._global_sync_task is not None
+
+    app._gateway_generation = 1
+    new_ready = asyncio.create_task(cohort_member())
+    app._ready_event_tasks.add(new_ready)
+    app._ready_event_generations[new_ready] = 1
+    try:
+        await app._sync_global_commands(1)
+    finally:
+        app._ready_event_tasks.clear()
+        app._ready_event_generations.clear()
+        app._release_completed_command_sync()
+        release.set()
+        await asyncio.gather(old_ready, new_ready)
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cannot_be_overtaken_by_a_stubborn_ready_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    sync_started = asyncio.Event()
+    release_sync = asyncio.Event()
+
+    class RecordingRuntime:
+        def __init__(self) -> None:
+            self.live = True
+            self.guild_sync_calls = 0
+
+        async def pause_sync(self) -> None:
+            self.live = False
+
+        async def sync_ready(self, *, is_current: Any) -> None:
+            self.guild_sync_calls += 1
+            if is_current():
+                self.live = True
+
+    runtime = RecordingRuntime()
+    app._module_interaction_runtime = cast(Any, runtime)
+
+    async def stubborn_sync(**_kwargs: Any) -> list[Any]:
+        sync_started.set()
+        while not release_sync.is_set():
+            try:
+                await release_sync.wait()
+            except asyncio.CancelledError:
+                continue
+        return []
+
+    monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
+    monkeypatch.setattr(app.bot.tree, "sync", stubborn_sync)
+    publication = asyncio.create_task(app._sync_global_commands(0))
+    await sync_started.wait()
+
+    await asyncio.wait_for(app.on_disconnect(), timeout=0.2)
+
+    assert runtime.live is False
+    assert publication.done() is False
+    release_sync.set()
+    await asyncio.wait_for(publication, timeout=0.2)
+
+    assert runtime.guild_sync_calls == 0
+    assert app._global_sync_task is None
+    assert app._global_sync_generation is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_cancel_a_newer_ready_while_pause_yields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    pause_started = asyncio.Event()
+    release_pause = asyncio.Event()
+    global_started = asyncio.Event()
+    release_global = asyncio.Event()
+    global_completed = False
+
+    class BlockingPauseRuntime:
+        def __init__(self) -> None:
+            self.guild_sync_calls = 0
+
+        async def pause_sync(self) -> None:
+            pause_started.set()
+            await release_pause.wait()
+
+        async def sync_ready(self, *, is_current: Any) -> None:
+            assert is_current() is True
+            self.guild_sync_calls += 1
+
+    runtime = BlockingPauseRuntime()
+    app._module_interaction_runtime = cast(Any, runtime)
+
+    async def global_sync(**_kwargs: Any) -> list[Any]:
+        nonlocal global_completed
+        global_started.set()
+        await release_global.wait()
+        global_completed = True
+        return []
+
+    monkeypatch.setattr(app.bot.tree, "sync", global_sync)
+    monkeypatch.setattr(app, "_log_ready_state", MagicMock())
+    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    monkeypatch.setattr(app, "_start_filesystem_sweepers_locked", AsyncMock())
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+
+    disconnecting = asyncio.create_task(app.on_disconnect())
+    await pause_started.wait()
+    ready = asyncio.create_task(app.on_ready())
+    await global_started.wait()
+
+    release_pause.set()
+    await asyncio.wait_for(disconnecting, timeout=0.2)
+    release_global.set()
+    await asyncio.wait_for(ready, timeout=0.2)
+
+    assert global_completed is True
+    assert runtime.guild_sync_calls == 1
+    assert app.gateway_ready is True
+
+
+@pytest.mark.asyncio
+async def test_global_sync_cancellation_preserves_concurrently_retired_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+    release_new = asyncio.Event()
+
+    async def stubborn_old() -> None:
+        old_started.set()
+        while not release_old.is_set():
+            try:
+                await release_old.wait()
+            except asyncio.CancelledError:
+                continue
+
+    async def wait_for_new_release() -> None:
+        await release_new.wait()
+
+    old = asyncio.create_task(stubborn_old())
+    newly_retired = asyncio.create_task(wait_for_new_release())
+    await old_started.wait()
+    app._retired_global_sync_tasks.add(old)
+    monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
+
+    cancelling = asyncio.create_task(app._cancel_global_command_sync(tasks={old}))
+    await asyncio.sleep(0)
+    app._retired_global_sync_tasks.add(newly_retired)
+    await asyncio.wait_for(cancelling, timeout=0.2)
+
+    assert old in app._retired_global_sync_tasks
+    assert newly_retired in app._retired_global_sync_tasks
+
+    release_old.set()
+    release_new.set()
+    await asyncio.wait_for(asyncio.gather(old, newly_retired), timeout=0.2)
+    app._retired_global_sync_tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_stubborn_retired_global_put_does_not_block_new_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    app.db_initialized = True
+    app._gateway_generation = 1
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+    global_calls = 0
+
+    async def stubborn_old_put() -> None:
+        old_started.set()
+        while not release_old.is_set():
+            try:
+                await release_old.wait()
+            except asyncio.CancelledError:
+                continue
+
+    old = asyncio.create_task(stubborn_old_put())
+    await old_started.wait()
+    old.cancel()
+    await asyncio.sleep(0)
+    app._retired_global_sync_tasks.add(old)
+
+    class RecordingRuntime:
+        def __init__(self) -> None:
+            self.guild_sync_calls = 0
+
+        async def sync_ready(self, *, is_current: Any) -> None:
+            assert is_current() is True
+            self.guild_sync_calls += 1
+
+    runtime = RecordingRuntime()
+    app._module_interaction_runtime = cast(Any, runtime)
+
+    async def global_sync(**_kwargs: Any) -> list[Any]:
+        nonlocal global_calls
+        global_calls += 1
+        return []
+
+    monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
+    monkeypatch.setattr(app.bot.tree, "sync", global_sync)
+    monkeypatch.setattr(app, "_log_ready_state", MagicMock())
+    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    monkeypatch.setattr(app, "_start_filesystem_sweepers_locked", AsyncMock())
+    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+
+    await asyncio.wait_for(app.on_ready(), timeout=0.2)
+
+    assert global_calls == 0
+    assert runtime.guild_sync_calls == 1
+    assert app.gateway_ready is True
+
+    release_old.set()
+    await asyncio.wait_for(old, timeout=0.2)
+    app._retired_global_sync_tasks.discard(old)

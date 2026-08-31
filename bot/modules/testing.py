@@ -33,6 +33,7 @@ from kimi_agent_module_api.testing import (
     FakeEvents,
     FakeGuildSettings,
     FakeHttp,
+    FakeInteractionOwnership,
     FakeInteractions,
     FakeProposals,
     FakeScheduler,
@@ -151,11 +152,15 @@ async def build_test_runtime(
     try:
         settings = Settings(_env_file=None, config_dir=str(config_dir))  # type: ignore[call-arg]
         registry = ToolRegistry()
+        resolved_capabilities = (
+            capabilities if capabilities is not None else module_capabilities(settings)
+        )
         manager = ModuleManager.load(
             tuple(names),
             core_settings=settings,
             registry=registry,
             installed=installed,
+            capabilities=resolved_capabilities,
         )
     finally:
         for key, value in previous.items():
@@ -169,14 +174,22 @@ async def build_test_runtime(
     bot = FakeBot()
     trust_lookup = trust or FakeTrust()
     ports: dict[str, ModulePorts] = {}
+    interaction_ownership = FakeInteractionOwnership()
 
-    def ports_for(spec: ModuleSpec) -> ModulePorts:
+    def ports_for(
+        spec: ModuleSpec,
+        is_guild_active: Callable[[int], bool],
+    ) -> ModulePorts:
         target_guilds = {f"guild:{guild_id}": str(guild_id) for guild_id in (guild_config or {})}
         created = ModulePorts(
             events=FakeEvents(spec.name),
             scheduler=FakeScheduler(),
             discord=FakeDiscordActions(spec.name, spec.permissions.discord_actions),
-            interactions=FakeInteractions(spec.name),
+            interactions=FakeInteractions(
+                spec.name,
+                ownership=interaction_ownership,
+                is_guild_active=is_guild_active,
+            ),
             guild_settings=FakeGuildSettings(guild_config),
             http=FakeHttp(http_routes),
             proposals=FakeProposals(spec.name, target_guilds=target_guilds),
@@ -192,12 +205,12 @@ async def build_test_runtime(
         # The same advertisement build_app makes. A narrower set here would let a
         # module pass ModuleManager.load's capability gate and then take the wrong
         # branch against ctx.capabilities, with nothing in production to match it.
-        capabilities=capabilities if capabilities is not None else module_capabilities(settings),
+        capabilities=resolved_capabilities,
         trust=trust_lookup,
     )
 
     def per_module(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
-        p = ports_for(spec)
+        p = ports_for(spec, ports["is_guild_active"])
         return {
             **ports,
             "events": p.events,
@@ -229,12 +242,27 @@ async def build_test_runtime(
 
 def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
     """``customize`` for manager tests: public fakes for the Discord-bound ports."""
+
+    # Every ModuleStorageImpl created by one manager points at the same Database.
+    # Keep the fake command tree there so successive customize() calls share the
+    # same top-level ownership, just as every live router shares one Discord tree.
+    database = getattr(ports.get("storage"), "database", None)
+    ownership = getattr(database, "_kimi_test_interaction_ownership", None)
+    if not isinstance(ownership, FakeInteractionOwnership):
+        ownership = FakeInteractionOwnership()
+        if database is not None:
+            database._kimi_test_interaction_ownership = ownership
+    is_guild_active = ports.get("is_guild_active")
     return {
         **ports,
         "events": ports.get("events") or FakeEvents(spec.name),
         "scheduler": ports.get("scheduler") or FakeScheduler(),
         "discord": FakeDiscordActions(spec.name, spec.permissions.discord_actions),
-        "interactions": FakeInteractions(spec.name),
+        "interactions": FakeInteractions(
+            spec.name,
+            ownership=ownership,
+            is_guild_active=is_guild_active if callable(is_guild_active) else None,
+        ),
         "http": ports.get("http") or FakeHttp(),
         "proposals": ports.get("proposals") or FakeProposals(spec.name),
     }

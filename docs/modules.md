@@ -344,8 +344,8 @@ the ports are a contract and an audit surface, not a sandbox.
   also give a registration an expiry. One persistent dispatcher routes clicks,
   so a button still works after a restart as long as the module re-registers
   its key in `start()`. Registrations are removed when the module closes; core
-  syncs the command tree once per READY, and overlapping READY events publish
-  one at a time. On shutdown core stops admitting interactions and gives the
+  syncs the command tree once per READY cohort, and overlapping READY events
+  share the same publication. On shutdown core stops admitting interactions and gives the
   handlers already running a bounded window to finish replying before Discord
   disconnects and your module and the database close; a handler still running
   after that window is cancelled, so keep them short. Hosts advertising
@@ -355,8 +355,11 @@ the ports are a contract and an audit surface, not a sandbox.
   removes it. Calls from `start()` are staged until every module has started,
   while later calls synchronize that guild immediately. Guild command names
   cannot shadow global commands or another module's top-level command in the
-  same guild. A live Discord synchronization failure raises `CommandSyncError`
-  while retaining the desired set for retry on the next READY.
+  same guild. A live Discord synchronization failure restores the previously
+  published handlers, performs a compensating synchronization, and raises
+  `CommandSyncError`; the rejected desired set is not installed later in the
+  background. Startup and compensating failures use bounded automatic retries
+  and surface through module health until synchronization recovers.
   Hosts advertising `discord.modals.v1` support `show_modal(ModalSpec)` and
   route submissions registered with kind `"modal"`; submitted text is exposed
   by key through `text_values`. Hosts advertising `discord.components_v2.v1`
@@ -368,10 +371,17 @@ the ports are a contract and an audit surface, not a sandbox.
   `edit_original` must also provide a layout.
   Command and component specs are checked against Discord's payload limits when
   you register them — at most 25 options and 25 choices, descriptions of 1 to
-  100 characters, choices and autocomplete never together and only on string or
-  integer options, integer-only bounds, and 1 to 25 unique select options within
+  100 characters, lowercase option names that are also valid Python identifiers
+  (so no `-`), choice values matching their option's type, choices and
+  autocomplete never together and only on string or integer options, an
+  autocomplete option only alongside a handler, integer-only bounds, buttons
+  with a label of at most 80 characters or an emoji, and 1 to 25 unique select
+  options within
   `min_values`/`max_values` — so a malformed spec raises `ModuleContractError`
   at registration instead of rejecting a whole scope's bulk synchronization.
+  A modal's `custom_id` has a smaller budget than a button's
+  (`MODAL_CUSTOM_ID_MAX_LENGTH`), because core reserves a fixed-width suffix so
+  two people opening the same form do not evict each other.
   Not supported: attachment/number option kinds, context menus, localization.
 - `ctx.http`: outbound HTTP limited to the hosts in
   `permissions.http_hosts`. A rule names an exact host, the `discord-cdn`
@@ -408,7 +418,10 @@ the standard library and the contracts, so a module can unit-test its logic
 with only the API package installed. `FakeDiscordActions` enforces the module's declared actions,
 `FakeInteractions.component_min_tiers[(kind, key)]` lets tests check a
 component's access tier, and `FakeScheduler.run_due(now)` runs jobs only when
-the test advances time.
+the test advances time. Create handler inputs with
+`FakeInteractions.interaction(...)` (or pass the exact `module_name` to
+`FakeInteraction`) so component and modal custom-ID budgets use the module's
+real namespace.
 
 For composition tests, core's `modules.testing.build_test_runtime(tmp_path,
 names)` loads the named modules through the real `ModuleManager`, applies their

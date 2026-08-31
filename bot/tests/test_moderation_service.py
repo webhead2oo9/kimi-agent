@@ -10,6 +10,7 @@ import pytest
 from moderation.backends.base import ModerationBackend
 from moderation.service import ModerationService
 from moderation.types import Direction, ModerationError, ModerationVerdict
+from providers.openrouter import OpenRouterProvider
 from providers.types import ContentPart, GeneratedAsset
 from tools.embeds import EmbedAttachment, EmbedSpec
 
@@ -76,6 +77,31 @@ async def test_service_fails_open_for_input_errors_and_closed_for_output_errors(
     assert not input_decision.blocked
     assert output_decision.blocked
     assert output_decision.matched_categories == ["moderation_error"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_openrouter_inline_image_never_enters_output_moderation() -> None:
+    backend = RecordingBackend()
+    service = ModerationService(backend=backend, enabled=True, timeout_seconds=1.0)
+    assets = OpenRouterProvider._parse_images(
+        [
+            {
+                "image_url": {
+                    "url": "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+",
+                }
+            }
+        ]
+    )
+
+    decision = await service.check(
+        text="valid answer",
+        direction=Direction.OUTPUT,
+        generated_assets=assets,
+    )
+
+    assert assets == []
+    assert not decision.blocked
+    assert [[item.type for item in call] for call in backend.calls] == [["text"]]
 
 
 @pytest.mark.asyncio

@@ -2484,7 +2484,11 @@ class KimiApplication:
                         )
                     finally:
                         await activity_reporter.finish()
-                    if result is not None and not result.blocked_by_moderation:
+                    if (
+                        result is not None
+                        and not result.blocked_by_moderation
+                        and result.termination_reason != "attachment_error"
+                    ):
                         transcript_text = result.response_text
                         if not transcript_text and result.embed is not None:
                             transcript_text = embed_transcript_summary(result.embed)
@@ -2794,7 +2798,7 @@ class KimiApplication:
                         await self.discord_gateway.add_status_reaction(message, "👋")
                     elif result.blocked_by_moderation:
                         await self.discord_gateway.add_status_reaction(message, "🚫")
-                    elif result.delivery_failed:
+                    elif result.termination_reason == "attachment_error" or result.delivery_failed:
                         await self.discord_gateway.add_status_reaction(message, "❌")
                     else:
                         await self.discord_gateway.add_status_reaction(message, "✅")
@@ -3122,10 +3126,13 @@ class KimiApplication:
             # operator-gated backstop synthesizes one for an over-long reply in an
             # opted-in channel. Either way the same creation/enrollment path runs.
             thread_request = turn_result.thread_request
-            if turn_result.blocked_by_moderation:
-                # A blocked reply gets no thread at all. Same-channel that was
-                # merely untidy; a cross-channel one would post an anchor in a
-                # channel nobody in this conversation is even looking at.
+            if (
+                turn_result.blocked_by_moderation
+                or turn_result.termination_reason == "attachment_error"
+            ):
+                # A blocked or attachment-validation reply gets no thread at all.
+                # Same-channel that would be merely untidy; a cross-channel one
+                # would post an anchor where nobody is awaiting the failed turn.
                 thread_request = None
             elif (
                 thread_request is None
@@ -3311,6 +3318,7 @@ class KimiApplication:
                 and conv_id is not None
                 and sent_messages
                 and not turn_result.blocked_by_moderation
+                and turn_result.termination_reason != "attachment_error"
             ):
                 # An embed-only reply has empty content; persist a text summary so the
                 # embed stays visible in the transcript that seeds later turns.

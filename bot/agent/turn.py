@@ -421,7 +421,19 @@ class TurnResult:
     delivery_failed: bool = False
 
 
-type TurnTerminationReason = ConversationTerminationReason | Literal["moderation_blocked"]
+type TurnTerminationReason = (
+    ConversationTerminationReason | Literal["attachment_error", "moderation_blocked"]
+)
+
+
+_CURRENT_IMAGE_UNAVAILABLE_RESPONSE = (
+    "I couldn't read the attached image. Re-upload it as a valid PNG, JPEG, GIF, or WebP "
+    "within the attachment size limit."
+)
+
+
+class _CurrentImageUnavailableError(Exception):
+    """The trigger advertised an image, but no validated image bytes were available."""
 
 
 def _workspace_key_for_turn(turn: TurnRequest) -> WorkspaceKey:
@@ -602,6 +614,11 @@ async def handle_turn(
             ),
             deadline,
         )
+    except _CurrentImageUnavailableError:
+        return TurnResult(
+            response_text=_CURRENT_IMAGE_UNAVAILABLE_RESPONSE,
+            termination_reason="attachment_error",
+        )
     except ConversationTurnTimeoutError:
         if usage_recorder is not None:
             await usage_recorder.flush()
@@ -734,6 +751,8 @@ async def prepare_turn(
             ),
             deadline,
         )
+        if turn_images.current_image_unavailable:
+            raise _CurrentImageUnavailableError
         reply_image_budget = max(0, config.max_turn_images - len(turn_images.vision_parts))
         reply_context = await _await_with_deadline(
             _collect_reply_context(

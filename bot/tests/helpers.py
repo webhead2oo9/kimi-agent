@@ -9,6 +9,7 @@ sessions) intentionally stay local to their test files.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import tempfile
 from functools import lru_cache
@@ -28,7 +29,43 @@ from tools.registry import MessageContext
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
+
 from workspace.manager import WorkspaceManager
+
+
+# Real 1x1 images that survive full decoding. Provider-output validation
+# rejects bare signatures, so tests that need "an image" must use these.
+VALID_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAA7EAAAOxAGVKw4b"
+    "AAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
+VALID_JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUG"
+    "BgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYH"
+    "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wgAR"
+    "CAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQBAQAAAAAAAAAAAAAAAA"
+    "AAAAD/2gAMAwEAAhADEAAAAX8f/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QA"
+    "FBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAA"
+    "gBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAA"
+    "AAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP"
+    "/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAA"
+    "AAAAAAAAAAAAAP/aAAgBAQABPxB//9k="
+)
+PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"
+
+
+def corrupt_png_crc(png: bytes) -> bytes:
+    """Flip one byte inside the first IDAT payload without updating its CRC.
+
+    The result still starts with a PNG signature and a well-formed IHDR, so a
+    signature-only check accepts it; a chunk walk that verifies CRCs does not.
+    """
+
+    data_start = png.index(b"IDAT") + 4
+    corrupted = bytearray(png)
+    corrupted[data_start + 2] ^= 0xFF
+    return bytes(corrupted)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

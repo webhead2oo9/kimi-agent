@@ -1,11 +1,61 @@
 import asyncio
+import base64
+import zlib
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from providers import openrouter as openrouter_module
 from providers.openrouter import OpenRouterProvider
 from providers.types import ContentPart, ProviderCapability, ProviderRequest
+from utils import image_types
+
+PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAA7EAAAOxAGVKw4b"
+    "AAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
+PNG_BYTES = base64.b64decode(PNG_BASE64)
+JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUG"
+    "BgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYH"
+    "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wgAR"
+    "CAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQBAQAAAAAAAAAAAAAAAA"
+    "AAAAD/2gAMAwEAAhADEAAAAX8f/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QA"
+    "FBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAA"
+    "gBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAA"
+    "AAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP"
+    "/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAA"
+    "AAAAAAAAAAAAAP/aAAgBAQABPxB//9k="
+)
+GIF_BYTES = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+WEBP_BYTES = base64.b64decode("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAgA0JaQAA3AA/vuUAAA=")
+GIF_WITHOUT_PALETTE_BYTES = (
+    b"GIF89a\x01\x00\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+)
+GIF_WITH_INVALID_LZW_BYTES = GIF_BYTES[:29] + b"\x00" + GIF_BYTES[30:]
+GIF_WITH_INVALID_FRAME_POSITION_BYTES = GIF_BYTES[:20] + b"\x01" + GIF_BYTES[21:]
+_png_with_invalid_compression = bytearray(PNG_BYTES)
+_png_with_invalid_compression[26] = 1
+_png_with_invalid_compression[29:33] = zlib.crc32(_png_with_invalid_compression[12:29]).to_bytes(
+    4, "big"
+)
+PNG_WITH_INVALID_COMPRESSION_BYTES = bytes(_png_with_invalid_compression)
+JPEG_SOF_OFFSET = JPEG_BYTES.index(b"\xff\xc2")
+JPEG_WITH_MISMATCHED_ARITHMETIC_SOF_BYTES = (
+    JPEG_BYTES[: JPEG_SOF_OFFSET + 1] + b"\xca" + JPEG_BYTES[JPEG_SOF_OFFSET + 2 :]
+)
+WEBP_REORDERED_BODY = WEBP_BYTES[12:] + b"VP8X\x0a\x00\x00\x00" + b"\x00" * 10
+WEBP_WITH_LATE_EXTENDED_HEADER_BYTES = (
+    b"RIFF" + (len(WEBP_REORDERED_BODY) + 4).to_bytes(4, "little") + b"WEBP" + WEBP_REORDERED_BODY
+)
+CORRUPT_WEBP_BYTES = (
+    b"RIFF"
+    + (18).to_bytes(4, "little")
+    + b"WEBPVP8L"
+    + (5).to_bytes(4, "little")
+    + b"\x2f\x00\x00\x00\x00\x00"
+)
 
 
 class FakeCompletions:
@@ -204,7 +254,7 @@ def test_openrouter_provider_captures_reasoning_field() -> None:
 
 
 def test_openrouter_provider_extracts_generated_images() -> None:
-    image = SimpleNamespace(image_url=SimpleNamespace(url="data:image/png;base64,abc"))
+    image = SimpleNamespace(image_url=SimpleNamespace(url=f"data:image/png;base64,{PNG_BASE64}"))
     message = SimpleNamespace(content="made one", tool_calls=None, images=[image])
     native = SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
@@ -228,7 +278,7 @@ def test_openrouter_provider_extracts_generated_images() -> None:
         )
     )
 
-    assert response.generated_assets[0].data_base64 == "abc"
+    assert response.generated_assets[0].data_base64 == PNG_BASE64
 
 
 def test_openrouter_provider_extracts_generated_images_from_sdk_extra_dicts() -> None:
@@ -239,7 +289,7 @@ def test_openrouter_provider_extracts_generated_images_from_sdk_extra_dicts() ->
             "images": [
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,ZGljdA=="},
+                    "image_url": {"url": f"data:image/png;base64,{PNG_BASE64}"},
                 }
             ]
         },
@@ -266,43 +316,171 @@ def test_openrouter_provider_extracts_generated_images_from_sdk_extra_dicts() ->
         )
     )
 
-    assert response.generated_assets[0].data_base64 == "ZGljdA=="
+    assert response.generated_assets[0].data_base64 == PNG_BASE64
 
 
 @pytest.mark.parametrize(
-    ("url", "expected_media_type", "expected_suffix"),
+    ("declared_media_type", "raw", "expected_media_type", "expected_suffix"),
     [
-        ("data:image/jpeg;base64,abc", "image/jpeg", ".jpg"),
-        ("data:image/webp;base64,abc", "image/webp", ".webp"),
-        ("data:image/gif;base64,abc", "image/gif", ".gif"),
-        ("data:image/png;charset=binary;base64,abc", "image/png", ".png"),
+        ("image/jpeg", JPEG_BYTES, "image/jpeg", ".jpg"),
+        ("image/webp", WEBP_BYTES, "image/webp", ".webp"),
+        ("image/gif", GIF_BYTES, "image/gif", ".gif"),
+        ("image/png;charset=binary", PNG_BYTES, "image/png", ".png"),
+        # A valid image with an untrusted or missing label is kept and canonicalized.
+        ("image/svg+xml", JPEG_BYTES, "image/jpeg", ".jpg"),
+        ("", PNG_BYTES, "image/png", ".png"),
     ],
 )
-def test_openrouter_provider_keeps_the_declared_image_media_type(
-    url: str, expected_media_type: str, expected_suffix: str
+def test_openrouter_provider_canonicalizes_image_type_from_bytes(
+    declared_media_type: str,
+    raw: bytes,
+    expected_media_type: str,
+    expected_suffix: str,
 ) -> None:
-    # OpenRouter returns more than PNG; labelling everything .png hands Discord a
-    # file whose extension contradicts its bytes.
+    payload = base64.b64encode(raw).decode("ascii")
     [asset] = OpenRouterProvider._parse_images(
-        [SimpleNamespace(image_url=SimpleNamespace(url=url))]
+        [
+            SimpleNamespace(
+                image_url=SimpleNamespace(url=f"data:{declared_media_type};base64,{payload}")
+            )
+        ]
     )
 
     assert asset.media_type == expected_media_type
+    assert asset.data_base64 == payload
     assert asset.suggested_filename == f"openrouter-image-1{expected_suffix}"
-    assert asset.data_base64 == "abc"
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "data:text/html;base64,abc",
-        "data:image/svg+xml;base64,abc",
-        "data:;base64,abc",
         "https://example.test/image.png",
+        "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+",
+        "data:image/png;base64,not-valid-base64!",
+        f"data:image/png,{PNG_BASE64}",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "data:image/png;base64,"
+        + base64.b64encode(PNG_WITH_INVALID_COMPRESSION_BYTES).decode("ascii"),
+        "data:image/jpeg;base64,/9j/2Q==",
+        "data:image/jpeg;base64,"
+        + base64.b64encode(JPEG_WITH_MISMATCHED_ARITHMETIC_SOF_BYTES).decode("ascii"),
+        "data:image/gif;base64,R0lGODlh",
+        "data:image/gif;base64," + base64.b64encode(GIF_WITHOUT_PALETTE_BYTES).decode("ascii"),
+        "data:image/gif;base64," + base64.b64encode(GIF_WITH_INVALID_LZW_BYTES).decode("ascii"),
+        "data:image/gif;base64,"
+        + base64.b64encode(GIF_WITH_INVALID_FRAME_POSITION_BYTES).decode("ascii"),
+        "data:image/webp;base64,UklGRgAAAABXRUJQ",
+        "data:image/webp;base64," + base64.b64encode(CORRUPT_WEBP_BYTES).decode("ascii"),
+        "data:image/webp;base64,"
+        + base64.b64encode(WEBP_WITH_LATE_EXTENDED_HEADER_BYTES).decode("ascii"),
     ],
 )
-def test_openrouter_provider_skips_image_urls_it_cannot_vouch_for(url: str) -> None:
+def test_openrouter_provider_skips_urls_that_are_not_valid_inline_images(url: str) -> None:
     assert (
         OpenRouterProvider._parse_images([SimpleNamespace(image_url=SimpleNamespace(url=url))])
         == []
     )
+
+
+def test_openrouter_provider_caps_images_before_they_reach_moderation() -> None:
+    url = f"data:image/png;base64,{PNG_BASE64}"
+    images = [SimpleNamespace(image_url=SimpleNamespace(url=url)) for _ in range(10)]
+
+    assets = OpenRouterProvider._parse_images(images)
+
+    assert len(assets) == openrouter_module._MAX_INLINE_IMAGES
+
+
+def test_openrouter_provider_caps_decoded_and_aggregate_image_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = f"data:image/png;base64,{PNG_BASE64}"
+    image = SimpleNamespace(image_url=SimpleNamespace(url=url))
+    monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", len(PNG_BYTES) - 1)
+    assert OpenRouterProvider._parse_images([image]) == []
+
+    monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", len(PNG_BYTES))
+    monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_BYTES", len(PNG_BYTES))
+    assert len(OpenRouterProvider._parse_images([image, image])) == 1
+
+
+def test_openrouter_provider_counts_rejected_images_toward_processing_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corrupt_payload = base64.b64encode(CORRUPT_WEBP_BYTES).decode("ascii")
+    corrupt = {"image_url": {"url": f"data:image/webp;base64,{corrupt_payload}"}}
+    valid = {"image_url": {"url": f"data:image/png;base64,{PNG_BASE64}"}}
+    monkeypatch.setattr(
+        openrouter_module,
+        "_MAX_TOTAL_INLINE_IMAGE_BYTES",
+        len(CORRUPT_WEBP_BYTES) + len(PNG_BYTES) - 1,
+    )
+
+    assert OpenRouterProvider._parse_images([corrupt, valid]) == []
+
+
+@pytest.mark.parametrize("payload", ["AAAA", "AAA!"])
+def test_openrouter_provider_bounds_encoded_work_for_rejected_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str,
+) -> None:
+    real_decode = openrouter_module.base64.b64decode
+    decode_calls = 0
+
+    def counted_decode(value: str, *, validate: bool) -> bytes:
+        nonlocal decode_calls
+        decode_calls += 1
+        return real_decode(value, validate=validate)
+
+    monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", 2)
+    monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_ENCODED_BYTES", 4)
+    monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_BYTES", 4)
+    monkeypatch.setattr(openrouter_module.base64, "b64decode", counted_decode)
+    image = {"image_url": {"url": f"data:image/png;base64,{payload}"}}
+
+    assert OpenRouterProvider._parse_images([image] * 8) == []
+    assert decode_calls == 2
+
+
+def test_openrouter_provider_rejects_oversized_data_url_header() -> None:
+    url = f"data:image/png;{'x;' * 1000}base64,{PNG_BASE64}"
+
+    assert OpenRouterProvider._parse_images([{"image_url": {"url": url}}]) == []
+
+
+def test_openrouter_provider_bounds_animated_frame_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TooManyFrames:
+        format = "GIF"
+        size = (1, 1)
+
+        @property
+        def n_frames(self) -> int:
+            raise AssertionError("validation must not scan an untrusted frame count")
+
+        def __enter__(self) -> TooManyFrames:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def seek(self, frame: int) -> None:
+            seek_calls.append(frame)
+
+        def load(self) -> None:
+            load_calls.append(None)
+
+    seek_calls: list[int] = []
+    load_calls: list[None] = []
+    monkeypatch.setattr(image_types.Image, "open", lambda _stream: TooManyFrames())
+    payload = base64.b64encode(GIF_BYTES).decode("ascii")
+
+    assert (
+        OpenRouterProvider._parse_images(
+            [{"image_url": {"url": f"data:image/gif;base64,{payload}"}}]
+        )
+        == []
+    )
+    assert seek_calls == list(range(image_types._MAX_VALIDATED_IMAGE_FRAMES + 1))
+    assert len(load_calls) == image_types._MAX_VALIDATED_IMAGE_FRAMES

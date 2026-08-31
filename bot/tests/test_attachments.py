@@ -114,6 +114,29 @@ def test_collect_turn_images_uses_filename_when_content_type_missing(
     assert list(tmp_path.rglob("cat.png"))
 
 
+def test_collect_turn_images_uses_filename_when_content_type_is_generic(
+    tmp_path: Path,
+) -> None:
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
+    message = SimpleNamespace(
+        id=55,
+        attachments=[
+            FakeAttachment(
+                filename="cat.png",
+                content_type="application/octet-stream",
+                payload=_PNG_HEADER,
+            )
+        ],
+    )
+
+    parts = _collect_current(store, message)
+
+    assert len(parts) == 1
+    assert parts[0].media_type == "image/png"
+    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert list(tmp_path.rglob("cat.png"))
+
+
 def test_collect_turn_images_sniffs_actual_media_type(tmp_path: Path) -> None:
     store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
     message = SimpleNamespace(
@@ -448,7 +471,10 @@ def test_collect_turn_images_skips_non_images(tmp_path: Path) -> None:
     assert parts == []
 
 
-def test_collect_turn_images_removes_declared_image_with_invalid_bytes(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_collect_turn_images_marks_declared_image_with_invalid_bytes_unavailable(
+    tmp_path: Path,
+) -> None:
     store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
     message = SimpleNamespace(
         id=55,
@@ -461,9 +487,19 @@ def test_collect_turn_images_removes_declared_image_with_invalid_bytes(tmp_path:
         ],
     )
 
-    parts = _collect_current(store, message)
+    result = await collect_turn_images(
+        message,
+        store=store,
+        conversation_key="guild:chan",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
 
-    assert parts == []
+    assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert not list(tmp_path.rglob("fake.png"))
 
 
@@ -680,6 +716,7 @@ async def test_dishonest_attachment_size_exhausts_turn_byte_budget(tmp_path: Pat
     )
 
     assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert (dishonest.read_count, second.read_count) == (1, 0)
     assert not list(tmp_path.rglob("*.png"))
 
@@ -712,6 +749,7 @@ async def test_staging_failure_still_spends_declared_turn_byte_budget(
     )
 
     assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert (first.read_count, second.read_count) == (1, 0)
     assert not list(tmp_path.rglob("*.png"))
 
@@ -1146,6 +1184,19 @@ def test_message_has_image_attachment_detects_image_filename_without_content_typ
     assert message_has_image_attachment(msg) is True
 
 
+def test_message_has_image_attachment_detects_image_filename_with_generic_content_type():
+    msg = _FakeMessage(
+        attachments=[
+            _FakeAttachment(
+                b"X",
+                name="photo.png",
+                content_type="application/octet-stream",
+            ),
+        ]
+    )
+    assert message_has_image_attachment(msg) is True
+
+
 def test_message_has_image_attachment_false_for_non_image():
     msg = _FakeMessage(attachments=[_FakeAttachment(b"X", content_type="text/plain")])
     assert message_has_image_attachment(msg) is False
@@ -1462,6 +1513,21 @@ def test_collect_turn_attachments_skips_image_filename_without_content_type() ->
     msg = _att_message(
         [
             _AttSrc(filename="photo.png", content_type=None, payload=b"x"),
+            _AttSrc(filename="notes.bin", content_type=None, payload=b"data"),
+        ]
+    )
+    refs = collect_turn_attachments(msg)
+    assert [r.filename for r in refs] == ["notes.bin"]
+
+
+def test_collect_turn_attachments_skips_image_filename_with_generic_content_type() -> None:
+    msg = _att_message(
+        [
+            _AttSrc(
+                filename="photo.png",
+                content_type="application/octet-stream",
+                payload=b"x",
+            ),
             _AttSrc(filename="notes.bin", content_type=None, payload=b"data"),
         ]
     )

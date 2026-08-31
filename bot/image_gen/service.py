@@ -15,10 +15,10 @@ from image_gen.types import (
     ImageGenRequest,
     ImageResult,
 )
+from utils.image_types import decoded_image_media_type
 
 log = logging.getLogger(__name__)
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # Mirrors discord_adapter.io.DISCORD_DEFAULT_FILE_SIZE_LIMIT_BYTES without an
 # image_gen -> discord_adapter import (forbidden by the package graph).
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -67,6 +67,8 @@ class ImageGenService:
             raise ImageGenError("image API returned data that is not valid base64") from exc
         if len(raw) > self._max_image_bytes:
             raise ImageGenError(f"generated image exceeds the {self._max_image_bytes} byte cap")
-        if not raw.startswith(PNG_SIGNATURE):
-            raise ImageGenError("image API returned data that is not a PNG image")
+        # Same validator as provider-native assets: a signature is not an image,
+        # and the size cap above bounds what the decoder is asked to touch.
+        if decoded_image_media_type(raw) != "image/png":
+            raise ImageGenError("image API returned data that is not a decodable PNG image")
         return raw

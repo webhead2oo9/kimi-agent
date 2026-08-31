@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v4. If you upgrade to a newer release, the bot runs the right migrations at startup. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
+The current schema version is v5. If you upgrade to a newer release, the bot runs the right migrations at startup. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -71,11 +71,12 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
 - `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry upgrades supported lower versions.
+- Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - **`module_scheduler_runner`** is the module scheduler's singleton lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second process against the same file pauses instead of running jobs.
 - **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt and last error). Core owns it. Modules reach it through `ctx.scheduler`.
 - **`module_command_guilds`** stores only guild IDs where modules have published guild-scoped commands. Core uses the set to remove stale Discord commands after a module is disabled or removed.
-- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and exact pre-change baseline needed for conflict detection and rollback. The runtime never reads `control_proposals` or `control_proposal_events`, and v4 doesn't create them.
+- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and exact pre-change baseline needed for conflict detection and rollback. The runtime never reads `control_proposals` or `control_proposal_events`; v5 preserves those legacy tables when present but never creates them.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
 - Stores under `storage/` can assume `Database.connect()` has already brought the database to the current supported schema.
 
@@ -90,6 +91,7 @@ The current registry:
 | v1 → v2 | `coding_task_context_inputs` | Durable worker input metadata for coding tasks. |
 | v2 → v3 | `video_understanding_sessions` | Video session bookkeeping, interactions, provider files, and deletion outboxes. |
 | v3 → v4 | `provider_circuit_breakers` | Persistent provider circuit breaker. |
+| v4 → v5 | `core_runtime_tables` | Canonical config-proposal, module scheduler, command-scope, and module-ledger tables. |
 
 Each version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema and version stamp unchanged.
 

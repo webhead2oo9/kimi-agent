@@ -60,34 +60,6 @@ _HANDLER_MAX = 64
 _DEFAULT_BACKOFF = Backoff()
 _MAX_FLOAT_LOG = math.log(sys.float_info.max)
 
-SCHEMA_SQL = f"""CREATE TABLE IF NOT EXISTS {TABLE} (
-    job_id           TEXT PRIMARY KEY,
-    module_name      TEXT NOT NULL,
-    job_key          TEXT NOT NULL,
-    handler          TEXT NOT NULL,
-    run_at           REAL NOT NULL,
-    interval_seconds REAL,
-    jitter_seconds   REAL NOT NULL DEFAULT 0,
-    backoff_json     TEXT NOT NULL DEFAULT '{{}}',
-    payload_json     TEXT NOT NULL DEFAULT '{{}}',
-    attempt          INTEGER NOT NULL DEFAULT 0,
-    leased_until     REAL,
-    lease_token      TEXT,
-    last_error       TEXT,
-    created_at       REAL NOT NULL,
-    updated_at       REAL NOT NULL,
-    UNIQUE (module_name, job_key)
-)"""
-INDEX_SQL = f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_due ON {TABLE}(run_at, leased_until)"
-RUNNER_SCHEMA_SQL = f"""CREATE TABLE IF NOT EXISTS {RUNNER_TABLE} (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    token        TEXT,
-    leased_until REAL NOT NULL DEFAULT 0
-)"""
-RUNNER_SEED_SQL = (
-    f"INSERT OR IGNORE INTO {RUNNER_TABLE} (id, token, leased_until) VALUES (1, NULL, 0)"
-)
-
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True, default=str)
@@ -218,15 +190,6 @@ class DurableScheduler:
         self._paused_reported: dict[tuple[str, str], str] = {}
         # Claim token -> module reserved by an in-flight claim transaction.
         self._reserving: dict[str, str] = {}
-
-    # ---- schema --------------------------------------------------------------
-
-    @staticmethod
-    async def ensure_schema(conn: Any) -> None:
-        await conn.execute(SCHEMA_SQL)
-        await conn.execute(INDEX_SQL)
-        await conn.execute(RUNNER_SCHEMA_SQL)
-        await conn.execute(RUNNER_SEED_SQL)
 
     # ---- registration --------------------------------------------------------
 
@@ -772,11 +735,7 @@ class ModuleSchedulerView:
 
 
 __all__ = [
-    "INDEX_SQL",
-    "RUNNER_SCHEMA_SQL",
-    "RUNNER_SEED_SQL",
     "RUNNER_TABLE",
-    "SCHEMA_SQL",
     "TABLE",
     "DurableScheduler",
     "ModuleSchedulerView",

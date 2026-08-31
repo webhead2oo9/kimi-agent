@@ -7,8 +7,10 @@ sandbox; this is the persistence layer alone.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import os
+from pathlib import Path
 import sqlite3
 import stat
 
@@ -22,6 +24,93 @@ from storage.memory_banks import UserMemoryBankStateStore
 from storage.module_commands import GuildCommandScopeStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
+
+
+_CORE_SCHEMA_V1_FIXTURE = Path(__file__).with_name("fixtures") / "core_schema_v1.sql"
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _normalize_trigger_sql(value: str | None) -> str:
+    if value is None:
+        return ""
+    normalized = " ".join(value.split())
+    optional_clause = "CREATE TRIGGER IF NOT EXISTS "
+    if normalized.upper().startswith(optional_clause):
+        return "CREATE TRIGGER " + normalized[len(optional_clause) :]
+    return normalized
+
+
+async def _schema_fingerprint(database: Database) -> list[str]:
+    async with database.conn.execute(
+        """SELECT type, name, tbl_name
+           FROM sqlite_master
+           WHERE name NOT LIKE 'sqlite_%'
+           ORDER BY type, name, tbl_name"""
+    ) as cursor:
+        identities = [tuple(row) for row in await cursor.fetchall()]
+
+    table_details: dict[str, object] = {}
+    table_names = [name for object_type, name, _ in identities if object_type == "table"]
+    for table_name in table_names:
+        quoted_table = _quote_identifier(table_name)
+        async with database.conn.execute(f"PRAGMA table_xinfo({quoted_table})") as cursor:
+            columns = [tuple(row) for row in await cursor.fetchall()]
+        async with database.conn.execute(f"PRAGMA foreign_key_list({quoted_table})") as cursor:
+            foreign_keys = [tuple(row) for row in await cursor.fetchall()]
+        async with database.conn.execute(f"PRAGMA index_list({quoted_table})") as cursor:
+            indexes = [tuple(row) for row in await cursor.fetchall()]
+
+        index_details: dict[str, list[tuple[object, ...]]] = {}
+        for index in indexes:
+            index_name = str(index[1])
+            quoted_index = _quote_identifier(index_name)
+            async with database.conn.execute(f"PRAGMA index_xinfo({quoted_index})") as cursor:
+                index_details[index_name] = [tuple(row) for row in await cursor.fetchall()]
+        table_details[table_name] = {
+            "table_xinfo": columns,
+            "foreign_key_list": foreign_keys,
+            "index_list": indexes,
+            "index_xinfo": index_details,
+        }
+
+    async with database.conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+    ) as cursor:
+        triggers = {
+            str(row["name"]): _normalize_trigger_sql(row["sql"]) for row in await cursor.fetchall()
+        }
+
+    async with database.conn.execute(
+        """SELECT module_name, version, name, applied_at
+           FROM module_schema_versions
+           ORDER BY module_name, version"""
+    ) as cursor:
+        module_schema_versions = [tuple(row) for row in await cursor.fetchall()]
+    async with database.conn.execute(
+        "SELECT id, token, leased_until FROM module_scheduler_runner ORDER BY id"
+    ) as cursor:
+        module_scheduler_runner = [tuple(row) for row in await cursor.fetchall()]
+
+    fingerprint = {
+        "identities": identities,
+        "module_scheduler_runner": module_scheduler_runner,
+        "module_schema_versions": module_schema_versions,
+        "tables": table_details,
+        "triggers": triggers,
+    }
+    return json.dumps(fingerprint, indent=2, sort_keys=True).splitlines()
+
+
+def _create_v1_fixture_database(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(_CORE_SCHEMA_V1_FIXTURE.read_text(encoding="utf-8"))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX mode bits")
@@ -79,7 +168,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "provider_circuit_breakers"
+        assert version_row["name"] == "core_runtime_tables"
         assert version_row["applied_at"]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -94,6 +183,36 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
             assert [row["name"] for row in await cur.fetchall()] == ["config_proposals"]
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_database_matches_oldest_supported_migration_schema(tmp_path) -> None:
+    fresh = Database(tmp_path / "fresh.db")
+    migrated_path = tmp_path / "migrated.db"
+    _create_v1_fixture_database(migrated_path)
+    migrated = Database(migrated_path)
+
+    await fresh.connect()
+    await migrated.connect()
+    try:
+        fresh_fingerprint = await _schema_fingerprint(fresh)
+        migrated_fingerprint = await _schema_fingerprint(migrated)
+    finally:
+        await fresh.close()
+        await migrated.close()
+
+    difference = "\n".join(
+        difflib.unified_diff(
+            fresh_fingerprint,
+            migrated_fingerprint,
+            fromfile="fresh schema",
+            tofile="migrated v1 schema",
+            lineterm="",
+        )
+    )
+    assert fresh_fingerprint == migrated_fingerprint, (
+        "Fresh and oldest-supported migrated schemas differ:\n" + difference
+    )
 
 
 @pytest.mark.asyncio
@@ -242,6 +361,72 @@ async def test_existing_v2_database_adopts_proposals_and_keeps_legacy_tables(tmp
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_v4_adoption_migration_preserves_existing_runtime_rows(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "v4-with-runtime-tables.db"
+    current_version = storage.db.SCHEMA_VERSION
+    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", 4)
+    legacy = Database(path)
+    await legacy.connect()
+    try:
+        async with legacy.write_transaction() as conn:
+            await conn.execute(
+                """INSERT INTO config_proposals (
+                    proposal_id, module_name, guild_id, target, content, content_revision,
+                    base_exists, base_content, base_revision, summary, actor_json, state,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "existing-proposal",
+                    "example",
+                    "guild-1",
+                    "servers/guild-1.md",
+                    "new content",
+                    "new-revision",
+                    1,
+                    "old content",
+                    "old-revision",
+                    "keep this proposal",
+                    "{}",
+                    "pending",
+                    1.0,
+                    2.0,
+                ),
+            )
+            await conn.execute(
+                """UPDATE module_scheduler_runner
+                   SET token = ?, leased_until = ?
+                   WHERE id = 1""",
+                ("existing-runner", 42.5),
+            )
+    finally:
+        await legacy.close()
+
+    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", current_version)
+    migrated = Database(path)
+    await migrated.connect()
+    try:
+        async with migrated.conn.execute(
+            "SELECT content, state FROM config_proposals WHERE proposal_id = ?",
+            ("existing-proposal",),
+        ) as cursor:
+            proposal = await cursor.fetchone()
+        async with migrated.conn.execute(
+            "SELECT id, token, leased_until FROM module_scheduler_runner ORDER BY id"
+        ) as cursor:
+            runner_rows = [tuple(row) for row in await cursor.fetchall()]
+        async with migrated.conn.execute("SELECT MAX(version) FROM schema_version") as cursor:
+            version = await cursor.fetchone()
+    finally:
+        await migrated.close()
+
+    assert proposal is not None
+    assert tuple(proposal) == ("new content", "pending")
+    assert runner_rows == [(1, "existing-runner", 42.5)]
+    assert version is not None
+    assert version[0] == current_version
+
+
 async def _add_note_column(conn) -> None:
     await conn.execute("ALTER TABLE migration_test_data ADD COLUMN note TEXT")
 
@@ -277,7 +462,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (2, "coding_task_context_inputs"),
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
-        (5, "add_note"),
+        (5, "core_runtime_tables"),
+        (6, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -289,7 +475,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 5
+        assert row[0] == 6
     finally:
         await reopened.close()
 
@@ -321,7 +507,8 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (2, "coding_task_context_inputs"),
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
-        (5, "add_note"),
+        (5, "core_runtime_tables"),
+        (6, "add_note"),
     ]
 
 
@@ -355,6 +542,7 @@ async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(
         (2, "coding_task_context_inputs"),
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
+        (5, "core_runtime_tables"),
     ]
     assert all(row["applied_at"] for row in history)
 
@@ -363,7 +551,7 @@ async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(
     await reopened.close()
     conn = sqlite3.connect(upgraded_path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (4,)
+        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (5,)
     finally:
         conn.close()
 
@@ -421,7 +609,7 @@ async def test_failed_schema_migration_rolls_back(tmp_path, monkeypatch) -> None
         conn.close()
 
     assert columns == {"id", "value"}
-    assert version == (4,)
+    assert version == (5,)
     assert preserved == ("keep me",)
 
 

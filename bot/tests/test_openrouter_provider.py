@@ -458,7 +458,9 @@ def test_openrouter_provider_bounds_encoded_work_for_rejected_candidates(
     image = {"image_url": {"url": f"data:image/png;base64,{payload}"}}
 
     assert OpenRouterProvider._parse_images([image] * 8) == []
-    assert decode_calls == 2
+    # Work is bounded per candidate (the <=32-char assertion above), not by
+    # an early stop: every admitted candidate costs one prefix sniff only.
+    assert decode_calls == 8
 
 
 def test_openrouter_provider_rejects_oversized_data_url_header() -> None:

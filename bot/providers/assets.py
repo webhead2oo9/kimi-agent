@@ -44,7 +44,11 @@ def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAss
         if len(asset.data_base64) > _MAX_GENERATED_ASSET_ENCODED_BYTES:
             log.warning("Skipping generated asset %d: encoded data exceeds byte cap", index)
             continue
-        total_encoded_cap = ((_MAX_TOTAL_GENERATED_ASSET_BYTES + 2) // 3) * 4
+        # Per-item padding slack: N separately encoded values carry up to 4
+        # extra characters each over one contiguous encoding of the same bytes.
+        total_encoded_cap = (
+            (_MAX_TOTAL_GENERATED_ASSET_BYTES + 2) // 3
+        ) * 4 + 4 * _MAX_GENERATED_ASSETS
         if processed_encoded + len(asset.data_base64) > total_encoded_cap:
             # The encoded budget bounds decode work itself: without it, a
             # provider could hand over eight near-cap payloads and have every
@@ -61,8 +65,10 @@ def validate_generated_assets(assets: list[GeneratedAsset]) -> list[GeneratedAss
             log.warning("Skipping generated asset %d: decoded data exceeds byte cap", index)
             continue
         if total_bytes + len(raw) > _MAX_TOTAL_GENERATED_ASSET_BYTES:
-            log.warning("Stopping generated-asset validation at the aggregate byte cap")
-            break
+            # Capacity, not a work bound (the encoded budget above is that): a
+            # later smaller asset may still fit the remaining room.
+            log.warning("Skipping generated asset %d: aggregate asset bytes exceed cap", index)
+            continue
         # Charge the budget before validating, so rejected candidates consume
         # it too and eight invalid near-cap payloads cannot each be decoded.
         total_bytes += len(raw)

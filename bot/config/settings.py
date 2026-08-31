@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     # ignore this field.
     react_temperature: float | None = 1.0
     codex_token_file: str = "secrets/codex-auth.json"
+    xai_oauth_token_file: str = "secrets/xai-oauth.json"
     codex_model: str = "gpt-5.5"
     codex_reasoning_effort: str = "high"
     codex_image_quality: str = "auto"
@@ -191,6 +192,14 @@ class Settings(BaseSettings):
     internet_search_max_backend_calls_per_turn: int = 10
     internet_search_max_output_chars: int = 24_000
     internet_search_safesearch: str = "moderate"
+
+    # Optional xAI-hosted X search. Registration requires this explicit flag and
+    # at least one credential allowed by the selected auth mode.
+    x_search_enabled: bool = False
+    x_search_auth_mode: str = "auto"
+    x_search_model: str = "grok-4.6"
+    x_search_timeout_seconds: float = 180.0
+    x_search_max_calls_per_turn: int = Field(default=10, ge=1, le=50)
 
     # Wolfram|Alpha computational knowledge (optional searchable tool). The
     # AppID is an environment-only secret and its presence gates registration.
@@ -760,6 +769,14 @@ class Settings(BaseSettings):
             raise ValueError("IMAGE_GEN_AUTH_MODE must be one of: auto, oauth, api_key")
         return normalized
 
+    @field_validator("x_search_auth_mode")
+    @classmethod
+    def _validate_x_search_auth_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"auto", "oauth", "api_key"}:
+            raise ValueError("X_SEARCH_AUTH_MODE must be one of: auto, oauth, api_key")
+        return normalized
+
     @field_validator("code_exec_min_tier")
     @classmethod
     def _validate_code_exec_min_tier(cls, value: str) -> str:
@@ -826,6 +843,7 @@ class Settings(BaseSettings):
         "provider_stream_stall_timeout_seconds",
         "internet_search_backend_timeout_seconds",
         "internet_search_timeout_seconds",
+        "x_search_timeout_seconds",
         "wolfram_alpha_timeout_seconds",
     )
     @classmethod

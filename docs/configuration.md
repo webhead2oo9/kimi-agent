@@ -471,6 +471,19 @@ settings for the transport itself stay in `.env`.
 | `CODEX_WS_READ_TIMEOUT` | float | `120.0` | Codex WebSocket read timeout (s). |
 | `CODEX_VERBOSE` | bool | `false` | Verbose Codex transport logging. |
 
+### xAI OAuth operational setting
+
+Native `xai` provider profiles select `oauth`, `api_key`, or `auto` in
+`config/models.yaml`. OAuth credentials are created separately with
+`scripts/xai_auth.py`; login never changes routing or enables a tool.
+
+| Env var | Type | Default | Description |
+|---|---|---:|---|
+| `XAI_OAUTH_TOKEN_FILE` | path | `secrets/xai-oauth.json` | Shared rotating xAI OAuth token store used by native xAI models and optional X search. |
+
+See [xAI Grok](providers-grok.md) for the profile contract and strict auth-mode
+semantics.
+
 ---
 
 ## Context compaction
@@ -636,6 +649,26 @@ that wants the free provider to actually displace the paid ones has to set
 
 See [Internet search](internet-search.md) for request behavior, output shape,
 deduplication, and cost accounting.
+
+---
+
+## X search (gated)
+
+The member-tier searchable `x_search` tool is independent of chat routing and
+defaults off. It registers only when explicitly enabled and the selected auth
+mode has a usable credential. In `auto`, OAuth is always first and
+`GROK_API_KEY` is the approved fallback; strict `oauth` never uses the key.
+
+| Env var | Type | Default | Description |
+|---|---|---:|---|
+| `X_SEARCH_ENABLED` | bool | `false` | Requests registration of the searchable X-search tool. |
+| `X_SEARCH_AUTH_MODE` | choice | `auto` | `oauth`, `api_key`, or OAuth-first `auto`; only `auto` may cross sources. |
+| `X_SEARCH_MODEL` | str | `grok-4.6` | xAI model used for the separate hosted-search Responses call. |
+| `X_SEARCH_TIMEOUT_SECONDS` | float | `180` | Whole timeout for one upstream attempt. Must be positive. |
+| `X_SEARCH_MAX_CALLS_PER_TURN` | int | `10` | Maximum upstream attempts per user turn, including retries and fallback; range 1–50. |
+
+See [X search](x-search.md) for filters, evidence/degradation behavior, OAuth
+limitations, and usage accounting.
 
 ---
 

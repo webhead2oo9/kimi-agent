@@ -57,6 +57,12 @@ class CodexTokenSource(Protocol):
     async def get_access_token(self) -> str: ...
 
 
+class XaiTokenSource(Protocol):
+    def is_available(self) -> bool: ...
+
+    async def get_access_token(self) -> str: ...
+
+
 @dataclass(frozen=True)
 class ContextWindowWarning:
     model_name: str
@@ -352,6 +358,12 @@ def codex_tokens_available(settings: Settings) -> bool:
     return get_codex_auth_manager(settings.codex_token_file).is_available()
 
 
+def xai_oauth_tokens_available(settings: Settings) -> bool:
+    from providers.factory import get_xai_auth_manager
+
+    return get_xai_auth_manager(settings.xai_oauth_token_file).is_available()
+
+
 def codex_startup_check(
     settings: Settings,
     manager: CodexTokenSource | None = None,
@@ -391,6 +403,51 @@ def codex_startup_check(
         )
 
 
+def xai_startup_check(
+    settings: Settings,
+    manager: XaiTokenSource | None = None,
+    *,
+    model_config: ModelConfig | None = None,
+) -> None:
+    """Validate reachable OAuth-backed xAI profiles without affecting API-key profiles."""
+    active_config = model_config or load_model_config(Path(settings.config_dir) / "models.yaml")
+    configs = _reachable_xai_configs(settings, active_config)
+    modes = {config.xai_auth_mode for config in configs}
+    if not modes or modes == {"api_key"}:
+        return
+
+    if manager is None:
+        from providers.factory import get_xai_auth_manager
+
+        manager = get_xai_auth_manager(settings.xai_oauth_token_file)
+    if not manager.is_available():
+        return
+
+    from xai.auth import XaiAuthError, XaiAuthRevokedError
+
+    try:
+        asyncio.run(manager.get_access_token())
+    except XaiAuthRevokedError as exc:
+        api_fallback_covers_every_profile = all(
+            config.xai_auth_mode == "api_key"
+            or (config.xai_auth_mode == "auto" and bool(config.api_key))
+            for config in configs
+        )
+        if not api_fallback_covers_every_profile:
+            log.error(
+                "xAI authentication rejected (%s). Run: python scripts/xai_auth.py --token-file %s",
+                exc,
+                settings.xai_oauth_token_file,
+            )
+            sys.exit(1)
+        log.warning("xAI OAuth is revoked; auto profiles will use GROK_API_KEY")
+    except (XaiAuthError, aiohttp.ClientError, TimeoutError) as exc:
+        log.warning(
+            "Could not validate xAI OAuth at startup (%s); will retry on first use.",
+            exc,
+        )
+
+
 def _has_active_llm_credentials(settings: Settings, model_config: ModelConfig) -> bool:
     return all(
         _provider_has_credentials(
@@ -410,6 +467,13 @@ def _provider_has_credentials(config: ProviderConfig, settings: Settings) -> boo
         return True
     if config.provider_name == "codex":
         return codex_tokens_available(settings)
+    if config.provider_name == "xai":
+        if config.xai_auth_mode == "api_key":
+            return bool(config.api_key)
+        oauth_ready = xai_oauth_tokens_available(settings)
+        if config.xai_auth_mode == "oauth":
+            return oauth_ready
+        return oauth_ready or bool(config.api_key)
     return bool(config.api_key)
 
 
@@ -424,6 +488,18 @@ def _codex_is_reachable(settings: Settings, model_config: ModelConfig) -> bool:
         if model_config.profile_for_model(model_name).type == "codex":
             return True
     return False
+
+
+def _reachable_xai_configs(settings: Settings, model_config: ModelConfig) -> list[ProviderConfig]:
+    configs: list[ProviderConfig] = []
+    for model_name in model_config.reachable_model_names(
+        include_compaction=True,
+        include_coding=settings.coding_tasks_enabled,
+    ):
+        profile = model_config.profile_for_model(model_name)
+        if profile.type == "xai":
+            configs.append(resolve_provider_config(model_config, model_name, settings=settings))
+    return configs
 
 
 async def close_provider(provider: LLMProvider | None) -> None:

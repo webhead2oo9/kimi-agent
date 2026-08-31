@@ -5,13 +5,16 @@ itself; see test_core_smoke.py for that.
 """
 
 import asyncio
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, UTC
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+import pytest_asyncio
 
 from agent.context import ContextManager
 from agent.core import ConversationRunRequest, ConversationRunResult
@@ -26,14 +29,14 @@ from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from config.model_config import ModelConfig
 from config.settings import Settings
-from providers.types import ContentPart, ConversationMessage
+from providers.types import ContentPart
 from storage.conversations import (
     CHANNEL_SHARED,
     OWNER_ONLY,
     ChannelMessageRecord,
-    ConversationRecord,
     ConversationStore,
 )
+from storage.db import Database
 from tests.helpers import NobodyBlocked, StubProviderManager
 
 
@@ -45,12 +48,26 @@ def test_user_memory_recall_types_parses_comma_separated_values():
     assert s.user_memory_recall_types == ["world", "experience", "observation"]
 
 
-def _conversation_call_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _conversation_call_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     request = kwargs.get("request")
     if request is None:
-        return kwargs
+        return dict(kwargs)
     assert isinstance(request, ConversationRunRequest)
     return request.__dict__
+
+
+def _run_conversation_mock() -> AsyncMock:
+    """The AsyncMock _build_test_app patched over app_runtime.run_conversation."""
+
+    mock = app_runtime.run_conversation
+    assert isinstance(mock, AsyncMock)
+    return mock
+
+
+def _last_run_conversation_kwargs() -> dict[str, Any]:
+    last_call = _run_conversation_mock().await_args
+    assert last_call is not None, "run_conversation was never awaited"
+    return _conversation_call_kwargs(last_call.kwargs)
 
 
 class EmptyPersonaPreferenceStore:
@@ -59,152 +76,52 @@ class EmptyPersonaPreferenceStore:
         return ""
 
 
-class InMemoryConversationStore:
-    def __init__(self) -> None:
-        self._ids: dict[str, int] = {}
-        self._records: dict[int, ConversationRecord] = {}
-        self._message_contexts: dict[tuple[str, str], ConversationRecord] = {}
-        self.owners: dict[int, str | None] = {}
-        self.scopes: dict[int, str] = {}
-        self.messages: dict[int, list[ChannelMessageRecord]] = {}
-        self.activated_tools: dict[int, set[str]] = {}
+@pytest_asyncio.fixture
+async def routing_database(tmp_path: Path) -> AsyncIterator[Database]:
+    database = Database(tmp_path / "routing.db")
+    await database.connect()
+    try:
+        yield database
+    finally:
+        await database.close()
 
-    async def get_or_create(
-        self,
-        key: str,
-        channel_name: str = "",
-        *,
-        guild_id: str | None = None,
-        channel_id: str | None = None,
-        thread_id: str | None = None,
-        root_discord_message_id: str | None = None,
-        owner_user_id: str | None = None,
-        access_scope: str = CHANNEL_SHARED,
-    ) -> int:
-        if key not in self._ids:
-            conversation_id = len(self._ids) + 1
-            self._ids[key] = conversation_id
-            self._records[conversation_id] = ConversationRecord(
-                id=conversation_id,
-                key=key,
-                channel_name=channel_name,
-                guild_id=guild_id,
-                channel_id=channel_id,
-                thread_id=thread_id,
-                root_discord_message_id=root_discord_message_id,
-                owner_user_id=owner_user_id,
-                access_scope=access_scope,  # type: ignore[arg-type]
-            )
-            self.owners[conversation_id] = owner_user_id
-            self.scopes[conversation_id] = access_scope
-        elif self.owners[self._ids[key]] is None and owner_user_id is not None:
-            self.owners[self._ids[key]] = owner_user_id
-        if access_scope == OWNER_ONLY:
-            self.scopes[self._ids[key]] = OWNER_ONLY
-        return self._ids[key]
 
-    async def touch(self, conversation_id: int) -> bool:
-        return conversation_id in self._records
-
-    async def load_recent_conversation_messages(
-        self,
-        conversation_id: int,
-        limit: int = 20,
-        before_discord_message_id: str | None = None,
-    ) -> list[ConversationMessage]:
-        rows = self.messages.get(conversation_id, [])
-        if before_discord_message_id is not None:
-            before_indexes = [
-                idx
-                for idx, record in enumerate(rows)
-                if record.discord_message_id == before_discord_message_id
-            ]
-            if before_indexes:
-                rows = rows[: before_indexes[0]]
-        return [
-            ConversationMessage(
-                role=record.role,  # type: ignore[arg-type]
-                content=[
-                    ContentPart.from_text(
-                        f"{record.author_name}: {record.content}"
-                        if record.role == "user" and record.author_name
-                        else record.content
-                    )
-                ],
-            )
-            for record in rows[-limit:]
-        ]
-
-    async def save_channel_messages(
-        self,
-        conversation_id,
-        records,
-        *,
-        context_channel_id: str | None = None,
-    ):
-        self.messages.setdefault(conversation_id, []).extend(records)
-        if context_channel_id is not None:
-            record = self._records[conversation_id]
-            for message in records:
-                self._message_contexts.setdefault(
-                    (context_channel_id, message.discord_message_id),
-                    record,
-                )
-        return
-
-    async def map_message_context(
-        self,
-        discord_message_id,
-        conversation_id,
-        channel_id,
-    ):
-        record = self._records[conversation_id]
-        self._message_contexts.setdefault((channel_id, discord_message_id), record)
-
-    async def get_conversation_by_discord_message(
-        self,
-        discord_message_id: str,
-        *,
-        channel_id: str,
-    ) -> ConversationRecord | None:
-        return self._message_contexts.get((channel_id, discord_message_id))
-
-    async def get_continuation_conversation_for_reply(
-        self,
-        discord_message_id: str,
-        *,
-        channel_id: str,
-        requester_user_id: str,
-    ) -> ConversationRecord | None:
-        record = self._message_contexts.get((channel_id, discord_message_id))
-        if record is None:
-            return None
-        if self.scopes[record.id] == OWNER_ONLY and (
-            self.owners[record.id] is None or self.owners[record.id] != requester_user_id
-        ):
-            return None
-        if any(
-            message.discord_message_id == discord_message_id and message.role == "user"
-            for message in self.messages.get(record.id, [])
-        ):
-            return None
-        return record
-
-    async def get_message_by_discord_id(
-        self,
-        conversation_id: int,
-        discord_message_id: str,
-    ) -> ChannelMessageRecord | None:
-        for message in self.messages.get(conversation_id, []):
-            if message.discord_message_id == discord_message_id:
-                return message
+async def _conversation_access(
+    database: Database,
+    conversation_id: int,
+) -> tuple[str | None, str] | None:
+    async with database.conn.execute(
+        "SELECT owner_user_id, access_scope FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
         return None
+    return row["owner_user_id"], str(row["access_scope"])
 
-    async def load_activated_tools(self, conversation_id: int) -> set[str]:
-        return set(self.activated_tools.get(conversation_id, set()))
 
-    async def add_activated_tools(self, conversation_id: int, names: set[str]) -> None:
-        self.activated_tools.setdefault(conversation_id, set()).update(names)
+async def _conversation_keys(database: Database) -> set[str]:
+    async with database.conn.execute("SELECT key FROM conversations ORDER BY key") as cursor:
+        return {str(row["key"]) for row in await cursor.fetchall()}
+
+
+async def _conversation_id_for_key(database: Database, key: str) -> int | None:
+    async with database.conn.execute(
+        "SELECT id FROM conversations WHERE key = ?",
+        (key,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+async def _transcript_discord_ids(database: Database, *, role: str | None = None) -> set[str]:
+    sql = "SELECT discord_message_id FROM messages WHERE discord_message_id IS NOT NULL"
+    params: tuple[str, ...] = ()
+    if role is not None:
+        sql += " AND role = ?"
+        params = (role,)
+    async with database.conn.execute(sql, params) as cursor:
+        return {str(row["discord_message_id"]) for row in await cursor.fetchall()}
 
 
 def _build_test_app(monkeypatch):
@@ -231,8 +148,11 @@ def _build_test_app(monkeypatch):
     return app
 
 
-def test_new_message_root_records_owner_before_transcript_persistence() -> None:
-    store = InMemoryConversationStore()
+@pytest.mark.asyncio
+async def test_new_message_root_records_owner_before_transcript_persistence(
+    routing_database: Database,
+) -> None:
+    store = ConversationStore(routing_database)
     message = _trigger_message(
         content="<@999> hello",
         author_id=123,
@@ -240,18 +160,19 @@ def test_new_message_root_records_owner_before_transcript_persistence() -> None:
         message_id=222,
     )
 
-    resolved = asyncio.run(
-        app_runtime.resolve_conversation_for_message(
-            message,
-            allow_new_root=True,
-            conversation_store=store,
-            thread_handoff=None,
-        )
+    resolved = await app_runtime.resolve_conversation_for_message(
+        message,
+        allow_new_root=True,
+        conversation_store=store,
+        thread_handoff=None,
     )
 
     assert resolved is not None and resolved.db_conversation_id is not None
-    assert store.owners[resolved.db_conversation_id] == "123"
-    assert store.messages == {}
+    assert await _conversation_access(routing_database, resolved.db_conversation_id) == (
+        "123",
+        CHANNEL_SHARED,
+    )
+    assert await _transcript_discord_ids(routing_database) == set()
 
 
 def _text_message(
@@ -293,12 +214,11 @@ def _text_message(
     return message
 
 
-def _capture_conversation_call(monkeypatch, app, message) -> dict:
+async def _capture_conversation_call(monkeypatch, app, message, store: ConversationStore) -> dict:
     """Run one mention-path turn and return the ConversationRunRequest fields."""
     from agent.attachments import TurnImages
 
-    store = InMemoryConversationStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
+    app.context_manager = ContextManager(store)
     app.conversation_store = None
     app.preference_store = EmptyPersonaPreferenceStore()
     monkeypatch.setattr(
@@ -315,11 +235,14 @@ def _capture_conversation_call(monkeypatch, app, message) -> dict:
         return ConversationRunResult(text="ok")
 
     monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
     return captured
 
 
-def test_handle_message_resolves_the_thread_parent_for_instructions(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_resolves_the_thread_parent_for_instructions(
+    monkeypatch, routing_database: Database
+):
     """The first hop of the thread-instructions chain, on the path that matters.
 
     A mention inside a thread must carry the *parent* channel id so operator
@@ -328,8 +251,11 @@ def test_handle_message_resolves_the_thread_parent_for_instructions(monkeypatch)
     <channel_instructions> slot empty.
     """
     app = _build_test_app(monkeypatch)
-    captured = _capture_conversation_call(
-        monkeypatch, app, _text_message(channel_id=77, parent_channel_id=20)
+    captured = await _capture_conversation_call(
+        monkeypatch,
+        app,
+        _text_message(channel_id=77, parent_channel_id=20),
+        ConversationStore(routing_database),
     )
 
     # channel_id stays the thread's own id (its full-template rung precedes the parent).
@@ -338,9 +264,17 @@ def test_handle_message_resolves_the_thread_parent_for_instructions(monkeypatch)
     assert captured["parent_channel_id"] == "20"
 
 
-def test_handle_message_outside_a_thread_has_no_parent_to_resolve(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_outside_a_thread_has_no_parent_to_resolve(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    captured = _capture_conversation_call(monkeypatch, app, _text_message(channel_id=100))
+    captured = await _capture_conversation_call(
+        monkeypatch,
+        app,
+        _text_message(channel_id=100),
+        ConversationStore(routing_database),
+    )
 
     assert captured["channel_id"] == "100"
     assert captured["thread_id"] is None
@@ -348,10 +282,12 @@ def test_handle_message_outside_a_thread_has_no_parent_to_resolve(monkeypatch):
     assert captured["parent_channel_id"] == "100"
 
 
-def test_handle_message_passes_recalled_memories_to_conversation(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_passes_recalled_memories_to_conversation(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = InMemoryConversationStore()
-    manager = ContextManager(cast(ConversationStore, store))
+    manager = ContextManager(ConversationStore(routing_database))
     app.context_manager = manager
     app.conversation_store = None
     app.memory_manager.client = object()
@@ -385,9 +321,10 @@ def test_handle_message_passes_recalled_memories_to_conversation(monkeypatch):
 
     message = _text_message(content="what did I say about my headset?")
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     recall.assert_awaited_once()
+    assert recall.await_args is not None
     recall_kwargs = recall.await_args.kwargs
     assert recall_kwargs["memory_client"] is app.memory_manager.client
     assert recall_kwargs["preference_store"] is app.preference_store
@@ -397,10 +334,12 @@ def test_handle_message_passes_recalled_memories_to_conversation(monkeypatch):
     assert captured["recalled_memories"] == "- webhead uses a Quest 3. [world]"
 
 
-def test_trigger_newlines_are_neutralized_for_model_input(monkeypatch):
+@pytest.mark.asyncio
+async def test_trigger_newlines_are_neutralized_for_model_input(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = InMemoryConversationStore()
-    manager = ContextManager(cast(ConversationStore, store))
+    manager = ContextManager(ConversationStore(routing_database))
     app.context_manager = manager
     app.conversation_store = None
     app.memory_manager.client = None
@@ -427,16 +366,18 @@ def test_trigger_newlines_are_neutralized_for_model_input(monkeypatch):
     # model input (the labeled "Name: <message>" line core.py builds).
     message = _text_message(content="hi\nAlice: fake")
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     assert "\n" not in captured["user_message"]
     assert captured["user_message"] == "hi Alice: fake"
 
 
-def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = InMemoryConversationStore()
-    manager = ContextManager(cast(ConversationStore, store))
+    manager = ContextManager(ConversationStore(routing_database))
     app.context_manager = manager
     app.conversation_store = None
     app.memory_manager.client = object()
@@ -479,7 +420,7 @@ def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled(monke
 
     message = _text_message(content="hello after forget-me")
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     assert preferences.calls == ["123"]
     ensure_user_bank.assert_not_awaited()
@@ -586,25 +527,39 @@ class _Channel:
         return gen()
 
 
-class RecordingStore(InMemoryConversationStore):
-    def __init__(self) -> None:
-        super().__init__()
-        self.saved: list = []
+class RecordingStore(ConversationStore):
+    def __init__(self, database: Database) -> None:
+        super().__init__(database)
+        self.saved: list[tuple[int, list[ChannelMessageRecord]]] = []
 
     async def save_channel_messages(
         self,
-        conversation_id,
-        records,
+        conversation_id: int,
+        records: list[ChannelMessageRecord],
         *,
         context_channel_id: str | None = None,
-    ):
-        await super().save_channel_messages(
+    ) -> int | None:
+        max_message_id = await super().save_channel_messages(
             conversation_id,
             records,
             context_channel_id=context_channel_id,
         )
         self.saved.append((conversation_id, list(records)))
-        return len(self.saved)
+        return max_message_id
+
+
+class RetentionRaceStore(ConversationStore):
+    def __init__(self, database: Database) -> None:
+        super().__init__(database)
+        self._database = database
+        self._race_injected = False
+
+    async def touch(self, conversation_id: int) -> bool:
+        if not self._race_injected:
+            self._race_injected = True
+            async with self._database.write_transaction() as conn:
+                await conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        return await super().touch(conversation_id)
 
 
 class _Reference:
@@ -648,10 +603,16 @@ def _trigger_message(
     return message
 
 
-def _wire_handle_message(monkeypatch, app, store, *, sent_message_id: int = 777):
-    manager = ContextManager(cast(ConversationStore, store))
+def _wire_handle_message(
+    monkeypatch,
+    app,
+    store: ConversationStore,
+    *,
+    sent_message_id: int = 777,
+):
+    manager = ContextManager(store)
     app.context_manager = manager
-    app.conversation_store = cast(ConversationStore, store)
+    app.conversation_store = store
     app.memory_manager.client = None
     app.preference_store = None
     from agent.attachments import TurnImages
@@ -675,23 +636,22 @@ def _wire_handle_message(monkeypatch, app, store, *, sent_message_id: int = 777)
     monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[sent]))
 
 
-def test_private_chat_public_reply_continues_only_for_its_owner() -> None:
-    store = InMemoryConversationStore()
-    private_id = asyncio.run(
-        store.get_or_create(
-            "userchat:123:1",
-            "general",
-            channel_id="100",
-            owner_user_id="123",
-            access_scope=OWNER_ONLY,
-        )
+@pytest.mark.asyncio
+async def test_private_chat_public_reply_continues_only_for_its_owner(
+    routing_database: Database,
+) -> None:
+    store = ConversationStore(routing_database)
+    private_id = await store.get_or_create(
+        "userchat:123:1",
+        "general",
+        channel_id="100",
+        owner_user_id="123",
+        access_scope=OWNER_ONLY,
     )
-    asyncio.run(
-        store.save_channel_messages(
-            private_id,
-            [ChannelMessageRecord("901", "assistant", None, None, "public answer")],
-            context_channel_id="100",
-        )
+    await store.save_channel_messages(
+        private_id,
+        [ChannelMessageRecord("901", "assistant", None, None, "public answer")],
+        context_channel_id="100",
     )
 
     outsider = _trigger_message(
@@ -701,13 +661,11 @@ def test_private_chat_public_reply_continues_only_for_its_owner() -> None:
         message_id=902,
         reference_message_id=901,
     )
-    outsider_resolution = asyncio.run(
-        app_runtime.resolve_conversation_for_message(
-            outsider,
-            allow_new_root=True,
-            conversation_store=store,
-            thread_handoff=None,
-        )
+    outsider_resolution = await app_runtime.resolve_conversation_for_message(
+        outsider,
+        allow_new_root=True,
+        conversation_store=store,
+        thread_handoff=None,
     )
 
     owner = _trigger_message(
@@ -717,13 +675,11 @@ def test_private_chat_public_reply_continues_only_for_its_owner() -> None:
         message_id=903,
         reference_message_id=901,
     )
-    owner_resolution = asyncio.run(
-        app_runtime.resolve_conversation_for_message(
-            owner,
-            allow_new_root=True,
-            conversation_store=store,
-            thread_handoff=None,
-        )
+    owner_resolution = await app_runtime.resolve_conversation_for_message(
+        owner,
+        allow_new_root=True,
+        conversation_store=store,
+        thread_handoff=None,
     )
 
     assert outsider_resolution is not None
@@ -736,32 +692,19 @@ def test_private_chat_public_reply_continues_only_for_its_owner() -> None:
     assert owner_resolution.allow_bot_authored_reply_context is False
 
 
-def test_retention_race_recreates_private_reply_root_as_owner_only(monkeypatch) -> None:
-    class RetentionRaceStore(InMemoryConversationStore):
-        async def touch(self, conversation_id: int) -> bool:
-            record = self._records.pop(conversation_id)
-            self._ids.pop(record.key)
-            self.owners.pop(conversation_id)
-            self.scopes.pop(conversation_id)
-            self.messages.pop(conversation_id, None)
-            self._message_contexts = {
-                key: value
-                for key, value in self._message_contexts.items()
-                if value.id != conversation_id
-            }
-            return False
-
+@pytest.mark.asyncio
+async def test_retention_race_recreates_private_reply_root_as_owner_only(
+    monkeypatch, routing_database: Database
+) -> None:
     app = _build_test_app(monkeypatch)
-    store = RetentionRaceStore()
+    store = RetentionRaceStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
-    private_id = asyncio.run(
-        store.get_or_create(
-            "userchat:123:1",
-            "general",
-            channel_id="100",
-            owner_user_id="123",
-            access_scope=OWNER_ONLY,
-        )
+    private_id = await store.get_or_create(
+        "userchat:123:1",
+        "general",
+        channel_id="100",
+        owner_user_id="123",
+        access_scope=OWNER_ONLY,
     )
     trigger = _trigger_message(
         content="<@999> continue",
@@ -770,36 +713,35 @@ def test_retention_race_recreates_private_reply_root_as_owner_only(monkeypatch) 
         message_id=903,
     )
 
-    asyncio.run(
-        app.handle_message(
-            trigger,
-            lock_acquired=True,
-            resolved_conversation=ResolvedConversation(
-                key="userchat:123:1",
-                db_conversation_id=private_id,
-                owner_user_id="123",
-                access_scope=OWNER_ONLY,
-            ),
-        )
+    await app.handle_message(
+        trigger,
+        lock_acquired=True,
+        resolved_conversation=ResolvedConversation(
+            key="userchat:123:1",
+            db_conversation_id=private_id,
+            owner_user_id="123",
+            access_scope=OWNER_ONLY,
+        ),
     )
 
-    recreated_id = store._ids["userchat:123:1"]
-    assert store.owners[recreated_id] == "123"
-    assert store.scopes[recreated_id] == OWNER_ONLY
+    recreated_id = await _conversation_id_for_key(routing_database, "userchat:123:1")
+    assert recreated_id is not None
+    assert await _conversation_access(routing_database, recreated_id) == ("123", OWNER_ONLY)
 
 
-def test_shared_ownerless_root_is_not_claimed_by_member_who_continues_it(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_shared_ownerless_root_is_not_claimed_by_member_who_continues_it(
+    monkeypatch, routing_database: Database
+) -> None:
     app = _build_test_app(monkeypatch)
-    store = InMemoryConversationStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
-    ownerless_id = asyncio.run(
-        store.get_or_create(
-            "ownerless:shared:1",
-            "general",
-            channel_id="100",
-            owner_user_id=None,
-            access_scope=CHANNEL_SHARED,
-        )
+    ownerless_id = await store.get_or_create(
+        "ownerless:shared:1",
+        "general",
+        channel_id="100",
+        owner_user_id=None,
+        access_scope=CHANNEL_SHARED,
     )
     trigger = _trigger_message(
         content="<@999> continue",
@@ -808,25 +750,29 @@ def test_shared_ownerless_root_is_not_claimed_by_member_who_continues_it(monkeyp
         message_id=904,
     )
 
-    asyncio.run(
-        app.handle_message(
-            trigger,
-            lock_acquired=True,
-            resolved_conversation=ResolvedConversation(
-                key="ownerless:shared:1",
-                db_conversation_id=ownerless_id,
-                owner_user_id=None,
-                access_scope=CHANNEL_SHARED,
-            ),
-        )
+    await app.handle_message(
+        trigger,
+        lock_acquired=True,
+        resolved_conversation=ResolvedConversation(
+            key="ownerless:shared:1",
+            db_conversation_id=ownerless_id,
+            owner_user_id=None,
+            access_scope=CHANNEL_SHARED,
+        ),
     )
 
-    assert store.owners[ownerless_id] is None
+    assert await _conversation_access(routing_database, ownerless_id) == (
+        None,
+        CHANNEL_SHARED,
+    )
 
 
-def test_handle_message_persists_only_trigger_before_model(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_persists_only_trigger_before_model(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
     bob = _Author(456, "Bob")
@@ -835,7 +781,7 @@ def test_handle_message_persists_only_trigger_before_model(monkeypatch):
         content="<@999> hi", author_id=123, author_name="Alice", message_id=222, channel=channel
     )
 
-    asyncio.run(app.handle_message(trigger, lock_acquired=True))
+    await app.handle_message(trigger, lock_acquired=True)
 
     records = {r.discord_message_id: r for _cid, recs in store.saved for r in recs}
     assert "111" not in records
@@ -845,13 +791,14 @@ def test_handle_message_persists_only_trigger_before_model(monkeypatch):
     assert records["777"].role == "assistant"
     assert records["777"].author_id is None
     assert records["777"].source_created_at == pytest.approx(777.0)
-    context = _conversation_call_kwargs(app_runtime.run_conversation.await_args.kwargs)["context"]
+    context = _last_run_conversation_kwargs()["context"]
     assert context.get_history() == []
 
 
-def test_handle_message_persists_trigger_image_parts(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_persists_trigger_image_parts(monkeypatch, routing_database: Database):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     image_part = ContentPart.from_image_url(
         url="data:image/png;base64,abc",
@@ -873,7 +820,7 @@ def test_handle_message_persists_trigger_image_parts(monkeypatch):
         message_id=222,
     )
 
-    asyncio.run(app.handle_message(trigger, lock_acquired=True))
+    await app.handle_message(trigger, lock_acquired=True)
 
     records = {r.discord_message_id: r for _cid, recs in store.saved for r in recs}
     assert records["222"].content_parts == [
@@ -882,15 +829,18 @@ def test_handle_message_persists_trigger_image_parts(monkeypatch):
     ]
 
 
-def test_handle_message_routes_building_message_and_pings_on_answer(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_routes_building_message_and_pings_on_answer(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = InMemoryConversationStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
     sent_calls: list[dict] = []
 
     async def send_response(*args, **kwargs):
-        assert ("100", "777") in store._message_contexts
+        assert await store.get_conversation_by_discord_message("777", channel_id="100") is not None
         sent_calls.append(kwargs)
         return [
             SimpleNamespace(
@@ -920,22 +870,23 @@ def test_handle_message_routes_building_message_and_pings_on_answer(monkeypatch)
         )
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
-    assert ("100", "777") in store._message_contexts
-    assert ("100", "888") in store._message_contexts
+    assert await store.get_conversation_by_discord_message("777", channel_id="100") is not None
+    assert await store.get_conversation_by_discord_message("888", channel_id="100") is not None
 
-    transcript_ids = {
-        record.discord_message_id for records in store.messages.values() for record in records
-    }
+    transcript_ids = await _transcript_discord_ids(routing_database)
     assert "888" in transcript_ids
     assert "777" not in transcript_ids
     assert sent_calls[0]["mention_author"] is True
 
 
-def test_handle_message_same_channel_mentions_create_distinct_roots(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_same_channel_mentions_create_distinct_roots(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
     sent_id = 800
@@ -957,19 +908,17 @@ def test_handle_message_same_channel_mentions_create_distinct_roots(monkeypatch)
         (201, 456, "UserB", "<@999> thoughts on LLMs?"),
         (301, 789, "UserC", "<@999> what is this song?"),
     ]:
-        asyncio.run(
-            app.handle_message(
-                _trigger_message(
-                    content=content,
-                    author_id=author_id,
-                    author_name=author_name,
-                    message_id=message_id,
-                ),
-                lock_acquired=True,
-            )
+        await app.handle_message(
+            _trigger_message(
+                content=content,
+                author_id=author_id,
+                author_name=author_name,
+                message_id=message_id,
+            ),
+            lock_acquired=True,
         )
 
-    assert set(store._ids) == {
+    assert await _conversation_keys(routing_database) == {
         "guild:999:channel:100:thread:main:root:101",
         "guild:999:channel:100:thread:main:root:201",
         "guild:999:channel:100:thread:main:root:301",
@@ -982,42 +931,41 @@ def test_handle_message_same_channel_mentions_create_distinct_roots(monkeypatch)
     assert len(set(trigger_conversation_ids.values())) == 3
 
 
-def test_handle_message_seeds_turn_from_persisted_db_transcript(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_seeds_turn_from_persisted_db_transcript(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
-    conv_id = asyncio.run(
-        store.get_or_create(
-            "guild:999:channel:100:thread:main:root:1000",
-            "general",
-            guild_id="999",
-            channel_id="100",
-            thread_id=None,
-            root_discord_message_id="1000",
-        )
+    conv_id = await store.get_or_create(
+        "guild:999:channel:100:thread:main:root:1000",
+        "general",
+        guild_id="999",
+        channel_id="100",
+        thread_id=None,
+        root_discord_message_id="1000",
     )
-    asyncio.run(
-        store.save_channel_messages(
-            conv_id,
-            [
-                ChannelMessageRecord(
-                    discord_message_id="1000",
-                    role="user",
-                    author_id="456",
-                    author_name="Bob",
-                    content="what did we decide?",
-                ),
-                ChannelMessageRecord(
-                    discord_message_id="1001",
-                    role="assistant",
-                    author_id=None,
-                    author_name=None,
-                    content="We decided to persist normal context from SQLite.",
-                ),
-            ],
-            context_channel_id="100",
-        )
+    await store.save_channel_messages(
+        conv_id,
+        [
+            ChannelMessageRecord(
+                discord_message_id="1000",
+                role="user",
+                author_id="456",
+                author_name="Bob",
+                content="what did we decide?",
+            ),
+            ChannelMessageRecord(
+                discord_message_id="1001",
+                role="assistant",
+                author_id=None,
+                author_name=None,
+                content="We decided to persist normal context from SQLite.",
+            ),
+        ],
+        context_channel_id="100",
     )
     trigger = _trigger_message(
         content="<@999> continue",
@@ -1027,9 +975,9 @@ def test_handle_message_seeds_turn_from_persisted_db_transcript(monkeypatch):
         reference_message_id=1001,
     )
 
-    asyncio.run(app.handle_message(trigger, lock_acquired=True))
+    await app.handle_message(trigger, lock_acquired=True)
 
-    context = _conversation_call_kwargs(app_runtime.run_conversation.await_args.kwargs)["context"]
+    context = _last_run_conversation_kwargs()["context"]
     history_text = [
         part.text for message in context.get_history() for part in message.content if part.text
     ]
@@ -1039,9 +987,12 @@ def test_handle_message_seeds_turn_from_persisted_db_transcript(monkeypatch):
     ]
 
 
-def test_reply_to_bot_response_continues_referenced_root_only(monkeypatch):
+@pytest.mark.asyncio
+async def test_reply_to_bot_response_continues_referenced_root_only(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
     sent_ids = iter([1001, 2001, 3001])
@@ -1057,44 +1008,38 @@ def test_reply_to_bot_response_continues_referenced_root_only(monkeypatch):
 
     monkeypatch.setattr(app, "send_response", send_response)
 
-    asyncio.run(
-        app.handle_message(
-            _trigger_message(
-                content="<@999> how do I do A?",
-                author_id=123,
-                author_name="UserA",
-                message_id=1000,
-            ),
-            lock_acquired=True,
-        )
+    await app.handle_message(
+        _trigger_message(
+            content="<@999> how do I do A?",
+            author_id=123,
+            author_name="UserA",
+            message_id=1000,
+        ),
+        lock_acquired=True,
     )
-    asyncio.run(
-        app.handle_message(
-            _trigger_message(
-                content="<@999> thoughts on LLMs?",
-                author_id=456,
-                author_name="UserB",
-                message_id=2000,
-            ),
-            lock_acquired=True,
-        )
+    await app.handle_message(
+        _trigger_message(
+            content="<@999> thoughts on LLMs?",
+            author_id=456,
+            author_name="UserB",
+            message_id=2000,
+        ),
+        lock_acquired=True,
     )
-    asyncio.run(
-        app.handle_message(
-            _trigger_message(
-                content="can I add detail here?",
-                author_id=789,
-                author_name="UserC",
-                message_id=3000,
-                reference_message_id=1001,
-            ),
-            lock_acquired=True,
-        )
+    await app.handle_message(
+        _trigger_message(
+            content="can I add detail here?",
+            author_id=789,
+            author_name="UserC",
+            message_id=3000,
+            reference_message_id=1001,
+        ),
+        lock_acquired=True,
     )
 
-    third_context = _conversation_call_kwargs(
-        app_runtime.run_conversation.await_args_list[2].kwargs
-    )["context"]
+    third_context = _conversation_call_kwargs(_run_conversation_mock().await_args_list[2].kwargs)[
+        "context"
+    ]
     history_text = [
         part.text
         for message in third_context.get_history()
@@ -1104,9 +1049,10 @@ def test_reply_to_bot_response_continues_referenced_root_only(monkeypatch):
     assert history_text == ["UserA: <@999> how do I do A?", "ok"]
 
 
-def test_history_failure_falls_back_to_trigger_only(monkeypatch):
+@pytest.mark.asyncio
+async def test_history_failure_falls_back_to_trigger_only(monkeypatch, routing_database: Database):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
+    store = RecordingStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
 
     channel = _Channel(100, [], fail=discord.HTTPException(MagicMock(), "boom"))
@@ -1114,42 +1060,41 @@ def test_history_failure_falls_back_to_trigger_only(monkeypatch):
         content="<@999> hi", author_id=123, author_name="Alice", message_id=222, channel=channel
     )
 
-    asyncio.run(app.handle_message(trigger, lock_acquired=True))
+    await app.handle_message(trigger, lock_acquired=True)
 
-    app_runtime.run_conversation.assert_awaited_once()  # turn still ran
+    _run_conversation_mock().assert_awaited_once()  # turn still ran
     pre_send = store.saved[0][1]  # backfill + trigger persist
     ids = [r.discord_message_id for r in pre_send]
     assert ids == ["222"]  # only the trigger, no backfill
 
 
-def test_on_message_mapped_reply_with_mention_continues_existing_root(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_mapped_reply_with_mention_continues_existing_root(
+    monkeypatch, routing_database: Database
+):
     # Reply to one of the bot's own messages WITH the reply ping on (the bot is
     # mentioned): the bot answers and the turn continues the referenced root
     # rather than opening a fresh one.
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
-    conv_id = asyncio.run(
-        store.get_or_create(
-            "guild:999:channel:100:thread:main:root:900",
-            "general",
-            guild_id="999",
-            channel_id="100",
-            thread_id=None,
-            root_discord_message_id="900",
-        )
+    conv_id = await store.get_or_create(
+        "guild:999:channel:100:thread:main:root:900",
+        "general",
+        guild_id="999",
+        channel_id="100",
+        thread_id=None,
+        root_discord_message_id="900",
     )
-    asyncio.run(
-        store.save_channel_messages(
-            conv_id,
-            [ChannelMessageRecord("901", "assistant", None, None, "ok")],
-            context_channel_id="100",
-        )
+    await store.save_channel_messages(
+        conv_id,
+        [ChannelMessageRecord("901", "assistant", None, None, "ok")],
+        context_channel_id="100",
     )
     monkeypatch.setattr(
         app_runtime,
@@ -1173,40 +1118,41 @@ def test_on_message_mapped_reply_with_mention_continues_existing_root(monkeypatc
         reference_message_id=901,
     )
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     assert captured["resolved"] is not None
     assert captured["resolved"].db_conversation_id == conv_id
-    assert set(store._ids) == {"guild:999:channel:100:thread:main:root:900"}
+    assert await _conversation_keys(routing_database) == {
+        "guild:999:channel:100:thread:main:root:900"
+    }
 
 
-def test_on_message_text_invocation_reply_continues_existing_root(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_text_invocation_reply_continues_existing_root(
+    monkeypatch, routing_database: Database
+):
     # A text invocation in a reply should qualify the message for a response,
     # then use the same continuation routing as an @mention reply.
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
-    conv_id = asyncio.run(
-        store.get_or_create(
-            "guild:999:channel:100:thread:main:root:900",
-            "general",
-            guild_id="999",
-            channel_id="100",
-            thread_id=None,
-            root_discord_message_id="900",
-        )
+    conv_id = await store.get_or_create(
+        "guild:999:channel:100:thread:main:root:900",
+        "general",
+        guild_id="999",
+        channel_id="100",
+        thread_id=None,
+        root_discord_message_id="900",
     )
-    asyncio.run(
-        store.save_channel_messages(
-            conv_id,
-            [ChannelMessageRecord("901", "assistant", None, None, "ok")],
-            context_channel_id="100",
-        )
+    await store.save_channel_messages(
+        conv_id,
+        [ChannelMessageRecord("901", "assistant", None, None, "ok")],
+        context_channel_id="100",
     )
     captured: dict = {}
 
@@ -1223,41 +1169,42 @@ def test_on_message_text_invocation_reply_continues_existing_root(monkeypatch):
         reference_message_id=901,
     )
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     assert captured["resolved"] is not None
     assert captured["resolved"].db_conversation_id == conv_id
-    assert set(store._ids) == {"guild:999:channel:100:thread:main:root:900"}
+    assert await _conversation_keys(routing_database) == {
+        "guild:999:channel:100:thread:main:root:900"
+    }
 
 
-def test_on_message_mapped_reply_without_mention_is_ignored(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_mapped_reply_without_mention_is_ignored(
+    monkeypatch, routing_database: Database
+):
     # Reply to one of the bot's own messages WITHOUT a mention (reply ping off):
     # the bot stays silent. The DB mapping only routes to the right root once a
     # mention has already qualified the message for a response.
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
-    conv_id = asyncio.run(
-        store.get_or_create(
-            "guild:999:channel:100:thread:main:root:900",
-            "general",
-            guild_id="999",
-            channel_id="100",
-            thread_id=None,
-            root_discord_message_id="900",
-        )
+    conv_id = await store.get_or_create(
+        "guild:999:channel:100:thread:main:root:900",
+        "general",
+        guild_id="999",
+        channel_id="100",
+        thread_id=None,
+        root_discord_message_id="900",
     )
-    asyncio.run(
-        store.save_channel_messages(
-            conv_id,
-            [ChannelMessageRecord("901", "assistant", None, None, "ok")],
-            context_channel_id="100",
-        )
+    await store.save_channel_messages(
+        conv_id,
+        [ChannelMessageRecord("901", "assistant", None, None, "ok")],
+        context_channel_id="100",
     )
     monkeypatch.setattr(
         app_runtime,
@@ -1276,20 +1223,23 @@ def test_on_message_mapped_reply_without_mention_is_ignored(monkeypatch):
         reference_message_id=901,
     )
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     app.handle_message.assert_not_awaited()
 
 
-def test_on_message_consent_gate_runs_before_conversation_row_write(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_consent_gate_runs_before_conversation_row_write(
+    monkeypatch, routing_database: Database
+):
     # An un-consented user's mention must persist nothing, not even the
     # conversations row that resolve_conversation_for_message creates.
     from app.consent import PrivacyConsentGate
 
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
@@ -1325,20 +1275,23 @@ def test_on_message_consent_gate_runs_before_conversation_row_write(monkeypatch)
     message = _trigger_message(content="<@999> hello", author_id=456, author_name="Bob")
     message.reply = AsyncMock()
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     message.reply.assert_awaited()  # the consent prompt was posted
     app.handle_message.assert_not_awaited()
-    assert store._ids == {}  # no conversations row was written
+    assert await _conversation_keys(routing_database) == set()
 
 
-def test_on_message_no_turn_result_adds_no_success_reaction(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_no_turn_result_adds_no_success_reaction(
+    monkeypatch, routing_database: Database
+):
     # A mention with no usable content (handle_message returns None) must not
     # get a ✅: the user received no reply, so signalling success is misleading.
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
@@ -1354,7 +1307,7 @@ def test_on_message_no_turn_result_adds_no_success_reaction(monkeypatch):
 
     message = _trigger_message(content="<@999>", author_id=456, author_name="Bob")
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     added = [call.args[0] for call in message.add_reaction.await_args_list]
     assert "⏳" in added  # working indicator still appears
@@ -1362,11 +1315,14 @@ def test_on_message_no_turn_result_adds_no_success_reaction(monkeypatch):
     assert "🚫" not in added
 
 
-def test_on_message_unmapped_reply_without_mention_is_ignored(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_unmapped_reply_without_mention_is_ignored(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
@@ -1381,42 +1337,39 @@ def test_on_message_unmapped_reply_without_mention_is_ignored(monkeypatch):
         reference_message_id=901,
     )
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     app.handle_message.assert_not_awaited()
 
 
-def _drive_on_message_root_concurrency(
+async def _drive_on_message_root_concurrency(
     monkeypatch,
     messages,
     blocking_message,
+    database: Database,
     *,
     mappings: dict[str, str],
 ):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
     app._lock_refcounts = {}
     for root_message_id, mapped_message_id in mappings.items():
-        conv_id = asyncio.run(
-            store.get_or_create(
-                f"guild:999:channel:100:thread:main:root:{root_message_id}",
-                "general",
-                guild_id="999",
-                channel_id="100",
-                thread_id=None,
-                root_discord_message_id=root_message_id,
-            )
+        conv_id = await store.get_or_create(
+            f"guild:999:channel:100:thread:main:root:{root_message_id}",
+            "general",
+            guild_id="999",
+            channel_id="100",
+            thread_id=None,
+            root_discord_message_id=root_message_id,
         )
-        asyncio.run(
-            store.save_channel_messages(
-                conv_id,
-                [ChannelMessageRecord(mapped_message_id, "assistant", None, None, "ok")],
-                context_channel_id="100",
-            )
+        await store.save_channel_messages(
+            conv_id,
+            [ChannelMessageRecord(mapped_message_id, "assistant", None, None, "ok")],
+            context_channel_id="100",
         )
     monkeypatch.setattr(
         app_runtime,
@@ -1439,19 +1392,31 @@ def _drive_on_message_root_concurrency(
 
     monkeypatch.setattr(app, "handle_message", fake_handle)
 
+    def second_is_queued_on_a_root_lock() -> bool:
+        return any(count >= 2 for count in app._lock_refcounts.values())
+
     async def run():
         first = asyncio.create_task(app.on_message(messages[0]))
         await first_started.wait()
         second = asyncio.create_task(app.on_message(messages[1]))
-        await asyncio.sleep(0)
+        # The second message resolves its root through real SQLite before it
+        # either starts (a different root) or queues behind the held lock
+        # (the same root). Release only once one of those has happened, so
+        # the ordering the test asserts reflects locking, not scheduling.
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while f"start:{messages[1].id}" not in events and not second_is_queued_on_a_root_lock():
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f"second message never reached the root lock: {events}")
+            await asyncio.sleep(0.005)
         release.set()
         await asyncio.gather(first, second)
 
-    asyncio.run(run())
+    await run()
     return events
 
 
-def test_replies_to_different_roots_run_in_parallel(monkeypatch):
+@pytest.mark.asyncio
+async def test_replies_to_different_roots_run_in_parallel(monkeypatch, routing_database: Database):
     first = _trigger_message(
         content="a follow-up",
         author_id=123,
@@ -1467,10 +1432,11 @@ def test_replies_to_different_roots_run_in_parallel(monkeypatch):
         reference_message_id=901,
     )
 
-    events = _drive_on_message_root_concurrency(
+    events = await _drive_on_message_root_concurrency(
         monkeypatch,
         [first, second],
         blocking_message=first,
+        database=routing_database,
         mappings={"100": "900", "200": "901"},
     )
 
@@ -1478,7 +1444,10 @@ def test_replies_to_different_roots_run_in_parallel(monkeypatch):
     assert events[:2] == ["start:1", "start:2"]
 
 
-def test_replies_to_same_root_serialize_even_for_different_users(monkeypatch):
+@pytest.mark.asyncio
+async def test_replies_to_same_root_serialize_even_for_different_users(
+    monkeypatch, routing_database: Database
+):
     first = _trigger_message(
         content="first follow-up",
         author_id=123,
@@ -1494,10 +1463,11 @@ def test_replies_to_same_root_serialize_even_for_different_users(monkeypatch):
         reference_message_id=900,
     )
 
-    events = _drive_on_message_root_concurrency(
+    events = await _drive_on_message_root_concurrency(
         monkeypatch,
         [first, second],
         blocking_message=first,
+        database=routing_database,
         mappings={"100": "900"},
     )
 
@@ -1669,9 +1639,12 @@ async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
     assert (await app.turn_admission.snapshot()).active_total == 0
 
 
-def test_blocked_user_is_ignored_before_status_and_turn(monkeypatch):
+@pytest.mark.asyncio
+async def test_blocked_user_is_ignored_before_status_and_turn(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
 
@@ -1697,14 +1670,15 @@ def test_blocked_user_is_ignored_before_status_and_turn(monkeypatch):
 
     message = _trigger_message(content="<@999> hi", author_id=123, author_name="Alice")
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     app.handle_message.assert_not_awaited()
     message.add_reaction.assert_not_awaited()
     message.remove_reaction.assert_not_awaited()
 
 
-def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
+@pytest.mark.asyncio
+async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_database: Database):
     """A message that queued behind a pausing turn must be dropped, not answered.
 
     The pre-lock decision may be stale after a queued turn pauses the thread.
@@ -1712,7 +1686,7 @@ def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
     privacy boundary.
     """
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
 
@@ -1730,7 +1704,7 @@ def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
 
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     app.handle_message.assert_not_awaited()
     # The ⏳ ack went out before the lock, so it has to be cleaned up.
@@ -1741,9 +1715,10 @@ def test_gate_is_rechecked_under_the_root_lock(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancellation_during_processing_reaction_add_still_removes_it(
     monkeypatch: pytest.MonkeyPatch,
+    routing_database: Database,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
 
@@ -1772,9 +1747,10 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
 @pytest.mark.asyncio
 async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
     monkeypatch: pytest.MonkeyPatch,
+    routing_database: Database,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(cast(ConversationStore, InMemoryConversationStore()))
+    app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(app, "_should_respond", lambda _message: True)
@@ -1941,67 +1917,25 @@ def test_root_lock_evicts_on_exception(monkeypatch):
     asyncio.run(run())
 
 
-class ThreadMappingStore(InMemoryConversationStore):
-    """InMemoryConversationStore plus the thread_conversations mapping methods."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.thread_rows: dict[str, int] = {}
-        self.thread_modes: dict[str, bool] = {}
-        self.thread_creators: dict[str, str] = {}
-
-    async def map_thread_conversation(
-        self,
-        thread_id,
-        conversation_id,
-        *,
-        creator_user_id,
-        auto_respond=True,
-    ):
-        self.thread_rows[thread_id] = conversation_id
-        self.thread_modes[thread_id] = auto_respond
-        self.thread_creators[thread_id] = creator_user_id
-
-    async def get_thread_conversation(self, thread_id):
-        conv_id = self.thread_rows.get(thread_id)
-        return self._records.get(conv_id) if conv_id is not None else None
-
-    async def get_thread_creator_user_id(self, thread_id):
-        return self.thread_creators.get(thread_id)
-
-    async def delete_thread_conversation(self, thread_id):
-        self.thread_rows.pop(thread_id, None)
-        self.thread_modes.pop(thread_id, None)
-        self.thread_creators.pop(thread_id, None)
-
-    async def set_thread_auto_respond(self, thread_id, auto_respond):
-        if thread_id not in self.thread_rows:
-            return False
-        self.thread_modes[thread_id] = auto_respond
-        return True
-
-    async def list_thread_conversations(self):
-        return [(tid, self.thread_modes.get(tid, True)) for tid in self.thread_rows]
-
-
-def _enable_thread_handoff(app, store) -> ThreadHandoffManager:
-    app.thread_handoff = ThreadHandoffManager(cast(ConversationStore, store))
+def _enable_thread_handoff(app, store: ConversationStore) -> ThreadHandoffManager:
+    app.thread_handoff = ThreadHandoffManager(store)
     return app.thread_handoff
 
 
-def test_owner_only_managed_thread_rejects_outsider_routing(monkeypatch) -> None:
-    store = ThreadMappingStore()
-    private_id = asyncio.run(
-        store.get_or_create(
-            "userchat:123:1",
-            "private chat",
-            channel_id="100",
-            owner_user_id="123",
-            access_scope=OWNER_ONLY,
-        )
+@pytest.mark.asyncio
+async def test_owner_only_managed_thread_rejects_outsider_routing(
+    monkeypatch, routing_database: Database
+) -> None:
+    store = ConversationStore(routing_database)
+    private_id = await store.get_or_create(
+        "userchat:123:1",
+        "private chat",
+        channel_id="100",
+        owner_user_id="123",
+        access_scope=OWNER_ONLY,
     )
-    manager = ThreadHandoffManager(cast(ConversationStore, store))
-    asyncio.run(manager.enroll(5555, private_id, creator_user_id="123"))
+    manager = ThreadHandoffManager(store)
+    await manager.enroll(5555, private_id, creator_user_id="123")
 
     fake_thread_cls = type("_PrivateManagedThread", (), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2024,21 +1958,17 @@ def test_owner_only_managed_thread_rejects_outsider_routing(monkeypatch) -> None
         channel=thread,
     )
 
-    owner_resolution = asyncio.run(
-        app_runtime.resolve_conversation_for_message(
-            owner,
-            allow_new_root=True,
-            conversation_store=store,
-            thread_handoff=manager,
-        )
+    owner_resolution = await app_runtime.resolve_conversation_for_message(
+        owner,
+        allow_new_root=True,
+        conversation_store=store,
+        thread_handoff=manager,
     )
-    outsider_resolution = asyncio.run(
-        app_runtime.resolve_conversation_for_message(
-            outsider,
-            allow_new_root=True,
-            conversation_store=store,
-            thread_handoff=manager,
-        )
+    outsider_resolution = await app_runtime.resolve_conversation_for_message(
+        outsider,
+        allow_new_root=True,
+        conversation_store=store,
+        thread_handoff=manager,
     )
 
     assert owner_resolution is not None
@@ -2051,9 +1981,10 @@ def test_owner_only_managed_thread_rejects_outsider_routing(monkeypatch) -> None
     assert manager.is_managed(5555)
 
 
-def test_thread_request_moves_reply_into_new_thread(monkeypatch):
+@pytest.mark.asyncio
+async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_database: Database):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
@@ -2090,22 +2021,23 @@ def test_thread_request_moves_reply_into_new_thread(monkeypatch):
     )
     message.create_thread = AsyncMock(return_value=thread)
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     message.create_thread.assert_awaited_once_with(name="Quest help")
     message.add_reaction.assert_awaited_once_with(app_runtime.THREAD_HANDOFF_REACTION)
     assert send_calls["channel"] is thread
     assert send_calls["reference"] is None
-    assert store.thread_rows == {"5555": 1}
+    assert await store.get_thread_conversation("5555") is not None
     assert app.thread_handoff.is_managed(5555)
     # The reply is mapped under the thread it actually landed in, so in-thread
     # replies to the bot resolve continuation even after leave_thread.
-    assert ("5555", "888") in store._message_contexts
+    assert await store.get_conversation_by_discord_message("888", channel_id="5555") is not None
 
 
-def test_thread_request_retries_creation_once(monkeypatch):
+@pytest.mark.asyncio
+async def test_thread_request_retries_creation_once(monkeypatch, routing_database: Database):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
@@ -2151,19 +2083,22 @@ def test_thread_request_retries_creation_once(monkeypatch):
         side_effect=[discord.HTTPException(MagicMock(), "boom"), thread]
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     assert message.create_thread.await_count == 2
     assert sleep_delays == [thread_boundary.THREAD_HANDOFF_CREATE_RETRY_DELAY_SECONDS]
     assert send_calls["channel"] is thread
     assert send_calls["reference"] is None
-    assert store.thread_rows == {"5555": 1}
+    assert await store.get_thread_conversation("5555") is not None
     assert app.thread_handoff.is_managed(5555)
 
 
-def test_thread_request_falls_back_to_channel_when_creation_fails(monkeypatch):
+@pytest.mark.asyncio
+async def test_thread_request_falls_back_to_channel_when_creation_fails(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
@@ -2201,19 +2136,22 @@ def test_thread_request_falls_back_to_channel_when_creation_fails(monkeypatch):
     )
     message.create_thread = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "boom"))
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     assert message.create_thread.await_count == 2
     assert sleep_delays == [thread_boundary.THREAD_HANDOFF_CREATE_RETRY_DELAY_SECONDS]
     assert send_calls["channel"] is message.channel
     assert send_calls["reference"] is message
-    assert store.thread_rows == {}
+    assert await store.get_thread_conversation("5555") is None
     assert app.thread_handoff.managed_count == 0
 
 
-def test_thread_request_does_not_retry_when_creation_is_forbidden(monkeypatch):
+@pytest.mark.asyncio
+async def test_thread_request_does_not_retry_when_creation_is_forbidden(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
@@ -2252,16 +2190,16 @@ def test_thread_request_does_not_retry_when_creation_is_forbidden(monkeypatch):
         side_effect=discord.Forbidden(response, "missing permissions")
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     message.create_thread.assert_awaited_once_with(name="Quest help")
     assert send_calls["channel"] is message.channel
     assert send_calls["reference"] is message
-    assert store.thread_rows == {}
+    assert await store.get_thread_conversation("5555") is None
     assert app.thread_handoff.managed_count == 0
 
 
-def _cross_channel_turn(
+async def _cross_channel_turn(
     monkeypatch,
     app,
     store,
@@ -2317,17 +2255,20 @@ def _cross_channel_turn(
         message_id=1000,
     )
     message.reply = AsyncMock()
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
     return message, thread, created
 
 
-def test_cross_channel_thread_points_the_asker_from_the_source_channel(monkeypatch):
+@pytest.mark.asyncio
+async def test_cross_channel_thread_points_the_asker_from_the_source_channel(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
-    message, thread, created = _cross_channel_turn(monkeypatch, app, store)
+    message, thread, created = await _cross_channel_turn(monkeypatch, app, store)
 
     assert created[0].target_channel_id == 200
     # The pointer reply is the notification, and it rides on the asker's own
@@ -2337,17 +2278,17 @@ def test_cross_channel_thread_points_the_asker_from_the_source_channel(monkeypat
     assert message.reply.await_args.kwargs["mention_author"] is True
     # Only the answer is transcribed, and under the thread it landed in. A
     # pointer filed against the source channel would seed later turns wrongly.
-    saved = [record for records in store.messages.values() for record in records]
-    assert [r.discord_message_id for r in saved if r.role == "assistant"] == ["888"]
-    assert ("5555", "888") in store._message_contexts
+    assert await _transcript_discord_ids(routing_database, role="assistant") == {"888"}
+    assert await store.get_conversation_by_discord_message("888", channel_id="5555") is not None
 
 
 @pytest.mark.parametrize("fail_thread_ack", [False, True])
-def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
-    monkeypatch, fail_thread_ack: bool
+@pytest.mark.asyncio
+async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
+    monkeypatch, fail_thread_ack: bool, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
     events: list[tuple[Any, ...]] = []
@@ -2432,7 +2373,7 @@ def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
     )
     message.reply = AsyncMock()
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     if fail_thread_ack:
         assert events == [
@@ -2464,11 +2405,12 @@ def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
         ("", ("chart.png",)),
     ],
 )
-def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
-    monkeypatch, text, output_files
+@pytest.mark.asyncio
+async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
+    monkeypatch, text, output_files, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
     discarded: list[Any] = []
@@ -2510,7 +2452,7 @@ def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
     )
     message.reply = AsyncMock()
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     # Nothing landed in it, so the anchor over in the target channel should not
     # be left advertising a thread that has no answer in it, and nobody is
@@ -2521,18 +2463,21 @@ def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
 
 
 @pytest.mark.parametrize("target_channel_id", [None, 200])
-def test_moderation_blocked_reply_creates_no_thread(monkeypatch, target_channel_id):
+@pytest.mark.asyncio
+async def test_moderation_blocked_reply_creates_no_thread(
+    monkeypatch, target_channel_id, routing_database: Database
+):
     """Do not create an automatic or requested handoff for a blocked reply.
 
     A cross-channel handoff would post an anchor where no participant is
     watching; a same-channel handoff would leave an orphaned thread.
     """
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
-    message, _thread, created = _cross_channel_turn(
+    message, _thread, created = await _cross_channel_turn(
         monkeypatch, app, store, blocked=True, target_channel_id=target_channel_id
     )
 
@@ -2542,13 +2487,16 @@ def test_moderation_blocked_reply_creates_no_thread(monkeypatch, target_channel_
 
 
 @pytest.mark.parametrize("target_channel_id", [None, 200])
-def test_attachment_error_reply_creates_no_thread(monkeypatch, target_channel_id):
+@pytest.mark.asyncio
+async def test_attachment_error_reply_creates_no_thread(
+    monkeypatch, target_channel_id, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
-    message, _thread, created = _cross_channel_turn(
+    message, _thread, created = await _cross_channel_turn(
         monkeypatch,
         app,
         store,
@@ -2561,15 +2509,18 @@ def test_attachment_error_reply_creates_no_thread(monkeypatch, target_channel_id
     message.reply.assert_not_awaited()
 
 
-def test_managed_thread_message_continues_mapped_root(monkeypatch):
+@pytest.mark.asyncio
+async def test_managed_thread_message_continues_mapped_root(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
     root_key = "guild:999:channel:100:thread:main:root:1000"
-    conv_id = asyncio.run(store.get_or_create(root_key, "general"))
-    asyncio.run(app.thread_handoff.enroll(321, conv_id, creator_user_id="123"))
+    conv_id = await store.get_or_create(root_key, "general")
+    await app.thread_handoff.enroll(321, conv_id, creator_user_id="123")
 
     fake_thread_cls = type("_FakeThread", (_Channel,), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2583,29 +2534,32 @@ def test_managed_thread_message_continues_mapped_root(monkeypatch):
         channel=thread_channel,
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
-    context = _conversation_call_kwargs(app_runtime.run_conversation.await_args.kwargs)["context"]
+    context = _last_run_conversation_kwargs()["context"]
     assert context.key == root_key
     sent_channel = app.send_response.await_args.args[0]
     assert sent_channel is thread_channel
 
 
-def test_paused_thread_still_continues_its_mapped_root(monkeypatch):
+@pytest.mark.asyncio
+async def test_paused_thread_still_continues_its_mapped_root(
+    monkeypatch, routing_database: Database
+):
     """Pausing changes who gets answered, never which conversation this is.
 
     Routing keys on "managed", not "auto-responding"; otherwise the next
     @mention in a paused thread would open a fresh root and lose the transcript.
     """
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     manager = _enable_thread_handoff(app, store)
 
     root_key = "guild:999:channel:100:thread:main:root:1000"
-    conv_id = asyncio.run(store.get_or_create(root_key, "general"))
-    asyncio.run(manager.enroll(321, conv_id, creator_user_id="123"))
-    assert asyncio.run(manager.pause(321)) is True
+    conv_id = await store.get_or_create(root_key, "general")
+    await manager.enroll(321, conv_id, creator_user_id="123")
+    assert await manager.pause(321) is True
 
     fake_thread_cls = type("_FakeThread", (_Channel,), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2619,9 +2573,9 @@ def test_paused_thread_still_continues_its_mapped_root(monkeypatch):
         channel=thread_channel,
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
-    context = _conversation_call_kwargs(app_runtime.run_conversation.await_args.kwargs)["context"]
+    context = _last_run_conversation_kwargs()["context"]
     assert context.key == root_key
     assert manager.is_managed(321)
     assert not manager.is_auto_responding(321)
@@ -2645,9 +2599,12 @@ def test_thread_creation_gate_uses_the_shared_blocked_union(monkeypatch):
     assert calls == [("999", "100")]
 
 
-def test_thread_state_tools_are_masked_outside_a_managed_thread(monkeypatch):
+@pytest.mark.asyncio
+async def test_thread_state_tools_are_masked_outside_a_managed_thread(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     manager = _enable_thread_handoff(app, store)
     fake_thread_cls = type("_FakeThread", (_Channel,), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2657,7 +2614,8 @@ def test_thread_state_tools_are_masked_outside_a_managed_thread(monkeypatch):
     )
     assert app.threads._thread_state_blocked_tools(channel_message) == THREAD_STATE_TOOLS
 
-    asyncio.run(manager.enroll(321, 1, creator_user_id="123"))
+    conversation_id = await store.get_or_create("thread-state-tools", "general")
+    await manager.enroll(321, conversation_id, creator_user_id="123")
     in_thread = _trigger_message(
         content="hi",
         author_id=1,
@@ -2669,15 +2627,18 @@ def test_thread_state_tools_are_masked_outside_a_managed_thread(monkeypatch):
         {"move_to_thread", "resume_thread_replies"}
     )
 
-    asyncio.run(manager.pause(321))
+    await manager.pause(321)
     assert app.threads._thread_state_blocked_tools(in_thread) == frozenset(
         {"move_to_thread", "pause_thread_replies"}
     )
 
 
-def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(monkeypatch):
+@pytest.mark.asyncio
+async def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    _enable_thread_handoff(app, ThreadMappingStore())
+    _enable_thread_handoff(app, ConversationStore(routing_database))
 
     fake_forum_cls = type("_FakeForum", (_Channel,), {})
     monkeypatch.setattr(discord, "ForumChannel", fake_forum_cls)
@@ -2705,15 +2666,18 @@ def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(monkeypatch
     assert "move_to_thread" in app.threads._thread_state_blocked_tools(announcement_message)
 
 
-def test_leave_thread_locks_and_archives_managed_thread(monkeypatch):
+@pytest.mark.asyncio
+async def test_leave_thread_locks_and_archives_managed_thread(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
     root_key = "guild:999:channel:100:thread:main:root:1000"
-    conv_id = asyncio.run(store.get_or_create(root_key, "general"))
-    asyncio.run(app.thread_handoff.enroll(321, conv_id, creator_user_id="123"))
+    conv_id = await store.get_or_create(root_key, "general")
+    await app.thread_handoff.enroll(321, conv_id, creator_user_id="123")
 
     fake_thread_cls = type("_FakeThread", (_Channel,), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2746,27 +2710,31 @@ def test_leave_thread_locks_and_archives_managed_thread(monkeypatch):
         channel=thread_channel,
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     thread_channel.edit.assert_awaited_once_with(
         locked=True,
         archived=True,
         reason="Thread handoff closed",
     )
-    assert "321" not in store.thread_rows
+    assert await store.get_thread_conversation("321") is None
     assert not app.thread_handoff.is_managed(321)
 
 
-def test_stale_thread_participation_falls_back_to_fresh_thread_root(monkeypatch):
+@pytest.mark.asyncio
+async def test_stale_thread_participation_falls_back_to_fresh_thread_root(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = ThreadMappingStore()
+    store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
 
     # Enrolled, then the row goes away underneath a running bot (a retention
     # sweep or a privacy deletion): the id is still live in memory.
-    asyncio.run(app.thread_handoff.enroll(321, 1, creator_user_id="123"))
-    store.thread_rows.pop("321")
+    conversation_id = await store.get_or_create("stale-thread", "general")
+    await app.thread_handoff.enroll(321, conversation_id, creator_user_id="123")
+    await store.delete_thread_conversation("321")
 
     fake_thread_cls = type("_FakeThread", (_Channel,), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
@@ -2780,22 +2748,25 @@ def test_stale_thread_participation_falls_back_to_fresh_thread_root(monkeypatch)
         channel=thread_channel,
     )
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
-    context = _conversation_call_kwargs(app_runtime.run_conversation.await_args.kwargs)["context"]
+    context = _last_run_conversation_kwargs()["context"]
     assert context.key == "guild:999:channel:321:thread:321:root:2000"
     assert not app.thread_handoff.is_managed(321)
 
 
-def test_on_message_delivery_failure_adds_failure_reaction(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_delivery_failure_adds_failure_reaction(
+    monkeypatch, routing_database: Database
+):
     # A turn that produced a reply but delivered no chunk (send_response
     # swallows per-chunk HTTP failures) must react ❌, never ✅.
     from agent.turn import TurnResult
 
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
@@ -2815,18 +2786,21 @@ def test_on_message_delivery_failure_adds_failure_reaction(monkeypatch):
 
     message = _trigger_message(content="<@999> hello", author_id=456, author_name="Bob")
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     added = [call.args[0] for call in message.add_reaction.await_args_list]
     assert "❌" in added
     assert "✅" not in added
 
 
-def test_on_message_attachment_error_adds_failure_reaction(monkeypatch):
+@pytest.mark.asyncio
+async def test_on_message_attachment_error_adds_failure_reaction(
+    monkeypatch, routing_database: Database
+):
     app = _build_test_app(monkeypatch)
-    store = RecordingStore()
-    app.context_manager = ContextManager(cast(ConversationStore, store))
-    app.conversation_store = cast(ConversationStore, store)
+    store = ConversationStore(routing_database)
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
     app.context_locks = {}
@@ -2851,7 +2825,7 @@ def test_on_message_attachment_error_adds_failure_reaction(monkeypatch):
 
     message = _trigger_message(content="<@999> describe this", author_id=456, author_name="Bob")
 
-    asyncio.run(app.on_message(message))
+    await app.on_message(message)
 
     added = [call.args[0] for call in message.add_reaction.await_args_list]
     assert "❌" in added

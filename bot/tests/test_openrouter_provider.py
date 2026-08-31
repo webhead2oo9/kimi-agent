@@ -449,6 +449,8 @@ def test_openrouter_provider_bounds_encoded_work_for_rejected_candidates(
     def counted_decode(value: str, *, validate: bool) -> bytes:
         nonlocal decode_calls
         decode_calls += 1
+        # Parsing must never decode a payload, only a bounded sniff prefix.
+        assert len(value) <= 32
         return real_decode(value, validate=validate)
 
     monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", 2)

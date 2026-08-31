@@ -282,8 +282,85 @@ async def test_generated_assets_validate_before_moderation_sees_them(tmp_path: P
 
     assert len(moderation.calls) == 1
     assert moderation.calls[0]["generated_assets"] == []
+    # Moderation must see the replacement text: the swap happens before the
+    # moderation gate, not after it.
+    assert "did not survive validation" in moderation.calls[0]["text"]
     assert result.output_files == ()
     assert "did not survive validation" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_validation_canonicalizes_media_types_before_moderation(tmp_path: Path) -> None:
+    """A valid image with a wrong provider label keeps its canonical type all
+    the way through: an equal-length validated list must still replace the
+    original, or moderation and the writer see the mislabeled asset."""
+    from tests.helpers import VALID_JPEG_BYTES
+    import base64 as _base64
+
+    context = ConversationContext(key="guild:100:main")
+    moderation = RecordingModerationService()
+    mislabeled = GeneratedAsset(
+        kind="image",
+        media_type="image/png",
+        data_base64=_base64.b64encode(VALID_JPEG_BYTES).decode("ascii"),
+        suggested_filename="photo.png",
+    )
+
+    await execute_turn(
+        _turn_request(context),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path / "workspace",
+            moderation_service=moderation,
+            run_conversation=RecordingRunConversation(
+                ConversationRunResult(text="Here you go.", generated_assets=[mislabeled])
+            ),
+        ),
+        config=_config(),
+    )
+
+    [seen] = moderation.calls[0]["generated_assets"]
+    assert seen.media_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_partial_validation_drop_recomputes_the_synthesized_claim(tmp_path: Path) -> None:
+    """Two assets, one survivor: a synthesized "Generated images attached."
+    must become the singular claim rather than overpromise."""
+    from tests.helpers import VALID_PNG_BYTES, corrupt_png_idat_stream
+    import base64 as _base64
+
+    context = ConversationContext(key="guild:100:main")
+    moderation = RecordingModerationService()
+    good = GeneratedAsset(
+        kind="image",
+        media_type="image/png",
+        data_base64=_base64.b64encode(VALID_PNG_BYTES).decode("ascii"),
+        suggested_filename="good.png",
+    )
+    bad = GeneratedAsset(
+        kind="image",
+        media_type="image/png",
+        data_base64=_base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
+        suggested_filename="bad.png",
+    )
+
+    result = await execute_turn(
+        _turn_request(context),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path / "workspace",
+            moderation_service=moderation,
+            run_conversation=RecordingRunConversation(
+                ConversationRunResult(
+                    text="Generated images attached.",
+                    generated_assets=[good, bad],
+                )
+            ),
+        ),
+        config=_config(),
+    )
+
+    assert result.response_text == "Generated image attached."
+    assert len(moderation.calls[0]["generated_assets"]) == 1
 
 
 @pytest.mark.asyncio

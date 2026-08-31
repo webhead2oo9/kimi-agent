@@ -26,11 +26,20 @@ import pytest
 from app.tool_surfaces import reset_surface_tools
 
 # The modules whose live-jail tests skip when the Linux boundary cannot start.
-# Under KIMI_REQUIRE_SANDBOX_TESTS=1 (the CI sandbox job) a skip in any of them
-# is a failure: the job exists to prove those jails ran, and a new skip
-# condition must not be able to hollow it out while the pass count looks fine.
+# Under KIMI_REQUIRE_SANDBOX_TESTS=1 (the CI sandbox job) such a skip is a
+# failure: the job exists to prove those jails ran, and a new gate condition
+# must not be able to hollow it out while the pass count looks fine. Only the
+# known sandbox-gate reasons convert, so an unrelated host-shape skip in the
+# same file (say a missing dist-packages layout) stays a skip;
+# tests/test_sandbox_required.py pins both name lists against the sources.
 _SANDBOX_MODULES = frozenset(
     {"test_sandbox_runner", "test_code_exec_tool", "test_skill_sandbox", "test_sandbox_required"}
+)
+_SANDBOX_SKIP_REASONS = (
+    "bwrap/prlimit/python not available on this host",
+    "bwrap/prlimit not available",
+    "requires a working production Linux Bubblewrap sandbox",
+    "libseccomp not available on this host",
 )
 _REQUIRE_SANDBOX_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
 
@@ -45,8 +54,12 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     outcome = yield
     if os.environ.get(_REQUIRE_SANDBOX_ENV) != "1":
         return
-    report = outcome.get_result()  # type: ignore[attr-defined]
+    # The hookwrapper Result is untyped; the runtest report is what it holds.
+    report: pytest.TestReport = outcome.get_result()  # type: ignore[attr-defined]
     if not report.skipped or item.path.stem not in _SANDBOX_MODULES:
         return
+    reason = str(report.longrepr)
+    if not any(gate in reason for gate in _SANDBOX_SKIP_REASONS):
+        return
     report.outcome = "failed"
-    report.longrepr = f"skipped under {_REQUIRE_SANDBOX_ENV}=1: {report.longrepr}"
+    report.longrepr = f"skipped under {_REQUIRE_SANDBOX_ENV}=1: {reason}"

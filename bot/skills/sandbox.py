@@ -268,9 +268,15 @@ def build_sandbox_command(
     return command
 
 
-def validate_sandbox_runtime() -> SandboxRuntime:
-    """Run a minimal namespace probe so configured script tools fail at boot."""
+def validate_sandbox_runtime(limits: ScriptSandboxLimits | None = None) -> SandboxRuntime:
+    """Run a minimal namespace probe so configured script tools fail at boot.
 
+    The probe applies the same prlimit ceilings real invocations will use, so
+    a host that cannot start a jail under the configured limits fails here, by
+    name, instead of registering tools whose every run would die at clone().
+    """
+
+    limits = limits if limits is not None else ScriptSandboxLimits()
     runtime = detect_sandbox_runtime()
     true_path = shutil.which("true")
     if true_path is None:
@@ -281,19 +287,13 @@ def validate_sandbox_runtime() -> SandboxRuntime:
             f"Executable skill sandbox probe utility is outside the system runtime: {resolved_true}"
         )
 
-    # RLIMIT_NPROC counts every process of the invoking real uid on the host,
-    # not just the jail, so a tight ceiling here fails on a busy account (a CI
-    # runner, a shared box) with "Creating new namespace failed: Resource
-    # temporarily unavailable" and says nothing about the sandbox. Real
-    # invocations apply the tool's declared process limit; this probe only
-    # proves prlimit and the namespace skeleton work together.
     command = [
         runtime.prlimit,
-        "--as=268435456",
-        "--cpu=5",
-        "--fsize=1048576",
-        "--nofile=64",
-        "--nproc=4096",
+        f"--as={limits.memory_bytes}",
+        f"--cpu={limits.cpu_seconds}",
+        f"--fsize={limits.file_size_bytes}",
+        f"--nofile={limits.open_files}",
+        f"--nproc={limits.processes}",
         "--core=0",
         "--",
         *_base_bwrap_command(runtime, allow_network=False),
@@ -313,6 +313,13 @@ def validate_sandbox_runtime() -> SandboxRuntime:
     if completed.returncode != 0:
         detail = completed.stderr.decode(errors="replace").strip().splitlines()
         suffix = f": {detail[-1]}" if detail else ""
+        if "Resource temporarily unavailable" in suffix:
+            # RLIMIT_NPROC counts every process of the service uid, so the
+            # configured ceiling has to clear what the account already runs.
+            suffix += (
+                f" (the uid's process count already exceeds the configured "
+                f"SCRIPT_SANDBOX_MAX_PROCESSES={limits.processes})"
+            )
         raise SandboxUnavailableError(
             f"Executable skill sandbox probe exited {completed.returncode}{suffix}"
         )

@@ -237,9 +237,10 @@ has actually loaded.
 - **Code execution and coding tasks** need the full Linux boundary in
   [code-exec.md](code-exec.md) (Bubblewrap, `prlimit`, libseccomp, a lingering
   user systemd manager, and a file `core_pattern`). Without it the live-jail
-  tests skip, and `run_code` does not register. `python -m scripts.sandbox_probe`
-  names the missing prerequisite for the configured profile; the CI `sandbox` job provisions all of them
-  and runs those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where skipping
+  tests skip, and `run_code` does not register.
+  `python -m scripts.sandbox_probe` names the missing prerequisite for the
+  configured profile; the CI `sandbox` job provisions all of them and runs
+  those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
   counts as failure.
 - **Persistent browser and visual rendering** also need the Linux isolation
   stack and pinned BetterWright/Mermaid runtime. They are off unless

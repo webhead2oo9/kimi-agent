@@ -183,6 +183,10 @@ jobs:
           # RLIMIT_CORE=0 is only authoritative with a file core pattern, so the
           # sandbox refuses Apport's pipe pattern by design.
           sudo sysctl -w kernel.core_pattern=core
+          # The probe deliberately refuses to create WORKSPACE_DIR (a run from
+          # the wrong account must not plant a root the bot cannot use), so
+          # provision it here the way a first bot start would.
+          mkdir -p workspaces
           # Ubuntu 24.04 strips capabilities from unprivileged user namespaces
           # unless the creating binary is confined by an AppArmor profile that
           # grants them, and the bubblewrap package ships no such profile; the

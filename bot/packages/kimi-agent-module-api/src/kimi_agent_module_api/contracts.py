@@ -12,6 +12,7 @@ owner manifest and enforced through the ports below; they are not a sandbox.
 from __future__ import annotations
 
 import json
+import keyword
 import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -326,6 +327,13 @@ CORE_TOPIC_PREFIX = "discord"
 _CORE_RESERVED_MODULE_NAMES = frozenset({CORE_TOPIC_PREFIX, "proposals"})
 CUSTOM_ID_PREFIX = "m"
 CUSTOM_ID_MAX_LENGTH = 100
+# A modal ID also carries a fixed-width per-open suffix so two people opening the
+# same form do not share one entry in the host's modal table. That suffix is not
+# the module's to spend, so a modal's declared ID has a smaller budget than a
+# button's. Fixed width on purpose: a variable one would shrink the budget as the
+# host ran, letting a modal open successfully and then fail later.
+MODAL_NONCE_CHARS = 8
+MODAL_CUSTOM_ID_MAX_LENGTH = CUSTOM_ID_MAX_LENGTH - 1 - MODAL_NONCE_CHARS
 
 
 def table_prefix(module_name: str) -> str:
@@ -1149,6 +1157,15 @@ class ModalSpec:
 
 
 _OPTIONS_WITH_CHOICES = frozenset({"string", "integer"})
+# Keep command and group name validation in the SDK so the public fakes reject
+# the same payloads discord.py rejects while constructing the live tree.
+_COMMAND_NAME_RE = re.compile(
+    r"^[-_\w\u0e31-\u0e3a\u0e47-\u0e4e\u0900-\u0903\u093a\u093b\u093c"
+    r"\u093e\u093f\u0940-\u094f\u0955\u0956\u0957\u0962\u0963]{1,32}$"
+)
+_BUTTON_STYLES = frozenset({"primary", "secondary", "success", "danger"})
+_DISCORD_INTEGER_MAX = (1 << 53) - 1
+_DISCORD_INTEGER_MIN = -_DISCORD_INTEGER_MAX
 
 
 def validate_command_spec(spec: CommandSpec) -> None:
@@ -1160,6 +1177,15 @@ def validate_command_spec(spec: CommandSpec) -> None:
     are the limits nothing else enforces before the payload reaches Discord.
     """
 
+    for label, name in (("command", spec.name), ("command group", spec.group)):
+        if name is None:
+            continue
+        if (
+            not isinstance(name, str)
+            or _COMMAND_NAME_RE.fullmatch(name) is None
+            or name.lower() != name
+        ):
+            raise ModuleContractError(f"invalid {label} name {name!r}")
     if not isinstance(spec.description, str) or not 1 <= len(spec.description) <= 100:
         raise ModuleContractError("a command description must contain 1 to 100 characters")
     if spec.group is not None and (
@@ -1171,7 +1197,17 @@ def validate_command_spec(spec: CommandSpec) -> None:
 
     names: set[str] = set()
     for option in spec.options:
-        if not isinstance(option.name, str) or not 1 <= len(option.name) <= 32:
+        # Discord applies the slash-command name grammar to option names, while
+        # the host also builds each option into a Python parameter. Enforce the
+        # intersection here: this keeps valid leading underscores and lowercase
+        # Unicode identifiers while rejecting Discord-only names such as ``a-b``.
+        if (
+            not isinstance(option.name, str)
+            or _COMMAND_NAME_RE.fullmatch(option.name) is None
+            or option.name.lower() != option.name
+            or not option.name.isidentifier()
+            or keyword.iskeyword(option.name)
+        ):
             raise ModuleContractError(f"invalid command option name {option.name!r}")
         if option.name in names:
             raise ModuleContractError("command option names must be unique")
@@ -1202,6 +1238,22 @@ def validate_command_spec(spec: CommandSpec) -> None:
                 raise ModuleContractError(
                     f"invalid choice value {value!r} on option {option.name!r}"
                 )
+            # A choice whose value type disagrees with its option is a 400 on the
+            # whole payload, and nothing downstream cross-checks the two.
+            if not isinstance(value, str if option.kind == "string" else int):
+                raise ModuleContractError(
+                    f"choice values on {option.kind} option {option.name!r} must be "
+                    f"{'strings' if option.kind == 'string' else 'integers'}"
+                )
+            if (
+                option.kind == "integer"
+                and isinstance(value, int)
+                and not _DISCORD_INTEGER_MIN <= value <= _DISCORD_INTEGER_MAX
+            ):
+                raise ModuleContractError(
+                    f"an integer choice value on option {option.name!r} must be between "
+                    f"{_DISCORD_INTEGER_MIN} and {_DISCORD_INTEGER_MAX}"
+                )
             if isinstance(value, str) and not 1 <= len(value) <= 100:
                 raise ModuleContractError(
                     f"a choice value on option {option.name!r} must contain 1 to 100 characters"
@@ -1221,12 +1273,45 @@ def validate_command_spec(spec: CommandSpec) -> None:
                     f"option {option.name!r} cannot set min_value or max_value on a "
                     f"{option.kind} option"
                 )
+            if not _DISCORD_INTEGER_MIN <= bound <= _DISCORD_INTEGER_MAX:
+                raise ModuleContractError(
+                    f"option {option.name!r} bounds must be between "
+                    f"{_DISCORD_INTEGER_MIN} and {_DISCORD_INTEGER_MAX}"
+                )
         if (
             option.min_value is not None
             and option.max_value is not None
             and option.min_value > option.max_value
         ):
             raise ModuleContractError(f"option {option.name!r} min_value cannot exceed max_value")
+
+
+def validate_button_spec(button: ButtonSpec) -> None:
+    """Validate Discord's hard button limits."""
+
+    if not isinstance(button.key, str) or not _TOPIC_SEGMENT_RE.fullmatch(button.key):
+        raise ModuleContractError(f"invalid button key {button.key!r}")
+    if any(not isinstance(part, str) or ":" in part for part in button.parts):
+        raise ModuleContractError("button custom_id parts must be strings without ':'")
+    if not isinstance(button.label, str) or len(button.label) > 80:
+        raise ModuleContractError("a button label cannot exceed 80 characters")
+    if button.style not in _BUTTON_STYLES:
+        raise ModuleContractError(f"invalid button style {button.style!r}")
+    if button.emoji is not None and (not isinstance(button.emoji, str) or not button.emoji):
+        raise ModuleContractError("a button emoji must be a non-empty string")
+    if not button.label and button.emoji is None:
+        raise ModuleContractError("a button must provide a label or emoji")
+
+
+def validate_component_spec(component: Any) -> None:
+    """Validate one interactive component, whichever kind it is."""
+
+    if isinstance(component, ButtonSpec):
+        validate_button_spec(component)
+    elif isinstance(component, SelectSpec):
+        validate_select_spec(component)
+    else:
+        raise ModuleContractError(f"unsupported component {component!r}")
 
 
 def validate_select_spec(select: SelectSpec) -> None:

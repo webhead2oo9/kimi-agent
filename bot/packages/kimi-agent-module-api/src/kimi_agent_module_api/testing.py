@@ -26,7 +26,9 @@ from kimi_agent_module_api.trust import TrustTier
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
+    MODAL_CUSTOM_ID_MAX_LENGTH,
     Backoff,
+    ButtonSpec,
     ChannelSnapshot,
     CommandSpec,
     GuildCommand,
@@ -58,11 +60,14 @@ from kimi_agent_module_api.contracts import (
     ProposalState,
     RoleSnapshot,
     ScopedModuleMigration,
+    SelectSpec,
     ServiceUnavailable,
     TrustTierName,
     UndeclaredDiscordAction,
     build_custom_id,
+    parse_custom_id,
     validate_command_spec,
+    validate_component_spec,
     validate_modal_spec,
     validate_layout_components,
     validate_outgoing_layout,
@@ -591,6 +596,7 @@ class FakeInteraction:
         guild_name: str | None = "Test Guild",
         message: MessageRef | None = None,
         message_uses_layout: bool = False,
+        module_name: str | None = None,
     ) -> None:
         self._message = message
         self._guild_name = guild_name
@@ -605,6 +611,31 @@ class FakeInteraction:
         self.shown_modals: list[ModalSpec] = []
         self.deferred: bool | None = None
         self._original_uses_layout = message_uses_layout
+        parsed_custom_id = parse_custom_id(custom_id or "")
+        self._module_name = module_name or (
+            parsed_custom_id[0] if parsed_custom_id is not None else None
+        )
+
+    def _component_module_name(self) -> str:
+        if self._module_name is None:
+            raise ModuleContractError(
+                "FakeInteraction needs module_name to validate component custom_ids; "
+                "use FakeInteractions.interaction() or pass module_name explicitly"
+            )
+        return self._module_name
+
+    def _validate_components(
+        self, components: Sequence[Any], *, layout: OutgoingLayout | None
+    ) -> None:
+        for component in components:
+            validate_component_spec(component)
+            if isinstance(component, ButtonSpec | SelectSpec):
+                build_custom_id(
+                    self._component_module_name(),
+                    component.key,
+                    *component.parts,
+                )
+        validate_layout_components(components, layout=layout)
 
     @property
     def guild_id(self) -> int:
@@ -653,9 +684,9 @@ class FakeInteraction:
     ) -> None:
         if layout is not None and (content is not None or embed is not None):
             raise ModuleContractError("layout cannot be combined with content or embed")
+        self._validate_components(components, layout=layout)
         if layout is not None:
             validate_outgoing_layout(layout)
-            validate_layout_components(components, layout=layout)
         self.responses.append(
             FakeResponse(content, embed, ephemeral, tuple(components), "respond", layout=layout)
         )
@@ -666,6 +697,11 @@ class FakeInteraction:
 
     async def show_modal(self, modal: ModalSpec) -> None:
         validate_modal_spec(modal)
+        declared = build_custom_id(self._component_module_name(), modal.key, *modal.parts)
+        if len(declared) > MODAL_CUSTOM_ID_MAX_LENGTH:
+            raise ModuleContractError(
+                f"modal custom_id exceeds {MODAL_CUSTOM_ID_MAX_LENGTH} characters"
+            )
         self.shown_modals.append(modal)
 
     async def edit_original(
@@ -682,9 +718,9 @@ class FakeInteraction:
             )
         if layout is not None and (content is not None or embed is not None):
             raise ModuleContractError("layout cannot be combined with content or embed")
+        self._validate_components(components, layout=layout)
         if layout is not None:
             validate_outgoing_layout(layout)
-            validate_layout_components(components, layout=layout)
         self.responses.append(
             FakeResponse(content, embed, False, tuple(components), "edit", layout=layout)
         )
@@ -701,17 +737,95 @@ class FakeInteraction:
         return self.responses[-1]
 
 
+@dataclass(slots=True)
+class FakeInteractionOwnership:
+    """Shared top-level command ownership for a multi-module test host."""
+
+    routers: list[FakeInteractions] = field(default_factory=list)
+
+    def register(self, router: FakeInteractions) -> None:
+        self.routers.append(router)
+
+    def unregister(self, router: FakeInteractions) -> None:
+        if router in self.routers:
+            self.routers.remove(router)
+
+    def global_top_names(self) -> set[str]:
+        return {top_name for router in self.routers for top_name in router._global_top_kinds()}
+
+    def guild_top_names(
+        self,
+        guild_id: int,
+        *,
+        excluding: FakeInteractions | None = None,
+    ) -> set[str]:
+        return {
+            spec.group or spec.name
+            for router in self.routers
+            if router is not excluding
+            for spec, _handler in router.guild_commands.get(guild_id, {}).values()
+        }
+
+    def global_owner(self, top_name: str) -> tuple[FakeInteractions, str] | None:
+        for router in self.routers:
+            kind = router._global_top_kinds().get(top_name)
+            if kind is not None:
+                return router, kind
+        return None
+
+    def guild_owner(self, top_name: str, *, guild_id: int | None = None) -> FakeInteractions | None:
+        for router in self.routers:
+            guild_sets = (
+                (router.guild_commands.get(guild_id, {}),)
+                if guild_id is not None
+                else tuple(router.guild_commands.values())
+            )
+            for commands in guild_sets:
+                if any(
+                    (spec.group or spec.name) == top_name for spec, _handler in commands.values()
+                ):
+                    return router
+        return None
+
+
 class FakeInteractions:
     """Records command and component registrations; tests invoke handlers directly."""
 
-    def __init__(self, module_name: str) -> None:
+    def __init__(
+        self,
+        module_name: str,
+        *,
+        ownership: FakeInteractionOwnership | None = None,
+        is_guild_active: Callable[[int], bool] | None = None,
+    ) -> None:
         self.module_name = module_name
+        self.ownership = ownership or FakeInteractionOwnership()
+        self.ownership.register(self)
+        self._is_guild_active = (
+            is_guild_active if is_guild_active is not None else lambda _guild_id: True
+        )
         self.commands: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
         self.guild_commands: dict[int, dict[str, tuple[CommandSpec, Callable[..., Any]]]] = {}
         self.guild_autocompletes: dict[int, dict[str, Callable[..., Any]]] = {}
         self.components: dict[tuple[str, str], Callable[..., Any]] = {}
         self.component_min_tiers: dict[tuple[str, str], TrustTierName] = {}
         self.autocompletes: dict[str, Callable[..., Any]] = {}
+        self._closed = False
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError(f"module {self.module_name!r} interactions are closed")
+
+    def interaction(self, **kwargs: Any) -> FakeInteraction:
+        """Create an interaction bound to this router's exact custom-ID namespace."""
+
+        self._ensure_open()
+        supplied = kwargs.pop("module_name", self.module_name)
+        if supplied != self.module_name:
+            raise ValueError(
+                f"interaction module_name {supplied!r} does not match {self.module_name!r}"
+            )
+        return FakeInteraction(module_name=self.module_name, **kwargs)
 
     def _global_top_kinds(self) -> dict[str, str]:
         """Top-level names the host tree would hold, derived so close() cannot drift.
@@ -725,13 +839,6 @@ class FakeInteractions:
             for spec, _handler in self.commands.values()
         }
 
-    def _guild_top_names(self) -> set[str]:
-        return {
-            spec.group or spec.name
-            for commands in self.guild_commands.values()
-            for spec, _handler in commands.values()
-        }
-
     def add_command(
         self,
         spec: CommandSpec,
@@ -739,25 +846,45 @@ class FakeInteractions:
         *,
         autocomplete: Callable[..., Any] | None = None,
     ) -> _Closable:
+        self._ensure_open()
         validate_command_spec(spec)
+        if autocomplete is None and any(option.autocomplete for option in spec.options):
+            raise ModuleContractError(
+                f"module {self.module_name!r} command {spec.name!r} declares an autocomplete "
+                "option but supplied no autocomplete handler"
+            )
         qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
         if qualified in self.commands:
             raise ModuleContractError(
                 f"module {self.module_name!r} command {qualified!r} is already registered"
             )
         top_name = spec.group or spec.name
-        if self._global_top_kinds().get(top_name) not in (
-            None,
-            "group" if spec.group else "command",
-        ):
+        kind = "group" if spec.group else "command"
+        existing_global = self.ownership.global_owner(top_name)
+        if existing_global is not None and existing_global[0] is not self:
+            raise ModuleContractError(
+                f"module {self.module_name!r} command {top_name!r} is already owned"
+            )
+        if existing_global is not None and existing_global[1] != kind:
             raise ModuleContractError(
                 f"module {self.module_name!r} command {top_name!r} is both a command and a group"
             )
-        if top_name in self._guild_top_names():
+        if self.ownership.guild_owner(top_name) is not None:
             raise ModuleContractError(
                 f"module {self.module_name!r} global command {top_name!r} "
                 "would shadow a guild command"
             )
+        if spec.group is not None:
+            group_size = sum(
+                existing.group == spec.group for existing, _handler in self.commands.values()
+            )
+            if group_size >= 25:
+                raise ModuleContractError(
+                    f"module {self.module_name!r} command group {spec.group!r} "
+                    "cannot contain more than 25 commands"
+                )
+        if existing_global is None and len(self.ownership.global_top_names()) >= 100:
+            raise ModuleContractError("Discord allows at most 100 global slash commands")
         self.commands[qualified] = (spec, handler)
         if autocomplete is not None:
             self.autocompletes[qualified] = autocomplete
@@ -770,21 +897,38 @@ class FakeInteractions:
         guild_id: int,
         commands: Sequence[GuildCommand],
     ) -> None:
+        self._ensure_open()
         if guild_id <= 0:
             raise ModuleContractError("guild_id must be a positive Discord snowflake")
+        if commands and not self._is_guild_active(guild_id):
+            raise ModuleContractError(
+                f"module {self.module_name!r} is not active in guild {guild_id}"
+            )
         desired: dict[str, tuple[CommandSpec, Callable[..., Any]]] = {}
         autocompletes: dict[str, Callable[..., Any]] = {}
         top_kinds: dict[str, str] = {}
-        global_top_kinds = self._global_top_kinds()
+        group_sizes: dict[str, int] = {}
         for command in commands:
             validate_command_spec(command.spec)
+            if command.autocomplete is None and any(
+                option.autocomplete for option in command.spec.options
+            ):
+                raise ModuleContractError(
+                    f"module {self.module_name!r} command {command.spec.name!r} declares an "
+                    "autocomplete option but supplied no autocomplete handler"
+                )
         for command in commands:
             top_name = command.spec.group or command.spec.name
             kind = "group" if command.spec.group else "command"
-            if top_name in global_top_kinds:
+            if self.ownership.global_owner(top_name) is not None:
                 raise ModuleContractError(
                     f"module {self.module_name!r} guild command {top_name!r} "
                     "would shadow a global command"
+                )
+            guild_owner = self.ownership.guild_owner(top_name, guild_id=guild_id)
+            if guild_owner is not None and guild_owner is not self:
+                raise ModuleContractError(
+                    f"module {self.module_name!r} guild command {top_name!r} is already owned"
                 )
             previous_kind = top_kinds.setdefault(top_name, kind)
             if previous_kind != kind:
@@ -792,6 +936,14 @@ class FakeInteractions:
                     f"module {self.module_name!r} guild command {top_name!r} "
                     "is both a command and a group"
                 )
+            if command.spec.group is not None:
+                group_size = group_sizes.get(command.spec.group, 0) + 1
+                if group_size > 25:
+                    raise ModuleContractError(
+                        f"module {self.module_name!r} guild command group "
+                        f"{command.spec.group!r} cannot contain more than 25 commands"
+                    )
+                group_sizes[command.spec.group] = group_size
             qualified = (
                 f"{command.spec.group}.{command.spec.name}"
                 if command.spec.group
@@ -805,6 +957,9 @@ class FakeInteractions:
             desired[qualified] = (command.spec, command.handler)
             if command.autocomplete is not None:
                 autocompletes[qualified] = command.autocomplete
+        other_top_names = self.ownership.guild_top_names(guild_id, excluding=self)
+        if len(other_top_names | set(top_kinds)) > 100:
+            raise ModuleContractError(f"guild {guild_id} would have more than 100 slash commands")
         if desired:
             self.guild_commands[guild_id] = desired
             self.guild_autocompletes[guild_id] = autocompletes
@@ -821,6 +976,7 @@ class FakeInteractions:
         expires_after_seconds: float | None = None,
         min_tier: TrustTierName = "member",
     ) -> _Closable:
+        self._ensure_open()
         if kind not in ("button", "select", "modal"):
             raise ModuleContractError(f"unsupported component kind {kind!r}")
         build_custom_id(self.module_name, key)
@@ -839,7 +995,22 @@ class FakeInteractions:
         )
 
     def custom_id(self, key: str, *parts: str) -> str:
+        self._ensure_open()
         return build_custom_id(self.module_name, key, *parts)
+
+    def close(self) -> None:
+        """Release fake registrations and shared ownership like the live router."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self.commands.clear()
+        self.guild_commands.clear()
+        self.guild_autocompletes.clear()
+        self.components.clear()
+        self.component_min_tiers.clear()
+        self.autocompletes.clear()
+        self.ownership.unregister(self)
 
 
 class FakeGuildSettings:
@@ -1147,6 +1318,7 @@ __all__ = [
     "FakeHealth",
     "FakeHttp",
     "FakeInteraction",
+    "FakeInteractionOwnership",
     "FakeInteractions",
     "FakeProposals",
     "FakeResponse",

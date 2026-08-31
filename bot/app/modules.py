@@ -294,6 +294,7 @@ def validate_module_selection(
     *,
     core_settings: Settings,
     installed: Mapping[str, ModuleSpec] | None = None,
+    capabilities: ModuleCapabilities | None = None,
 ) -> tuple[ModuleSpec, ...]:
     """Preflight one explicit module set without creating module instances."""
     if not names:
@@ -310,7 +311,7 @@ def validate_module_selection(
                 f"Kimi modules {previous!r} and {spec.name!r} share normalized prefix {prefix!r}"
             )
         by_prefix[prefix] = spec.name
-    capabilities = module_capabilities(core_settings)
+    capabilities = capabilities if capabilities is not None else module_capabilities(core_settings)
     for spec in specs:
         if spec.api_version != MODULE_API_VERSION:
             raise RuntimeError(
@@ -462,6 +463,7 @@ class ModuleManager:
         core_settings: Settings,
         registry: ToolRegistry,
         installed: Mapping[str, ModuleSpec] | None = None,
+        capabilities: ModuleCapabilities | None = None,
     ) -> ModuleManager:
         settings_registry = ModuleSettingsRegistry(config_dir=Path(core_settings.config_dir))
         manager = cls(
@@ -472,19 +474,27 @@ class ModuleManager:
         )
         if not names:
             return manager
+        resolved_capabilities = (
+            capabilities if capabilities is not None else module_capabilities(core_settings)
+        )
         specs = validate_module_selection(
             names,
             core_settings=core_settings,
             installed=installed,
+            capabilities=resolved_capabilities,
         )
-        capabilities = module_capabilities(core_settings)
-        disabled = _activation_disabled(specs, capabilities)
+        disabled = _activation_disabled(specs, resolved_capabilities)
         active_specs = tuple(spec for spec in specs if spec.name not in disabled)
         tool_registry = _LoadTimeToolRegistry(registry)
         manager._tool_registry = tool_registry
         try:
             cls._create_all(
-                manager, active_specs, tool_registry, settings_registry, capabilities, registry
+                manager,
+                active_specs,
+                tool_registry,
+                settings_registry,
+                resolved_capabilities,
+                registry,
             )
         finally:
             # Sealed even when a later create() fails, so a module that stashed

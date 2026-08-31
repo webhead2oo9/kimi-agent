@@ -164,6 +164,8 @@ When both code execution and the [persistent browser](browser.md) use `netns`, t
 
 Every mode needs Linux, Bubblewrap, util-linux `prlimit`, libseccomp, `systemd-run`, a working user systemd manager, unprivileged user namespaces, and a Bubblewrap version that can disable nested user namespaces.
 
+Unprivileged user namespaces must keep their capabilities. Ubuntu 24.04 strips them (`kernel.apparmor_restrict_unprivileged_userns=1`) unless the creating binary is confined by an AppArmor profile that allows them, which the distribution's `bubblewrap` package provides. Where that profile is not loaded, `bwrap` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted` or `Creating new namespace failed`, and `run_code` stays unavailable; `python -m scripts.sandbox_probe` prints the relevant sysctls next to the failure.
+
 Kimi must run as a normal Unix user. UID 0 is rejected during startup and again before every run. Container root does not count as unprivileged.
 
 The account also needs lingering so its systemd user manager stays available. Replace `kimi` with the real account:

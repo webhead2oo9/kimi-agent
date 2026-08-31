@@ -113,7 +113,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "usage",
         "utils",
     },
-    "image_gen": {"codex"},
+    "image_gen": {"codex", "utils"},
     "memory": {"providers", "storage", "utils"},
     "moderation": {"observability", "providers", "trust", "utils"},
     # Module API runtime services. Grows as each service lands; the app edge is

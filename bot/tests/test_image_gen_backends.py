@@ -16,7 +16,7 @@ from image_gen.openai import (
     OAUTH_BASE_URL,
     OpenAIImageBackend,
 )
-from image_gen.service import DEFAULT_MAX_IMAGE_BYTES, PNG_SIGNATURE, ImageGenService
+from image_gen.service import DEFAULT_MAX_IMAGE_BYTES, ImageGenService
 from image_gen.types import (
     ImageEditRequest,
     ImageGenError,
@@ -26,7 +26,9 @@ from image_gen.types import (
     ImageResult,
 )
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 16
+from tests.helpers import PNG_SIGNATURE_ONLY, VALID_PNG_BYTES, corrupt_png_crc
+
+PNG_BYTES = VALID_PNG_BYTES
 PNG_BASE64 = base64.b64encode(PNG_BYTES).decode("ascii")
 
 
@@ -516,13 +518,41 @@ async def test_service_verifies_png_and_rejects_other_data() -> None:
             raise AssertionError("unused")
 
     service = ImageGenService(GifBackend())
-    with pytest.raises(ImageGenError, match="not a PNG"):
+    with pytest.raises(ImageGenError, match="not a decodable PNG"):
         await service.generate(_request())
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(PNG_SIGNATURE_ONLY + b"verified", id="signature-only"),
+        pytest.param(corrupt_png_crc(VALID_PNG_BYTES), id="crc-corrupt"),
+        pytest.param(VALID_PNG_BYTES[:-8], id="truncated"),
+    ],
+)
+async def test_service_rejects_png_bytes_that_do_not_fully_decode(payload: bytes) -> None:
+    # The shipped backend's output is written into the workspace and queued for
+    # Discord, so it gets the same decode-level check as provider-native assets.
+    class BrokenPngBackend:
+        name = "stub"
+
+        def available(self) -> bool:
+            return True
+
+        async def generate(self, request: ImageGenRequest) -> ImageResult:
+            return ImageResult(image_base64=base64.b64encode(payload).decode())
+
+        async def edit(self, request: ImageEditRequest) -> ImageResult:
+            raise AssertionError("unused")
+
+    with pytest.raises(ImageGenError, match="not a decodable PNG"):
+        await ImageGenService(BrokenPngBackend()).generate(_request())
+
+
+@pytest.mark.asyncio
 async def test_service_returns_verified_bytes_for_workspace_write() -> None:
-    png = PNG_SIGNATURE + b"verified"
+    png = VALID_PNG_BYTES
 
     class PngBackend:
         name = "stub"
@@ -543,7 +573,7 @@ async def test_service_returns_verified_bytes_for_workspace_write() -> None:
 
 @pytest.mark.asyncio
 async def test_service_rejects_oversized_images() -> None:
-    huge = PNG_SIGNATURE + b"0" * (DEFAULT_MAX_IMAGE_BYTES + 1)
+    huge = PNG_SIGNATURE_ONLY + b"0" * (DEFAULT_MAX_IMAGE_BYTES + 1)
 
     class HugeBackend:
         name = "stub"

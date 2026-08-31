@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import math
 from dataclasses import replace
@@ -13,9 +15,15 @@ from providers.types import (
     ProviderRequest,
     ProviderResponse,
 )
-from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, supported_image_media_type
+from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, decoded_image_media_type
 
 log = logging.getLogger(__name__)
+
+_MAX_INLINE_IMAGES = 8
+_MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_TOTAL_INLINE_IMAGE_BYTES = 25 * 1024 * 1024
+_MAX_INLINE_IMAGE_ENCODED_BYTES = ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4
+_MAX_INLINE_IMAGE_HEADER_CHARS = 1024
 
 
 class OpenRouterProvider(OpenAIChatProvider):
@@ -113,7 +121,10 @@ class OpenRouterProvider(OpenAIChatProvider):
     def _bounded_text(value: Any, *, max_chars: int = 160) -> str:
         if not isinstance(value, str):
             return ""
-        return "".join(char for char in value.strip() if char.isprintable())[:max_chars]
+        # Bound work before stripping/filtering: provider metadata is untrusted,
+        # and scanning a multi-megabyte value just to retain 160 characters is
+        # avoidable event-loop work.
+        return "".join(char for char in value[:max_chars].strip() if char.isprintable())
 
     @classmethod
     def _selected_provider(cls, metadata: Any) -> str:
@@ -140,7 +151,12 @@ class OpenRouterProvider(OpenAIChatProvider):
     @classmethod
     def _parse_images(cls, images: Any) -> list[GeneratedAsset]:
         assets: list[GeneratedAsset] = []
+        processed_bytes = 0
+        processed_encoded_chars = 0
         for index, image in enumerate(images or [], start=1):
+            if index > _MAX_INLINE_IMAGES:
+                log.warning("Skipping OpenRouter images beyond the image-count cap")
+                break
             image_url = cls._native_field(image, "image_url")
             url = cls._native_field(image_url, "url")
             if not isinstance(url, str):
@@ -148,17 +164,70 @@ class OpenRouterProvider(OpenAIChatProvider):
             # Only data URLs carry inline base64. A plain http(s) URL is not
             # base64 and must not be smuggled into data_base64, where it would
             # later fail to decode.
-            if not (url.startswith("data:") and "," in url):
+            if url[:5].lower() != "data:":
                 log.warning("Skipping non-data image URL from OpenRouter: %s", url[:80])
                 continue
-            header, data_base64 = url.split(",", 1)
-            # OpenRouter returns JPEG and WebP alongside PNG. The declared type
-            # picks the extension; an unsupported one is dropped rather than
-            # relabelled as a PNG that neither Discord nor the user can trust.
-            media_type = supported_image_media_type(header.removeprefix("data:"))
-            if media_type is None:
-                log.warning("Skipping unsupported OpenRouter image type: %s", header[:80])
+            comma_index = url.find(",", 5, 6 + _MAX_INLINE_IMAGE_HEADER_CHARS)
+            if comma_index < 0:
+                log.warning("Skipping OpenRouter image data URL with a missing/oversized header")
                 continue
+            header_parts = url[5:comma_index].split(";")
+            if not any(part.strip().lower() == "base64" for part in header_parts[1:]):
+                log.warning("Skipping non-base64 OpenRouter image data URL")
+                continue
+            encoded_length = len(url) - comma_index - 1
+            if encoded_length > _MAX_INLINE_IMAGE_ENCODED_BYTES:
+                log.warning("Skipping OpenRouter image %d: encoded data exceeds byte cap", index)
+                continue
+            total_encoded_cap = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
+            if processed_encoded_chars + encoded_length > total_encoded_cap:
+                log.warning("Stopping OpenRouter image parsing at the aggregate encoded-data cap")
+                break
+            # Charge every bounded candidate before validating base64. Rejected
+            # data must not repeat full scans/decodes outside the total response
+            # processing budget.
+            processed_encoded_chars += encoded_length
+            remaining_bytes = _MAX_TOTAL_INLINE_IMAGE_BYTES - processed_bytes
+            remaining_encoded_bytes = ((remaining_bytes + 2) // 3) * 4
+            if encoded_length > remaining_encoded_bytes:
+                log.warning("Stopping OpenRouter image parsing at the aggregate byte cap")
+                break
+            data_base64 = url[comma_index + 1 :]
+            try:
+                raw = base64.b64decode(data_base64, validate=True)
+            except binascii.Error, ValueError:
+                log.warning("Skipping OpenRouter image %d: data is not valid base64", index)
+                continue
+            if len(raw) > _MAX_INLINE_IMAGE_BYTES:
+                log.warning("Skipping OpenRouter image %d: decoded data exceeds byte cap", index)
+                continue
+            if processed_bytes + len(raw) > _MAX_TOTAL_INLINE_IMAGE_BYTES:
+                # Padding can make the encoded upper-bound check conservative by
+                # two bytes. Keep the exact decoded bound authoritative.
+                log.warning("Stopping OpenRouter image parsing at the aggregate byte cap")
+                break
+            # Invalid candidates consume the processing budget too. Otherwise a
+            # provider could make every rejected image perform a full local decode
+            # while evading the aggregate cap reserved for this response.
+            processed_bytes += len(raw)
+
+            # Both the declared media type and payload are untrusted provider data.
+            # Sniff before the asset enters output moderation: an invalid payload
+            # would otherwise fail moderation closed even though the asset writer
+            # would discard it later. Valid images survive a bad upstream label and
+            # carry the canonical type and extension earned by their magic bytes.
+            media_type = decoded_image_media_type(raw)
+            if media_type is None:
+                log.warning("Skipping OpenRouter image %d: bytes are not a supported image", index)
+                continue
+            declared = cls._bounded_text(header_parts[0]).lower()
+            if declared != media_type:
+                log.warning(
+                    "OpenRouter image %d declared %s but its bytes are %s",
+                    index,
+                    declared or "an empty media type",
+                    media_type,
+                )
             assets.append(
                 GeneratedAsset(
                     kind="image",

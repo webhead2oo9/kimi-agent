@@ -2259,7 +2259,13 @@ def test_thread_request_does_not_retry_when_creation_is_forbidden(monkeypatch):
 
 
 def _cross_channel_turn(
-    monkeypatch, app, store, *, blocked: bool = False, target_channel_id: int | None = 200
+    monkeypatch,
+    app,
+    store,
+    *,
+    blocked: bool = False,
+    termination_reason: str = "completed",
+    target_channel_id: int | None = 200,
 ):
     """Drive one turn whose reply asks for a thread over in channel 200."""
     fake_thread_cls = type("_FakeThread", (), {})
@@ -2272,6 +2278,7 @@ def _cross_channel_turn(
             response_text="moved!",
             thread_request=ThreadRequest(name="Quest help", target_channel_id=target_channel_id),
             blocked_by_moderation=blocked,
+            termination_reason=termination_reason,
         )
 
     monkeypatch.setattr(app_runtime, "handle_turn", fake_handle_turn)
@@ -2524,6 +2531,26 @@ def test_moderation_blocked_reply_creates_no_thread(monkeypatch, target_channel_
 
     message, _thread, created = _cross_channel_turn(
         monkeypatch, app, store, blocked=True, target_channel_id=target_channel_id
+    )
+
+    assert created == []
+    assert app.thread_handoff.managed_count == 0
+    message.reply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("target_channel_id", [None, 200])
+def test_attachment_error_reply_creates_no_thread(monkeypatch, target_channel_id):
+    app = _build_test_app(monkeypatch)
+    store = ThreadMappingStore()
+    _wire_handle_message(monkeypatch, app, store)
+    _enable_thread_handoff(app, store)
+
+    message, _thread, created = _cross_channel_turn(
+        monkeypatch,
+        app,
+        store,
+        termination_reason="attachment_error",
+        target_channel_id=target_channel_id,
     )
 
     assert created == []
@@ -2784,6 +2811,42 @@ def test_on_message_delivery_failure_adds_failure_reaction(monkeypatch):
     )
 
     message = _trigger_message(content="<@999> hello", author_id=456, author_name="Bob")
+
+    asyncio.run(app.on_message(message))
+
+    added = [call.args[0] for call in message.add_reaction.await_args_list]
+    assert "❌" in added
+    assert "✅" not in added
+
+
+def test_on_message_attachment_error_adds_failure_reaction(monkeypatch):
+    app = _build_test_app(monkeypatch)
+    store = RecordingStore()
+    app.context_manager = ContextManager(cast(ConversationStore, store))
+    app.conversation_store = cast(ConversationStore, store)
+    app.blocked_user_store = None
+    app.settings.allowed_channel_ids = ""
+    app.context_locks = {}
+    app._lock_refcounts = {}
+    monkeypatch.setattr(
+        app_runtime,
+        "should_respond",
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+            True
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "handle_message",
+        AsyncMock(
+            return_value=TurnResult(
+                response_text="I couldn't read that image.",
+                termination_reason="attachment_error",
+            )
+        ),
+    )
+
+    message = _trigger_message(content="<@999> describe this", author_id=456, author_name="Bob")
 
     asyncio.run(app.on_message(message))
 

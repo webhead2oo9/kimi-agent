@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from discord.ext import commands
 from pydantic import ValidationError
 
 from agent.activity import ActivityUpdate
+from agent.core import ConversationRunRequest, ConversationRunResult
 from agent.turn import TurnResult
 from commands.chat_cmd import register_user_app_chat_commands
 from app import runtime as app_runtime
@@ -25,11 +27,18 @@ from discord_adapter.interaction_io import (
 )
 from storage.conversations import OWNER_ONLY, ConversationStore
 from storage.db import Database
+from providers.types import ContentPartType, ProviderCapability
 from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
 from tools.registry import MessageContext
 from workspace import user_app_workspace_key
 from tests.helpers import StubProviderManager
+
+
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9aw"
+    "AAAABJRU5ErkJggg=="
+)
 
 
 def test_user_app_access_uses_highest_overlapping_tier() -> None:
@@ -325,6 +334,190 @@ async def test_chat_visibility_choice_maps_to_internal_public_flag() -> None:
     )
 
     assert calls == [False, True]
+
+
+class _UserAppImageAttachment:
+    def __init__(self, *, unreadable: bool = False) -> None:
+        self.filename = "photo.png"
+        self.content_type = "application/octet-stream"
+        self._payload = _PNG_1X1
+        self.size = len(self._payload)
+        self.unreadable = unreadable
+        self.read_count = 0
+
+    async def read(self) -> bytes:
+        self.read_count += 1
+        if self.unreadable:
+            raise OSError("attachment expired")
+        return self._payload
+
+
+class _UserAppInteractionResponse:
+    def __init__(self) -> None:
+        self.deferred: list[dict[str, object]] = []
+        self.sent: list[dict[str, object]] = []
+
+    async def defer(self, **kwargs: object) -> None:
+        self.deferred.append(kwargs)
+
+    async def send_message(self, content: object = None, **kwargs: object) -> None:
+        kwargs["content"] = content
+        self.sent.append(kwargs)
+
+
+class _UserAppImageInteraction:
+    def __init__(self) -> None:
+        self.id = 7
+        self.user = SimpleNamespace(id=42, display_name="Alice")
+        self.channel = SimpleNamespace(guild=None)
+        self.channel_id = 99
+        self.guild = None
+        self.guild_id = None
+        self.created_at = datetime.now(UTC)
+        self.response = _UserAppInteractionResponse()
+        self.edits: list[dict[str, object]] = []
+
+    async def edit_original_response(self, **kwargs: object) -> None:
+        self.edits.append(kwargs)
+
+
+async def _image_chat_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
+    )
+    app = app_runtime.build_app(
+        Settings.model_validate(
+            {
+                "discord_bot_token": "token",
+                "model_api_key": "key",
+                "config_dir": str(tmp_path / "config"),
+                "database_path": str(tmp_path / "runtime.db"),
+                "workspace_dir": str(tmp_path / "workspaces"),
+                "attachment_store_dir": str(tmp_path / "attachments"),
+                "user_app_chat_enabled": True,
+                "owner_user_id": "42",
+            }
+        )
+    )
+    await app._first_init_core()
+    provider_manager = cast(StubProviderManager, app.provider_manager)
+    provider_manager.main.capabilities = {
+        ProviderCapability.TEXT,
+        ProviderCapability.IMAGE_INPUT,
+        ProviderCapability.TOOL_CALLING,
+    }
+    return app
+
+
+@pytest.mark.asyncio
+async def test_registered_chat_passes_generic_mime_image_to_image_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _image_chat_app(tmp_path, monkeypatch)
+    requests: list[ConversationRunRequest] = []
+    delivered: list[str] = []
+
+    async def capture_run(*, request: ConversationRunRequest) -> ConversationRunResult:
+        requests.append(request)
+        return ConversationRunResult(text="I can see the image.")
+
+    async def capture_result(_interaction: object, content: str, **_kwargs: object) -> None:
+        delivered.append(content)
+
+    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
+    attachment = _UserAppImageAttachment()
+    interaction = _UserAppImageInteraction()
+    command = cast(Any, app.bot.tree.get_command("chat"))
+    assert command is not None
+
+    try:
+        await command.callback(
+            cast(discord.Interaction, interaction),
+            "Describe this",
+            attachment=cast(discord.Attachment, attachment),
+        )
+
+        assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+        assert interaction.response.sent == []
+        assert attachment.read_count == 1
+        assert delivered == ["I can see the image."]
+        assert len(requests) == 1
+        provider_manager = cast(StubProviderManager, app.provider_manager)
+        assert requests[0].provider is provider_manager.main
+        input_parts = requests[0].input_parts
+        assert input_parts is not None
+        assert len(input_parts) == 1
+        image_part = input_parts[0]
+        assert image_part.type is ContentPartType.IMAGE
+        assert image_part.media_type == "image/png"
+        assert image_part.image_url is not None
+        header, encoded = image_part.image_url.split(",", maxsplit=1)
+        assert header == "data:image/png;base64"
+        assert base64.b64decode(encoded, validate=True) == _PNG_1X1
+        assert not list((tmp_path / "attachments").rglob("photo.png"))
+    finally:
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_registered_chat_reports_unreadable_image_without_provider_or_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _image_chat_app(tmp_path, monkeypatch)
+    requests: list[ConversationRunRequest] = []
+    delivered: list[str] = []
+
+    async def capture_run(*, request: ConversationRunRequest) -> ConversationRunResult:
+        requests.append(request)
+        return ConversationRunResult(text="unexpected")
+
+    async def capture_result(_interaction: object, content: str, **_kwargs: object) -> None:
+        delivered.append(content)
+
+    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
+    attachment = _UserAppImageAttachment(unreadable=True)
+    interaction = _UserAppImageInteraction()
+    command = cast(Any, app.bot.tree.get_command("chat"))
+    assert command is not None
+
+    try:
+        await command.callback(
+            cast(discord.Interaction, interaction),
+            "Describe this",
+            attachment=cast(discord.Attachment, attachment),
+        )
+
+        assert attachment.read_count == 1
+        assert requests == []
+        assert delivered == [
+            (
+                "I couldn't read the attached image. Re-upload it as a valid PNG, JPEG, GIF, "
+                "or WebP within the attachment size limit."
+            )
+        ]
+        async with app.database.conn.execute(
+            """
+            SELECT messages.role
+            FROM messages
+            JOIN conversations ON conversations.id = messages.conversation_id
+            WHERE conversations.key = ?
+            """,
+            ("userchat:42",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        assert rows == []
+        assert not list((tmp_path / "attachments").rglob("photo.png"))
+    finally:
+        await app.database.close()
 
 
 @pytest.mark.asyncio

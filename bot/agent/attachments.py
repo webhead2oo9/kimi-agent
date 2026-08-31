@@ -31,15 +31,24 @@ from providers.types import ContentPart, ContentPartType, ConversationMessage
 IMAGE_DETAIL_VALUES = {"low", "high", "original", "auto"}
 _DISCORD_MEDIA_HOSTS = frozenset({"cdn.discordapp.com", "media.discordapp.net"})
 _DISCORD_ATTACHMENT_STREAM_TIMEOUT_SECONDS = 1_800.0
+_GENERIC_BINARY_MEDIA_TYPES = frozenset({"application/octet-stream", "binary/octet-stream"})
 
 log = logging.getLogger(__name__)
 
 
 def _attachment_image_media_type(attachment: Any) -> str | None:
     declared = getattr(attachment, "content_type", None)
-    if declared:
-        return supported_image_media_type(str(declared))
-    return image_media_type_from_filename(str(getattr(attachment, "filename", "")))
+    normalized_declared = str(declared).partition(";")[0].strip().lower() if declared else ""
+    declared_media_type = supported_image_media_type(normalized_declared)
+    if declared_media_type is not None:
+        return declared_media_type
+    # Discord's content_type is optional metadata and can be a generic value such
+    # as application/octet-stream. Keep the supported filename suffix as a candidate
+    # signal only in that case; an explicit non-image type remains authoritative.
+    # _images_from_message still sniffs the bytes before admitting an image.
+    if not normalized_declared or normalized_declared in _GENERIC_BINARY_MEDIA_TYPES:
+        return image_media_type_from_filename(str(getattr(attachment, "filename", "")))
+    return None
 
 
 @dataclass
@@ -49,6 +58,10 @@ class TurnImages:
     cleanup_paths: list[Path] = field(default_factory=list)
     vision_hashes: frozenset[str] = frozenset()
     reply_images: tuple[CollectedImage, ...] = ()
+    # The trigger carried image-like metadata, but none of its candidates could
+    # be read, staged, or validated. Turn orchestration surfaces this to the user
+    # instead of silently sending a text-only request to the selected vision model.
+    current_image_unavailable: bool = False
 
 
 @dataclass(frozen=True)
@@ -614,7 +627,14 @@ async def collect_turn_images(
         )
         if isinstance(exc, Exception):
             log.warning("collect_turn_images failed; proceeding text-only", exc_info=True)
-            return TurnImages(vision_parts=[], edit_target=None)
+            return TurnImages(
+                vision_parts=[],
+                edit_target=None,
+                # Any staged current image was cleaned in this exception path,
+                # so a trigger image is unavailable even if collection reached it
+                # before a later reply/history phase failed.
+                current_image_unavailable=has_current_image_candidate,
+            )
         raise
 
     # Edit target: reply if reply, else newest-from-history (only when no current image), else None.
@@ -650,6 +670,7 @@ async def collect_turn_images(
         cleanup_paths=cleanup_paths,
         vision_hashes=frozenset(vision_hashes),
         reply_images=tuple(reply),
+        current_image_unavailable=has_current_image_candidate and not current,
     )
 
 

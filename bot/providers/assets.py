@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from providers.types import GeneratedAsset
-from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, sniff_image_media_type
+from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, decoded_image_media_type
 
 log = logging.getLogger(__name__)
 
@@ -49,11 +49,12 @@ def write_generated_assets(
             log.warning("Skipping generated asset %d: aggregate asset bytes exceed cap", index)
             continue
         # The provider's declared type is untrusted upstream data, and these files
-        # are handed straight to Discord as attachments. Magic bytes decide both
-        # whether the payload is an image at all and what extension it gets.
-        sniffed = sniff_image_media_type(raw)
+        # are handed straight to Discord as attachments. Every provider's assets
+        # converge here, so this is the one place that decides whether the bytes
+        # are a complete, decodable image and what extension they earn.
+        sniffed = decoded_image_media_type(raw)
         if sniffed is None:
-            log.warning("Skipping generated asset %d: bytes are not a supported image", index)
+            log.warning("Skipping generated asset %d: bytes are not a decodable image", index)
             continue
         if sniffed != asset.media_type:
             log.warning(

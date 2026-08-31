@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.providers import close_provider
-from config.settings import settings
+from config.settings import Settings
 from evals.capture import InstrumentedProvider
 from evals.cassette import (
     CASSETTE_MODES,
@@ -650,7 +650,7 @@ def write_transcripts(path: Path, results: dict[str, tuple[Scenario, list[RepRes
                 handle.write(json.dumps(row, default=str) + "\n")
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace, settings: Settings) -> int:
     if args.repeat == 1:
         # Observed: one scenario swung 100 -> 35 between identical reps purely
         # from tool choice. A single sample per scenario is a coin flip dressed
@@ -991,7 +991,8 @@ def main() -> None:
         parser.error("--repeat must be >= 1")
     if args.max_tokens < 1:
         parser.error("--max-tokens must be >= 1")
-    raise SystemExit(asyncio.run(_run(args)))
+    settings = Settings()
+    raise SystemExit(asyncio.run(_run(args, settings)))
 
 
 if __name__ == "__main__":

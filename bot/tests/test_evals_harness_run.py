@@ -26,6 +26,7 @@ from evals.harness_run import (
 from evals.mechanical import MechanicalResult
 from evals.models import ModelsConfig, ModelSpec, load_models
 from evals.scenario import Expect, Scenario, TurnSpec
+from tests.helpers import make_settings
 from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 from usage.normalization import UsageBreakdown
@@ -211,14 +212,15 @@ def test_dry_run_applies_runtime_tool_gate_before_printing_plan(monkeypatch, tmp
         dry_run=True,
     )
 
-    assert asyncio.run(harness_run._run(args)) == 0
+    settings = make_settings()
+    assert asyncio.run(harness_run._run(args, settings)) == 0
     plan = capsys.readouterr().out
     assert "Scenarios: staff-code" in plan
     assert "regular-code" not in plan
     assert "Total run_conversation calls: 1" in plan
 
     monkeypatch.setattr(harness_run, "load_scenarios", lambda path: [regular])
-    assert asyncio.run(harness_run._run(args)) == 2
+    assert asyncio.run(harness_run._run(args, settings)) == 2
 
 
 def test_build_summary_aggregates_scores_and_pass_rate():

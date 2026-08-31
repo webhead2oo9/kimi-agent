@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from config.settings import Settings, settings
+from config.settings import Settings
 from workspace import WorkspaceManager
 from skills.loader import SKILL_FILENAME, SkillToolDeclaration, _parse_skill_file, scan_skills
 from skills.policy import normalize_skill_tool_min_tier
@@ -64,6 +64,7 @@ def build_script_sandbox_limits(settings: Settings) -> ScriptSandboxLimits:
 def build_script_tool_handler(
     tool_decl: SkillToolDeclaration,
     *,
+    settings: Settings,
     source_dir: Path,
     resolved_secrets: dict[str, str],
     workspace_manager: WorkspaceManager,
@@ -188,6 +189,8 @@ def register_skill_tools(
     workspace_manager: WorkspaceManager | None = None,
     script_semaphore: asyncio.Semaphore | None = None,
     workspace_locks: UserLocks | None = None,
+    *,
+    settings: Settings,
 ) -> int:
     skill_file = skill_dir / SKILL_FILENAME
     if not skill_file.exists():
@@ -231,6 +234,7 @@ def register_skill_tools(
         )
         handler = build_script_tool_handler(
             tool_decl,
+            settings=settings,
             source_dir=skill_dir,
             resolved_secrets=resolved_secrets,
             workspace_manager=tool_workspace_manager,
@@ -264,6 +268,8 @@ def register_all_skill_tools(
     workspace_manager: WorkspaceManager | None = None,
     script_semaphore: asyncio.Semaphore | None = None,
     workspace_locks: UserLocks | None = None,
+    *,
+    settings: Settings,
 ) -> int:
     count = 0
     for meta in scan_skills(skills_store).values():
@@ -276,6 +282,7 @@ def register_all_skill_tools(
                 skill_dir=meta.path.parent,
                 registry=registry,
                 secrets=secrets,
+                settings=settings,
                 workspace_base_dir=workspace_base_dir,
                 workspace_manager=workspace_manager,
                 script_semaphore=script_semaphore,
@@ -294,12 +301,15 @@ def reload_all_skill_tools(
     workspace_manager: WorkspaceManager | None = None,
     script_semaphore: asyncio.Semaphore | None = None,
     workspace_locks: UserLocks | None = None,
+    *,
+    settings: Settings,
 ) -> int:
     staged = ToolRegistry()
     count = register_all_skill_tools(
         skills_store=skills_store,
         registry=staged,
         secrets=secrets,
+        settings=settings,
         workspace_base_dir=workspace_base_dir,
         workspace_manager=workspace_manager,
         script_semaphore=script_semaphore,

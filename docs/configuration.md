@@ -70,7 +70,7 @@ Most settings in this reference are optional or gated off by default. The first 
 
 Kimi loads configuration from multiple layers so operators can keep secrets and deployment-specific values out of the repository while still having safe, auditable overrides. The core `Settings` model comes from the environment (or a chosen `.env` file). An optional operator settings file can then layer on top of it. Per-tool config, guild and channel fragments, and the model routing file are read at different times and have different lifecycles.
 
-The main `Settings` object is instantiated once as a module-level singleton. Everything else imports this single instance. Plugins and application modules may define their own separate settings models.
+Each process entry point constructs the main `Settings` object explicitly and passes it into the application composition root. Importing `config.settings` does not instantiate the model or load setting values from the environment or a dotenv file. Plugins and application modules may define their own separate settings models.
 
 Values are read from OS environment variables first, then from the dotenv file named by `ENV_FILE` (default `.env`). Core, plugin, and module settings all use the same selector, so a development process can't accidentally mix files. Unknown environment keys are ignored (`extra = "ignore"`).
 

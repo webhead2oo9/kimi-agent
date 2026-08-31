@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from tests.helpers import PROJECT_ROOT
 
@@ -18,6 +21,36 @@ _ALLOWED_LIVE_ENV_SETTINGS_CALLS = {
         "_live_linux_sandbox_unavailable",
     ): "the collection-time sandbox probe validates the live operator limits",
 }
+
+
+def test_importing_settings_does_not_construct_settings() -> None:
+    script = """
+import config.settings as settings_module
+from pydantic import ValidationError
+
+try:
+    settings_module.Settings(_env_file=None)
+except ValidationError as exc:
+    assert any(error["loc"] == ("script_default_timeout",) for error in exc.errors())
+else:
+    raise AssertionError("poisoned settings unexpectedly validated")
+
+print(hasattr(settings_module, "settings"))
+"""
+    env = os.environ.copy()
+    env["SCRIPT_DEFAULT_TIMEOUT"] = "0"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
 
 
 class _SettingsCallVisitor(ast.NodeVisitor):

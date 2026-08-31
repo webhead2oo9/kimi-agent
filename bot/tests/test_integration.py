@@ -5,6 +5,7 @@ import pytest
 
 from skills.loader import scan_skills
 from skills.registration import register_all_skill_tools
+from tests.helpers import make_settings
 from tools.browse import init_browse_tools
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
@@ -26,6 +27,7 @@ def full_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ToolRegist
         skills_store=store,
         registry=reg,
         secrets={},
+        settings=make_settings(),
         workspace_base_dir=tmp_path / "workspaces",
     )
     init_browse_tools(reg)

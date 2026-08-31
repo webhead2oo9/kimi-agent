@@ -10,6 +10,7 @@ from skills.loader import SkillToolDeclaration
 from skills.admin import SkillAdminError, SkillAdminService
 from skills.registration import build_script_tool_handler, reload_all_skill_tools
 from skills.runner import ScriptResult
+from tests.helpers import make_settings
 from tools.learn import LearnEvent
 from tools.registry import MessageContext, ToolRegistry
 import tools.skills as skill_tools
@@ -64,7 +65,7 @@ def _use_skill_store(store: Path, *, builtin_dir: Path | None = None) -> ToolReg
 
 
 def _reload_skill_tools(store: Path, registry: ToolRegistry, secrets: dict[str, str]) -> None:
-    reload_all_skill_tools(store, registry, secrets=secrets)
+    reload_all_skill_tools(store, registry, secrets=secrets, settings=make_settings())
 
 
 @pytest.mark.asyncio
@@ -770,7 +771,7 @@ def test_register_all_skips_malformed_skill_keeps_valid(tmp_path: Path) -> None:
     _write_exec_skill(store, "b-bad", skill_name="b-bad", tool_name="bad_tool", bad_timeout=True)
     registry = ToolRegistry()
 
-    reload_all_skill_tools(store, registry, secrets={})  # must not raise
+    reload_all_skill_tools(store, registry, secrets={}, settings=make_settings())  # must not raise
 
     assert registry.has_tool("good_tool")
     assert not registry.has_tool("bad_tool")
@@ -783,7 +784,7 @@ def test_register_all_skips_cross_skill_name_collision(tmp_path: Path) -> None:
     _write_exec_skill(store, "c-third", skill_name="c-third", tool_name="beep")
     registry = ToolRegistry()
 
-    reload_all_skill_tools(store, registry, secrets={})  # must not raise
+    reload_all_skill_tools(store, registry, secrets={}, settings=make_settings())  # must not raise
 
     assert registry.has_tool("honk")  # first by sorted dir order wins
     assert registry.has_tool("beep")  # a later distinct skill still registers
@@ -811,7 +812,7 @@ async def test_script_output_files_respect_attachment_cap_and_report_drops(
         )
 
     monkeypatch.setattr(registration, "run_script", _fake_run_script)
-    monkeypatch.setattr(registration.settings, "workspace_tool_max_attachments", 1)
+    settings = make_settings(workspace_tool_max_attachments=1)
     handler = build_script_tool_handler(
         SkillToolDeclaration(
             name="chart",
@@ -819,6 +820,7 @@ async def test_script_output_files_respect_attachment_cap_and_report_drops(
             availability="always",
             script="scripts/run.py",
         ),
+        settings=settings,
         source_dir=tmp_path,
         resolved_secrets={},
         workspace_manager=manager,
@@ -847,6 +849,7 @@ async def test_script_handler_passes_explicit_network_policy_and_limits(
         return ScriptResult(stdout="ok", stderr="", return_code=0)
 
     monkeypatch.setattr(registration, "run_script", _fake_run_script)
+    settings = make_settings()
     handler = build_script_tool_handler(
         SkillToolDeclaration(
             name="fetch",
@@ -855,6 +858,7 @@ async def test_script_handler_passes_explicit_network_policy_and_limits(
             script="scripts/run.py",
             network=True,
         ),
+        settings=settings,
         source_dir=tmp_path,
         resolved_secrets={},
         workspace_manager=WorkspaceManager(base_dir=tmp_path / "workspaces"),
@@ -864,7 +868,7 @@ async def test_script_handler_passes_explicit_network_policy_and_limits(
     assert seen["allow_network"] is True
     limits = seen["sandbox_limits"]
     assert isinstance(limits, registration.ScriptSandboxLimits)
-    assert limits.memory_bytes == registration.settings.script_sandbox_memory_max_mb * 1024 * 1024
+    assert limits.memory_bytes == settings.script_sandbox_memory_max_mb * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -890,7 +894,7 @@ async def test_script_duplicate_output_basenames_expose_unique_remove_ids(
         )
 
     monkeypatch.setattr(registration, "run_script", _fake_run_script)
-    monkeypatch.setattr(registration.settings, "workspace_tool_max_attachments", 2)
+    settings = make_settings(workspace_tool_max_attachments=2)
     handler = build_script_tool_handler(
         SkillToolDeclaration(
             name="chart",
@@ -898,6 +902,7 @@ async def test_script_duplicate_output_basenames_expose_unique_remove_ids(
             availability="always",
             script="scripts/run.py",
         ),
+        settings=settings,
         source_dir=tmp_path,
         resolved_secrets={},
         workspace_manager=manager,
@@ -922,7 +927,7 @@ def test_register_all_skips_bad_min_tier(tmp_path: Path) -> None:
     _write_exec_skill(store, "b-bad", skill_name="b-bad", tool_name="bad_tool", min_tier="wizard")
     registry = ToolRegistry()
 
-    reload_all_skill_tools(store, registry, secrets={})  # must not raise
+    reload_all_skill_tools(store, registry, secrets={}, settings=make_settings())  # must not raise
 
     assert registry.has_tool("good_tool")
     assert not registry.has_tool("bad_tool")
@@ -1182,7 +1187,7 @@ async def test_missing_private_skills_store_is_valid_and_created_lazily(tmp_path
     registry = _use_skill_store(store)
 
     assert not store.exists()
-    assert reload_all_skill_tools(store, registry, secrets={}) == 0
+    assert reload_all_skill_tools(store, registry, secrets={}, settings=make_settings()) == 0
     listing = json.loads(await skill_tools._skill_list({}, _staff_ctx()))
     assert {item["name"] for item in listing["skills"]} == SHIPPED_BUILTIN_NAMES
     assert all(item["source"] == "builtin" for item in listing["skills"])

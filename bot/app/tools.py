@@ -246,6 +246,7 @@ def build_runtime_tools(
             skills_store=skills_store,
             registry=registry,
             secrets=all_secrets,
+            settings=settings,
             workspace_manager=workspace_manager,
             script_semaphore=script_semaphore,
             workspace_locks=workspace_locks,

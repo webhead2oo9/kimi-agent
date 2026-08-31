@@ -15,7 +15,7 @@ from tests.helpers import (
 )
 from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES
 
-PNG_BASE64 = base64.b64encode(VALID_PNG_BYTES).decode("ascii")
+from tests.helpers import VALID_PNG_BASE64 as PNG_BASE64
 
 
 def test_write_generated_assets_decodes_base64_images(tmp_path: Path) -> None:

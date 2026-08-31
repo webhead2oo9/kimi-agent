@@ -1824,14 +1824,10 @@ def _request_contains_image_parts(
 
 
 def generated_assets_response_text(generated_assets: list[GeneratedAsset]) -> str:
-    image_count = sum(1 for asset in generated_assets if asset.kind == "image")
-    if image_count == 1 and len(generated_assets) == 1:
-        return "Generated image attached."
-    if image_count == len(generated_assets):
-        return "Generated images attached."
+    # GeneratedAsset.kind is Literal["image"], so images are the only case.
     if len(generated_assets) == 1:
-        return "Generated file attached."
-    return "Generated files attached."
+        return "Generated image attached."
+    return "Generated images attached."
 
 
 def _raw_assistant_message(response: ProviderResponse) -> dict:

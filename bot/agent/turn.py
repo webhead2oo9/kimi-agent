@@ -1219,7 +1219,18 @@ async def execute_turn(
         # neither fail an otherwise fine text reply closed at the moderation
         # backend nor reach the workspace writer.
         original_assets = run_result.generated_assets
-        validated_assets = await asyncio.to_thread(validate_generated_assets, original_assets)
+        validated_assets = await _await_guarded_with_deadline(
+            lambda: asyncio.to_thread(validate_generated_assets, original_assets),
+            deadline=deadline,
+            user_id=turn.user_id,
+            activity_guard=run_dependencies.user_activity,
+        )
+        if len(validated_assets) != len(original_assets):
+            log.warning(
+                "Dropped %d of %d provider assets at validation",
+                len(original_assets) - len(validated_assets),
+                len(original_assets),
+            )
         synthesized = run_result.text == generated_assets_response_text(original_assets)
         # Always adopt the validated list: even at equal length it carries the
         # canonical media types the bytes earned, which moderation and the

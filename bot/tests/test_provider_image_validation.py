@@ -44,6 +44,42 @@ def test_the_idat_fixture_is_caught_only_by_the_decode_layer() -> None:
     assert image_types.decoded_image_media_type(payload) is None
 
 
+def test_frame_discovery_is_bounded_without_reading_untrusted_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The validator probes one frame past its cap instead of trusting
+    n_frames, so a hostile animation cannot force an unbounded walk."""
+
+    class TooManyFrames:
+        format = "GIF"
+        size = (1, 1)
+
+        @property
+        def n_frames(self) -> int:
+            raise AssertionError("validation must not scan an untrusted frame count")
+
+        def __enter__(self) -> TooManyFrames:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def seek(self, frame: int) -> None:
+            seek_calls.append(frame)
+
+        def load(self) -> None:
+            load_calls.append(None)
+
+    seek_calls: list[int] = []
+    load_calls: list[None] = []
+    monkeypatch.setattr(image_types.Image, "open", lambda _stream: TooManyFrames())
+    gif = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+
+    assert image_types.decoded_image_media_type(gif) is None
+    assert seek_calls == list(range(image_types._MAX_VALIDATED_IMAGE_FRAMES + 1))
+    assert len(load_calls) == image_types._MAX_VALIDATED_IMAGE_FRAMES
+
+
 def test_every_sniffable_type_has_a_container_validator() -> None:
     # An unknown-but-sniffable type fails closed at runtime; this is the CI
     # tripwire that turns SDK drift into a red build instead.

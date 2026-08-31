@@ -1110,6 +1110,7 @@ class KimiApplication:
             self.bot,
             self.trust_resolver,
             run_learn=self._run_learn_turn,
+            is_blocked=self._user_is_blocked,
             bot_name=self.settings.bot_name,
         )
         register_privacy_command(
@@ -1308,6 +1309,7 @@ class KimiApplication:
                 model_config=model_config,
                 notifier=self._publish_coding_task,
                 user_activity=self.privacy_barrier.activity,
+                user_blocked=self._user_is_blocked,
                 workspace_manager=self.tools.workspace_manager,
                 workspace_locks=self.tools.workspace_locks,
                 workspace_config=self.tools.workspace_config,
@@ -1941,6 +1943,18 @@ class KimiApplication:
             lines.append(f"{marker} {step.get('content', '')[:180]}")
         return "\n".join(lines)[:2000]
 
+    async def _user_is_blocked(self, user_id: str) -> bool:
+        """The one block answer every entry point asks before doing anything.
+
+        Guild messages, personal chat, the teach context menu, and coding-task
+        claim all route through here so a block cannot be honoured on one path
+        and missed on another. A store that is not initialised yet means the
+        database is not ready, and nothing that reaches a user runs before it.
+        """
+        if self.blocked_user_store is None:
+            return False
+        return await self.blocked_user_store.is_blocked(user_id)
+
     async def _run_learn_turn(
         self,
         target: LearnTarget,
@@ -2172,9 +2186,7 @@ class KimiApplication:
                 ephemeral=True,
             )
             return
-        if self.blocked_user_store is not None and await self.blocked_user_store.is_blocked(
-            user_id
-        ):
+        if await self._user_is_blocked(user_id):
             await interaction.response.send_message(
                 "You can't use personal chat right now.",
                 ephemeral=True,
@@ -2278,10 +2290,7 @@ class KimiApplication:
                             requested_public=public,
                         )
                         return
-                    if (
-                        self.blocked_user_store is not None
-                        and await self.blocked_user_store.is_blocked(user_id)
-                    ):
+                    if await self._user_is_blocked(user_id):
                         await _send_user_app_status(
                             interaction,
                             "You can't use personal chat right now.",
@@ -2681,11 +2690,9 @@ class KimiApplication:
 
         # Hard block gate precedes reactions, transcript writes, every lock or
         # privacy lease, tools, and provider calls.
-        if self.blocked_user_store is not None:
-            blocked = await self.blocked_user_store.is_blocked(str(message.author.id))
-            if blocked:
-                log.info("Ignoring blocked user %s", message.author.id)
-                return
+        if await self._user_is_blocked(str(message.author.id)):
+            log.info("Ignoring blocked user %s", message.author.id)
+            return
 
         # Cancellation has its own lane before admission and the response lock;
         # otherwise a STOP message could queue behind the work it needs to end.

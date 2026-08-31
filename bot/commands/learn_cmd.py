@@ -7,7 +7,10 @@ the gateway message to plain data, hand off, and report back ephemerally.
 
 Staff-only, and re-checked here rather than trusted from the caller: a context
 menu carries no tier of its own, and every tool the resulting turn calls is
-gated again at dispatch.
+gated again at dispatch. A moderation block is standing too: the same
+``is_blocked`` answer that silences a blocked user's messages refuses their
+teach gesture, since staff standing can arrive after a block (promotion,
+per-guild trust) and this path runs a full model turn.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ log = logging.getLogger(__name__)
 LEARN_MENU_PREFIX = "Teach "
 
 _NO_STANDING = "Staff only."
+_BLOCKED = "You can't use this right now."
 _NO_GUILD = "I can only learn community knowledge inside a server."
 _BOT_MESSAGE = "That's one of my own messages. Teach me from what a person actually said."
 _EMPTY = "That message has nothing for me to learn from."
@@ -37,6 +41,7 @@ _FAILED = "Something went wrong while I was learning that. Nothing was saved."
 _NO_REPORT = "I finished, but had nothing to report back."
 
 LearnRunner = Callable[[LearnTarget, discord.Interaction], Awaitable[str]]
+BlockedUserCheck = Callable[[str], Awaitable[bool]]
 
 
 def learn_menu_name(bot_name: str) -> str:
@@ -51,13 +56,15 @@ def register_learn_command(
     trust_resolver: TrustResolver,
     *,
     run_learn: LearnRunner,
+    is_blocked: BlockedUserCheck,
     bot_name: str = DEFAULT_BOT_NAME,
 ) -> None:
     """Install the context menu.
 
-    ``run_learn`` is injected so this module never reaches into the application:
-    ``app/runtime.py`` binds it to the scoped turn with the live provider,
-    registry, and skills index.
+    ``run_learn`` and ``is_blocked`` are injected so this module never reaches
+    into the application: ``app/runtime.py`` binds them to the scoped turn with
+    the live provider, registry, and skills index, and to the blocked-user
+    store every other entry point consults.
     """
 
     @app_commands.context_menu(name=learn_menu_name(bot_name))
@@ -70,6 +77,9 @@ def register_learn_command(
         tier = trust_resolver.resolve(member, str(interaction.user.id), guild_id)
         if tier < TrustTier.STAFF:
             await _send_message(interaction, _NO_STANDING)
+            return
+        if await is_blocked(str(interaction.user.id)):
+            await _send_message(interaction, _BLOCKED)
             return
         if guild_id is None:
             await _send_message(interaction, _NO_GUILD)

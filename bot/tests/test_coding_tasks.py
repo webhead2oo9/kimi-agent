@@ -6,6 +6,8 @@ lifecycle backed by storage/coding_tasks.py.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import contextlib
 import json
 import os
@@ -104,15 +106,33 @@ def _steering_service(
     return service
 
 
+async def _nobody_blocked(_user_id: str) -> bool:
+    return False
+
+
+@asynccontextmanager
+async def _no_user_activity(_user_id: str) -> AsyncIterator[None]:
+    yield
+
+
+async def _no_notifier(_task: object, _context: object = None) -> None:
+    return None
+
+
 def _start_service(
     store: CodingTaskStore,
     tmp_path: Path,
     *,
     max_queued_per_user: int = 10,
     max_queued_per_workspace: int = 10,
+    user_blocked: Any = _nobody_blocked,
+    notifier: Any = _no_notifier,
 ) -> CodingTaskService:
     service = object.__new__(CodingTaskService)
     service._store = store
+    service._wake = asyncio.Event()
+    service._publishers = {}
+    service._last_published = {}
     service._runtime = cast(
         Any,
         SimpleNamespace(
@@ -120,13 +140,46 @@ def _start_service(
                 coding_task_max_seconds=60,
                 coding_task_max_queued_per_user=max_queued_per_user,
                 coding_task_max_queued_per_workspace=max_queued_per_workspace,
+                coding_status_min_interval_seconds=0.0,
             ),
             workspace_manager=WorkspaceManager(tmp_path / "workspaces"),
             workspace_locks=UserLocks(),
             workspace_config=WorkspaceToolConfig(),
+            user_blocked=user_blocked,
+            notifier=notifier,
+            user_activity=_no_user_activity,
         ),
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_claim_cancels_a_queued_task_whose_user_is_now_blocked(tmp_path) -> None:
+    """A block that lands while a task waits must hold when it would start."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        blocked = await _create(store, root_key="root-blocked")
+        notified: list[str] = []
+
+        async def user_blocked(user_id: str) -> bool:
+            return user_id == blocked.user_id
+
+        async def notifier(task, context) -> None:
+            notified.append(task.status.value)
+
+        service = _start_service(store, tmp_path, user_blocked=user_blocked, notifier=notifier)
+
+        assert await service._claim_next_runnable() is None
+
+        refreshed = await store.get_task(blocked.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert refreshed.error_text == "User is blocked"
+        assert notified == ["cancelled"]
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

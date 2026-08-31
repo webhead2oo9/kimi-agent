@@ -59,6 +59,9 @@ BlockedToolsResolver = Callable[[str, str], frozenset[str]]
 ToolConfigResolver = Callable[[Any], dict[str, dict[str, Any]]]
 
 
+type UserBlockedCheck = Callable[[str], Awaitable[bool]]
+
+
 @dataclass(frozen=True, slots=True)
 class CodingTaskRuntime:
     settings: Settings
@@ -72,6 +75,7 @@ class CodingTaskRuntime:
     model_config: Any
     notifier: TaskNotifier
     user_activity: UserActivityGuard
+    user_blocked: UserBlockedCheck
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     workspace_config: WorkspaceToolConfig
@@ -799,7 +803,7 @@ class CodingTaskService:
                             partial(self._delivery_retry_done, task_id=pending.id)
                         )
                 while len(self._workers) < self._runtime.settings.coding_task_max_concurrency:
-                    task = await self._store.claim_next()
+                    task = await self._claim_next_runnable()
                     if task is None:
                         break
                     worker = asyncio.create_task(
@@ -815,6 +819,24 @@ class CodingTaskService:
             except Exception:
                 logger.exception("Coding task scheduler failed")
                 await asyncio.sleep(1.0)
+
+    async def _claim_next_runnable(self) -> CodingTask | None:
+        """Claim the next task whose owner may still use the bot.
+
+        A block that lands while a task is queued, or while the process is down
+        and the task waits for recovery, has to hold when the task would start.
+        The claim has already moved the row to running, so a refused task is
+        finished as cancelled here rather than handed to a worker.
+        """
+        while True:
+            task = await self._store.claim_next()
+            if task is None or not await self._runtime.user_blocked(task.user_id):
+                return task
+            logger.info("Cancelling coding task %s: user %s is blocked", task.id, task.user_id)
+            await self._store.finish(
+                task.id, CodingTaskStatus.CANCELLED, error_text="User is blocked"
+            )
+            await self._notify_id(task.id)
 
     async def _retry_pending_delivery(self, task: CodingTask) -> None:
         async with self._delivery_semaphore:

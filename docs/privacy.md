@@ -299,7 +299,9 @@ Everything else keeps its own lifecycle, by design:
 - **`/memory opt-out`** stops future memory recall/writes for the user. It does
   not delete existing data by itself.
 - **`block_user`** (member self-block) and staff **`/moderation`** stop the bot
-  responding to a user; neither deletes stored data.
+  responding to a user on every path (guild messages, personal chat, the teach
+  context menu, and coding tasks that have not started yet); neither deletes
+  stored data.
 - **Declining or ignoring the consent prompt** (if the gate is enabled) means
   the message never reaches the provider or the transcript at all.
 

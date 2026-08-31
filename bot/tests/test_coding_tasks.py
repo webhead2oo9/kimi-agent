@@ -132,6 +132,7 @@ def _start_service(
     service._store = store
     service._wake = asyncio.Event()
     service._publishers = {}
+    service._workers = {}
     service._last_published = {}
     service._runtime = cast(
         Any,
@@ -184,6 +185,58 @@ async def test_claim_cancels_a_queued_task_whose_user_is_now_blocked(tmp_path) -
         # owns the announcement.
         assert notified == []
         assert blocked.id in {task.id for task in await store.list_pending_delivery()}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_settles_a_cancel_that_landed_during_the_block_check(tmp_path) -> None:
+    """A /stop between claim and block answer must not leave a workerless
+    cancelling row for restart recovery."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-midcancel")
+
+        async def cancel_mid_check(_user_id: str) -> bool:
+            await store.request_cancel(task.id, reason="stopped mid-check")
+            return False
+
+        service = _start_service(store, tmp_path, user_blocked=cancel_mid_check)
+
+        assert await service._claim_next_runnable() is None
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_the_first_worker_step_settles_the_row(tmp_path) -> None:
+    """asyncio cancels a task that never started without running its body, so
+    nothing inside the worker can mark the row terminal."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-instant-cancel")
+        claimed = await store.claim_next()
+        assert claimed is not None and claimed.id == task.id
+
+        service = _start_service(store, tmp_path)
+        service._runtime.settings.coding_stop_cleanup_wait_seconds = 2.0
+        never_started = asyncio.create_task(asyncio.sleep(3600))
+        service._workers[task.id] = never_started
+
+        assert await service.cancel_task(task.id, reason="stop") is True
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
     finally:
         await db.close()
 

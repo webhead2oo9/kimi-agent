@@ -55,9 +55,7 @@ VALID_JPEG_BYTES = base64.b64decode(
 
 
 class NobodyBlocked:
-    """Blocked-user store stand-in: the runtime's block gate raises on an
-    uninitialised store, so tests that bypass _first_init_core and do not care
-    about blocks give it this real answer instead of None."""
+    """Blocked-user store that blocks nobody, for tests that bypass init."""
 
     async def is_blocked(self, user_id: str) -> bool:
         return False

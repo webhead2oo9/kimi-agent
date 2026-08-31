@@ -180,6 +180,16 @@ jobs:
           # RLIMIT_CORE=0 is only authoritative with a file core pattern, so the
           # sandbox refuses Apport's pipe pattern by design.
           sudo sysctl -w kernel.core_pattern=core
+          # Ubuntu 24.04 strips capabilities from unprivileged user namespaces
+          # unless the creating process is confined by an AppArmor profile that
+          # allows them. The runner image has no such profile loaded for bwrap,
+          # so the jail failed with "loopback: Failed RTM_NEWADDR: Operation not
+          # permitted" and "Creating new namespace failed". A deployment gets
+          # this from the bubblewrap package's own profile; the runner gets it
+          # from the sysctl.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           # systemd-run --user needs a lingering user manager and its bus; this
           # is the same recipe as the "Host requirements" section.
           uid=$(id -u)

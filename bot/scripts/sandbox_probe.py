@@ -66,6 +66,28 @@ def _read_core_pattern() -> str:
         return f"<unreadable: {exc}>"
 
 
+# Kernel knobs that decide whether an unprivileged user namespace keeps its
+# capabilities. bwrap reports a restriction as "loopback: Failed RTM_NEWADDR:
+# Operation not permitted" or "Creating new namespace failed", neither of
+# which names the knob.
+_USERNS_SYSCTLS = (
+    "kernel.unprivileged_userns_clone",
+    "kernel.apparmor_restrict_unprivileged_userns",
+    "user.max_user_namespaces",
+)
+
+
+def _userns_sysctls() -> str:
+    parts: list[str] = []
+    for name in _USERNS_SYSCTLS:
+        path = Path("/proc/sys") / name.replace(".", "/")
+        try:
+            parts.append(f"{name}={path.read_text(encoding='utf-8').strip()}")
+        except OSError:
+            parts.append(f"{name}=<absent>")
+    return " ".join(parts)
+
+
 def main() -> int:
     config = SandboxConfig()
     euid = os.geteuid() if hasattr(os, "geteuid") else None
@@ -101,6 +123,7 @@ def main() -> int:
         f"     launch env: XDG_RUNTIME_DIR={launch_env.get('XDG_RUNTIME_DIR', '')} "
         f"DBUS_SESSION_BUS_ADDRESS={launch_env.get('DBUS_SESSION_BUS_ADDRESS', '')}"
     )
+    print(f"     user namespaces: {_userns_sysctls()}")
 
     # The real gate, with its debug logging routed to stderr so the start
     # probe's own failure text (bwrap, prlimit, systemd-run) is not swallowed.

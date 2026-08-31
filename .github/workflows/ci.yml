@@ -148,7 +148,9 @@ jobs:
   # skip into a failure.
   sandbox:
     name: live sandbox tests
-    runs-on: ubuntu-latest
+    # Pinned: the AppArmor provisioning below is Noble-specific (package
+    # paths, profile ABI, sysctl), and ubuntu-latest migrates under it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
@@ -192,7 +194,14 @@ jobs:
             /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+          # Set the restriction deliberately rather than trusting the image
+          # default, so the job tests the documented posture even if a future
+          # image ships it relaxed.
+          if [ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo "kernel has no apparmor_restrict_unprivileged_userns knob" >&2
+            exit 1
+          fi
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
           # systemd-run --user needs a lingering user manager and its bus; this
           # is the same recipe as the "Host requirements" section.
           uid=$(id -u)
@@ -228,3 +237,45 @@ jobs:
           tests/test_sandbox_runner.py
           tests/test_code_exec_tool.py
           tests/test_skill_sandbox.py
+
+      # TEMPORARY: diagnose why the skill jail's execvp of the venv interpreter
+      # failed on this runner. Remove once the cause is fixed.
+      - name: Diagnose skill jail interpreter (temporary)
+        if: failure()
+        shell: bash
+        run: |
+          echo "--- venv layout ---"
+          ls -la .venv/bin/ | head -12
+          readlink -f .venv/bin/python3 || true
+          echo "--- runtime mounts as the sandbox computes them ---"
+          uv run python - <<'PY'
+          import subprocess, sys, tempfile
+          from pathlib import Path
+
+          from skills import sandbox as s
+
+          interp = Path(sys.executable)
+          print("sys.executable:", interp)
+          print("resolved:", interp.resolve())
+          print("sys.prefix:", sys.prefix, "base:", sys.base_prefix)
+          print("mounts:", s._runtime_mounts(interp.absolute()))
+          runtime = s.detect_sandbox_runtime()
+          skill = Path(tempfile.mkdtemp()) / "probe"
+          (skill / "scripts").mkdir(parents=True)
+          script = skill / "scripts" / "probe.py"
+          script.write_text("print('jail ok')", encoding="utf-8")
+          command = s.build_sandbox_command(
+              runtime=runtime,
+              limits=s.ScriptSandboxLimits(),
+              interpreter=interp,
+              resolved_script=script,
+              skill_dir=skill,
+              workspace_dir=None,
+              allow_network=False,
+          )
+          print("command:", " ".join(command))
+          done = subprocess.run(command, capture_output=True, text=True, timeout=30)
+          print("rc:", done.returncode)
+          print("stdout:", done.stdout)
+          print("stderr:", done.stderr)
+          PY

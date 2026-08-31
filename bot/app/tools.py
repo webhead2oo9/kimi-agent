@@ -21,8 +21,8 @@ from providers.factory import get_codex_auth_manager
 from skills.admin import SkillAdminService
 from skills.loader import SharedSkillCatalog, scan_skills
 from skills.personal import PersonalSkillManager
-from skills.registration import reload_all_skill_tools
-from skills.sandbox import validate_sandbox_runtime
+from skills.registration import build_script_sandbox_limits, reload_all_skill_tools
+from skills.sandbox import ScriptSandboxLimits, validate_sandbox_runtime
 from skills.secrets import load_secrets
 from search.brave import BraveSearchBackend
 from search.chain import SearchChain
@@ -71,12 +71,12 @@ from web_browser.visual_service import VisualService
 log = logging.getLogger(__name__)
 
 
-def _validate_executable_skill_sandbox(skills_store: Path) -> bool:
+def _validate_executable_skill_sandbox(skills_store: Path, limits: ScriptSandboxLimits) -> bool:
     """Validate the OS boundary iff this store contains executable tools."""
 
     if not any(meta.tools for meta in scan_skills(skills_store).values()):
         return False
-    validate_sandbox_runtime()
+    validate_sandbox_runtime(limits)
     return True
 
 
@@ -150,7 +150,9 @@ def build_runtime_tools(
     def ensure_executable_skill_sandbox() -> None:
         nonlocal sandbox_runtime_validated
         if not sandbox_runtime_validated:
-            sandbox_runtime_validated = _validate_executable_skill_sandbox(skills_store)
+            sandbox_runtime_validated = _validate_executable_skill_sandbox(
+                skills_store, build_script_sandbox_limits(settings)
+            )
 
     init_browse_tools(registry)
     init_plan_tool(registry)

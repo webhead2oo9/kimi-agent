@@ -124,11 +124,11 @@ def test_configured_executable_tools_require_successful_startup_probe(
     monkeypatch.setattr(
         app_tools,
         "validate_sandbox_runtime",
-        lambda: (_ for _ in ()).throw(SandboxUnavailableError("probe denied")),
+        lambda _limits: (_ for _ in ()).throw(SandboxUnavailableError("probe denied")),
     )
 
     with pytest.raises(SandboxUnavailableError, match="probe denied"):
-        app_tools._validate_executable_skill_sandbox(tmp_path)
+        app_tools._validate_executable_skill_sandbox(tmp_path, ScriptSandboxLimits())
 
 
 def test_instruction_only_store_does_not_require_linux_sandbox(
@@ -145,10 +145,10 @@ def test_instruction_only_store_does_not_require_linux_sandbox(
     monkeypatch.setattr(
         app_tools,
         "validate_sandbox_runtime",
-        lambda: (_ for _ in ()).throw(AssertionError("should not probe")),
+        lambda _limits: (_ for _ in ()).throw(AssertionError("should not probe")),
     )
 
-    assert app_tools._validate_executable_skill_sandbox(tmp_path) is False
+    assert app_tools._validate_executable_skill_sandbox(tmp_path, ScriptSandboxLimits()) is False
 
 
 def _live_linux_sandbox_unavailable() -> bool:

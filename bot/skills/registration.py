@@ -44,6 +44,23 @@ def _build_parameters(tool_decl: SkillToolDeclaration) -> dict:
     return parameters
 
 
+def build_script_sandbox_limits(settings) -> ScriptSandboxLimits:
+    """The one mapping from settings to the per-invocation sandbox ceilings.
+
+    Shared with startup validation and scripts/sandbox_probe.py so the probe
+    certifies the same limits every real invocation applies.
+    """
+
+    return ScriptSandboxLimits(
+        memory_bytes=settings.script_sandbox_memory_max_mb * 1024 * 1024,
+        cpu_seconds=settings.script_sandbox_cpu_seconds,
+        file_size_bytes=settings.script_sandbox_max_file_bytes,
+        open_files=settings.script_sandbox_max_open_files,
+        processes=settings.script_sandbox_max_processes,
+        tmpfs_bytes=settings.script_sandbox_tmpfs_max_mb * 1024 * 1024,
+    )
+
+
 def build_script_tool_handler(
     tool_decl: SkillToolDeclaration,
     *,
@@ -61,14 +78,7 @@ def build_script_tool_handler(
         tool_decl.timeout if tool_decl.timeout is not None else settings.script_default_timeout,
         settings.script_max_timeout,
     )
-    sandbox_limits = ScriptSandboxLimits(
-        memory_bytes=settings.script_sandbox_memory_max_mb * 1024 * 1024,
-        cpu_seconds=settings.script_sandbox_cpu_seconds,
-        file_size_bytes=settings.script_sandbox_max_file_bytes,
-        open_files=settings.script_sandbox_max_open_files,
-        processes=settings.script_sandbox_max_processes,
-        tmpfs_bytes=settings.script_sandbox_tmpfs_max_mb * 1024 * 1024,
-    )
+    sandbox_limits = build_script_sandbox_limits(settings)
 
     async def _handler(
         args: dict,

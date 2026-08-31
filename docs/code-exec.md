@@ -219,7 +219,9 @@ An incomplete netns configuration fails settings validation. A complete setup wh
 Before exposing the tool:
 
 1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`
-   with the same `ENV_FILE` the service uses. It builds the profile startup
+   with the same `ENV_FILE` (and `RUNTIME_ENV`, if the unit sets one) the
+   service uses; the operator `settings.md` overlay is applied the way startup
+   applies it. It builds the profile startup
    builds from your `CODE_EXEC_*` and `WORKSPACE_DIR` settings, runs the
    prerequisite checks in startup's order, and names the first one that
    fails; exit status 0 means a jailed process actually started with that

@@ -31,7 +31,7 @@ REQUIRE_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
 
 def test_live_sandbox_is_available_where_required() -> None:
     if os.environ.get(REQUIRE_ENV) != "1":
-        pytest.skip(f"{REQUIRE_ENV}=1 is not set; the live sandbox is optional on this host")
+        pytest.skip("KIMI_REQUIRE_SANDBOX_TESTS=1 is not set; the live sandbox is optional here")
 
     settings = Settings()  # type: ignore[call-arg]
     # The same layered profile startup certifies: the operator settings.md
@@ -46,10 +46,15 @@ def test_live_sandbox_is_available_where_required() -> None:
     validate_sandbox_runtime(build_script_sandbox_limits(settings))
 
 
-def _skip_reason_literals(tree: ast.AST) -> set[str]:
-    """Every literal a skip in this module can carry: skipif/skip reasons."""
+def _skip_reason_literals(tree: ast.AST) -> tuple[set[str], int]:
+    """Every literal a skip can carry, plus a count of dynamic reasons.
+
+    A dynamically built reason cannot be classified, so its count must be
+    zero: an f-string gate reason would silently evade the CI conversion.
+    """
 
     reasons: set[str] = set()
+    dynamic = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -57,20 +62,18 @@ def _skip_reason_literals(tree: ast.AST) -> set[str]:
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
         if name == "skipif":
             for keyword in node.keywords:
-                if (
-                    keyword.arg == "reason"
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, str)
-                ):
+                if keyword.arg != "reason":
+                    continue
+                if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
                     reasons.add(keyword.value.value)
-        elif (
-            name == "skip"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ):
-            reasons.add(node.args[0].value)
-    return reasons
+                else:
+                    dynamic += 1
+        elif name == "skip" and node.args:
+            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                reasons.add(node.args[0].value)
+            else:
+                dynamic += 1
+    return reasons, dynamic
 
 
 def test_every_skip_reason_is_classified_and_every_gate_reason_is_real() -> None:
@@ -88,7 +91,9 @@ def test_every_skip_reason_is_classified_and_every_gate_reason_is_real() -> None
     for stem in tests_conftest._SANDBOX_MODULES:
         path = tests_dir / f"{stem}.py"
         assert path.is_file(), f"conftest._SANDBOX_MODULES names a missing file: {stem}"
-        found |= _skip_reason_literals(ast.parse(path.read_text(encoding="utf-8")))
+        reasons, dynamic = _skip_reason_literals(ast.parse(path.read_text(encoding="utf-8")))
+        assert dynamic == 0, f"{stem}.py builds a skip reason dynamically; use a literal"
+        found |= reasons
 
     classified = set(tests_conftest._SANDBOX_SKIP_REASONS) | set(
         tests_conftest._HOST_SHAPE_SKIP_REASONS
@@ -103,4 +108,8 @@ def test_every_skip_reason_is_classified_and_every_gate_reason_is_real() -> None
     for gate in tests_conftest._SANDBOX_SKIP_REASONS:
         assert any(reason.startswith(gate) for reason in found), (
             f"conftest._SANDBOX_SKIP_REASONS entry no longer appears as a skip: {gate!r}"
+        )
+    for shape in tests_conftest._HOST_SHAPE_SKIP_REASONS:
+        assert any(reason.startswith(shape) for reason in found), (
+            f"conftest._HOST_SHAPE_SKIP_REASONS entry no longer appears as a skip: {shape!r}"
         )

@@ -178,6 +178,28 @@ def test_write_generated_assets_skips_images_that_do_not_fully_decode(
     assert not (tmp_path / "bad.png").exists()
 
 
+def test_aggregate_cap_is_capacity_not_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected middle asset must not stop a later asset that still fits.
+
+    The per-asset cap rejects before the aggregate work budget is charged, so
+    the following in-budget asset is still admitted."""
+    monkeypatch.setattr(asset_writer, "_MAX_TOTAL_GENERATED_ASSET_BYTES", len(VALID_PNG_BYTES) * 2)
+    monkeypatch.setattr(asset_writer, "_MAX_GENERATED_ASSET_ENCODED_BYTES", len(PNG_BASE64))
+
+    paths = write_generated_assets(
+        [
+            GeneratedAsset("image", "image/png", PNG_BASE64, "first.png"),
+            GeneratedAsset("image", "image/png", PNG_BASE64 + PNG_BASE64, "too-big.png"),
+            GeneratedAsset("image", "image/png", PNG_BASE64, "still-fits.png"),
+        ],
+        output_dir=tmp_path,
+    )
+
+    assert [path.name for path in paths] == ["first.png", "still-fits.png"]
+
+
 def test_every_supported_image_media_type_has_a_filename_suffix() -> None:
     # write_generated_assets indexes the suffix map with whatever the sniffer
     # returns, so the two sets must not drift apart.

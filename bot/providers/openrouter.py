@@ -180,7 +180,9 @@ class OpenRouterProvider(OpenAIChatProvider):
             if encoded_length > ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4:
                 log.warning("Skipping OpenRouter image %d: encoded data exceeds byte cap", index)
                 continue
-            total_encoded_cap = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
+            total_encoded_cap = (
+                (_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3
+            ) * 4 + 4 * _MAX_INLINE_IMAGES
             if processed_encoded_chars + encoded_length > total_encoded_cap:
                 log.warning("Stopping OpenRouter image parsing at the aggregate encoded-data cap")
                 break
@@ -210,8 +212,9 @@ class OpenRouterProvider(OpenAIChatProvider):
                 log.warning("Skipping OpenRouter image %d: decoded data exceeds byte cap", index)
                 continue
             if processed_bytes + decoded_length > _MAX_TOTAL_INLINE_IMAGE_BYTES:
-                log.warning("Stopping OpenRouter image parsing at the aggregate byte cap")
-                break
+                # Capacity, not a work bound: a later smaller image may fit.
+                log.warning("Skipping OpenRouter image %d: aggregate byte cap", index)
+                continue
             processed_bytes += decoded_length
 
             media_type = sniff_image_media_type(prefix)

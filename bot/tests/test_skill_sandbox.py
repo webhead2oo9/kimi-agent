@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from skills import sandbox as sandbox_module
 from skills.runner import run_script
 from config.settings import Settings
 from skills.registration import build_script_sandbox_limits
@@ -151,6 +152,73 @@ def test_instruction_only_store_does_not_require_linux_sandbox(
     )
 
     assert app_tools._validate_executable_skill_sandbox(tmp_path, ScriptSandboxLimits()) is False
+
+
+def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
+    """uv reaches its interpreter through a version-alias directory symlink;
+    mounting only the resolved target leaves that hop missing inside the jail
+    and execvp fails with ENOENT despite every visible component existing."""
+    store = tmp_path / "store"
+    real_bin = store / "cpython-1.2.3" / "bin"
+    real_bin.mkdir(parents=True)
+    (real_bin / "python1.2").write_text("", encoding="utf-8")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    try:
+        (store / "cpython-1.2").symlink_to(store / "cpython-1.2.3", target_is_directory=True)
+        (venv_bin / "python").symlink_to(store / "cpython-1.2" / "bin" / "python1.2")
+        (venv_bin / "python3").symlink_to("python")
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+
+    mounts = sandbox_module._runtime_mounts((venv_bin / "python3").absolute())
+
+    alias_bin = store / "cpython-1.2" / "bin"
+    for needed in (venv_bin, alias_bin, real_bin):
+        assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
+            f"{needed} is not covered by {mounts}"
+        )
+
+
+def test_validate_probe_applies_every_configured_limit(monkeypatch, tmp_path: Path) -> None:
+    """The startup probe must exercise the same ceilings real invocations use,
+    tmpfs included, or a host that rejects one passes validation and every
+    skill call fails."""
+    recorded: dict = {}
+
+    class _Done:
+        returncode = 0
+        stderr = b""
+
+    def capture(command, **kwargs):
+        recorded["command"] = command
+        return _Done()
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", capture)
+    monkeypatch.setattr(
+        sandbox_module,
+        "detect_sandbox_runtime",
+        lambda: SandboxRuntime(bwrap="bwrap", prlimit="prlimit"),
+    )
+    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(sandbox_module, "_covered_by_base_mount", lambda path: True)
+
+    limits = ScriptSandboxLimits(
+        memory_bytes=111,
+        cpu_seconds=22,
+        file_size_bytes=333,
+        open_files=44,
+        processes=55,
+        tmpfs_bytes=789,
+    )
+    validate_sandbox_runtime(limits)
+
+    command = recorded["command"]
+    for expected in ("--as=111", "--cpu=22", "--fsize=333", "--nofile=44", "--nproc=55"):
+        assert expected in command
+    size_index = command.index("--size")
+    assert command[size_index + 1] == "789"
+    assert command[size_index + 2 : size_index + 4] == ["--tmpfs", "/tmp"]
 
 
 def _live_linux_sandbox_unavailable() -> bool:

@@ -158,28 +158,55 @@ def _covered_by_base_mount(path: Path) -> bool:
     return any(path == root or path.is_relative_to(root) for root in roots)
 
 
-def _runtime_mounts(interpreter: Path) -> list[Path]:
-    """Return non-FHS Python/runtime roots needed by the selected interpreter."""
+_SYMLINK_HOP_LIMIT = 40
 
-    candidates = [interpreter.parent, interpreter.resolve().parent]
-    if interpreter.resolve() == Path(sys.executable).resolve():
+
+def _runtime_mounts(interpreter: Path) -> list[Path]:
+    """Return non-FHS runtime roots for every path the interpreter is reached by.
+
+    The returned paths deliberately stay unresolved: bwrap resolves bind
+    sources on the host, so binding an unresolved directory places the real
+    content at the path the interpreter's symlink chain actually names inside
+    the jail. Mounting only the fully resolved target broke any interpreter
+    reached through a symlinked directory - uv's version-alias layout
+    (``cpython-3.14 -> cpython-3.14.7``) made ``execvp`` fail with ENOENT on a
+    chain whose every visible component existed - so each hop's parent is a
+    candidate mount of its own.
+    """
+
+    candidates = [interpreter.parent]
+    current = interpreter
+    for _ in range(_SYMLINK_HOP_LIMIT):
+        try:
+            if not current.is_symlink():
+                break
+            target = Path(os.readlink(current))
+        except OSError:
+            break
+        current = target if target.is_absolute() else current.parent / target
+        current = Path(os.path.normpath(current))
+        candidates.append(current.parent)
+    resolved_interpreter = interpreter.resolve()
+    candidates.append(resolved_interpreter.parent)
+    if resolved_interpreter == Path(sys.executable).resolve():
         candidates.extend((Path(sys.prefix), Path(sys.base_prefix)))
 
     mounts: list[Path] = []
     for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved == Path("/"):
+        normalized = Path(os.path.normpath(candidate))
+        resolved = normalized.resolve()
+        if resolved == Path("/") or normalized == Path("/"):
             raise SandboxUnavailableError(
                 "Refusing to expose the host root as an interpreter mount"
             )
-        if _covered_by_base_mount(resolved):
+        if _covered_by_base_mount(normalized) and _covered_by_base_mount(resolved):
             continue
         if not resolved.exists():
             raise SandboxUnavailableError(f"Interpreter runtime path does not exist: {resolved}")
-        if any(resolved == parent or resolved.is_relative_to(parent) for parent in mounts):
+        if any(normalized == parent or normalized.is_relative_to(parent) for parent in mounts):
             continue
-        mounts = [child for child in mounts if not child.is_relative_to(resolved)]
-        mounts.append(resolved)
+        mounts = [child for child in mounts if not child.is_relative_to(normalized)]
+        mounts.append(normalized)
     return sorted(mounts, key=lambda item: (len(item.parts), str(item)))
 
 
@@ -298,6 +325,12 @@ def validate_sandbox_runtime(limits: ScriptSandboxLimits) -> SandboxRuntime:
         "--core=0",
         "--",
         *_base_bwrap_command(runtime, allow_network=False),
+        # The tmpfs cap is part of the real invocation shape too; a bwrap that
+        # cannot apply it must fail here, not on the first skill call.
+        "--size",
+        str(limits.tmpfs_bytes),
+        "--tmpfs",
+        "/tmp",
         "--",
         str(resolved_true),
     ]

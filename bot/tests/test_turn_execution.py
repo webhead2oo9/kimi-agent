@@ -42,7 +42,15 @@ from providers.types import (
     ProviderRequest,
     ProviderResponse,
 )
-from tests.helpers import StubContextManager, StubProvider, make_turn_dependencies
+
+# The pre-moderation validation drops anything that does not fully decode, so
+# turn fixtures need a real image, not a signature.
+from tests.helpers import (
+    VALID_PNG_BASE64 as _VALID_PNG_B64,
+    StubContextManager,
+    StubProvider,
+    make_turn_dependencies,
+)
 from tools.embeds import EmbedAttachment, EmbedSpec
 from tools.registry import TurnHandoff
 from tools.threads import ThreadRequest
@@ -237,6 +245,45 @@ def _dependencies(
 
 def _config() -> TurnExecutionConfig:
     return TurnExecutionConfig(max_iterations=7, max_tokens=1234)
+
+
+@pytest.mark.asyncio
+async def test_generated_assets_validate_before_moderation_sees_them(tmp_path: Path) -> None:
+    """A provider-returned asset that does not decode must neither fail the
+    text reply closed at the moderation backend nor reach the writer; and the
+    loop's synthesized "Generated image attached." must not survive as a false
+    claim when nothing was attached."""
+    from tests.helpers import corrupt_png_idat_stream, VALID_PNG_BYTES
+    import base64 as _base64
+
+    context = ConversationContext(key="guild:100:main")
+    moderation = RecordingModerationService()
+    bad_asset = GeneratedAsset(
+        kind="image",
+        media_type="image/png",
+        data_base64=_base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
+        suggested_filename="bad.png",
+    )
+
+    result = await execute_turn(
+        _turn_request(context),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path / "workspace",
+            moderation_service=moderation,
+            run_conversation=RecordingRunConversation(
+                ConversationRunResult(
+                    text="Generated image attached.",
+                    generated_assets=[bad_asset],
+                )
+            ),
+        ),
+        config=_config(),
+    )
+
+    assert len(moderation.calls) == 1
+    assert moderation.calls[0]["generated_assets"] == []
+    assert result.output_files == ()
+    assert "did not survive validation" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -1356,7 +1403,7 @@ async def test_execute_turn_writes_generated_assets_and_clears_pending_outputs(
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="iVBORw0KGgo=",
+        data_base64=_VALID_PNG_B64,
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(
@@ -1411,7 +1458,7 @@ async def test_execute_turn_offloads_asset_writes_off_event_loop(tmp_path: Path)
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="iVBORw0KGgo=",
+        data_base64=_VALID_PNG_B64,
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(
@@ -1456,7 +1503,7 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="iVBORw0KGgo=",
+        data_base64=_VALID_PNG_B64,
         suggested_filename="late.png",
     )
 
@@ -1648,7 +1695,7 @@ async def test_execute_turn_blocks_output_before_asset_writes_and_clears_pending
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64="iVBORw0KGgo=",
+        data_base64=_VALID_PNG_B64,
         suggested_filename="image.png",
     )
     run_conversation = RecordingRunConversation(

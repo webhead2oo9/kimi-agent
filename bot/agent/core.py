@@ -1216,7 +1216,7 @@ class _ConversationRunner:
             notice = "(Response was cut off due to length limits.)"
             return f"{final_text}\n\n{notice}" if final_text else notice
         if not final_text and state.generated_assets:
-            return _generated_assets_response_text(state.generated_assets)
+            return generated_assets_response_text(state.generated_assets)
         if not final_text and msg_ctx.embed is not None:
             # Embed-only reply: the queued embed is the message; the caption is
             # intentionally blank, so don't synthesize fallback prose.
@@ -1823,7 +1823,7 @@ def _request_contains_image_parts(
     )
 
 
-def _generated_assets_response_text(generated_assets: list[GeneratedAsset]) -> str:
+def generated_assets_response_text(generated_assets: list[GeneratedAsset]) -> str:
     image_count = sum(1 for asset in generated_assets if asset.kind == "image")
     if image_count == 1 and len(generated_assets) == 1:
         return "Generated image attached."

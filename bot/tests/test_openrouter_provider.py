@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from providers import openrouter as openrouter_module
+from providers.assets import validate_generated_assets
 from providers.openrouter import OpenRouterProvider
 from providers.types import ContentPart, ProviderCapability, ProviderRequest
 from utils import image_types
@@ -358,21 +359,6 @@ def test_openrouter_provider_canonicalizes_image_type_from_bytes(
         "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+",
         "data:image/png;base64,not-valid-base64!",
         f"data:image/png,{PNG_BASE64}",
-        "data:image/png;base64,iVBORw0KGgo=",
-        "data:image/png;base64,"
-        + base64.b64encode(PNG_WITH_INVALID_COMPRESSION_BYTES).decode("ascii"),
-        "data:image/jpeg;base64,/9j/2Q==",
-        "data:image/jpeg;base64,"
-        + base64.b64encode(JPEG_WITH_MISMATCHED_ARITHMETIC_SOF_BYTES).decode("ascii"),
-        "data:image/gif;base64,R0lGODlh",
-        "data:image/gif;base64," + base64.b64encode(GIF_WITHOUT_PALETTE_BYTES).decode("ascii"),
-        "data:image/gif;base64," + base64.b64encode(GIF_WITH_INVALID_LZW_BYTES).decode("ascii"),
-        "data:image/gif;base64,"
-        + base64.b64encode(GIF_WITH_INVALID_FRAME_POSITION_BYTES).decode("ascii"),
-        "data:image/webp;base64,UklGRgAAAABXRUJQ",
-        "data:image/webp;base64," + base64.b64encode(CORRUPT_WEBP_BYTES).decode("ascii"),
-        "data:image/webp;base64,"
-        + base64.b64encode(WEBP_WITH_LATE_EXTENDED_HEADER_BYTES).decode("ascii"),
     ],
 )
 def test_openrouter_provider_skips_urls_that_are_not_valid_inline_images(url: str) -> None:
@@ -380,6 +366,34 @@ def test_openrouter_provider_skips_urls_that_are_not_valid_inline_images(url: st
         OpenRouterProvider._parse_images([SimpleNamespace(image_url=SimpleNamespace(url=url))])
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"\x89PNG\r\n\x1a\n\x00\x00", id="png-signature-only"),
+        pytest.param(PNG_WITH_INVALID_COMPRESSION_BYTES, id="png-invalid-compression"),
+        pytest.param(base64.b64decode("/9j/2Q=="), id="jpeg-truncated"),
+        pytest.param(JPEG_WITH_MISMATCHED_ARITHMETIC_SOF_BYTES, id="jpeg-arithmetic-sof"),
+        pytest.param(base64.b64decode("R0lGODlh"), id="gif-signature-only"),
+        pytest.param(GIF_WITHOUT_PALETTE_BYTES, id="gif-no-palette"),
+        pytest.param(GIF_WITH_INVALID_LZW_BYTES, id="gif-invalid-lzw"),
+        pytest.param(GIF_WITH_INVALID_FRAME_POSITION_BYTES, id="gif-frame-position"),
+        pytest.param(base64.b64decode("UklGRgAAAABXRUJQ"), id="webp-signature-only"),
+        pytest.param(CORRUPT_WEBP_BYTES, id="webp-corrupt"),
+        pytest.param(WEBP_WITH_LATE_EXTENDED_HEADER_BYTES, id="webp-late-header"),
+    ],
+)
+def test_sniffable_but_undecodable_payloads_pass_parse_and_die_at_validation(
+    payload: bytes,
+) -> None:
+    """Parse is deliberately cheap (it runs on the event loop): a bare
+    signature gets through it and is dropped by the shared decode-level
+    validation every provider's assets funnel through before moderation."""
+    url = "data:application/octet-stream;base64," + base64.b64encode(payload).decode("ascii")
+    parsed = OpenRouterProvider._parse_images([SimpleNamespace(image_url=SimpleNamespace(url=url))])
+    assert len(parsed) == 1
+    assert validate_generated_assets(parsed) == []
 
 
 def test_openrouter_provider_caps_images_before_they_reach_moderation() -> None:
@@ -407,13 +421,18 @@ def test_openrouter_provider_caps_decoded_and_aggregate_image_bytes(
 def test_openrouter_provider_counts_rejected_images_toward_processing_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    corrupt_payload = base64.b64encode(CORRUPT_WEBP_BYTES).decode("ascii")
-    corrupt = {"image_url": {"url": f"data:image/webp;base64,{corrupt_payload}"}}
+    # Not sniffable at all, so parse rejects it -- and must still charge its
+    # decoded size against the aggregate budget, or a provider could stream
+    # rejected payloads past the cap.
+    junk = b"\x00" * len(CORRUPT_WEBP_BYTES)
+    corrupt = {
+        "image_url": {"url": "data:image/webp;base64," + base64.b64encode(junk).decode("ascii")}
+    }
     valid = {"image_url": {"url": f"data:image/png;base64,{PNG_BASE64}"}}
     monkeypatch.setattr(
         openrouter_module,
         "_MAX_TOTAL_INLINE_IMAGE_BYTES",
-        len(CORRUPT_WEBP_BYTES) + len(PNG_BYTES) - 1,
+        len(junk) + len(PNG_BYTES) - 1,
     )
 
     assert OpenRouterProvider._parse_images([corrupt, valid]) == []
@@ -435,6 +454,7 @@ def test_openrouter_provider_bounds_encoded_work_for_rejected_candidates(
     monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", 2)
     monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_ENCODED_BYTES", 4)
     monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_BYTES", 4)
+    monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES", 8)
     monkeypatch.setattr(openrouter_module.base64, "b64decode", counted_decode)
     image = {"image_url": {"url": f"data:image/png;base64,{payload}"}}
 
@@ -474,13 +494,7 @@ def test_openrouter_provider_bounds_animated_frame_discovery(
     seek_calls: list[int] = []
     load_calls: list[None] = []
     monkeypatch.setattr(image_types.Image, "open", lambda _stream: TooManyFrames())
-    payload = base64.b64encode(GIF_BYTES).decode("ascii")
 
-    assert (
-        OpenRouterProvider._parse_images(
-            [{"image_url": {"url": f"data:image/gif;base64,{payload}"}}]
-        )
-        == []
-    )
+    assert image_types.decoded_image_media_type(GIF_BYTES) is None
     assert seek_calls == list(range(image_types._MAX_VALIDATED_IMAGE_FRAMES + 1))
     assert len(load_calls) == image_types._MAX_VALIDATED_IMAGE_FRAMES

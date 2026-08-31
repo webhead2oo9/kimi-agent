@@ -39,7 +39,9 @@ from agent.discord_references import (
     ResolvedDiscordReferenceHint,
     discord_reference_hints_text,
 )
+from providers.assets import validate_generated_assets
 from agent.core import (
+    generated_assets_response_text,
     ConversationTerminationReason,
     ConversationRunRequest,
     ConversationRunResult,
@@ -1210,6 +1212,29 @@ async def execute_turn(
             terminal_handoff=run_result.terminal_handoff,
             termination_reason=run_result.termination_reason,
         )
+
+    if run_result.generated_assets:
+        # One decode-level validation for every provider's assets, off the
+        # event loop, before moderation sees them: an invalid payload must
+        # neither fail an otherwise fine text reply closed at the moderation
+        # backend nor reach the workspace writer.
+        original_assets = run_result.generated_assets
+        validated_assets = await asyncio.to_thread(validate_generated_assets, original_assets)
+        if len(validated_assets) != len(original_assets):
+            run_result = replace(run_result, generated_assets=validated_assets)
+            if not validated_assets and run_result.text == generated_assets_response_text(
+                original_assets
+            ):
+                # The loop synthesized "Generated image attached." for an
+                # asset-only reply; with nothing surviving validation that
+                # text would be a false claim.
+                run_result = replace(
+                    run_result,
+                    text=(
+                        "I generated a file, but it did not survive validation "
+                        "and was not attached."
+                    ),
+                )
 
     await _stage_pending_response_files(
         turn,

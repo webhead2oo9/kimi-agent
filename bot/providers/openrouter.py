@@ -15,7 +15,7 @@ from providers.types import (
     ProviderRequest,
     ProviderResponse,
 )
-from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, decoded_image_media_type
+from utils.image_types import IMAGE_MEDIA_TYPE_SUFFIXES, sniff_image_media_type
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ _MAX_INLINE_IMAGES = 8
 _MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_INLINE_IMAGE_BYTES = 25 * 1024 * 1024
 _MAX_INLINE_IMAGE_ENCODED_BYTES = ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4
+_MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
 _MAX_INLINE_IMAGE_HEADER_CHARS = 1024
 
 
@@ -179,8 +180,7 @@ class OpenRouterProvider(OpenAIChatProvider):
             if encoded_length > _MAX_INLINE_IMAGE_ENCODED_BYTES:
                 log.warning("Skipping OpenRouter image %d: encoded data exceeds byte cap", index)
                 continue
-            total_encoded_cap = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
-            if processed_encoded_chars + encoded_length > total_encoded_cap:
+            if processed_encoded_chars + encoded_length > _MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES:
                 log.warning("Stopping OpenRouter image parsing at the aggregate encoded-data cap")
                 break
             # Charge every bounded candidate before validating base64. Rejected
@@ -211,12 +211,12 @@ class OpenRouterProvider(OpenAIChatProvider):
             # while evading the aggregate cap reserved for this response.
             processed_bytes += len(raw)
 
-            # Both the declared media type and payload are untrusted provider data.
-            # Sniff before the asset enters output moderation: an invalid payload
-            # would otherwise fail moderation closed even though the asset writer
-            # would discard it later. Valid images survive a bad upstream label and
-            # carry the canonical type and extension earned by their magic bytes.
-            media_type = decoded_image_media_type(raw)
+            # Both the declared media type and payload are untrusted provider
+            # data. Response parsing runs on the event loop, so it applies only
+            # the caps and a signature sniff here; the decode-level check every
+            # provider shares runs in a worker thread before moderation
+            # (agent/turn.py -> providers/assets.py:validate_generated_assets).
+            media_type = sniff_image_media_type(raw)
             if media_type is None:
                 log.warning("Skipping OpenRouter image %d: bytes are not a supported image", index)
                 continue

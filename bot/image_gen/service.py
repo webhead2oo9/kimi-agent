@@ -47,12 +47,13 @@ class ImageGenService:
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.generate(request)
-        return replace(result, image_bytes=self._verify(result))
+        # Full-decode validation is CPU work; keep it off the event loop.
+        return replace(result, image_bytes=await asyncio.to_thread(self._verify, result))
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.edit(request)
-        return replace(result, image_bytes=self._verify(result))
+        return replace(result, image_bytes=await asyncio.to_thread(self._verify, result))
 
     def _verify(self, result: ImageResult) -> bytes:
         """Rejects bodies that are not decodable PNG data within the size cap.
@@ -61,6 +62,10 @@ class ImageGenService:
         otherwise be written into the workspace and queued as a Discord
         attachment verbatim.
         """
+        # Reject before allocating the decoded body: a backend contract is not
+        # a size cap, and the string length already bounds the decoded size.
+        if len(result.image_base64) > ((self._max_image_bytes + 2) // 3) * 4 + 4:
+            raise ImageGenError(f"generated image exceeds the {self._max_image_bytes} byte cap")
         try:
             raw = base64.b64decode(result.image_base64, validate=True)
         except (binascii.Error, ValueError) as exc:

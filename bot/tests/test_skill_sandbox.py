@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from skills.runner import run_script
+from config.settings import Settings
+from skills.registration import build_script_sandbox_limits
 from skills.sandbox import (
     SandboxRuntime,
     SandboxUnavailableError,
@@ -155,7 +157,9 @@ def _live_linux_sandbox_unavailable() -> bool:
     if sys.platform != "linux" or not shutil.which("bwrap") or not shutil.which("prlimit"):
         return True
     try:
-        validate_sandbox_runtime()
+        # The configured ceilings, not the dataclass defaults: a gate that
+        # passes at limits real invocations never use certifies nothing.
+        validate_sandbox_runtime(build_script_sandbox_limits(Settings()))  # type: ignore[call-arg]
     except SandboxUnavailableError:
         return True
     return False

@@ -268,15 +268,16 @@ def build_sandbox_command(
     return command
 
 
-def validate_sandbox_runtime(limits: ScriptSandboxLimits | None = None) -> SandboxRuntime:
+def validate_sandbox_runtime(limits: ScriptSandboxLimits) -> SandboxRuntime:
     """Run a minimal namespace probe so configured script tools fail at boot.
 
     The probe applies the same prlimit ceilings real invocations will use, so
     a host that cannot start a jail under the configured limits fails here, by
     name, instead of registering tools whose every run would die at clone().
+    ``limits`` is required on purpose: a probe that quietly falls back to
+    defaults certifies ceilings nobody runs.
     """
 
-    limits = limits if limits is not None else ScriptSandboxLimits()
     runtime = detect_sandbox_runtime()
     true_path = shutil.which("true")
     if true_path is None:
@@ -313,11 +314,12 @@ def validate_sandbox_runtime(limits: ScriptSandboxLimits | None = None) -> Sandb
     if completed.returncode != 0:
         detail = completed.stderr.decode(errors="replace").strip().splitlines()
         suffix = f": {detail[-1]}" if detail else ""
-        if "Resource temporarily unavailable" in suffix:
+        if any("Resource temporarily unavailable" in line for line in detail):
             # RLIMIT_NPROC counts every process of the service uid, so the
             # configured ceiling has to clear what the account already runs.
+            # EAGAIN has other per-uid sources too, hence "likely".
             suffix += (
-                f" (the uid's process count already exceeds the configured "
+                f" (likely the uid's process count exceeds the configured "
                 f"SCRIPT_SANDBOX_MAX_PROCESSES={limits.processes})"
             )
         raise SandboxUnavailableError(

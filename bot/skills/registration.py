@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from config.settings import settings
+from config.settings import Settings, settings
 from workspace import WorkspaceManager
 from skills.loader import SKILL_FILENAME, SkillToolDeclaration, _parse_skill_file, scan_skills
 from skills.policy import normalize_skill_tool_min_tier
@@ -44,7 +44,7 @@ def _build_parameters(tool_decl: SkillToolDeclaration) -> dict:
     return parameters
 
 
-def build_script_sandbox_limits(settings) -> ScriptSandboxLimits:
+def build_script_sandbox_limits(settings: Settings) -> ScriptSandboxLimits:
     """The one mapping from settings to the per-invocation sandbox ceilings.
 
     Shared with startup validation and scripts/sandbox_probe.py so the probe

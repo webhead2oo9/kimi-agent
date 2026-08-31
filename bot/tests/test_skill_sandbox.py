@@ -183,6 +183,39 @@ def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
         )
 
 
+def test_runtime_mounts_refuse_an_interpreter_directly_in_the_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An interpreter parented by the service home would ro-bind the whole
+    home - credentials included - into every jail."""
+    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: tmp_path))
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module._runtime_mounts(interpreter.absolute())
+
+
+def test_runtime_mounts_fail_closed_on_dotdot_across_an_alias(tmp_path: Path) -> None:
+    """A relative .. hop that crosses an unresolved directory symlink is
+    normalized the way the jail will see it; when that path does not exist on
+    the host the layout is refused by name rather than mounted wrongly."""
+    srv = tmp_path / "srv"
+    (srv / "python-v2").mkdir(parents=True)
+    (srv / "python-v2" / "python").write_text("", encoding="utf-8")
+    (srv / "python-v1").mkdir()
+    aliases = tmp_path / "opt" / "aliases"
+    aliases.mkdir(parents=True)
+    try:
+        (aliases / "current").symlink_to(srv / "python-v1", target_is_directory=True)
+        (srv / "python-v1" / "python").symlink_to(Path("..") / "python-v2" / "python")
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+
+    with pytest.raises(SandboxUnavailableError, match="does not exist"):
+        sandbox_module._runtime_mounts((aliases / "current" / "python").absolute())
+
+
 def test_validate_probe_applies_every_configured_limit(monkeypatch, tmp_path: Path) -> None:
     """The startup probe must exercise the same ceilings real invocations use,
     tmpfs included, or a host that rejects one passes validation and every

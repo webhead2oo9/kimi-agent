@@ -234,6 +234,13 @@ has actually loaded.
 - **Executable skills** need Linux with `bubblewrap` + `util-linux` and a
   non-root service account; on a Windows/macOS dev host, use an instruction-only
   or empty skill store (see [setup.md](setup.md)).
+- **Code execution and coding tasks** need the full Linux boundary in
+  [code-exec.md](code-exec.md) (Bubblewrap, `prlimit`, libseccomp, a lingering
+  user systemd manager, and a file `core_pattern`). Without it the live-jail
+  tests skip, and `run_code` does not register. `python -m scripts.sandbox_probe`
+  names the missing prerequisite; the CI `sandbox` job provisions all of them
+  and runs those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where skipping
+  counts as failure.
 - **Persistent browser and visual rendering** also need the Linux isolation
   stack and pinned BetterWright/Mermaid runtime. They are off unless
   `BROWSER_ENABLED=true`, so a Windows/macOS dev host needs no change and can

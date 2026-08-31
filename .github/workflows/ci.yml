@@ -139,3 +139,76 @@ jobs:
           test -n "${api_sdist}"
           test -n "${reference_wheel}"
           uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"
+
+  # The check job's runner has no Bubblewrap and ships Apport's piped
+  # core_pattern, so every live-jail test skips there and the most
+  # security-critical code in the repo would otherwise never execute in CI.
+  # This job provisions the boundary the way docs/code-exec.md tells an
+  # operator to, and KIMI_REQUIRE_SANDBOX_TESTS turns "unavailable" from a
+  # skip into a failure.
+  sandbox:
+    name: live sandbox tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: bot/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-packages --extra dev
+
+      - name: Install the sandbox boundary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap libseccomp2 util-linux
+
+      - name: Configure the host like a deployment
+        shell: bash
+        run: |
+          # RLIMIT_CORE=0 is only authoritative with a file core pattern, so the
+          # sandbox refuses Apport's pipe pattern by design.
+          sudo sysctl -w kernel.core_pattern=core
+          # systemd-run --user needs a lingering user manager and its bus; this
+          # is the same recipe as the "Host requirements" section.
+          uid=$(id -u)
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          for _ in $(seq 1 30); do
+            [ -S "/run/user/${uid}/bus" ] && break
+            sleep 1
+          done
+          test -S "/run/user/${uid}/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+          state=$(XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user is-system-running || true)
+          echo "user manager: ${state}"
+          case "${state}" in
+            running|degraded) ;;
+            *) echo "user manager is not usable" >&2; exit 1 ;;
+          esac
+
+      # Names the first missing prerequisite instead of a bare False.
+      - name: Probe the sandbox
+        run: uv run python -m scripts.sandbox_probe
+
+      - name: Live sandbox tests
+        env:
+          KIMI_REQUIRE_SANDBOX_TESTS: "1"
+        run: >-
+          uv run python -m pytest -q -rs
+          tests/test_sandbox_required.py
+          tests/test_sandbox_runner.py
+          tests/test_code_exec_tool.py
+          tests/test_skill_sandbox.py

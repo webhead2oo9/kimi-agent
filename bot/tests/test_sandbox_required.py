@@ -29,6 +29,7 @@ from tests import conftest as tests_conftest
 REQUIRE_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
 
 
+@pytest.mark.uses_live_settings_env
 def test_live_sandbox_is_available_where_required() -> None:
     if os.environ.get(REQUIRE_ENV) != "1":
         pytest.skip("KIMI_REQUIRE_SANDBOX_TESTS=1 is not set; the live sandbox is optional here")

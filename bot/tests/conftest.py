@@ -9,7 +9,8 @@ Reusable stubs and builders are *not* fixtures. They take constructor
 arguments, so they live as plain classes in `tests/helpers.py`
 (``StubProvider``, ``StubProviderManager``, ``StubContextManager``,
 ``RecordingEnsureUserBank``, ``RecordingRecall``, ``FakeResponses``,
-``make_message_context``). Import from there before hand-rolling another copy.
+``make_message_context``, ``make_settings``). Import from there before hand-rolling
+another copy.
 
 Every async test needs an explicit `@pytest.mark.asyncio`. There is no
 `asyncio_mode = auto` (see pyproject.toml); an async test missing the marker
@@ -24,6 +25,7 @@ import os
 import pytest
 
 from app.tool_surfaces import reset_surface_tools
+from config.settings import Settings
 
 # The modules whose live-jail tests skip when the Linux boundary cannot start.
 # Under KIMI_REQUIRE_SANDBOX_TESTS=1 (the CI sandbox job) such a skip is a
@@ -56,9 +58,50 @@ _HOST_SHAPE_SKIP_REASONS = (
 _REQUIRE_SANDBOX_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
 
 
+def _settings_env_names() -> frozenset[str]:
+    """Every environment variable pydantic-settings would read into Settings.
+
+    Settings declares no env prefix, no aliases, and case-insensitive names, so
+    the upper-cased field name is the whole story. The assertions make a future
+    alias or prefix fail this derivation loudly instead of leaking past the
+    scrub below.
+    """
+
+    assert not Settings.model_config.get("env_prefix"), "update _settings_env_names"
+    assert not Settings.model_config.get("case_sensitive"), "update _settings_env_names"
+    aliased = [
+        name
+        for name, field in Settings.model_fields.items()
+        if field.validation_alias is not None or field.alias is not None
+    ]
+    assert not aliased, f"aliased Settings fields need env names here: {aliased}"
+    return frozenset(name.upper() for name in Settings.model_fields)
+
+
+_SETTINGS_ENV_NAMES = _settings_env_names()
+
+
 @pytest.fixture(autouse=True)
 def _reset_tool_surfaces() -> None:
     reset_surface_tools()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings_environment(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if request.node.get_closest_marker("uses_live_settings_env") is not None:
+        return
+
+    # Ambient KIMI_* variables would otherwise leak into every Settings(...)
+    # a test builds, even with the dotenv file suppressed. The CI sandbox gate
+    # is not a Settings field and stays visible to the skip-conversion hook.
+    for env_name in tuple(os.environ):
+        if env_name.upper() == _REQUIRE_SANDBOX_ENV:
+            continue
+        if env_name.upper() in _SETTINGS_ENV_NAMES:
+            monkeypatch.delenv(env_name)
 
 
 # tryfirst on a hookwrapper means the post-yield half runs LAST, so no

@@ -255,7 +255,7 @@ jobs:
         shell: bash
         run: |
           echo "--- venv layout ---"
-          ls -la .venv/bin/ | head -12 || true
+          ls -la .venv/bin/ || true
           readlink -f .venv/bin/python3 || true
           echo "--- runtime mounts as the sandbox computes them ---"
           uv run python - <<'PY'
@@ -288,4 +288,51 @@ jobs:
           print("rc:", done.returncode)
           print("stdout:", done.stdout)
           print("stderr:", done.stderr)
+          # Same jail, known-good interpreter: report what the jail actually
+          # sees at every component of the venv interpreter path.
+          probe_code = (
+              "import os
+"
+              "paths = [
+"
+              f"    {str(interp)!r},
+"
+              f"    {str(interp.parent)!r},
+"
+              f"    {str(interp.resolve())!r},
+"
+              f"    {str(interp.resolve().parent)!r},
+"
+              "]
+"
+              "for path in paths:
+"
+              "    print(path, 'exists=', os.path.exists(path), 'lexists=', os.path.lexists(path))
+"
+              "    if os.path.islink(path):
+"
+              "        print('   ->', os.readlink(path))
+"
+              "part = ''
+"
+              f"for component in {str(interp)!r}.split('/')[1:]:
+"
+              "    part += '/' + component
+"
+              "    print('component', part, os.path.lexists(part))
+"
+              "print('--- mountinfo home entries ---')
+"
+              "for line in open('/proc/self/mountinfo'):
+"
+              "    if '/home' in line or 'uv-python' in line:
+"
+              "        print(line.rstrip())
+"
+          )
+          introspect = command[:-2] + ["/usr/bin/python3", "-I", "-c", probe_code]
+          seen = subprocess.run(introspect, capture_output=True, text=True, timeout=30)
+          print("introspection rc:", seen.returncode)
+          print(seen.stdout)
+          print("introspection stderr:", seen.stderr)
           PY

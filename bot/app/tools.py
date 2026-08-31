@@ -549,20 +549,13 @@ def _register_video(
     return service
 
 
-def _register_code_exec(
-    settings: Settings,
-    registry: ToolRegistry,
-    workspace_manager: WorkspaceManager,
-    locks: UserLocks,
-    *,
-    netns_lease: NetnsLease | None = None,
-    netns_conflict: Callable[[str, str], bool] | None = None,
-    runtime_guards: CodeExecRuntimeGuards | None = None,
-) -> SandboxConfig | None:
-    if not settings.code_exec_enabled:
-        log.info("Code execution disabled; CODE_EXEC_ENABLED is not set")
-        return None
+def build_sandbox_config(settings: Settings) -> SandboxConfig:
+    """The code-execution profile startup runs, derived from the live settings.
 
+    Shared with scripts/sandbox_probe.py so an operator's diagnostic exercises
+    the same interpreter, network mode, binds, and workspace root that
+    registration will, rather than the dataclass defaults.
+    """
     venv_dir = settings.code_exec_venv_dir.strip()
     python_bin = (
         str(Path(venv_dir) / "bin" / "python3") if venv_dir else settings.code_exec_python_bin
@@ -574,7 +567,7 @@ def _register_code_exec(
         if path
     )
     network_mode = cast(SandboxNetworkMode, settings.code_exec_network_mode)
-    sandbox_config = SandboxConfig(
+    return SandboxConfig(
         python_bin=python_bin,
         bwrap_bin=settings.code_exec_bwrap_bin,
         prlimit_bin=settings.code_exec_prlimit_bin,
@@ -616,6 +609,24 @@ def _register_code_exec(
         max_env_bytes=settings.code_exec_env_dir_max_mb * 1024 * 1024,
         max_env_files=settings.code_exec_env_dir_max_files,
     )
+
+
+def _register_code_exec(
+    settings: Settings,
+    registry: ToolRegistry,
+    workspace_manager: WorkspaceManager,
+    locks: UserLocks,
+    *,
+    netns_lease: NetnsLease | None = None,
+    netns_conflict: Callable[[str, str], bool] | None = None,
+    runtime_guards: CodeExecRuntimeGuards | None = None,
+) -> SandboxConfig | None:
+    if not settings.code_exec_enabled:
+        log.info("Code execution disabled; CODE_EXEC_ENABLED is not set")
+        return None
+
+    sandbox_config = build_sandbox_config(settings)
+    network_mode = sandbox_config.network_mode
     if not sandbox_available(sandbox_config):
         log.warning(
             "Code execution enabled but the %s sandbox profile failed its startup "

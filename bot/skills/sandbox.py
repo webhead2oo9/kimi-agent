@@ -281,13 +281,19 @@ def validate_sandbox_runtime() -> SandboxRuntime:
             f"Executable skill sandbox probe utility is outside the system runtime: {resolved_true}"
         )
 
+    # RLIMIT_NPROC counts every process of the invoking real uid on the host,
+    # not just the jail, so a tight ceiling here fails on a busy account (a CI
+    # runner, a shared box) with "Creating new namespace failed: Resource
+    # temporarily unavailable" and says nothing about the sandbox. Real
+    # invocations apply the tool's declared process limit; this probe only
+    # proves prlimit and the namespace skeleton work together.
     command = [
         runtime.prlimit,
         "--as=268435456",
         "--cpu=5",
         "--fsize=1048576",
         "--nofile=64",
-        "--nproc=16",
+        "--nproc=4096",
         "--core=0",
         "--",
         *_base_bwrap_command(runtime, allow_network=False),

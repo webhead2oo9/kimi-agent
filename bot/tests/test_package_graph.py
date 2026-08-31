@@ -121,7 +121,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "modules": {"app", "config", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
-    "scripts": {"codex", "sandbox", "skills"},
+    "scripts": {"app", "codex", "config", "sandbox", "skills"},
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": {"utils"},

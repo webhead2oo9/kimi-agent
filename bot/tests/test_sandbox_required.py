@@ -1,12 +1,12 @@
-"""Turn "sandbox unavailable" from a skip into a failure where it is required.
+"""Fail early and by name when the live sandbox is required but cannot start.
 
 The live-jail tests in test_sandbox_runner.py, test_code_exec_tool.py, and
 test_skill_sandbox.py skip when the Linux boundary cannot start, which is
 right on a developer laptop and self-concealing on the one CI job whose
-purpose is to prove the boundary. That job sets KIMI_REQUIRE_SANDBOX_TESTS=1;
-here that flips the outcome so a runner that quietly lost bubblewrap, a file
-core pattern, or its user systemd manager turns the build red instead of
-reporting the same pass count with 23 fewer tests executed.
+purpose is to prove the boundary. That job sets KIMI_REQUIRE_SANDBOX_TESTS=1.
+The enforcement lives in conftest.py, which turns any skip in those modules
+into a failure under that flag; this test is the fast, readable first failure
+that names the prerequisite instead of leaving 23 converted skips to explain.
 """
 
 from __future__ import annotations

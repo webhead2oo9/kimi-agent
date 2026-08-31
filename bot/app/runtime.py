@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1111,6 +1111,11 @@ class KimiApplication:
             self.trust_resolver,
             run_learn=self._run_learn_turn,
             is_blocked=self._user_is_blocked,
+            request_consent=lambda interaction, resume: self._prompt_consent_if_needed(
+                interaction,
+                on_accept=resume,
+                public_response=False,
+            ),
             bot_name=self.settings.bot_name,
         )
         register_privacy_command(
@@ -2168,6 +2173,37 @@ class KimiApplication:
             all_work=False,
         )
 
+    async def _prompt_consent_if_needed(
+        self,
+        interaction: discord.Interaction,
+        *,
+        on_accept: Callable[[discord.Interaction], Awaitable[None]],
+        public_response: bool,
+    ) -> bool:
+        if (
+            not self.settings.privacy_consent_enabled
+            or self.preference_store is None
+            or await self.preference_store.has_consented(str(interaction.user.id))
+        ):
+            return False
+
+        view = UserAppConsentView(
+            author_id=interaction.user.id,
+            store=self.preference_store,
+            on_accept=on_accept,
+            timeout=self.settings.privacy_consent_timeout,
+            public_response=public_response,
+        )
+        await interaction.response.send_message(
+            embed=build_consent_embed(
+                title=self.settings.privacy_consent_title,
+                text=self.settings.privacy_consent_text,
+            ),
+            view=view,
+            ephemeral=True,
+        )
+        return True
+
     async def _handle_user_app_chat_interaction(
         self,
         interaction: discord.Interaction,
@@ -2215,26 +2251,11 @@ class KimiApplication:
                 request_generation=request_generation,
             )
 
-        if (
-            self.settings.privacy_consent_enabled
-            and self.preference_store is not None
-            and not await self.preference_store.has_consented(user_id)
+        if await self._prompt_consent_if_needed(
+            interaction,
+            on_accept=execute,
+            public_response=public,
         ):
-            view = UserAppConsentView(
-                author_id=interaction.user.id,
-                store=self.preference_store,
-                on_accept=execute,
-                timeout=self.settings.privacy_consent_timeout,
-                public_response=public,
-            )
-            await interaction.response.send_message(
-                embed=build_consent_embed(
-                    title=self.settings.privacy_consent_title,
-                    text=self.settings.privacy_consent_text,
-                ),
-                view=view,
-                ephemeral=True,
-            )
             return
 
         # A deferred response cannot change visibility later. The selected

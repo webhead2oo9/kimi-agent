@@ -493,6 +493,7 @@ def _menu(
     staff_ids: set[str] | None = None,
     bot_name: str = "Kimi",
     blocked_ids: frozenset[str] = frozenset(),
+    request_consent=None,
 ):
     from commands.learn_cmd import register_learn_command
     from trust.resolver import TrustResolver
@@ -508,11 +509,15 @@ def _menu(
     async def is_blocked(user_id: str) -> bool:
         return user_id in blocked_ids
 
+    async def consent_not_required(interaction, resume) -> bool:
+        return False
+
     register_learn_command(
         cast(Any, bot),
         resolver,
         run_learn=run_learn,
         is_blocked=is_blocked,
+        request_consent=request_consent or consent_not_required,
         bot_name=bot_name,
     )
     return added[0]

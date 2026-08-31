@@ -487,7 +487,13 @@ def _message(content: str = "Raid night is Thursdays.", *, bot: bool = False):
     )
 
 
-def _menu(run_learn, *, staff_ids: set[str] | None = None, bot_name: str = "Kimi"):
+def _menu(
+    run_learn,
+    *,
+    staff_ids: set[str] | None = None,
+    bot_name: str = "Kimi",
+    blocked_ids: frozenset[str] = frozenset(),
+):
     from commands.learn_cmd import register_learn_command
     from trust.resolver import TrustResolver
 
@@ -498,7 +504,17 @@ def _menu(run_learn, *, staff_ids: set[str] | None = None, bot_name: str = "Kimi
         regular_role_ids=set(),
         staff_ids=staff_ids if staff_ids is not None else {"999"},
     )
-    register_learn_command(cast(Any, bot), resolver, run_learn=run_learn, bot_name=bot_name)
+
+    async def is_blocked(user_id: str) -> bool:
+        return user_id in blocked_ids
+
+    register_learn_command(
+        cast(Any, bot),
+        resolver,
+        run_learn=run_learn,
+        is_blocked=is_blocked,
+        bot_name=bot_name,
+    )
     return added[0]
 
 
@@ -522,6 +538,16 @@ async def test_context_menu_refuses_non_staff() -> None:
     interaction = _Interaction(user_id=555)
     await menu.callback(cast(Any, interaction), cast(Any, _message()))
     assert interaction.response.sent == ["Staff only."]
+    assert not interaction.response.deferred
+
+
+@pytest.mark.asyncio
+async def test_context_menu_refuses_blocked_staff() -> None:
+    """Staff standing can arrive after a block; the block still wins here."""
+    menu = _menu(_never_runs, blocked_ids=frozenset({"999"}))
+    interaction = _Interaction(user_id=999)
+    await menu.callback(cast(Any, interaction), cast(Any, _message()))
+    assert interaction.response.sent == ["You can't use this right now."]
     assert not interaction.response.deferred
 
 

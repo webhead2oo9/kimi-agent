@@ -79,7 +79,7 @@ Input preparation is all-or-nothing. If a named attachment is unavailable, a pat
 
 ## Recovery, steering, and cancellation
 
-After every completed tool batch, the worker stores its conversation checkpoint, provider state, current plan, and event cursor. On startup, interrupted workers are requeued. Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the original total deadline. Only one worker may resume a given workspace at a time.
+After every completed tool batch, the worker stores its conversation checkpoint, provider state, current plan, and event cursor. On startup, interrupted workers are requeued. When the scheduler claims a queued or requeued task whose owner has since been blocked, it finishes the task as cancelled instead of running it; a task already running is not interrupted by a block and ends on its own. Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the original total deadline. Only one worker may resume a given workspace at a time.
 
 Members can cancel with `/stop`, or by sending a bot-directed message containing exactly `stop`, `cancel`, or `abort` (case-insensitive). That lane runs before normal turn admission and cancels both the foreground response and any coding work in the current root. `/stop scope:all` covers all of that member's active work. Partial workspace changes are preserved so they can be inspected or resumed later.
 

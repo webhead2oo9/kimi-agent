@@ -1094,6 +1094,3 @@ class Settings(BaseSettings):
     @property
     def kimi_module_list(self) -> tuple[str, ...]:
         return tuple(name.strip() for name in self.kimi_modules.split(",") if name.strip())
-
-
-settings = Settings()

@@ -11,6 +11,7 @@ import pytest
 from skills.loader import _parse_guild_ids, load_skill
 import skills.manager as manager
 from skills.registration import reload_all_skill_tools
+from tests.helpers import make_settings
 from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
@@ -103,7 +104,13 @@ tools:
             encoding="utf-8",
         )
         reg = ToolRegistry()
-        reload_all_skill_tools(store, reg, secrets={}, workspace_base_dir=store)
+        reload_all_skill_tools(
+            store,
+            reg,
+            secrets={},
+            workspace_base_dir=store,
+            settings=make_settings(),
+        )
         assert reg.has_tool("still_available")
 
 
@@ -577,7 +584,13 @@ tools:
             encoding="utf-8",
         )
         reg = ToolRegistry()
-        reload_all_skill_tools(store, reg, secrets={}, workspace_base_dir=store)
+        reload_all_skill_tools(
+            store,
+            reg,
+            secrets={},
+            workspace_base_dir=store,
+            settings=make_settings(),
+        )
         assert reg.has_tool("still_available")
 
         bad_skill = store / "bad"
@@ -599,7 +612,13 @@ tools:
         )
 
         # Does NOT raise; the bad skill is skipped, the good tool survives.
-        reload_all_skill_tools(store, reg, secrets={}, workspace_base_dir=store)
+        reload_all_skill_tools(
+            store,
+            reg,
+            secrets={},
+            workspace_base_dir=store,
+            settings=make_settings(),
+        )
         assert reg.has_tool("still_available")
         assert not reg.has_tool("broken_tool")
 
@@ -619,7 +638,13 @@ tools:
             encoding="utf-8",
         )
 
-        reload_all_skill_tools(store, reg, secrets={}, workspace_base_dir=store)
+        reload_all_skill_tools(
+            store,
+            reg,
+            secrets={},
+            workspace_base_dir=store,
+            settings=make_settings(),
+        )
         assert reg.has_tool("still_available")
         assert not reg.has_tool("broken_tool")
 
@@ -654,7 +679,13 @@ def test_skill_tool_without_min_tier_defaults_to_staff() -> None:
             encoding="utf-8",
         )
         reg = ToolRegistry()
-        reload_all_skill_tools(store, reg, secrets={}, workspace_base_dir=store)
+        reload_all_skill_tools(
+            store,
+            reg,
+            secrets={},
+            workspace_base_dir=store,
+            settings=make_settings(),
+        )
 
         assert reg.has_tool("honk")
         member_tools = [t.name for t in reg.get_tools_for_tier(TrustTier.MEMBER, set())]
@@ -692,6 +723,7 @@ def test_secret_backed_skill_tool_is_forced_to_staff() -> None:
             reg,
             secrets={"API_KEY": "test-secret"},
             workspace_base_dir=store,
+            settings=make_settings(),
         )
 
         member_tools = [t.name for t in reg.get_tools_for_tier(TrustTier.MEMBER, set())]

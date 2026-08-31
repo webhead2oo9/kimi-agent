@@ -10,6 +10,7 @@ from evals.run import plan_matrix
 from evals.scenario import Expect, Scenario
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse
+from tests.helpers import make_settings
 from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
@@ -145,7 +146,8 @@ def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_
         out=str(tmp_path),
         dry_run=False,
     )
-    assert asyncio.run(evals_run._run(args)) == 0
+    settings = make_settings()
+    assert asyncio.run(evals_run._run(args, settings)) == 0
 
     report = (tmp_path / "report.md").read_text()
     assert "Candidate tokens: 10 | Baseline tokens: 10" in report
@@ -171,7 +173,7 @@ def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_
         "build_eval_provider",
         lambda spec: (_ for _ in ()).throw(AssertionError("dry-run built a model provider")),
     )
-    assert asyncio.run(evals_run._run(args)) == 0
+    assert asyncio.run(evals_run._run(args, settings)) == 0
     plan = capsys.readouterr().out
     assert "Scenarios: staff-code" in plan
     assert "regular-code" not in plan
@@ -179,4 +181,4 @@ def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_
     assert identities == []
 
     monkeypatch.setattr(evals_run, "load_scenarios", lambda path: [regular])
-    assert asyncio.run(evals_run._run(args)) == 2
+    assert asyncio.run(evals_run._run(args, settings)) == 2

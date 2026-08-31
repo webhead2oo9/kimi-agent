@@ -3631,8 +3631,10 @@ def build_app(settings: Settings) -> KimiApplication:
     # of it is captured into the config objects built below. The file wins over
     # .env on purpose: it is the operator's deliberate edit, so environment
     # precedence would make that edit silently do nothing
-    # (config/operator_settings.py).
-    apply_operator_settings(settings)
+    # (config/operator_settings.py). The instance directory is named
+    # explicitly: the process-wide default still points at the checkout here,
+    # and reading the overlay from there ignored every production settings.md.
+    apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
     inherited_settings_values = MappingProxyType(
         {
             field: tuple(value) if isinstance(value, list) else value

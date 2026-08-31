@@ -41,6 +41,18 @@ _SANDBOX_SKIP_REASONS = (
     "requires a working production Linux Bubblewrap sandbox",
     "libseccomp not available on this host",
 )
+# Host-shape conditions in the same files that are NOT sandbox failures and
+# must stay skips even under the flag. tests/test_sandbox_required.py asserts
+# every skip literal in the sandbox modules lands in one of these two tuples.
+_HOST_SHAPE_SKIP_REASONS = (
+    "symlink creation unavailable on this host",
+    "POSIX execute-bit semantics",
+    "owned-tree removal is fd-relative (dir_fd/O_DIRECTORY), POSIX only",
+    "POSIX PATH_MAX permits this depth",
+    "cleanup path uses os.killpg",
+    "host has no system Python package dirs to mask",
+    "KIMI_REQUIRE_SANDBOX_TESTS=1 is not set",
+)
 _REQUIRE_SANDBOX_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
 
 

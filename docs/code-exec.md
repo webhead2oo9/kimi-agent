@@ -219,17 +219,18 @@ An incomplete netns configuration fails settings validation. A complete setup wh
 Before exposing the tool:
 
 1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`
-   with the same `ENV_FILE` (and `RUNTIME_ENV`, if the unit sets one) the
-   service uses; the operator `settings.md` overlay is applied the way startup
-   applies it. It builds the profile startup
-   builds from your `CODE_EXEC_*` and `WORKSPACE_DIR` settings, runs the
-   prerequisite checks in startup's order, and names the first one that
-   fails; exit status 0 means a jailed process actually started with that
-   profile (including the network legs of `netns` or `host`). Then run the
-   live-jail tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, under which any skip
-   in those files is a failure:
+   with the same `ENV_FILE` the service uses. The unit's second
+   `EnvironmentFile` (`runtime.env` under the config home) and the operator
+   `settings.md` overlay are applied the way startup applies them. The probe
+   builds the profile startup builds from your `CODE_EXEC_*` and
+   `WORKSPACE_DIR` settings, runs the prerequisite checks in startup's order,
+   and names the first one that fails; exit status 0 means a jailed process
+   actually started with that profile (including the network legs of `netns`
+   or `host`). Then run the live-jail tests with
+   `KIMI_REQUIRE_SANDBOX_TESTS=1`, under which a sandbox-gate skip in those
+   files is a failure:
    `KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py`.
-   CI runs the same job on a provisioned `ubuntu-latest` runner
+   CI runs the same job on a provisioned `ubuntu-24.04` runner
    (`.github/workflows/ci.yml`, job `sandbox`).
 2. Confirm `run_code` appears in the startup capability summary at the tier you selected.
 3. Run an offline profile and confirm network connections fail.

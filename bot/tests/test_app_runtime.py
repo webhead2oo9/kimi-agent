@@ -845,3 +845,38 @@ async def test_first_init_restores_global_model_selection(
     assert app.provider_manager.active_chat_model == "stub-model"
     assert app.bot.tree.get_command("models") is not None
     await app.database.close()
+
+
+def test_build_app_reads_the_operator_overlay_from_the_configured_instance_dir(
+    tmp_path, monkeypatch
+):
+    """build_app applied settings.md before set_default_config_dir ran, so the
+    overlay was read from the checkout and a production CONFIG_DIR's file was
+    silently ignored. Pin the explicit config_dir handoff."""
+    from pathlib import Path as _Path
+
+    import app.runtime as app_runtime
+    from config.settings import Settings
+    from tests.helpers import StubProviderManager
+
+    recorded: dict = {}
+
+    def record_overlay(settings, *, config_dir=None):
+        recorded["config_dir"] = config_dir
+        return []
+
+    monkeypatch.setattr(app_runtime, "apply_operator_settings", record_overlay)
+    monkeypatch.setattr(
+        app_runtime, "build_provider_manager", lambda settings: StubProviderManager(settings)
+    )
+    config_dir = tmp_path / "instance-config"
+    config_dir.mkdir()
+    app_runtime.build_app(
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            model_api_key="key",
+            config_dir=str(config_dir),
+        )
+    )
+
+    assert recorded["config_dir"] == _Path(str(config_dir)).resolve()

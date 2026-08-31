@@ -54,11 +54,18 @@ def _merge_runtime_env() -> str | None:
     """
 
     raw = os.environ.get("RUNTIME_ENV")
-    if not raw:
-        return None
-    runtime_env = Path(raw)
+    if raw:
+        runtime_env = Path(raw)
+    else:
+        # The shipped unit consumes this file via EnvironmentFile= without
+        # exporting a RUNTIME_ENV variable, so default the way
+        # scripts/preflight does rather than silently probing without it.
+        config_home = os.environ.get(
+            "KIMI_CONFIG_HOME", str(Path.home() / ".config" / "kimi-agent")
+        )
+        runtime_env = Path(config_home) / "runtime.env"
     if not runtime_env.is_file():
-        return f"RUNTIME_ENV={runtime_env} does not exist; probing without it"
+        return f"no runtime.env overlay ({runtime_env} absent)"
     from dotenv import dotenv_values
 
     values = dotenv_values(runtime_env, interpolate=False)
@@ -107,8 +114,8 @@ def main() -> int:
 
     # Startup layers the operator settings.md over the environment before any
     # config is captured (app/runtime.py:build_app); the probe must certify the
-    # same layered profile.
-    from config.operator_settings import apply_operator_settings
+    # same layered profile, from the same instance directory.
+    from config.operator_settings import OperatorSettingsError, apply_operator_settings
 
     # The probe mirrors the gate on purpose, so it reads the gate's own helpers
     # rather than re-deriving them and drifting.
@@ -118,7 +125,11 @@ def main() -> int:
     from skills.registration import build_script_sandbox_limits
     from skills.sandbox import SandboxUnavailableError, validate_sandbox_runtime
 
-    overlaid = apply_operator_settings(settings)
+    try:
+        overlaid = apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
+    except OperatorSettingsError as exc:
+        print(f"FAIL settings.md: {exc}")
+        return 2
     config = build_sandbox_config(settings)
     skill_limits = build_script_sandbox_limits(settings)
     euid = os.geteuid() if hasattr(os, "geteuid") else None
@@ -138,12 +149,17 @@ def main() -> int:
 
         return check
 
+    workspace_root_missing = False
+
     def workspace_row() -> tuple[bool, str]:
         # Deliberately non-creating: startup makes this directory as the
         # service user, and a diagnostic run from the wrong account must not
-        # plant a 0700 root it cannot use.
+        # plant a 0700 root it cannot use. When it is missing, main() also
+        # skips the start probe, whose own execute check would create it.
+        nonlocal workspace_root_missing
         root = Path(config.workspace_probe_root)
         if not root.is_dir():
+            workspace_root_missing = True
             return False, f"{root} does not exist; start the bot once or create it as its user"
         st = root.stat()
         detail = f"{root} uid={st.st_uid} mode={stat_module.filemode(st.st_mode)}"
@@ -188,8 +204,7 @@ def main() -> int:
         except OSError as exc:
             return f"<unreadable: {exc}>"
 
-    if runtime_env_note:
-        print(f"     {runtime_env_note}")
+    print(f"     {runtime_env_note}")
     if overlaid:
         print(f"     settings.md overlay applied: {', '.join(sorted(overlaid))}")
     print(
@@ -227,6 +242,12 @@ def main() -> int:
         f"DBUS_SESSION_BUS_ADDRESS={launch_env.get('DBUS_SESSION_BUS_ADDRESS', '')}"
     )
     print(f"     user namespaces: {_userns_sysctls()}")
+
+    if workspace_root_missing:
+        # sandbox_available() would mkdir the missing root as this user, which
+        # is exactly what the row above refused to do.
+        print("FAIL not running the start probe: the workspace root is missing")
+        return 1
 
     # The real gate, with its debug logging routed to stderr so the start
     # probe's own failure text (bwrap, prlimit, systemd-run) is not swallowed.

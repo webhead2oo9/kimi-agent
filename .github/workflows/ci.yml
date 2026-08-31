@@ -229,6 +229,7 @@ jobs:
         run: uv run python -m scripts.sandbox_probe
 
       - name: Live sandbox tests
+        id: live-tests
         env:
           KIMI_REQUIRE_SANDBOX_TESTS: "1"
         run: >-
@@ -239,13 +240,18 @@ jobs:
           tests/test_skill_sandbox.py
 
       # TEMPORARY: diagnose why the skill jail's execvp of the venv interpreter
-      # failed on this runner. Remove once the cause is fixed.
+      # failed on this runner. Remove once the cause is fixed. Runs only when
+      # the test step itself failed, and its own exit must not move the job's
+      # failure annotation, hence continue-on-error. ScriptSandboxLimits()
+      # defaults are deliberate here: this asks an execvp question, not a
+      # limits question.
       - name: Diagnose skill jail interpreter (temporary)
-        if: failure()
+        if: failure() && steps.live-tests.conclusion == 'failure'
+        continue-on-error: true
         shell: bash
         run: |
           echo "--- venv layout ---"
-          ls -la .venv/bin/ | head -12
+          ls -la .venv/bin/ | head -12 || true
           readlink -f .venv/bin/python3 || true
           echo "--- runtime mounts as the sandbox computes them ---"
           uv run python - <<'PY'

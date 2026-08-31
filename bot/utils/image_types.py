@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Callable
 from io import BytesIO
 import mimetypes
 import warnings
@@ -105,11 +104,6 @@ def structurally_valid_image_media_type(payload: bytes) -> str | None:
     if not validator(payload):
         return None
     return media_type
-
-
-# Bound at module level so the mapping cannot be rebuilt per call and so the
-# key set is a testable constant.
-_CONTAINER_VALIDATORS: dict[str, Callable[[bytes], bool]]
 
 
 def _reasonable_dimensions(width: int, height: int) -> bool:
@@ -348,6 +342,16 @@ def _valid_webp_image_chunk(chunk_type: bytes, data: bytes) -> bool:
     return _reasonable_dimensions(width, height)
 
 
+# Bound immediately after the validators it names, so the mapping exists
+# for any module-level caller and cannot be rebuilt per call.
+_CONTAINER_VALIDATORS = {
+    "image/png": _valid_png_container,
+    "image/jpeg": _valid_jpeg_container,
+    "image/gif": _valid_gif_container,
+    "image/webp": _valid_webp_container,
+}
+
+
 def supported_image_media_type(value: str | None) -> str | None:
     if not value:
         return None
@@ -376,11 +380,3 @@ def normalize_image_data_url(value: str, media_type: str | None = None) -> tuple
     if sniffed is None:
         return value, supported_image_media_type(media_type) or media_type
     return f"data:{sniffed};base64,{payload}", sniffed
-
-
-_CONTAINER_VALIDATORS = {
-    "image/png": _valid_png_container,
-    "image/jpeg": _valid_jpeg_container,
-    "image/gif": _valid_gif_container,
-    "image/webp": _valid_webp_container,
-}

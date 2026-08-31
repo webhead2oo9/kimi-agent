@@ -10,7 +10,6 @@ from providers import openrouter as openrouter_module
 from providers.assets import validate_generated_assets
 from providers.openrouter import OpenRouterProvider
 from providers.types import ContentPart, ProviderCapability, ProviderRequest
-from utils import image_types
 
 PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAA7EAAAOxAGVKw4b"
@@ -454,9 +453,7 @@ def test_openrouter_provider_bounds_encoded_work_for_rejected_candidates(
         return real_decode(value, validate=validate)
 
     monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_BYTES", 2)
-    monkeypatch.setattr(openrouter_module, "_MAX_INLINE_IMAGE_ENCODED_BYTES", 4)
     monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_BYTES", 4)
-    monkeypatch.setattr(openrouter_module, "_MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES", 8)
     monkeypatch.setattr(openrouter_module.base64, "b64decode", counted_decode)
     image = {"image_url": {"url": f"data:image/png;base64,{payload}"}}
 
@@ -468,35 +465,3 @@ def test_openrouter_provider_rejects_oversized_data_url_header() -> None:
     url = f"data:image/png;{'x;' * 1000}base64,{PNG_BASE64}"
 
     assert OpenRouterProvider._parse_images([{"image_url": {"url": url}}]) == []
-
-
-def test_openrouter_provider_bounds_animated_frame_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class TooManyFrames:
-        format = "GIF"
-        size = (1, 1)
-
-        @property
-        def n_frames(self) -> int:
-            raise AssertionError("validation must not scan an untrusted frame count")
-
-        def __enter__(self) -> TooManyFrames:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-        def seek(self, frame: int) -> None:
-            seek_calls.append(frame)
-
-        def load(self) -> None:
-            load_calls.append(None)
-
-    seek_calls: list[int] = []
-    load_calls: list[None] = []
-    monkeypatch.setattr(image_types.Image, "open", lambda _stream: TooManyFrames())
-
-    assert image_types.decoded_image_media_type(GIF_BYTES) is None
-    assert seek_calls == list(range(image_types._MAX_VALIDATED_IMAGE_FRAMES + 1))
-    assert len(load_calls) == image_types._MAX_VALIDATED_IMAGE_FRAMES

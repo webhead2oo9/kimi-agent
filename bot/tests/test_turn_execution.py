@@ -8,6 +8,7 @@ call to reproduce.
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,7 +47,10 @@ from providers.types import (
 # The pre-moderation validation drops anything that does not fully decode, so
 # turn fixtures need a real image, not a signature.
 from tests.helpers import (
+    VALID_JPEG_BYTES,
     VALID_PNG_BASE64 as _VALID_PNG_B64,
+    VALID_PNG_BYTES,
+    corrupt_png_idat_stream,
     StubContextManager,
     StubProvider,
     make_turn_dependencies,
@@ -253,15 +257,12 @@ async def test_generated_assets_validate_before_moderation_sees_them(tmp_path: P
     text reply closed at the moderation backend nor reach the writer; and the
     loop's synthesized "Generated image attached." must not survive as a false
     claim when nothing was attached."""
-    from tests.helpers import corrupt_png_idat_stream, VALID_PNG_BYTES
-    import base64 as _base64
-
     context = ConversationContext(key="guild:100:main")
     moderation = RecordingModerationService()
     bad_asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64=_base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
+        data_base64=base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
         suggested_filename="bad.png",
     )
 
@@ -294,15 +295,12 @@ async def test_validation_canonicalizes_media_types_before_moderation(tmp_path: 
     """A valid image with a wrong provider label keeps its canonical type all
     the way through: an equal-length validated list must still replace the
     original, or moderation and the writer see the mislabeled asset."""
-    from tests.helpers import VALID_JPEG_BYTES
-    import base64 as _base64
-
     context = ConversationContext(key="guild:100:main")
     moderation = RecordingModerationService()
     mislabeled = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64=_base64.b64encode(VALID_JPEG_BYTES).decode("ascii"),
+        data_base64=base64.b64encode(VALID_JPEG_BYTES).decode("ascii"),
         suggested_filename="photo.png",
     )
 
@@ -326,21 +324,18 @@ async def test_validation_canonicalizes_media_types_before_moderation(tmp_path: 
 async def test_partial_validation_drop_recomputes_the_synthesized_claim(tmp_path: Path) -> None:
     """Two assets, one survivor: a synthesized "Generated images attached."
     must become the singular claim rather than overpromise."""
-    from tests.helpers import VALID_PNG_BYTES, corrupt_png_idat_stream
-    import base64 as _base64
-
     context = ConversationContext(key="guild:100:main")
     moderation = RecordingModerationService()
     good = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64=_base64.b64encode(VALID_PNG_BYTES).decode("ascii"),
+        data_base64=base64.b64encode(VALID_PNG_BYTES).decode("ascii"),
         suggested_filename="good.png",
     )
     bad = GeneratedAsset(
         kind="image",
         media_type="image/png",
-        data_base64=_base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
+        data_base64=base64.b64encode(corrupt_png_idat_stream(VALID_PNG_BYTES)).decode("ascii"),
         suggested_filename="bad.png",
     )
 

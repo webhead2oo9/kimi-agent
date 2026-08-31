@@ -599,10 +599,12 @@ history so tool-use continuations can echo provider state back unchanged.
 ## Images
 
 Discord image attachments are stored under `ATTACHMENT_STORE_DIR` and enter the
-conversation as image content parts. A message that advertises an image whose
-bytes cannot be read (unsupported type, over the size limit, or an empty
-download) answers with a re-upload prompt instead of running the provider; the
-exchange is not persisted to the transcript, in both guild and personal chat. `IMAGE_DETAIL` accepts `low`, `high`,
+conversation as image content parts.
+
+A message that advertises an image whose bytes cannot be read (unsupported
+type, over the size limit, or an empty download) answers with a re-upload
+prompt instead of running the provider; the exchange is not persisted to the
+transcript, in both guild and personal chat. `IMAGE_DETAIL` accepts `low`, `high`,
 `original`, or `auto`, set in `.env` or the `<CONFIG_DIR>/settings.md` overlay;
 an unknown value falls back to `auto`.
 

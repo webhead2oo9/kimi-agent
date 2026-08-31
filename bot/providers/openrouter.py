@@ -22,8 +22,6 @@ log = logging.getLogger(__name__)
 _MAX_INLINE_IMAGES = 8
 _MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_INLINE_IMAGE_BYTES = 25 * 1024 * 1024
-_MAX_INLINE_IMAGE_ENCODED_BYTES = ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4
-_MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
 _MAX_INLINE_IMAGE_HEADER_CHARS = 1024
 
 
@@ -177,10 +175,13 @@ class OpenRouterProvider(OpenAIChatProvider):
                 log.warning("Skipping non-base64 OpenRouter image data URL")
                 continue
             encoded_length = len(url) - comma_index - 1
-            if encoded_length > _MAX_INLINE_IMAGE_ENCODED_BYTES:
+            # Derived from the live byte caps so a test (or reload) that
+            # adjusts the base value cannot leave a stale encoded bound.
+            if encoded_length > ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4:
                 log.warning("Skipping OpenRouter image %d: encoded data exceeds byte cap", index)
                 continue
-            if processed_encoded_chars + encoded_length > _MAX_TOTAL_INLINE_IMAGE_ENCODED_BYTES:
+            total_encoded_cap = ((_MAX_TOTAL_INLINE_IMAGE_BYTES + 2) // 3) * 4
+            if processed_encoded_chars + encoded_length > total_encoded_cap:
                 log.warning("Stopping OpenRouter image parsing at the aggregate encoded-data cap")
                 break
             # Charge every bounded candidate before validating base64. Rejected
@@ -198,8 +199,12 @@ class OpenRouterProvider(OpenAIChatProvider):
                 prefix = base64.b64decode(data_base64[:32], validate=False)
             except binascii.Error, ValueError:
                 prefix = b""
-            decoded_length = (encoded_length * 3) // 4 - (
-                2 if data_base64.endswith("==") else 1 if data_base64.endswith("=") else 0
+            # max(0, ...) keeps the running budget monotonic: a degenerate
+            # padding-only payload would otherwise subtract from it.
+            decoded_length = max(
+                0,
+                (encoded_length * 3) // 4
+                - (2 if data_base64.endswith("==") else 1 if data_base64.endswith("=") else 0),
             )
             if decoded_length > _MAX_INLINE_IMAGE_BYTES:
                 log.warning("Skipping OpenRouter image %d: decoded data exceeds byte cap", index)

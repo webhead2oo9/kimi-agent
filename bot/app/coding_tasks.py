@@ -662,6 +662,14 @@ class CodingTaskService:
                     completed.result()
             if pending:
                 logger.warning("Coding task %s cancellation cleanup is still running", task_id)
+            else:
+                # A task cancelled before its first step never runs any of the
+                # worker body, so nothing marked the row terminal; without this
+                # it stays a workerless 'cancelling' claim until restart. The
+                # pending-delivery sweeper announces the settled row.
+                refreshed = await self._store.get_task(task_id)
+                if refreshed is not None and refreshed.status in ACTIVE_TASK_STATUSES:
+                    await self._store.finish(task_id, CodingTaskStatus.CANCELLED)
         else:
             refreshed = await self._store.get_task(task_id)
             if refreshed is not None and refreshed.status == CodingTaskStatus.CANCELLED:
@@ -840,11 +848,22 @@ class CodingTaskService:
             except BaseException:
                 # An unanswered block question must not orphan a running row
                 # with no worker; put the claim back and surface the failure.
-                await self._store.release_claim(task.id)
+                # The compensating write shares the database with the failed
+                # read, so it gets its own guard: a second failure is logged
+                # rather than allowed to mask the original error.
+                try:
+                    released = await self._store.release_claim(task.id)
+                    if not released:
+                        refreshed = await self._store.get_task(task.id)
+                        if refreshed is not None and refreshed.cancel_requested:
+                            await self._store.finish(task.id, CodingTaskStatus.CANCELLED)
+                except Exception:
+                    logger.exception("Could not release the claim on coding task %s", task.id)
                 raise
             if not blocked:
                 refreshed = await self._store.get_task(task.id)
                 if refreshed is None:
+                    logger.warning("Coding task %s vanished between claim and start", task.id)
                     continue
                 if refreshed.cancel_requested:
                     # A /stop or /privacy cancel landed during the block check,
@@ -854,6 +873,11 @@ class CodingTaskService:
                     await self._store.finish(task.id, CodingTaskStatus.CANCELLED)
                     continue
                 if refreshed.status is not CodingTaskStatus.RUNNING:
+                    logger.warning(
+                        "Dropping coding task %s claimed at unexpected status %s",
+                        task.id,
+                        refreshed.status.value,
+                    )
                     continue
                 return refreshed
             logger.info("Cancelling coding task %s: user %s is blocked", task.id, task.user_id)

@@ -365,7 +365,7 @@ class CodingTaskStore:
             await self._append_event_conn(conn, task_id, "started", {}, now)
         return await self.get_task(task_id)
 
-    async def release_claim(self, task_id: str) -> None:
+    async def release_claim(self, task_id: str) -> bool:
         """Put a just-claimed task back in the queue.
 
         For the window between claim_next() and worker registration where the
@@ -376,7 +376,7 @@ class CodingTaskStore:
 
         now = time.time()
         async with self._db.write_transaction() as conn:
-            await conn.execute(
+            changed = await conn.execute(
                 """
                 UPDATE coding_tasks
                 SET status = 'queued', updated_at = ?, heartbeat_at = ?
@@ -384,7 +384,13 @@ class CodingTaskStore:
                 """,
                 (now, now, task_id),
             )
+            if changed.rowcount != 1:
+                # The row moved (a cancel landed, or privacy deletion removed
+                # it); recording a release that did not happen would falsify
+                # the durable event log.
+                return False
             await self._append_event_conn(conn, task_id, "claim_released", {}, now)
+        return True
 
     async def bind_handoff_target(
         self,

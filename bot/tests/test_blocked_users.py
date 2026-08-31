@@ -244,10 +244,15 @@ async def test_the_guild_gate_sits_directly_before_the_stop_check(
     """Positive control: an unblocked user passes the gate and reaches the
     very next statement, so the refusal above is the gate and not some other
     failure of the fake message."""
-    app, store = await _blocked_app(tmp_path, monkeypatch)
-    app.blocked_user_store = cast(Any, _BlockedStore(set()))
+    app, _ = await _blocked_app(tmp_path, monkeypatch)
+    control_store = _BlockedStore(set())
+    app.blocked_user_store = cast(Any, control_store)
     try:
         with pytest.raises(_ReachedPastGate):
             await _via_guild_message(app, monkeypatch)
     finally:
         await app._close_resources()
+
+    # The sentinel alone proves the stop check ran; this proves the gate was
+    # the thing consulted immediately before it.
+    assert control_store.asked == [str(BLOCKED_USER_ID)]

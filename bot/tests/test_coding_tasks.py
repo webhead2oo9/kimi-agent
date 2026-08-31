@@ -190,6 +190,86 @@ async def test_claim_cancels_a_queued_task_whose_user_is_now_blocked(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_queue_cancel_arms_the_delivery_sweeper(tmp_path) -> None:
+    """A row cancelled straight from the queue reaches no worker; the durable
+    finished event and final_pending state are what let the sweeper announce
+    it when the immediate notify fails."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-queue-cancel")
+
+        assert await store.request_cancel(task.id, reason="stop") is True
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_cancel_arms_the_delivery_sweeper(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-recover-cancel")
+        claimed = await store.claim_next()
+        assert claimed is not None
+        await store.request_cancel(task.id, reason="stop")
+
+        await store.recover_interrupted()
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_a_hanging_block_check_settles_the_claim(tmp_path) -> None:
+    """The claim is running with no registered worker while the block check
+    awaits; /stop must terminalize it rather than leave a workerless
+    cancelling row until restart."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-hang")
+        gate = asyncio.Event()
+
+        async def hanging_user_blocked(_user_id: str) -> bool:
+            await gate.wait()
+            return False
+
+        service = _start_service(store, tmp_path, user_blocked=hanging_user_blocked)
+        service._runtime.settings.coding_stop_cleanup_wait_seconds = 1.0
+        claim = asyncio.create_task(service._claim_next_runnable())
+        await asyncio.sleep(0.05)
+
+        assert await service.cancel_task(task.id, reason="stop") is True
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+
+        gate.set()
+        assert await claim is None
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_claim_settles_a_cancel_that_landed_during_the_block_check(tmp_path) -> None:
     """A /stop between claim and block answer must not leave a workerless
     cancelling row for restart recovery."""

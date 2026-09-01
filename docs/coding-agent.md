@@ -39,7 +39,7 @@ The foreground assistant calls `start_coding_task` with the objective, acceptanc
 
 The worker does not start until the Discord boundary has delivered that acknowledgement and created the initial status message. Workers are globally bounded, and only one writer may hold a workspace at a time, so extra tasks wait in FIFO order.
 
-Once the queue succeeds, the foreground assistant is done. Progress and completion arrive later through the durable delivery path.
+Once the queue succeeds, the foreground assistant is done. Progress and completion arrive later through the durable delivery path in `app/coding_delivery.py`.
 
 ## Status messages and visibility
 

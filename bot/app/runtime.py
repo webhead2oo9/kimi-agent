@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -23,12 +23,10 @@ from agent.attachments import (
     collect_turn_images,
     turn_has_image_input,
 )
-from agent.backfill import clean_message_text, message_source_timestamp, strip_chunk_marker
+from agent.backfill import clean_message_text, message_source_timestamp
 from workspace import WorkspaceKey
-from agent.auto_handoff import build_auto_handoff_request
 from config.fragments.channel_pins import (
     filter_pins_to_searchable,
-    load_channel_auto_thread,
     load_channel_blocked_tools,
     load_channel_pinned_tools,
 )
@@ -43,10 +41,7 @@ from config.fragments.guild_config import (
 from agent.context import ContextManager
 from utils.asyncio import await_uncancellable
 from config.fragments.tool_config import load_tool_configs
-from config.fragments.tool_policy import (
-    load_blocked_tools,
-    load_global_blocked_tools,
-)
+from config.fragments.tool_policy import load_global_blocked_tools
 from agent.core import run_conversation
 from agent.turn import (
     TurnPreparationInput,
@@ -67,6 +62,11 @@ from app.conversation_routing import (
 )
 from app.consent import PrivacyConsentGate
 from app.consent import build_consent_embed
+from app.coding_delivery import (
+    CodingDelivery,
+    CodingDeliveryConfig,
+    CodingTaskController,
+)
 from app.foreground_turn import (
     ForegroundTurnInvocation,
     ForegroundTurnRunner,
@@ -77,11 +77,10 @@ from app.foreground_turn import (
 from app.guild_turn_adapter import GuildMessageTurnAdapter
 from app.user_app_turn_adapter import UserAppInteractionTurnAdapter
 from app.user_app_consent import UserAppConsentView
-from app.coding_jobs import CodingJobManager
-from app.coding_tasks import CodingTaskRuntime, CodingTaskService
 from app.modules import ModuleRuntimeBase, module_capabilities
 from app.proposals import ConfigProposalService, ProposalHost, ROUTER_NAME
-from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
+from app.root_locks import RootLockPool
+from app.thread_handoff_boundary import ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
 from app.memory import MemoryManager
 from app.moderation import build_moderation_service
@@ -135,22 +134,16 @@ from config.operator_settings import apply_operator_settings, settings_values
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
-    AttachmentDeliveryPlan,
-    apply_attachment_delivery_notice,
-    attachment_delivery_notice,
     can_send_reply,
-    chunk_message,
     is_allowed_guild_interaction,
     is_eligible_to_respond,
     should_respond,
     strip_mention,
-    suppress_link_previews,
 )
 from discord_adapter.interaction_io import send_interaction_status
 from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
-from moderation.types import Direction
 from storage.auto_retain import AutoRetainStore
 from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from providers.assets import write_generated_assets
@@ -161,13 +154,12 @@ from tools.learn import LearnTarget
 from storage.blocked_users import BlockedUserStore
 from storage.coding_tasks import (
     CodingTask,
-    CodingTaskStatus,
     CodingTaskStore,
 )
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
 from storage.module_commands import GuildCommandScopeStore
-from storage.conversations import OWNER_ONLY, ChannelMessageRecord, ConversationStore
+from storage.conversations import OWNER_ONLY, ConversationStore
 from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
 from storage.preferences import PreferenceStore
@@ -176,7 +168,6 @@ from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
 from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
-from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
 from tools.user_memory import set_user_memory_preference_store
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
@@ -209,12 +200,6 @@ log = logging.getLogger(__name__)
 
 GUILD_ACTIVATION_REFRESH_SECONDS = 5.0
 READY_EVENT_DRAIN_SECONDS = 5.0
-
-
-@dataclass(frozen=True)
-class _ModeratedCodingText:
-    text: str
-    blocked: bool = False
 
 
 @dataclass
@@ -378,8 +363,9 @@ class KimiApplication:
     image_distillation_store: ImageDistillationStore | None = None
     usage_store: UsageStore | None = None
     video_session_store: VideoSessionStore | None = None
-    coding_task_store: CodingTaskStore | None = None
-    coding_tasks: CodingTaskService | None = None
+    _coding_task_controller: CodingTaskController | None = field(
+        default=None, init=False, repr=False
+    )
     _module_event_publisher: ModuleEventPublisher | None = None
     _module_interaction_runtime: InteractionRuntime | None = None
     privacy_deletion_store: PrivacyDeletionRequestStore | None = None
@@ -404,8 +390,7 @@ class KimiApplication:
     _transcript_retention_task: asyncio.Task | None = None
     _video_session_sweeper_task: asyncio.Task | None = None
     _guild_activation_refresh_task: asyncio.Task | None = None
-    context_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    _lock_refcounts: dict[str, int] = field(default_factory=dict)
+    root_locks: RootLockPool = field(default_factory=RootLockPool, init=False, repr=False)
     llm_semaphore: asyncio.Semaphore = field(init=False)
     turn_admission: TurnAdmissionController = field(init=False)
     turn_runner: ForegroundTurnRunner = field(init=False, repr=False)
@@ -465,6 +450,16 @@ class KimiApplication:
     @property
     def registry(self) -> ToolRegistry:
         return self.tools.registry
+
+    @property
+    def coding_task_store(self) -> CodingTaskStore | None:
+        controller = self._coding_task_controller
+        return controller.store if controller is not None else None
+
+    @property
+    def coding_tasks(self) -> CodingTaskController | None:
+        controller = self._coding_task_controller
+        return controller if controller is not None and controller.running else None
 
     def active_guilds(self) -> set[int]:
         """Guilds enabled by validated setup or the deployment allowlist.
@@ -714,9 +709,8 @@ class KimiApplication:
             log.warning("Timed out waiting for active operations during shutdown")
         await drain_confirmed_privacy_deletions()
         await stop_event_writer()
-        if self.coding_tasks is not None:
-            await self.coding_tasks.close()
-            self.coding_tasks = None
+        if self._coding_task_controller is not None:
+            await self._coding_task_controller.close()
         try:
             await self.tools.browser_service.close()
         except Exception:
@@ -1207,7 +1201,36 @@ class KimiApplication:
             self.provider_manager.set_active_chat_model(None)
         self.usage_store = UsageStore(self.database)
         self.video_session_store = VideoSessionStore(self.database)
-        self.coding_task_store = CodingTaskStore(self.database)
+        assert self.conversation_store is not None
+        assert self.usage_store is not None
+        coding_task_store = CodingTaskStore(self.database)
+        self._coding_task_controller = CodingTaskController(
+            settings=self.settings,
+            store=coding_task_store,
+            usage_store=self.usage_store,
+            provider_manager=self.provider_manager,
+            source_registry=self.registry,
+            tools=self.tools,
+            llm_semaphore=self.llm_semaphore,
+            privacy_barrier=self.privacy_barrier,
+            user_blocked=self._user_is_blocked,
+            delivery=CodingDelivery(
+                bot=self.bot,
+                store=coding_task_store,
+                conversation_store=self.conversation_store,
+                discord_gateway=self.discord_gateway,
+                workspace_locks=self.tools.workspace_locks,
+                root_locks=self.root_locks,
+                threads=self.threads,
+                moderation_service=self.moderation_service,
+                config=CodingDeliveryConfig(
+                    thread_handoff_enabled=self.settings.thread_handoff_enabled,
+                    thread_auto_handoff_enabled=self.settings.thread_auto_handoff_enabled,
+                    bot_name=self.settings.bot_name,
+                ),
+                strip_message_invocation=self._strip_message_invocation,
+            ),
+        )
         self.privacy_deletion_store = PrivacyDeletionRequestStore(self.database)
         self.user_memory_bank_state_store = UserMemoryBankStateStore(self.database)
         configure_bank_tracking = getattr(
@@ -1454,485 +1477,20 @@ class KimiApplication:
             )
 
     async def _init_coding_tasks(self) -> None:
-        model_config = self.provider_manager.model_config
-        coding_model = model_config.roles.coding if model_config is not None else None
-        sandbox_config = self.tools.code_sandbox_config
-        if not self.settings.coding_tasks_enabled:
-            log.info("Coding tasks disabled; CODING_TASKS_ENABLED is false")
-            return
-        if coding_model is None:
-            log.warning("Coding tasks requested but config/models.yaml assigns no coding role")
-            return
-        if sandbox_config is None:
-            log.warning("Coding tasks requested but the code sandbox is unavailable")
-            return
-        code_exec_guards = self.tools.code_exec_guards
-        if code_exec_guards is None:
-            log.warning("Coding tasks requested but code execution guards are unavailable")
-            return
-        assert self.usage_store is not None
-        self.coding_task_store = self.coding_task_store or CodingTaskStore(self.database)
-        jobs = CodingJobManager(
-            store=self.coding_task_store,
-            workspace_manager=self.tools.workspace_manager,
-            workspace_locks=self.tools.workspace_locks,
-            sandbox_config=sandbox_config,
-            max_seconds=self.settings.coding_job_max_seconds,
-            max_cpu_seconds=self.settings.coding_job_max_cpu_seconds,
-            runtime_guards=code_exec_guards,
-            usage_store=self.usage_store,
-            user_activity=self.privacy_barrier.activity,
-        )
-        self.coding_tasks = CodingTaskService(
-            CodingTaskRuntime(
-                settings=self.settings,
-                store=self.coding_task_store,
-                usage_store=self.usage_store,
-                provider_manager=self.provider_manager,
-                source_registry=self.registry,
-                jobs=jobs,
-                llm_semaphore=self.llm_semaphore,
-                compactor=self.provider_manager.build_compactor(self.llm_semaphore),
-                model_config=model_config,
-                notifier=self._publish_coding_task,
-                user_activity=self.privacy_barrier.activity,
-                user_blocked=self._user_is_blocked,
-                workspace_manager=self.tools.workspace_manager,
-                workspace_locks=self.tools.workspace_locks,
-                workspace_config=self.tools.workspace_config,
-                blocked_tools=load_blocked_tools,
-                tool_configs=load_tool_configs,
-            )
-        )
-        # Built-in lifecycle controls are authoritative if a plugin happened to
-        # claim one of their names before the database-backed service was ready.
-        self.registry.remove_tools(set(CODING_CONTROL_TOOLS))
-        init_coding_control_tools(self.registry, self.coding_tasks)
-        await self.coding_tasks.start()
-        log.info("Durable coding tasks enabled with model %s", coding_model)
+        controller = self._coding_task_controller
+        if controller is None:
+            raise RuntimeError("Coding task controller was not constructed during initialization")
+        await controller.start()
 
     async def _publish_coding_task(
         self,
         task: CodingTask,
         context: Any | None,
     ) -> None:
-        """Project durable task state onto one edited status and one final reply."""
-
-        # A worker completion, debounced milestone, and delivery retry can become
-        # ready together. Serialize them per task and refresh the durable row so
-        # a stale retry cannot send a second final response.
-        async with self._root_lock(f"coding-delivery:{task.id}"):
-            if self.coding_task_store is not None:
-                refreshed = await self.coding_task_store.get_task(task.id)
-                if refreshed is None:
-                    return
-                task = refreshed
-            await self._publish_coding_task_locked(task, context)
-
-    async def _publish_coding_task_locked(
-        self,
-        task: CodingTask,
-        context: Any | None,
-    ) -> None:
-
-        target_id = task.thread_id or task.channel_id
-        try:
-            channel = self.bot.get_channel(int(target_id))
-            if channel is None:
-                channel = await self.bot.fetch_channel(int(target_id))
-        except ValueError:
-            await self._mark_coding_delivery_permanent_failure(task, "Invalid Discord channel id")
-            log.warning("Invalid Discord channel for coding task %s", task.id)
-            return
-        except (discord.NotFound, discord.Forbidden) as exc:
-            await self._mark_coding_delivery_permanent_failure(
-                task,
-                f"Discord channel is unavailable ({type(exc).__name__})",
-            )
-            log.warning("Discord channel is unavailable for coding task %s", task.id)
-            return
-        except discord.HTTPException:
-            log.warning("Could not resolve Discord channel for coding task %s", task.id)
-            return
-        if not isinstance(channel, discord.TextChannel | discord.Thread):
-            await self._mark_coding_delivery_permanent_failure(
-                task,
-                "Discord delivery target is not a text channel or thread",
-            )
-            return
-        status_marker = self._coding_task_marker(task.id)
-        terminal = task.status in {
-            CodingTaskStatus.COMPLETED,
-            CodingTaskStatus.FAILED,
-            CodingTaskStatus.CANCELLED,
-            CodingTaskStatus.TIMED_OUT,
-        }
-        if terminal and task.final_discord_message_id is not None:
-            await self._delete_coding_status_message(channel, task, status_marker)
-            return
-        status_text = self._coding_status_text(task)
-        status_text = (await self._moderate_coding_text(task, status_text, status=True)).text
-        status_text = self._coding_status_wire_text(status_text)[:2000]
-        status_message: discord.Message | None = None
-        if task.status_discord_message_id:
-            try:
-                status_message = await channel.fetch_message(int(task.status_discord_message_id))
-                await status_message.edit(content=status_text)
-            except ValueError, discord.HTTPException:
-                status_message = None
-        if status_message is None:
-            status_message = await self._find_coding_delivery(channel, status_marker)
-            if status_message is not None:
-                with suppress(discord.HTTPException):
-                    await status_message.edit(content=status_text)
-                if self.conversation_store is not None and task.conversation_id is not None:
-                    await self.conversation_store.map_message_context(
-                        str(status_message.id), task.conversation_id, str(channel.id)
-                    )
-                if self.coding_task_store is not None:
-                    await self.coding_task_store.mark_status_message(
-                        task.id, str(status_message.id)
-                    )
-        if status_message is None:
-            try:
-                status_message = await channel.send(
-                    status_text,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except (discord.NotFound, discord.Forbidden) as exc:
-                await self._mark_coding_delivery_permanent_failure(
-                    task,
-                    f"Cannot send to Discord channel ({type(exc).__name__})",
-                )
-                log.warning("Cannot send coding status for task %s", task.id, exc_info=True)
-                return
-            except discord.HTTPException:
-                log.warning("Could not send coding status for task %s", task.id, exc_info=True)
-                return
-            if self.conversation_store is not None and task.conversation_id is not None:
-                await self.conversation_store.map_message_context(
-                    str(status_message.id), task.conversation_id, str(channel.id)
-                )
-            if self.coding_task_store is not None:
-                await self.coding_task_store.mark_status_message(task.id, str(status_message.id))
-
-        if terminal:
-            final_text = task.result_text.strip() or task.error_text.strip()
-            if not final_text:
-                final_text = f"Coding task `{task.id[:8]}` ended as **{task.status.value}**."
-            moderated_final = await self._moderate_coding_text(task, final_text, status=False)
-            final_text = self._coding_result_delivery_text(task.id, moderated_final.text)
-            legacy_marker = f"coding-result:{task.id}"
-            legacy_final = await self._find_coding_delivery(channel, legacy_marker)
-            if legacy_final is not None:
-                await self._persist_coding_final_messages(
-                    task,
-                    [legacy_final],
-                    channel_id=str(channel.id),
-                )
-                if self.coding_task_store is not None:
-                    await self.coding_task_store.mark_delivered(task.id, str(legacy_final.id))
-                await self._delete_coding_status_message(
-                    channel,
-                    task,
-                    status_marker,
-                    message=status_message,
-                )
-                return
-            delivery_channel = await self._coding_result_channel(task, channel, final_text)
-            delivery = task.checkpoint.get("delivery")
-            durable_output_files = (
-                delivery.get("output_files", []) if isinstance(delivery, dict) else []
-            )
-            durable_allowed_roots = (
-                delivery.get("allowed_file_roots", []) if isinstance(delivery, dict) else []
-            )
-            output_files = (
-                list(context.pending_output_files)
-                if context is not None
-                else [str(value) for value in durable_output_files]
-            )
-            allowed_roots: list[str | Path] = (
-                list(context.pending_allowed_file_roots)
-                if context is not None
-                else [str(value) for value in durable_allowed_roots]
-            )
-            if moderated_final.blocked:
-                output_files = []
-                allowed_roots = []
-            async with self._root_lock(task.root_key):
-                async with AsyncExitStack() as delivery_stack:
-                    if output_files:
-                        await delivery_stack.enter_async_context(
-                            self.tools.workspace_locks.activity(WorkspaceKey(task.workspace_key))
-                        )
-                    attachment_plan = await self._prepare_coding_attachment_delivery(
-                        task,
-                        delivery_channel,
-                        output_files=output_files,
-                        allowed_roots=allowed_roots,
-                    )
-                    prepared_text = apply_attachment_delivery_notice(
-                        final_text,
-                        attachment_plan,
-                        after_first_line=True,
-                    )
-                    recovered_final = await self._find_coding_result_delivery(
-                        delivery_channel,
-                        prepared_text,
-                        legacy_marker=legacy_marker,
-                    )
-                    if recovered_final:
-                        await self._persist_coding_final_messages(
-                            task,
-                            recovered_final,
-                            channel_id=str(delivery_channel.id),
-                        )
-                        if self.coding_task_store is not None:
-                            await self.coding_task_store.mark_delivered(
-                                task.id,
-                                str(recovered_final[0].id),
-                            )
-                        await self._delete_coding_status_message(
-                            channel,
-                            task,
-                            status_marker,
-                            message=status_message,
-                        )
-                        return
-                    sent = await self.discord_gateway.send_prepared_response(
-                        delivery_channel,
-                        prepared_text,
-                        attachment_plan,
-                    )
-                    if not sent or bool(getattr(sent, "delivery_failed", False)):
-                        if sent:
-                            await self._delete_coding_messages(list(sent))
-                        if bool(getattr(sent, "delivery_permanent", False)):
-                            error = str(
-                                getattr(sent, "delivery_error", "Discord permission failure")
-                            )
-                            await self._mark_coding_delivery_permanent_failure(task, error)
-                        return
-                    first = sent[0]
-                    await self._persist_coding_final_messages(
-                        task, list(sent), channel_id=str(delivery_channel.id)
-                    )
-                    if self.coding_task_store is not None:
-                        await self.coding_task_store.mark_delivered(task.id, str(first.id))
-                    await self._delete_coding_status_message(
-                        channel,
-                        task,
-                        status_marker,
-                        message=status_message,
-                    )
-
-    async def _prepare_coding_attachment_delivery(
-        self,
-        task: CodingTask,
-        channel: discord.TextChannel | discord.Thread,
-        *,
-        output_files: list[str],
-        allowed_roots: list[str | Path],
-    ) -> AttachmentDeliveryPlan:
-        delivery = task.checkpoint.get("delivery")
-        persisted = delivery.get("attachment_plan") if isinstance(delivery, dict) else None
-        limit, notice = self._attachment_plan_overrides(persisted)
-        plan = self.discord_gateway.prepare_attachment_delivery(
-            channel,
-            output_files=output_files,
-            allowed_file_roots=allowed_roots,
-            embed=None,
-            effective_limit_bytes=limit,
-            notice_text=notice,
-        )
-        if not output_files or persisted is not None or self.coding_task_store is None:
-            return plan
-
-        frozen = self._serialize_attachment_plan(plan)
-        stored = await self.coding_task_store.set_delivery_attachment_plan_if_absent(
-            task.id,
-            frozen,
-        )
-        if stored is None or stored == frozen:
-            return plan
-        stored_limit, stored_notice = self._attachment_plan_overrides(stored)
-        return self.discord_gateway.prepare_attachment_delivery(
-            channel,
-            output_files=output_files,
-            allowed_file_roots=allowed_roots,
-            embed=None,
-            effective_limit_bytes=stored_limit,
-            notice_text=stored_notice,
-        )
-
-    @staticmethod
-    def _serialize_attachment_plan(plan: AttachmentDeliveryPlan) -> dict[str, Any]:
-        return {
-            "effective_limit_bytes": plan.effective_limit_bytes,
-            "notice_text": attachment_delivery_notice(plan),
-            "omitted": [
-                {
-                    "path": omitted.path,
-                    "filename": omitted.filename,
-                    "size_bytes": omitted.size_bytes,
-                    "reason": omitted.reason,
-                }
-                for omitted in plan.omitted
-            ],
-        }
-
-    @staticmethod
-    def _attachment_plan_overrides(raw: object) -> tuple[int | None, str | None]:
-        if not isinstance(raw, dict):
-            return None, None
-        limit = raw.get("effective_limit_bytes")
-        notice = raw.get("notice_text")
-        valid_limit = (
-            limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
-        )
-        return valid_limit, notice if isinstance(notice, str) else None
-
-    async def _mark_coding_delivery_permanent_failure(
-        self,
-        task: CodingTask,
-        reason: str,
-    ) -> None:
-        if self.coding_task_store is not None:
-            await self.coding_task_store.record_delivery_failure(
-                task.id,
-                reason,
-                permanent=True,
-            )
-
-    async def _coding_result_channel(
-        self,
-        task: CodingTask,
-        fallback: discord.TextChannel | discord.Thread,
-        final_text: str,
-    ) -> discord.TextChannel | discord.Thread:
-        """Keep an existing thread or apply the ordinary auto-handoff policy."""
-
-        if task.thread_id is not None:
-            return fallback
-
-        delivery = task.checkpoint.get("delivery")
-        saved_thread_id = delivery.get("thread_id") if isinstance(delivery, dict) else None
-        if isinstance(saved_thread_id, str):
-            try:
-                saved_channel = self.bot.get_channel(int(saved_thread_id))
-                if saved_channel is None:
-                    saved_channel = await self.bot.fetch_channel(int(saved_thread_id))
-            except ValueError, discord.HTTPException:
-                saved_channel = None
-            if isinstance(saved_channel, discord.Thread):
-                return saved_channel
-
-        if (
-            not isinstance(fallback, discord.TextChannel)
-            or not self.settings.thread_handoff_enabled
-            or self.thread_handoff is None
-        ):
-            return fallback
-
-        try:
-            trigger = await fallback.fetch_message(int(task.trigger_discord_message_id))
-        except ValueError, discord.HTTPException:
-            return fallback
-        existing_thread = await self.threads._adopt_managed_handoff_thread(trigger)
-        if existing_thread is not None:
-            await self._save_coding_delivery_thread(task, existing_thread.id)
-            return existing_thread
-        if not self.settings.thread_auto_handoff_enabled:
-            return fallback
-        auto_cfg = (
-            load_channel_auto_thread(task.channel_id)
-            if self.threads._thread_handoff_creation_allowed(trigger)
-            else None
-        )
-        if auto_cfg is None:
-            return fallback
-        request = build_auto_handoff_request(
-            response_text=final_text,
-            question_text=self._strip_message_invocation(
-                trigger.content,
-                bot_user=self.bot.user,
-            ),
-            bot_name=self.settings.bot_name,
-            min_lines=auto_cfg.min_lines,
-            min_chars=auto_cfg.min_chars,
-            always=auto_cfg.always,
-        )
-        if request is None:
-            return fallback
-        thread = await self.threads._create_handoff_thread(
-            trigger,
-            request,
-            task.conversation_id,
-            creator_user_id=task.user_id,
-        )
-        if thread is None:
-            return fallback
-        await self._save_coding_delivery_thread(task, thread.id)
-        await self.discord_gateway.add_status_reaction(trigger, THREAD_HANDOFF_REACTION)
-        return thread
-
-    async def _save_coding_delivery_thread(self, task: CodingTask, thread_id: int) -> None:
-        if self.coding_task_store is None:
-            return
-        current = await self.coding_task_store.get_task(task.id)
-        checkpoint = dict(current.checkpoint if current is not None else task.checkpoint)
-        persisted_delivery = checkpoint.get("delivery")
-        persisted_delivery = (
-            dict(persisted_delivery) if isinstance(persisted_delivery, dict) else {}
-        )
-        persisted_delivery["thread_id"] = str(thread_id)
-        checkpoint["delivery"] = persisted_delivery
-        await self.coding_task_store.set_checkpoint(task.id, checkpoint)
-
-    async def _find_coding_result_delivery(
-        self,
-        channel: discord.TextChannel | discord.Thread,
-        expected_text: str,
-        *,
-        legacy_marker: str,
-    ) -> list[discord.Message]:
-        """Recover only a complete multi-message result after a process crash."""
-
-        bot_user = self.bot.user
-        expected_chunks = chunk_message(suppress_link_previews(expected_text))
-        if bot_user is None or not expected_chunks:
-            return []
-        try:
-            newest_first = [
-                message
-                async for message in channel.history(limit=max(100, len(expected_chunks) * 2))
-            ]
-        except discord.HTTPException:
-            log.warning("Could not reconcile coding result %s", legacy_marker, exc_info=True)
-            return []
-
-        bot_messages = [
-            message for message in reversed(newest_first) if message.author.id == bot_user.id
-        ]
-        for start, message in enumerate(bot_messages):
-            if message.content != expected_chunks[0]:
-                continue
-            matched = [message]
-            expected_index = 1
-            for candidate in bot_messages[start + 1 :]:
-                if expected_index >= len(expected_chunks):
-                    break
-                if candidate.content == expected_chunks[expected_index]:
-                    matched.append(candidate)
-                    expected_index += 1
-            if expected_index == len(expected_chunks):
-                return matched
-
-        for message in newest_first:
-            if message.author.id == bot_user.id and legacy_marker in message.content:
-                return [message]
-        return []
+        controller = self._coding_task_controller
+        if controller is None:
+            raise RuntimeError("Coding task controller is not initialized")
+        await controller.delivery.publish(task, context)
 
     async def _delete_coding_status_message(
         self,
@@ -1942,193 +1500,19 @@ class KimiApplication:
         *,
         message: discord.Message | None = None,
     ) -> None:
-        if message is None and task.status_discord_message_id:
-            try:
-                message = await channel.fetch_message(int(task.status_discord_message_id))
-            except ValueError, discord.HTTPException:
-                message = None
-        if message is None:
-            message = await self._find_coding_delivery(channel, marker)
-        if message is None:
-            return
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            log.warning("Could not delete coding status for task %s", task.id, exc_info=True)
-
-    @staticmethod
-    async def _delete_coding_messages(messages: list[discord.Message]) -> None:
-        for message in reversed(messages):
-            try:
-                await message.delete()
-            except discord.HTTPException:
-                log.warning("Could not clean up partial coding result", exc_info=True)
-
-    async def _persist_coding_final_messages(
-        self,
-        task: CodingTask,
-        messages: list[discord.Message],
-        *,
-        channel_id: str,
-    ) -> None:
-        """Persist and route a final before disabling marker-based retry."""
-
-        if self.conversation_store is None or task.conversation_id is None:
-            return
-        records = [
-            ChannelMessageRecord(
-                discord_message_id=str(message.id),
-                role="assistant",
-                author_id=None,
-                author_name=None,
-                content=self._strip_coding_delivery_marker(
-                    strip_chunk_marker(message.content),
-                    task_ref=task.id[:8],
-                ),
-                source_created_at=message_source_timestamp(message),
-            )
-            for message in messages
-        ]
-        await self.conversation_store.save_channel_messages(
-            task.conversation_id,
-            records,
-            context_channel_id=channel_id,
+        controller = self._coding_task_controller
+        if controller is None:
+            raise RuntimeError("Coding task controller is not initialized")
+        await controller.delete_status_message(
+            channel,
+            task,
+            marker,
+            message=message,
         )
-
-    async def _find_coding_delivery(
-        self,
-        channel: discord.TextChannel | discord.Thread,
-        marker: str,
-    ) -> discord.Message | None:
-        """Reconcile a send that may have committed just before a process crash."""
-
-        bot_user = self.bot.user
-        if bot_user is None:
-            return None
-        try:
-            async for message in channel.history(limit=100):
-                if message.author.id == bot_user.id and marker in message.content:
-                    return message
-        except discord.HTTPException:
-            log.warning("Could not reconcile coding delivery marker %s", marker, exc_info=True)
-        return None
-
-    @staticmethod
-    def _strip_coding_delivery_marker(text: str, *, task_ref: str | None = None) -> str:
-        visible_result_marker = f"**Coding result `{task_ref}`**" if task_ref else None
-        lines = [
-            line
-            for line in text.splitlines()
-            if not line.startswith("-# coding-result:")
-            and not line.startswith("-# coding-status:")
-            and line != visible_result_marker
-        ]
-        return "\n".join(lines)
 
     @staticmethod
     def _coding_task_marker(task_id: str) -> str:
-        return f"Coding task `{task_id[:8]}`"
-
-    @staticmethod
-    def _coding_result_marker(task_id: str) -> str:
-        return f"Coding result `{task_id[:8]}`"
-
-    @staticmethod
-    def _coding_result_delivery_text(task_id: str, text: str) -> str:
-        return f"**{KimiApplication._coding_result_marker(task_id)}**\n{text}"
-
-    async def _moderate_coding_text(
-        self,
-        task: CodingTask,
-        text: str,
-        *,
-        status: bool,
-    ) -> _ModeratedCodingText:
-        service = self.moderation_service
-        if not self._should_moderate_coding_output(task) or service is None:
-            return _ModeratedCodingText(text)
-        trust_tier = self._coding_task_trust_tier(task)
-        try:
-            decision = await service.check(
-                text=text,
-                direction=Direction.OUTPUT,
-                user_id=task.user_id,
-                channel_id=task.channel_id,
-                thread_id=task.thread_id,
-                trust_tier=trust_tier.value,
-            )
-        except Exception:
-            log.warning("Coding task output moderation failed", exc_info=True)
-            return _ModeratedCodingText(
-                (
-                    f"**Coding task `{task.id[:8]}`: {task.status.value}**"
-                    if status
-                    else service.refusal_for(Direction.OUTPUT, error=True)
-                ),
-                blocked=True,
-            )
-        if not decision.blocked:
-            return _ModeratedCodingText(text)
-        if status:
-            return _ModeratedCodingText(
-                f"**Coding task `{task.id[:8]}`: {task.status.value}**",
-                blocked=True,
-            )
-        return _ModeratedCodingText(
-            service.refusal_for(Direction.OUTPUT, error=decision.error),
-            blocked=True,
-        )
-
-    def _should_moderate_coding_output(self, task: CodingTask) -> bool:
-        service = self.moderation_service
-        if service is None or not service.enabled:
-            return False
-        exempt_tier = service.output_exempt_tier
-        return exempt_tier is None or self._coding_task_trust_tier(task) < exempt_tier
-
-    @staticmethod
-    def _coding_task_trust_tier(task: CodingTask) -> TrustTier:
-        raw = task.checkpoint.get("trust_tier")
-        if isinstance(raw, str):
-            with suppress(ValueError):
-                return TrustTier(raw)
-        # Tasks created before trust was recorded get the lowest usable tier.
-        return TrustTier.MEMBER
-
-    @staticmethod
-    def _coding_status_wire_text(status_text: str) -> str:
-        return suppress_link_previews(status_text)
-
-    @staticmethod
-    def _coding_status_text(task: CodingTask) -> str:
-        icons = {
-            CodingTaskStatus.QUEUED: "⏳",
-            CodingTaskStatus.RECOVERING: "🔄",
-            CodingTaskStatus.RUNNING: "🛠️",
-            CodingTaskStatus.WAITING_FOR_JOB: "⚙️",
-            CodingTaskStatus.WAITING_FOR_INPUT: "❓",
-            CodingTaskStatus.CANCELLING: "🛑",
-            CodingTaskStatus.COMPLETED: "✅",
-            CodingTaskStatus.FAILED: "❌",
-            CodingTaskStatus.CANCELLED: "🛑",
-            CodingTaskStatus.TIMED_OUT: "⌛",
-        }
-        task_marker = KimiApplication._coding_task_marker(task.id)
-        lines = [f"{icons[task.status]} **{task_marker}: {task.status.value}**"]
-        if not task.plan:
-            lines.append(
-                CodingTaskService._display_summary(
-                    task.objective,
-                    str(getattr(task, "display_summary", "")),
-                )
-            )
-        if task.milestone:
-            lines.append(f"-# {task.milestone[:500]}")
-        visible_plan = [step for step in task.plan if step.get("status") != "completed"][:3]
-        for step in visible_plan:
-            marker = "▶" if step.get("status") == "in_progress" else "•"
-            lines.append(f"{marker} {step.get('content', '')[:180]}")
-        return "\n".join(lines)[:2000]
+        return CodingDelivery.task_marker(task_id)
 
     async def _user_is_blocked(self, user_id: str) -> bool:
         """The one block answer every entry point asks before doing anything.
@@ -3348,47 +2732,16 @@ class KimiApplication:
         self,
         user_id: str,
     ) -> AsyncIterator[None]:
-        """Drain every active root whose transcript a deletion will mutate."""
-
-        store = self.conversation_store
-        if store is None:
-            yield
-            return
-        list_keys = getattr(store, "list_user_conversation_keys", None)
-        if list_keys is None:
-            yield
-            return
-        keys = await list_keys(user_id)
-        async with AsyncExitStack() as stack:
-            # Stable ordering prevents two simultaneous user deletions whose
-            # shared roots overlap from deadlocking while they drain turns.
-            for key in sorted(set(keys)):
-                await stack.enter_async_context(self._root_lock(key))
+        async with self.root_locks.hold_user_conversations(
+            user_id,
+            self.conversation_store,
+        ):
             yield
 
     @asynccontextmanager
     async def _root_lock(self, key: str) -> AsyncIterator[None]:
-        # Per-root serialization lock with refcounted eviction so context_locks
-        # does not grow unbounded across fresh-mention roots (each root key
-        # embeds a unique trigger snowflake). The get-or-create + refcount bump
-        # run synchronously before the first await (the lock acquire), so a
-        # concurrent acquirer for the same root always sees the same Lock object;
-        # the entry is evicted only once the last holder/waiter releases.
-        lock = self.context_locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self.context_locks[key] = lock
-        self._lock_refcounts[key] = self._lock_refcounts.get(key, 0) + 1
-        try:
-            async with lock:
-                yield
-        finally:
-            count = self._lock_refcounts[key] - 1
-            if count <= 0:
-                self._lock_refcounts.pop(key, None)
-                self.context_locks.pop(key, None)
-            else:
-                self._lock_refcounts[key] = count
+        async with self.root_locks.hold(key):
+            yield
 
 
 # Chat-command wiring helpers. Module-level (not methods) so tests can drive

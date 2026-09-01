@@ -3,12 +3,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 
 import discord
 
+from app.consent import build_consent_embed
 from storage.preferences import PreferenceStore
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class UserAppConsentConfig:
+    enabled: bool
+    title: str
+    text: str
+    timeout: float
 
 
 class UserAppConsentView(discord.ui.View):
@@ -74,3 +84,63 @@ class UserAppConsentView(discord.ui.View):
             embed=None,
             view=None,
         )
+
+
+class UserAppConsentPrompter:
+    """Fail-closed consent boundary shared by personal chat and teaching."""
+
+    def __init__(
+        self,
+        *,
+        config: UserAppConsentConfig,
+        preference_store: PreferenceStore | None,
+    ) -> None:
+        self._config = config
+        self._preference_store = preference_store
+
+    async def prompt_if_needed(
+        self,
+        interaction: discord.Interaction,
+        *,
+        on_accept: Callable[[discord.Interaction], Awaitable[None]],
+        public_response: bool,
+    ) -> bool:
+        if not self._config.enabled:
+            return False
+        user_id = str(interaction.user.id)
+        try:
+            preference_store = self._preference_store
+            if preference_store is None:
+                raise RuntimeError("privacy consent store is unavailable")
+            if await preference_store.has_consented(user_id):
+                return False
+
+            view = UserAppConsentView(
+                author_id=interaction.user.id,
+                store=preference_store,
+                on_accept=on_accept,
+                timeout=self._config.timeout,
+                public_response=public_response,
+            )
+            await interaction.response.send_message(
+                embed=build_consent_embed(
+                    title=self._config.title,
+                    text=self._config.text,
+                ),
+                view=view,
+                ephemeral=True,
+            )
+            return True
+        except Exception:
+            log.exception("User-app privacy consent gate failed for user %s", user_id)
+            with suppress(discord.HTTPException):
+                message = "I couldn't verify your privacy consent. Please try again."
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        message,
+                        ephemeral=True,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+            return True

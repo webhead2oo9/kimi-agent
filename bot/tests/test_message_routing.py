@@ -42,7 +42,6 @@ from tests.helpers import (
     NobodyBlocked,
     RootLockProbe,
     StubProviderManager,
-    WorkCancellationDriver,
     install_foreground_turn_handler,
     remove_processing_reaction,
 )
@@ -153,6 +152,12 @@ def _build_test_app(monkeypatch):
     # The runtime's block gate raises on an uninitialised store rather than
     # guessing; these tests bypass _first_init_core, so give it a real answer.
     app.blocked_user_store = NobodyBlocked()  # type: ignore[assignment]
+    # These guild-routing fixtures likewise stop before store-backed subsystem
+    # construction. Stop behavior is covered directly by test_work_cancellation.
+    app.work_cancellation = cast(
+        Any,
+        SimpleNamespace(is_stop_message=lambda _message: False),
+    )
     return app
 
 
@@ -1534,106 +1539,6 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
         TURN_ADMISSION_BUSY_MESSAGE,
         reference=second,
     )
-    assert (await app.turn_admission.snapshot()).active_total == 0
-
-
-@pytest.mark.asyncio
-async def test_stop_cancels_turn_between_admission_and_root_registration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = _build_test_app(monkeypatch)
-    app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = NobodyBlocked()
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
-
-    admitted = asyncio.Event()
-
-    async def pause_before_root_registration(_message: Any) -> None:
-        admitted.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(app, "_on_message_for_user", pause_before_root_registration)
-    message = _trigger_message(
-        content="<@999> begin",
-        author_id=123,
-        author_name="Alice",
-        message_id=1,
-    )
-
-    turn = asyncio.create_task(app.on_message(message))
-    await admitted.wait()
-    summary = await WorkCancellationDriver(app).cancel_user_work(
-        user_id="123",
-        scopes=[(str(message.channel.id), "resolved-root")],
-        all_work=False,
-    )
-    await turn
-
-    assert summary.startswith("Stopped 1 active response(s).")
-    assert (await app.turn_admission.snapshot()).active_total == 0
-
-
-@pytest.mark.asyncio
-async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = _build_test_app(monkeypatch)
-    app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = NobodyBlocked()
-    app.turn_admission = TurnAdmissionController(max_active=2, max_active_per_user=2)
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
-
-    async def resolve(message: Any, *, allow_new_root: bool) -> ResolvedConversation:
-        assert allow_new_root is True
-        return ResolvedConversation(
-            key=f"root-{message.id}",
-            db_conversation_id=None,
-            owner_user_id=str(message.author.id),
-        )
-
-    monkeypatch.setattr(app, "resolve_conversation_for_message", resolve)
-    reaction_started = {1: asyncio.Event(), 2: asyncio.Event()}
-
-    async def block_processing_reaction(message: Any, emoji: str) -> None:
-        assert emoji == "⏳"
-        reaction_started[message.id].set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(app.discord_gateway, "add_status_reaction", block_processing_reaction)
-    monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", AsyncMock())
-    first_message = _trigger_message(
-        content="<@999> first root",
-        author_id=123,
-        author_name="Alice",
-        message_id=1,
-    )
-    second_message = _trigger_message(
-        content="<@999> second root",
-        author_id=123,
-        author_name="Alice",
-        message_id=2,
-    )
-
-    first = asyncio.create_task(app.on_message(first_message))
-    second = asyncio.create_task(app.on_message(second_message))
-    await asyncio.gather(*(event.wait() for event in reaction_started.values()))
-
-    summary = await WorkCancellationDriver(app).cancel_user_work(
-        user_id="123",
-        scopes=[(str(first_message.channel.id), "root-1")],
-        all_work=False,
-    )
-
-    assert summary.startswith("Stopped 1 active response(s).")
-    assert first.done()
-    assert not second.done()
-
-    second.cancel()
-    await second
     assert (await app.turn_admission.snapshot()).active_total == 0
 
 

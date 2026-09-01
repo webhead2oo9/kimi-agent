@@ -35,7 +35,7 @@ from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
 from tools.registry import MessageContext
 from workspace import user_app_workspace_key
-from tests.helpers import StubProviderManager, make_settings
+from tests.helpers import StubProviderManager, install_foreground_turn_handler, make_settings
 
 
 _PNG_1X1 = base64.b64decode(
@@ -413,6 +413,24 @@ async def _user_app_chat_app(
     return app
 
 
+async def _run_registered_chat(
+    app: Any,
+    interaction: object,
+    *,
+    message: str,
+    attachment: discord.Attachment | None = None,
+    public: bool = False,
+) -> None:
+    command = cast(Any, app.bot.tree.get_command("chat"))
+    assert command is not None
+    await command.callback(
+        cast(discord.Interaction, interaction),
+        message,
+        attachment=attachment,
+        visibility="public" if public else "private",
+    )
+
+
 async def _complete_primary_delivery(content: str, kwargs: dict[str, object]) -> None:
     callback = cast(
         Callable[[str], Awaitable[None]],
@@ -780,6 +798,7 @@ async def test_public_personal_chat_finishes_activity_before_every_outcome(
             self.guild = None
             self.guild_id = None
             self.created_at = datetime.now(UTC)
+            self.response = _UserAppInteractionResponse()
             self.edits: list[str] = []
 
         async def edit_original_response(self, **kwargs: object) -> None:
@@ -816,18 +835,17 @@ async def test_public_personal_chat_finishes_activity_before_every_outcome(
         delivered.append((bool(kwargs["ephemeral"]), bool(kwargs["original_ephemeral"])))
         await real_send_result(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(app_runtime, "handle_turn", failed_turn)
+    install_foreground_turn_handler(app, failed_turn)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", record_result)
     interaction = FakeInteraction()
 
     try:
         task = asyncio.create_task(
-            app._execute_user_app_chat(
-                interaction,  # type: ignore[arg-type]
+            _run_registered_chat(
+                app,
+                interaction,
                 message="hello",
-                attachment=None,
                 public=True,
-                request_generation=app._user_app_chat_generation("42"),
             )
         )
         if outcome == "cancel":
@@ -878,25 +896,23 @@ async def test_same_root_chat_delivery_finishes_before_next_turn_starts(
         await _complete_primary_delivery(content, kwargs)
         events.append(f"deliver:{content}:end")
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     first = asyncio.create_task(
-        app._execute_user_app_chat(
-            _UserAppImageInteraction(7),  # type: ignore[arg-type]
+        _run_registered_chat(
+            app,
+            _UserAppImageInteraction(7),
             message="first",
-            attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
         )
     )
     await asyncio.wait_for(first_body_started.wait(), timeout=0.5)
     second = asyncio.create_task(
-        app._execute_user_app_chat(
-            _UserAppImageInteraction(8),  # type: ignore[arg-type]
+        _run_registered_chat(
+            app,
+            _UserAppImageInteraction(8),
             message="second",
-            attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
         )
     )
 
@@ -949,15 +965,14 @@ async def test_chat_admission_stays_active_through_delivery(
         await release_delivery.wait()
         await _complete_primary_delivery(content, kwargs)
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     task = asyncio.create_task(
-        app._execute_user_app_chat(
-            _UserAppImageInteraction(),  # type: ignore[arg-type]
+        _run_registered_chat(
+            app,
+            _UserAppImageInteraction(),
             message="hello",
-            attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
         )
     )
 
@@ -1002,20 +1017,18 @@ async def test_chat_admission_maps_shutdown_without_busy_status(
         provider_calls.extend(args)
         return TurnResult(response_text="unexpected")
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     interaction = _UserAppImageInteraction()
 
     try:
         with caplog.at_level("INFO", logger=app_runtime.__name__):
-            result = await app._execute_user_app_chat(
-                interaction,  # type: ignore[arg-type]
+            await _run_registered_chat(
+                app,
+                interaction,
                 message="hello",
-                attachment=None,
                 public=False,
-                request_generation=app._user_app_chat_generation("42"),
             )
 
-        assert result is None
         assert provider_calls == []
         if shutdown:
             assert interaction.edits == []
@@ -1053,7 +1066,7 @@ async def test_chat_rechecks_access_and_block_after_waiting_for_root_lock(
         async def is_blocked(self, _user_id: str) -> bool:
             return True
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     interaction = _UserAppImageInteraction()
     root_key = "userchat:42"
     task: asyncio.Task[TurnResult | None] | None = None
@@ -1061,7 +1074,7 @@ async def test_chat_rechecks_access_and_block_after_waiting_for_root_lock(
     try:
         async with app._root_lock(root_key):
             task = asyncio.create_task(
-                app._execute_user_app_chat(
+                app._run_user_app_chat(
                     interaction,  # type: ignore[arg-type]
                     message="hello",
                     attachment=None,
@@ -1110,21 +1123,18 @@ async def test_chat_delivery_failure_does_not_persist_assistant(
         response = SimpleNamespace(status=500, reason="Server Error")
         raise discord.HTTPException(response, "delivery failed")  # type: ignore[arg-type]
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", fail_delivery)
     interaction = _UserAppImageInteraction()
 
     try:
-        result = await app._execute_user_app_chat(
-            interaction,  # type: ignore[arg-type]
+        await _run_registered_chat(
+            app,
+            interaction,
             message="hello",
-            attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
         )
 
-        assert result is not None
-        assert result.delivery_failed is True
         assert not any(role == "assistant" for role, _content in await _personal_chat_messages(app))
         assert interaction.edits[-1]["content"] == (
             "I finished the turn but couldn't deliver the response here. Try again privately."
@@ -1151,20 +1161,17 @@ async def test_file_only_chat_persists_delivered_attachment_notice(
             workspace_key=workspace_key,
         )
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     interaction = _UserAppImageInteraction(file_size_limit=1)
 
     try:
-        result = await app._execute_user_app_chat(
-            interaction,  # type: ignore[arg-type]
+        await _run_registered_chat(
+            app,
+            interaction,
             message="make a file",
-            attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
         )
 
-        assert result is not None
-        assert result.delivery_failed is False
         delivered_content = str(interaction.edits[-1]["content"])
         assert delivered_content.startswith("Delivery notice:")
         assert await _personal_chat_messages(app) == [("assistant", delivered_content)]
@@ -1201,19 +1208,18 @@ async def test_chat_file_delivery_uses_workspace_activity_lock(
         delivery_started.set()
         await _complete_primary_delivery(content, kwargs)
 
-    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    install_foreground_turn_handler(app, run_turn)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
-    task: asyncio.Task[TurnResult | None] | None = None
+    task: asyncio.Task[None] | None = None
 
     try:
         async with app.tools.workspace_locks.writer(workspace_key):
             task = asyncio.create_task(
-                app._execute_user_app_chat(
-                    _UserAppImageInteraction(),  # type: ignore[arg-type]
+                _run_registered_chat(
+                    app,
+                    _UserAppImageInteraction(),
                     message="hello",
-                    attachment=None,
                     public=False,
-                    request_generation=app._user_app_chat_generation("42"),
                 )
             )
             await asyncio.wait_for(turn_finished.wait(), timeout=0.5)
@@ -1342,6 +1348,11 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
         def __init__(self, interaction_id: int) -> None:
             self.id = interaction_id
             self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
+            self.channel = SimpleNamespace(guild=None)
+            self.channel_id = 99
+            self.guild = None
+            self.guild_id = None
+            self.created_at = datetime.now(UTC)
             self.edits: list[str] = []
             self.followups: list[str] = []
             self.deleted = False
@@ -1362,47 +1373,55 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
         async def delete_original_response(self) -> None:
             self.deleted = True
 
-    entered_delivery = asyncio.Event()
     calls = 0
 
-    async def wait_in_delivery(_interaction: object, **_kwargs: object) -> None:
+    async def should_not_run(*_args: object, **_kwargs: object) -> TurnResult:
         nonlocal calls
         calls += 1
-        entered_delivery.set()
-        await asyncio.Event().wait()
+        raise AssertionError("reset did not cancel the queued request")
 
-    monkeypatch.setattr(app, "_run_user_app_chat_turn", wait_in_delivery)
+    install_foreground_turn_handler(app, should_not_run)
     interaction = FakeInteraction(1)
     generation = app._user_app_chat_generation("42")
-    task = asyncio.create_task(
-        app._execute_user_app_chat(
-            interaction,  # type: ignore[arg-type]
-            message="hello",
-            attachment=None,
-            public=True,
-            request_generation=generation,
+    root_key = "userchat:42"
+    async with app._root_lock(root_key):
+        task = asyncio.create_task(
+            app._run_user_app_chat(
+                interaction,  # type: ignore[arg-type]
+                message="hello",
+                attachment=None,
+                public=True,
+                request_generation=generation,
+            )
         )
-    )
-    await entered_delivery.wait()
+        deadline = asyncio.get_running_loop().time() + 0.5
+        while app._lock_refcounts.get(root_key, 0) < 2:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("personal chat turn never queued on the root lock")
+            await asyncio.sleep(0.005)
 
-    summary = await app._handle_user_app_chat_reset(interaction)  # type: ignore[arg-type]
-    await task
+        reset_task = asyncio.create_task(
+            app._handle_user_app_chat_reset(interaction)  # type: ignore[arg-type]
+        )
+        await asyncio.wait_for(task, timeout=0.5)
+
+    summary = await asyncio.wait_for(reset_task, timeout=0.5)
 
     assert summary == "Your personal chat thread is already clear."
     assert interaction.deleted is False
     assert interaction.edits == ["Stopped."]
     assert interaction.followups == []
-    assert calls == 1
+    assert calls == 0
 
     stale = FakeInteraction(2)
-    await app._execute_user_app_chat(
+    await app._run_user_app_chat(
         stale,  # type: ignore[arg-type]
         message="old retained request",
         attachment=None,
         public=False,
         request_generation=generation,
     )
-    assert calls == 1
+    assert calls == 0
     assert "expired because your personal thread was reset or deleted" in stale.edits[-1]
     await app.database.close()
 
@@ -1436,23 +1455,29 @@ async def test_personal_chat_timeout_covers_wait_before_turn_execution(
         def __init__(self) -> None:
             self.id = 1
             self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
+            self.channel = SimpleNamespace(guild=None)
+            self.channel_id = 99
+            self.guild = None
+            self.guild_id = None
+            self.created_at = datetime.now(UTC)
             self.edits: list[str] = []
 
         async def edit_original_response(self, **kwargs: object) -> None:
             self.edits.append(str(kwargs.get("content", "")))
 
-    async def wait_forever(_interaction: object, **_kwargs: object) -> None:
-        await asyncio.Event().wait()
+    async def should_not_run(*_args: object, **_kwargs: object) -> TurnResult:
+        raise AssertionError("the provider ran before the root-lock wait timed out")
 
-    monkeypatch.setattr(app, "_run_user_app_chat_turn", wait_forever)
+    install_foreground_turn_handler(app, should_not_run)
     interaction = FakeInteraction()
-    await app._execute_user_app_chat(
-        interaction,  # type: ignore[arg-type]
-        message="hello",
-        attachment=None,
-        public=False,
-        request_generation=app._user_app_chat_generation("42"),
-    )
+    async with app._root_lock("userchat:42"):
+        await app._run_user_app_chat(
+            interaction,  # type: ignore[arg-type]
+            message="hello",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
 
     assert interaction.edits == ["That personal chat turn timed out. Run `/chat` again to retry."]
     await app.database.close()
@@ -1561,6 +1586,11 @@ async def test_personal_chat_cancellation_propagates_during_shutdown(
         def __init__(self) -> None:
             self.id = 1
             self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
+            self.channel = SimpleNamespace(guild=None)
+            self.channel_id = 99
+            self.guild = None
+            self.guild_id = None
+            self.created_at = datetime.now(UTC)
             self.edits: list[str] = []
 
         async def edit_original_response(self, **kwargs: object) -> None:
@@ -1568,14 +1598,15 @@ async def test_personal_chat_cancellation_propagates_during_shutdown(
 
     entered = asyncio.Event()
 
-    async def wait_forever(_interaction: object, **_kwargs: object) -> None:
+    async def wait_forever(*_args: object, **_kwargs: object) -> TurnResult:
         entered.set()
         await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
-    monkeypatch.setattr(app, "_run_user_app_chat_turn", wait_forever)
+    install_foreground_turn_handler(app, wait_forever)
     interaction = FakeInteraction()
     task = asyncio.create_task(
-        app._execute_user_app_chat(
+        app._run_user_app_chat(
             interaction,  # type: ignore[arg-type]
             message="hello",
             attachment=None,
@@ -1820,7 +1851,7 @@ async def test_personal_dm_uses_chat_execution_policy_without_onboarding(
             execution_config=execution_config,
         )
 
-    monkeypatch.setattr(app_runtime, "handle_turn", capture_turn)
+    install_foreground_turn_handler(app, capture_turn)
 
     try:
         result = await app.handle_message(

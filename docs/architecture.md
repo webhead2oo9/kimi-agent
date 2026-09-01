@@ -10,9 +10,13 @@ People talk to Kimi in a few different ways. Under the hood they all use the sam
 
 This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
+The gateway entry point keeps the Discord gates and root lock, then `handle_message` sends the turn through the shared foreground runner and its guild-message adapter.
+
 ### Personal chat (optional)
 
 `/chat` is optional and off until you enable it. It uses the same model loop, but each person gets a private `userchat:<user_id>` conversation, plus their own prompt, memory, and workspace. That chat is not tied to any Discord server, so server tools and server files stay out of reach. The channel they typed in is only used for Discord permissions. It does not grant extra trust. See [Discord user-app personal chat](user-app.md).
+
+Its registered command keeps the interaction gates and root lock, then uses the same foreground runner with the deferred-interaction adapter.
 
 ### Teach Kimi
 
@@ -57,7 +61,7 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
 | `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
 
-`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, `on_message`), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery and handoffs), `user_app_turn_adapter.py` (deferred `/chat` delivery), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
+`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, and ingress gates), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery and handoffs), `user_app_turn_adapter.py` (deferred `/chat` delivery), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
 ## Design choices that matter
 

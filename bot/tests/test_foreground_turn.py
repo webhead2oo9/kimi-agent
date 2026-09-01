@@ -346,6 +346,38 @@ async def test_user_persists_before_provider_and_assistant_after_delivery(
 
 
 @pytest.mark.asyncio
+async def test_delivery_receipt_channel_maps_the_persisted_reply(
+    foreground_database: Database,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    store = RecordingConversationStore(foreground_database, events)
+    locks = UserLocks()
+    adapter = FakeAdapter(
+        events,
+        receipt=TurnDeliveryReceipt(
+            replies=(DeliveredReply("assistant-in-thread", "answer"),),
+            context_channel_id="destination-thread",
+        ),
+    )
+    runner = _runner(
+        store,
+        FakeDependencyFactory(events, tmp_path, locks),
+        locks,
+        _successful_handle_turn(events),
+    )
+
+    await runner.run(_invocation(), adapter=adapter)
+
+    async with foreground_database.conn.execute(
+        "SELECT channel_id FROM message_contexts WHERE discord_message_id = ?",
+        ("assistant-in-thread",),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None and row["channel_id"] == "destination-thread"
+
+
+@pytest.mark.asyncio
 async def test_delivery_failure_propagates_without_assistant_persistence(
     foreground_database: Database,
     tmp_path: Path,

@@ -11,11 +11,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-import zlib
 import tempfile
+import zlib
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 from agent.attachments import TurnImages
@@ -60,6 +63,231 @@ class NobodyBlocked:
 
     async def is_blocked(self, user_id: str) -> bool:
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleSnapshot:
+    """Read-only lifecycle state until ``app.lifecycle`` owns it."""
+
+    closed: bool
+    close_complete: bool
+    startup_error: Exception | None
+    guild_activation_refresh_task: Any | None
+    video_session_sweeper_task: Any | None
+    workspace_sweeper_task: Any | None
+    attachment_sweeper_task: Any | None
+    module_event_publisher: Any | None
+    module_interaction_runtime: Any | None
+
+
+class LifecycleProbe:
+    """Transitional test seam for the future ``app.lifecycle`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> LifecycleSnapshot:
+        return LifecycleSnapshot(
+            closed=self._app._closed,
+            close_complete=self._app._close_complete.is_set(),
+            startup_error=self._app._startup_error,
+            guild_activation_refresh_task=self._app._guild_activation_refresh_task,
+            video_session_sweeper_task=self._app._video_session_sweeper_task,
+            workspace_sweeper_task=self._app._workspace_sweeper_task,
+            attachment_sweeper_task=self._app._attachment_sweeper_task,
+            module_event_publisher=self._app._module_event_publisher,
+            module_interaction_runtime=self._app._module_interaction_runtime,
+        )
+
+    async def first_init_core(self) -> None:
+        await self._app._first_init_core()
+
+    async def close_resources(self) -> None:
+        await self._app._close_resources()
+
+    async def resume_pending_privacy_deletions(self, *, auto_retain_watermarks: Any) -> None:
+        await self._app._resume_pending_privacy_deletions(
+            auto_retain_watermarks=auto_retain_watermarks
+        )
+
+    async def guild_activation_refresh_loop(self) -> None:
+        await self._app._guild_activation_refresh_loop()
+
+    def set_closed(self, value: bool = True) -> None:
+        self._app._closed = value
+
+    def set_startup_error(self, error: Exception | None) -> None:
+        self._app._startup_error = error
+
+    def set_guild_activation_refresh_task(self, task: Any | None) -> None:
+        self._app._guild_activation_refresh_task = task
+
+    def set_video_session_sweeper_task(self, task: Any | None) -> None:
+        self._app._video_session_sweeper_task = task
+
+    def set_module_event_publisher(self, publisher: Any | None) -> None:
+        self._app._module_event_publisher = publisher
+
+    def set_module_interaction_runtime(self, runtime: Any | None) -> None:
+        self._app._module_interaction_runtime = runtime
+
+
+@dataclass(frozen=True, slots=True)
+class CommandSyncSnapshot:
+    """Read-only command state until ``app.command_sync`` owns it."""
+
+    gateway_generation: int
+    global_sync_task: asyncio.Task[None] | None
+    global_sync_generation: int | None
+    retired_global_sync_tasks: tuple[asyncio.Task[None], ...]
+    ready_event_tasks: tuple[asyncio.Task[Any], ...]
+    ready_event_generations: Mapping[asyncio.Task[Any], int]
+
+
+class CommandSyncProbe:
+    """Transitional test seam for the future ``app.command_sync`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> CommandSyncSnapshot:
+        return CommandSyncSnapshot(
+            gateway_generation=self._app._gateway_generation,
+            global_sync_task=self._app._global_sync_task,
+            global_sync_generation=self._app._global_sync_generation,
+            retired_global_sync_tasks=tuple(self._app._retired_global_sync_tasks),
+            ready_event_tasks=tuple(self._app._ready_event_tasks),
+            ready_event_generations=MappingProxyType(dict(self._app._ready_event_generations)),
+        )
+
+    async def sync_global_commands(self, generation: int | None = None) -> None:
+        await self._app._sync_global_commands(generation)
+
+    def release_completed_command_sync(self) -> None:
+        self._app._release_completed_command_sync()
+
+    async def cancel_global_command_sync(
+        self,
+        *,
+        tasks: Iterable[asyncio.Task[None]] | None = None,
+    ) -> None:
+        task_set = set(tasks) if tasks is not None else None
+        await self._app._cancel_global_command_sync(tasks=task_set)
+
+    def set_gateway_generation(self, generation: int) -> None:
+        self._app._gateway_generation = generation
+
+    def set_ready_cohort(
+        self,
+        tasks: Iterable[asyncio.Task[Any]],
+        generations: Mapping[asyncio.Task[Any], int],
+    ) -> None:
+        self._app._ready_event_tasks.clear()
+        self._app._ready_event_tasks.update(tasks)
+        self._app._ready_event_generations.clear()
+        self._app._ready_event_generations.update(generations)
+
+    def add_retired_global_sync_task(self, task: asyncio.Task[None]) -> None:
+        self._app._retired_global_sync_tasks.add(task)
+
+    def discard_retired_global_sync_task(self, task: asyncio.Task[None]) -> None:
+        self._app._retired_global_sync_tasks.discard(task)
+
+    def set_retired_global_sync_tasks(self, tasks: Iterable[asyncio.Task[None]]) -> None:
+        self._app._retired_global_sync_tasks.clear()
+        self._app._retired_global_sync_tasks.update(tasks)
+
+
+class CodingDeliveryDriver:
+    """Transitional test seam for the future ``app.coding_delivery`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def result_channel(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._coding_result_channel(*args, **kwargs)
+
+    async def moderate_text(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._moderate_coding_text(*args, **kwargs)
+
+
+class PersonalChatDriver:
+    """Transitional test seam for the future ``app.user_app_chat`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def run_chat(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._run_user_app_chat(*args, **kwargs)
+
+    async def reset(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._handle_user_app_chat_reset(*args, **kwargs)
+
+    def generation(self, user_id: str) -> int:
+        return self._app._user_app_chat_generation(user_id)
+
+    def dm_tier(self, *args: Any, **kwargs: Any) -> Any:
+        return self._app._dm_personal_chat_tier(*args, **kwargs)
+
+    async def resolve_dm_conversation(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._resolve_personal_dm_conversation(*args, **kwargs)
+
+
+class WorkCancellationDriver:
+    """Transitional test seam for cancellation split across future app subsystems."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def cancel_user_work(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._cancel_user_work(*args, **kwargs)
+
+    async def stop_interaction(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._handle_stop_interaction(*args, **kwargs)
+
+    async def stop_message(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app._handle_stop_message(*args, **kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class RootLockSnapshot:
+    """Read-only lock state until the root-lock owner becomes its own module."""
+
+    keys: tuple[str, ...]
+    refcounts: Mapping[str, int]
+
+
+class RootLockProbe:
+    """Transitional test seam for the future root-lock owner under ``app``."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> RootLockSnapshot:
+        return RootLockSnapshot(
+            keys=tuple(sorted(self._app.context_locks)),
+            refcounts=MappingProxyType(dict(self._app._lock_refcounts)),
+        )
+
+    @asynccontextmanager
+    async def hold(self, key: str) -> AsyncIterator[None]:
+        async with self._app._root_lock(key):
+            yield
+
+    @asynccontextmanager
+    async def hold_user_conversations(self, user_id: str) -> AsyncIterator[None]:
+        async with self._app._lock_user_conversation_turns(user_id):
+            yield
+
+    def reset(self) -> None:
+        self._app.context_locks = {}
+        self._app._lock_refcounts = {}
+
+
+async def remove_processing_reaction(app: Any, *args: Any, **kwargs: Any) -> Any:
+    """Route tests through the future message-routing module's reaction seam."""
+
+    return await app._remove_processing_reaction(*args, **kwargs)
 
 
 def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> None:

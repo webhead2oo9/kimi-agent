@@ -24,7 +24,7 @@ from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from storage.db import Database
 from storage.coding_tasks import CodingTask, CodingTaskStatus
 from storage.model_selection import ModelSelectionStore
-from tests.helpers import StubProviderManager
+from tests.helpers import CodingDeliveryDriver, LifecycleProbe, StubProviderManager
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from workspace import WorkspaceKey
@@ -283,7 +283,7 @@ async def test_coding_result_channel_adopts_foreground_handoff_thread(monkeypatc
         ),
     )
 
-    result = await app._coding_result_channel(
+    result = await CodingDeliveryDriver(app).result_channel(
         task,
         cast(discord.TextChannel | discord.Thread, fallback),
         "result",
@@ -479,7 +479,7 @@ async def test_coding_output_moderation_marks_blocked_result() -> None:
         ),
     )
 
-    result = await app._moderate_coding_text(task, "blocked report", status=False)
+    result = await CodingDeliveryDriver(app).moderate_text(task, "blocked report", status=False)
 
     assert result.text == "refused:False"
     assert result.blocked is True
@@ -622,7 +622,7 @@ async def test_first_init_core_has_no_optional_module_tables(monkeypatch, tmp_pa
         lambda settings: StubProviderManager(settings),
     )
     app = app_runtime.build_app(_settings(database_path=str(tmp_path / "bot.db")))
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     cursor = await app.database.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     tables = {str(row[0]) for row in await cursor.fetchall()}
@@ -842,7 +842,7 @@ async def test_first_init_restores_global_model_selection(
     )
     app = app_runtime.build_app(_settings(database_path=str(path), owner_user_id="42"))
 
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     assert app.provider_manager.active_chat_model == "stub-model"
     assert app.bot.tree.get_command("models") is not None

@@ -24,7 +24,7 @@ import app.runtime as app_runtime
 from commands.learn_cmd import learn_menu_name
 from config.settings import Settings
 from pydantic import SecretStr
-from tests.helpers import StubProviderManager
+from tests.helpers import LifecycleProbe, StubProviderManager
 
 BLOCKED_USER_ID = 4242
 GUILD_ID = 999
@@ -134,7 +134,7 @@ async def _blocked_app(
         )
     )
     try:
-        await app._first_init_core()
+        await LifecycleProbe(app).first_init_core()
         app.gateway_ready = True
         store = _BlockedStore({str(BLOCKED_USER_ID)})
         app.blocked_user_store = cast(Any, store)
@@ -145,7 +145,7 @@ async def _blocked_app(
 
         monkeypatch.setattr(app_runtime, "run_conversation", never_runs)
     except BaseException:
-        await app._close_resources()
+        await app.close()
         raise
     return app, store
 
@@ -230,7 +230,7 @@ async def test_every_entry_point_refuses_a_blocked_user_before_any_work(
     try:
         reply = await entry_point(app, monkeypatch)
     finally:
-        await app._close_resources()
+        await app.close()
 
     assert reply == refusal
     assert store.asked == [str(BLOCKED_USER_ID)]
@@ -251,7 +251,7 @@ async def test_the_guild_gate_sits_directly_before_the_stop_check(
         with pytest.raises(_ReachedPastGate):
             await _via_guild_message(app, monkeypatch)
     finally:
-        await app._close_resources()
+        await app.close()
 
     # The sentinel alone proves the stop check ran; this proves the gate was
     # the thing consulted immediately before it.

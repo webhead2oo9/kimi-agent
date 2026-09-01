@@ -35,7 +35,15 @@ from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
 from tools.registry import MessageContext
 from workspace import user_app_workspace_key
-from tests.helpers import StubProviderManager, install_foreground_turn_handler, make_settings
+from tests.helpers import (
+    LifecycleProbe,
+    PersonalChatDriver,
+    RootLockProbe,
+    StubProviderManager,
+    WorkCancellationDriver,
+    install_foreground_turn_handler,
+    make_settings,
+)
 
 
 _PNG_1X1 = base64.b64decode(
@@ -409,7 +417,7 @@ async def _user_app_chat_app(
     }
     settings_values.update(setting_overrides)
     app = app_runtime.build_app(make_settings(**settings_values))
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
     return app
 
 
@@ -787,7 +795,7 @@ async def test_public_personal_chat_finishes_activity_before_every_outcome(
             }
         )
     )
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     class FakeInteraction:
         def __init__(self) -> None:
@@ -1069,21 +1077,23 @@ async def test_chat_rechecks_access_and_block_after_waiting_for_root_lock(
     install_foreground_turn_handler(app, run_turn)
     interaction = _UserAppImageInteraction()
     root_key = "userchat:42"
+    chat = PersonalChatDriver(app)
+    locks = RootLockProbe(app)
     task: asyncio.Task[TurnResult | None] | None = None
 
     try:
-        async with app._root_lock(root_key):
+        async with locks.hold(root_key):
             task = asyncio.create_task(
-                app._run_user_app_chat(
+                chat.run_chat(
                     interaction,  # type: ignore[arg-type]
                     message="hello",
                     attachment=None,
                     public=False,
-                    request_generation=app._user_app_chat_generation("42"),
+                    request_generation=chat.generation("42"),
                 )
             )
             deadline = asyncio.get_running_loop().time() + 0.5
-            while app._lock_refcounts.get(root_key, 0) < 2:
+            while locks.snapshot().refcounts.get(root_key, 0) < 2:
                 if asyncio.get_running_loop().time() > deadline:
                     raise AssertionError("personal chat turn never queued on the root lock")
                 await asyncio.sleep(0.005)
@@ -1342,7 +1352,7 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
             }
         )
     )
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     class FakeInteraction:
         def __init__(self, interaction_id: int) -> None:
@@ -1382,11 +1392,13 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
 
     install_foreground_turn_handler(app, should_not_run)
     interaction = FakeInteraction(1)
-    generation = app._user_app_chat_generation("42")
+    chat = PersonalChatDriver(app)
+    locks = RootLockProbe(app)
+    generation = chat.generation("42")
     root_key = "userchat:42"
-    async with app._root_lock(root_key):
+    async with locks.hold(root_key):
         task = asyncio.create_task(
-            app._run_user_app_chat(
+            chat.run_chat(
                 interaction,  # type: ignore[arg-type]
                 message="hello",
                 attachment=None,
@@ -1395,13 +1407,13 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
             )
         )
         deadline = asyncio.get_running_loop().time() + 0.5
-        while app._lock_refcounts.get(root_key, 0) < 2:
+        while locks.snapshot().refcounts.get(root_key, 0) < 2:
             if asyncio.get_running_loop().time() > deadline:
                 raise AssertionError("personal chat turn never queued on the root lock")
             await asyncio.sleep(0.005)
 
         reset_task = asyncio.create_task(
-            app._handle_user_app_chat_reset(interaction)  # type: ignore[arg-type]
+            chat.reset(interaction)  # type: ignore[arg-type]
         )
         await asyncio.wait_for(task, timeout=0.5)
 
@@ -1414,7 +1426,7 @@ async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
     assert calls == 0
 
     stale = FakeInteraction(2)
-    await app._run_user_app_chat(
+    await chat.run_chat(
         stale,  # type: ignore[arg-type]
         message="old retained request",
         attachment=None,
@@ -1449,7 +1461,7 @@ async def test_personal_chat_timeout_covers_wait_before_turn_execution(
             }
         )
     )
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     class FakeInteraction:
         def __init__(self) -> None:
@@ -1470,13 +1482,14 @@ async def test_personal_chat_timeout_covers_wait_before_turn_execution(
 
     install_foreground_turn_handler(app, should_not_run)
     interaction = FakeInteraction()
-    async with app._root_lock("userchat:42"):
-        await app._run_user_app_chat(
+    chat = PersonalChatDriver(app)
+    async with RootLockProbe(app).hold("userchat:42"):
+        await chat.run_chat(
             interaction,  # type: ignore[arg-type]
             message="hello",
             attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
+            request_generation=chat.generation("42"),
         )
 
     assert interaction.edits == ["That personal chat turn timed out. Run `/chat` again to retry."]
@@ -1507,7 +1520,7 @@ async def test_stop_current_reaches_personal_chat_for_dual_installed_app(
             }
         )
     )
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     recorded: list[tuple[str, str | None, bool]] = []
 
@@ -1539,18 +1552,19 @@ async def test_stop_current_reaches_personal_chat_for_dual_installed_app(
             return self._guild_install
 
     dual = FakeInteraction(user_install=True, guild_install=True)
-    await app._handle_stop_interaction(dual, False, None)  # type: ignore[arg-type]
+    cancellation = WorkCancellationDriver(app)
+    await cancellation.stop_interaction(dual, False, None)  # type: ignore[arg-type]
     assert ("userapp", "userchat:42", False) in recorded
     assert ("555", None, False) in recorded
 
     recorded.clear()
     user_only = FakeInteraction(user_install=True, guild_install=False)
-    await app._handle_stop_interaction(user_only, False, None)  # type: ignore[arg-type]
+    await cancellation.stop_interaction(user_only, False, None)  # type: ignore[arg-type]
     assert recorded == [("userapp", "userchat:42", False)]
 
     recorded.clear()
     guild_only = FakeInteraction(user_install=False, guild_install=True)
-    await app._handle_stop_interaction(guild_only, False, None)  # type: ignore[arg-type]
+    await cancellation.stop_interaction(guild_only, False, None)  # type: ignore[arg-type]
     assert recorded == [("555", None, False)]
 
     await app.database.close()
@@ -1580,7 +1594,7 @@ async def test_personal_chat_cancellation_propagates_during_shutdown(
             }
         )
     )
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
 
     class FakeInteraction:
         def __init__(self) -> None:
@@ -1605,18 +1619,19 @@ async def test_personal_chat_cancellation_propagates_during_shutdown(
 
     install_foreground_turn_handler(app, wait_forever)
     interaction = FakeInteraction()
+    chat = PersonalChatDriver(app)
     task = asyncio.create_task(
-        app._run_user_app_chat(
+        chat.run_chat(
             interaction,  # type: ignore[arg-type]
             message="hello",
             attachment=None,
             public=False,
-            request_generation=app._user_app_chat_generation("42"),
+            request_generation=chat.generation("42"),
         )
     )
     await entered.wait()
 
-    app._closed = True
+    LifecycleProbe(app).set_closed()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1762,7 +1777,7 @@ async def _dm_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: 
     }
     config.update(overrides)
     app = app_runtime.build_app(Settings.model_validate(config))
-    await app._first_init_core()
+    await LifecycleProbe(app).first_init_core()
     return app
 
 
@@ -1772,13 +1787,14 @@ async def test_dm_personal_chat_tier_gates_on_setting_and_allowlist(
     tmp_path: Path,
 ) -> None:
     app = await _dm_app(tmp_path, monkeypatch)
+    chat = PersonalChatDriver(app)
     # Owner is automatically user-app staff; nobody else is allowlisted here.
-    assert app._dm_personal_chat_tier(_dm_message(42)) is TrustTier.STAFF
-    assert app._dm_personal_chat_tier(_dm_message(999)) is None
+    assert chat.dm_tier(_dm_message(42)) is TrustTier.STAFF
+    assert chat.dm_tier(_dm_message(999)) is None
     await app.database.close()
 
     off = await _dm_app(tmp_path / "off", monkeypatch, user_app_dm_enabled=False)
-    assert off._dm_personal_chat_tier(_dm_message(42)) is None
+    assert PersonalChatDriver(off).dm_tier(_dm_message(42)) is None
     await off.database.close()
 
 
@@ -1809,7 +1825,7 @@ async def test_dm_continues_the_owner_only_chat_root(
         access_scope=OWNER_ONLY,
     )
 
-    resolved = await app._resolve_personal_dm_conversation(_dm_message(42))
+    resolved = await PersonalChatDriver(app).resolve_dm_conversation(_dm_message(42))
     assert resolved is not None
     assert resolved.key == "userchat:42"
     assert resolved.access_scope == OWNER_ONLY
@@ -1889,7 +1905,9 @@ async def test_dm_stop_targets_shared_personal_scope(
     monkeypatch.setattr(app, "_cancel_user_work", cancel_user_work)
     monkeypatch.setattr(app, "send_response", send_response)
 
-    await app._handle_stop_message(_dm_message(42, content="stop"))  # type: ignore[arg-type]
+    await WorkCancellationDriver(app).stop_message(  # type: ignore[arg-type]
+        _dm_message(42, content="stop")
+    )
 
     assert captured == {
         "user_id": "42",

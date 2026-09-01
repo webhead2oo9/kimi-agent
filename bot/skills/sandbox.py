@@ -241,7 +241,12 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
             raise SandboxUnavailableError(
                 "Refusing to expose the host root as an interpreter mount"
             )
-        if normalized == home or home.is_relative_to(normalized) or resolved == home:
+        if (
+            normalized == home
+            or home.is_relative_to(normalized)
+            or resolved == home
+            or home.is_relative_to(resolved)
+        ):
             # An interpreter sitting directly in (or above) the service home
             # would ro-bind the whole home - credentials, config, databases -
             # into every skill jail. A venv or runtime tree under the home is

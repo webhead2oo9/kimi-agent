@@ -23,6 +23,7 @@ from tests.helpers import (
     replace_app_repositories,
 )
 from tools.learn import LearnTarget
+from trust.resolver import TrustResolver
 
 USER_ID = 42
 GUILD_ID = 999
@@ -165,6 +166,8 @@ def _bind_teach_consent(
     app: Any,
     prompter: UserAppConsentPrompter,
     calls: list[tuple[LearnTarget, discord.Interaction]],
+    *,
+    trust_resolver: TrustResolver | None = None,
 ) -> None:
     async def capture_learn(
         target: LearnTarget,
@@ -180,7 +183,7 @@ def _bind_teach_consent(
 
     register_learn_command(
         app.bot,
-        app.trust_resolver,
+        trust_resolver or app.trust_resolver,
         run_learn=capture_learn,
         is_blocked=is_blocked,
         request_consent=lambda interaction, resume: prompter.prompt_if_needed(
@@ -256,6 +259,68 @@ async def test_teach_accept_stores_consent_and_resumes_with_button_interaction(
         assert calls[0][1] is accepted
         assert accepted.response.deferred == [{"ephemeral": True, "thinking": True}]
         assert [message["content"] for message in accepted.followup.sent] == [REPORT]
+    finally:
+        await app.close()
+
+
+@pytest.mark.asyncio
+async def test_teach_accept_rechecks_blocked_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
+    original = _Interaction()
+    accepted = _Interaction()
+    try:
+        await _teach_menu(app).callback(cast(Any, original), cast(Any, _message()))
+        assert app.blocked_user_store is not None
+        await app.blocked_user_store.block_user(
+            str(USER_ID),
+            blocked_by="operator",
+            reason="changed while consent was pending",
+        )
+        view = cast(UserAppConsentView, original.response.sent[0]["view"])
+        accept_button = next(
+            child
+            for child in view.children
+            if getattr(child, "label", None) == "Accept and continue"
+        )
+
+        await cast(Any, accept_button).callback(cast(discord.Interaction, accepted))
+
+        assert calls == []
+        assert [message["content"] for message in accepted.followup.sent] == [
+            "You can't use this right now."
+        ]
+    finally:
+        await app.close()
+
+
+@pytest.mark.asyncio
+async def test_teach_accept_rechecks_staff_standing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
+    staff_ids = {str(USER_ID)}
+    resolver = TrustResolver(set(), set(), staff_ids)
+    _bind_teach_consent(app, app.user_app_consent, calls, trust_resolver=resolver)
+    original = _Interaction()
+    accepted = _Interaction()
+    try:
+        await _teach_menu(app).callback(cast(Any, original), cast(Any, _message()))
+        staff_ids.clear()
+        view = cast(UserAppConsentView, original.response.sent[0]["view"])
+        accept_button = next(
+            child
+            for child in view.children
+            if getattr(child, "label", None) == "Accept and continue"
+        )
+
+        await cast(Any, accept_button).callback(cast(discord.Interaction, accepted))
+
+        assert calls == []
+        assert [message["content"] for message in accepted.followup.sent] == ["Staff only."]
     finally:
         await app.close()
 

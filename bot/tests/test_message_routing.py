@@ -314,10 +314,12 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
     monkeypatch, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    app.memory_manager.client = object()
-    app.memory_manager.ready = True
     replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
     _install_foreground_runner(app, ConversationStore(routing_database))
+    # The shared runner is built before lifecycle readiness. Memory becoming
+    # active afterward must still be resolved for this turn.
+    app.memory_manager.client = object()
+    app.memory_manager.ready = True
     ensure_user_bank = AsyncMock()
     monkeypatch.setattr(message_runtime, "ensure_user_bank", ensure_user_bank)
     from agent.attachments import TurnImages
@@ -357,6 +359,39 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
     assert recall_kwargs["user_message"] == "what did I say about my headset?"
     assert recall_kwargs["types"] == app.settings.user_memory_recall_types
     assert captured["recalled_memories"] == "- webhead uses a Quest 3. [world]"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_resolves_bot_identity_after_runner_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    routing_database: Database,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
+    _install_foreground_runner(app, ConversationStore(routing_database))
+    live_bot_user = SimpleNamespace(id=999)
+    monkeypatch.setattr(type(app.bot), "user", property(lambda _bot: live_bot_user))
+    image_probe = AsyncMock(return_value=False)
+    monkeypatch.setattr(message_runtime, "turn_has_image_input", image_probe)
+    from agent.attachments import TurnImages
+
+    monkeypatch.setattr(
+        message_runtime,
+        "collect_turn_images",
+        AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
+    )
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        message_runtime,
+        "run_conversation",
+        AsyncMock(return_value=ConversationRunResult(text="ok")),
+    )
+
+    await app.message_controller.handle_message(_text_message(), lock_acquired=True)
+
+    image_probe.assert_awaited_once()
+    assert image_probe.await_args is not None
+    assert image_probe.await_args.kwargs["bot_user"] is live_bot_user
 
 
 @pytest.mark.asyncio

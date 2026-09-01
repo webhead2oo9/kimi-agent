@@ -196,6 +196,30 @@ def test_runtime_mounts_refuse_an_interpreter_directly_in_the_home(
         sandbox_module._runtime_mounts(interpreter.absolute())
 
 
+@pytest.mark.parametrize("resolved_ancestor", ["parent", "higher"])
+def test_runtime_mounts_refuse_a_symlink_resolving_above_the_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resolved_ancestor: str,
+) -> None:
+    service_root = tmp_path / "service"
+    home = service_root / "home"
+    home.mkdir(parents=True)
+    target = service_root if resolved_ancestor == "parent" else tmp_path
+    (target / "python").write_text("", encoding="utf-8")
+    aliases = tmp_path / "aliases"
+    aliases.mkdir()
+    alias = aliases / "runtime"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module._runtime_mounts((alias / "python").absolute())
+
+
 def test_runtime_mounts_fail_closed_on_dotdot_across_an_alias(tmp_path: Path) -> None:
     """A relative .. hop that crosses an unresolved directory symlink is
     normalized the way the jail will see it; when that path does not exist on

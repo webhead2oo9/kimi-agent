@@ -71,6 +71,7 @@ from app.conversation_routing import (
 )
 from app.consent import PrivacyConsentGate
 from app.consent import build_consent_embed
+from app.foreground_turn import ForegroundTurnRunner, deliver_with_workspace_guard
 from app.user_app_consent import UserAppConsentView
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
@@ -89,7 +90,9 @@ from app.providers import (
 from utils.privacy_barrier import PrivacyDeletionPendingError, UserPrivacyBarrier
 from app.tools import RuntimeTools, build_runtime_tools
 from app.turn_entry import (
+    TurnDependencyFactory,
     TurnEntryHooks,
+    TurnEntryServices,
     build_turn_dependencies,
     chat_model_name_for_scope,
     build_turn_preparation_config,
@@ -410,6 +413,7 @@ class KimiApplication:
     _lock_refcounts: dict[str, int] = field(default_factory=dict)
     llm_semaphore: asyncio.Semaphore = field(init=False)
     turn_admission: TurnAdmissionController = field(init=False)
+    turn_runner: ForegroundTurnRunner = field(init=False, repr=False)
     skills_index_cache: SkillsIndexCache = field(init=False)
     user_app_access: UserAppAccess = field(init=False)
     _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
@@ -1233,6 +1237,14 @@ class KimiApplication:
             is_available=self.gateway_interactions_ready,
         )
         self.context_manager = ContextManager(store=self.conversation_store)
+        self.turn_runner = ForegroundTurnRunner(
+            settings=self.settings,
+            conversation_store=self.conversation_store,
+            dependency_factory=self._make_turn_dependency_factory(),
+            active_operations=self.active_operations,
+            privacy_barrier=self.privacy_barrier,
+            workspace_locks=self.tools.workspace_locks,
+        )
         if self.settings.thread_handoff_enabled:
             self.thread_handoff = ThreadHandoffManager(self.conversation_store)
             await self.thread_handoff.load()
@@ -2684,12 +2696,8 @@ class KimiApplication:
                         workspace_key=user_app_workspace_key(user_id),
                     )
                     dependencies = await build_turn_dependencies(
-                        self,
+                        self._make_turn_dependency_factory(),
                         turn_input,
-                        context_manager=self.context_manager,
-                        registry=self.registry,
-                        preference_store=self.preference_store,
-                        usage_store=self._usage_store(),
                         hooks=_turn_entry_hooks(),
                         command_template="chat",
                         collect_reply_context_func=collect_reply_context,
@@ -3304,12 +3312,8 @@ class KimiApplication:
         )
         turn_stop_event = asyncio.Event()
         turn_dependencies = await build_turn_dependencies(
-            self,
+            self._make_turn_dependency_factory(),
             turn_input,
-            context_manager=self.context_manager,
-            registry=self.registry,
-            preference_store=self.preference_store,
-            usage_store=self._usage_store(),
             hooks=_turn_entry_hooks(),
             command_template="chat" if personal_dm else None,
             collect_reply_context_func=collect_reply_context,
@@ -3724,13 +3728,12 @@ class KimiApplication:
         output_files: Sequence[str] | None,
         deliver: Callable[[], Awaitable[T]],
     ) -> T:
-        # Only local attachments need their workspace protected until Discord
-        # has consumed them. A text-only response must remain deliverable while
-        # a durable coding worker owns the workspace writer lease.
-        if workspace_key and output_files:
-            async with self.tools.workspace_locks.activity(workspace_key):
-                return await deliver()
-        return await deliver()
+        return await deliver_with_workspace_guard(
+            workspace_locks=self.tools.workspace_locks,
+            workspace_key=workspace_key,
+            output_files=output_files,
+            deliver=deliver,
+        )
 
     async def _resolve_personal_dm_conversation(
         self,
@@ -3840,6 +3843,32 @@ class KimiApplication:
         if self.usage_store is None:
             self.usage_store = UsageStore(self.database)
         return self.usage_store
+
+    def _make_turn_dependency_factory(self) -> TurnDependencyFactory:
+        assert self.context_manager is not None
+        return TurnDependencyFactory(
+            TurnEntryServices(
+                settings=self.settings,
+                bot_user=self.bot.user,
+                provider_manager=self.provider_manager,
+                context_manager=self.context_manager,
+                registry=self.registry,
+                preference_store=self.preference_store,
+                usage_store=self._usage_store(),
+                attachment_store=self.tools.attachment_store,
+                workspace_dir=self.tools.workspace_dir,
+                workspace_manager=self.tools.workspace_manager,
+                workspace_locks=self.tools.workspace_locks,
+                llm_semaphore=self.llm_semaphore,
+                memory_client=self.memory_manager.active_client(),
+                skills_index=self.skills_index_cache.index,
+                personal_skills_index=self.tools.personal_skill_manager.index,
+                resolve_reference_hints=self.discord_gateway.resolve_reference_hints,
+                moderation_service=self.moderation_service,
+                image_distillation_store=self.image_distillation_store,
+                user_activity=self.privacy_barrier.activity,
+            )
+        )
 
     def _model_log_label(self, role: str) -> str:
         model_config = getattr(self.provider_manager, "model_config", None)

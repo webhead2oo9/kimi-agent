@@ -144,6 +144,7 @@ class EnsureUserBank(Protocol):
         memory_client: Any,
         user_id: str,
         user_name: str,
+        /,
     ) -> str | None: ...
 
 
@@ -283,6 +284,7 @@ class PersistPreparedUserMessage(Protocol):
         self,
         source: TurnPreparationInput,
         turn: TurnRequest,
+        /,
     ) -> None: ...
 
 
@@ -296,6 +298,7 @@ class WriteGeneratedAssets(Protocol):
     def __call__(
         self,
         generated_assets: list[GeneratedAsset],
+        /,
         *,
         output_dir: Path,
     ) -> list[Path]: ...

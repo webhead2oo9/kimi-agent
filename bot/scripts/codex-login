@@ -23,9 +23,9 @@ cd "$BOT_DIR"
 if [[ -z "${TOKEN_FILE:-}" ]]; then
     TOKEN_FILE="$(
         ENV_FILE="$ENV_FILE" "$PYTHON_BIN" - <<'PY'
-from config.settings import settings
+from config.settings import Settings
 
-print(settings.codex_token_file)
+print(Settings().codex_token_file)
 PY
     )"
 fi

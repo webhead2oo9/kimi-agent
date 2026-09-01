@@ -298,7 +298,7 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
                 context_key=first.context_key,
                 must_exist=True,
             )
-            assert resolved.path == generated_file
+            assert resolved.path == generated_file.resolve()
             with pytest.raises(
                 ValueError, match="Generated file is outside this conversation context"
             ):

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,7 +178,10 @@ def test_betterwright_installer_shell_syntax() -> None:
     subprocess.run(["sh", "-n", str(BETTERWRIGHT_INSTALLER)], check=True)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="BetterWright runtime installation is Linux-only",
+)
 def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path: Path) -> None:
     lexical = _run_installer_preflight(tmp_path, "/opt/kimi/../kimi/betterwright")
     alias = tmp_path / "runtime-alias"
@@ -190,7 +194,10 @@ def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path
         assert "refusing runtime directory" not in result.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="BetterWright runtime installation is Linux-only",
+)
 def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Path) -> None:
     victim = tmp_path / "victim"
     victim.mkdir()

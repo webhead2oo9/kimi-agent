@@ -21,7 +21,8 @@ def test_codex_login_uses_the_selected_codex_token_setting() -> None:
 
     assert 'if [[ -z "${TOKEN_FILE:-}" ]]' in source
     assert 'ENV_FILE="$ENV_FILE" "$PYTHON_BIN"' in source
-    assert "print(settings.codex_token_file)" in source
+    assert "from config.settings import Settings" in source
+    assert "print(Settings().codex_token_file)" in source
 
 
 def test_service_installer_quotes_generated_path_values() -> None:

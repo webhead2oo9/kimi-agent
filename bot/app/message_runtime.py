@@ -604,7 +604,7 @@ class DiscordMessageController:
         return TurnDependencyFactory(
             TurnEntryServices(
                 settings=self._turn_settings,
-                bot_user=self._bot.user,
+                get_bot_user=lambda: self._bot.user,
                 provider_manager=self._provider_manager,
                 context_manager=context_manager,
                 registry=self._tools.registry,
@@ -615,7 +615,7 @@ class DiscordMessageController:
                 workspace_manager=self._tools.workspace_manager,
                 workspace_locks=self._tools.workspace_locks,
                 llm_semaphore=self._llm_semaphore,
-                memory_client=self._memory_manager.active_client(),
+                get_memory_client=self._memory_manager.active_client,
                 skills_index=self._skills_index_cache.index,
                 personal_skills_index=self._tools.personal_skill_manager.index,
                 resolve_reference_hints=self._gateway.resolve_reference_hints,

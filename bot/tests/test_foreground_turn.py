@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -51,6 +52,24 @@ class RecordingConversationStore(ConversationStore):
         context_channel_id: str | None = None,
     ) -> int | None:
         self.events.extend(f"persist:{record.role}" for record in records)
+        return await super().save_channel_messages(
+            conversation_id,
+            records,
+            context_channel_id=context_channel_id,
+        )
+
+
+class AssistantPersistenceFailingStore(RecordingConversationStore):
+    async def save_channel_messages(
+        self,
+        conversation_id: int,
+        records: list[ChannelMessageRecord],
+        *,
+        context_channel_id: str | None = None,
+    ) -> int | None:
+        if any(record.role == "assistant" for record in records):
+            self.events.extend(f"persist:{record.role}" for record in records)
+            raise RuntimeError("assistant persistence failed")
         return await super().save_channel_messages(
             conversation_id,
             records,
@@ -375,6 +394,32 @@ async def test_delivery_receipt_channel_maps_the_persisted_reply(
     ) as cursor:
         row = await cursor.fetchone()
     assert row is not None and row["channel_id"] == "destination-thread"
+
+
+@pytest.mark.asyncio
+async def test_delivered_result_survives_assistant_persistence_failure(
+    foreground_database: Database,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    events: list[str] = []
+    store = AssistantPersistenceFailingStore(foreground_database, events)
+    locks = UserLocks()
+    adapter = FakeAdapter(events)
+    runner = _runner(
+        store,
+        FakeDependencyFactory(events, tmp_path, locks),
+        locks,
+        _successful_handle_turn(events),
+    )
+    caplog.set_level(logging.ERROR, logger="app.foreground_turn")
+
+    result = await runner.run(_invocation(), adapter=adapter)
+
+    assert result == TurnResult(response_text="answer")
+    assert adapter.outcomes[-1].kind == "delivered"
+    assert await _transcript_rows(foreground_database) == [("user", "hello")]
+    assert "Could not persist delivered assistant replies" in caplog.text
 
 
 @pytest.mark.asyncio

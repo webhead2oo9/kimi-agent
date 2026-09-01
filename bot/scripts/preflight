@@ -57,7 +57,9 @@ if runtime_env.is_file():
 from app.providers import ProviderManager, codex_startup_check
 from config.model_config import load_model_config
 from config.operator_settings import apply_operator_settings
-from config.settings import settings
+from config.settings import Settings
+
+settings = Settings()
 
 # Startup layers the operator settings.md over the environment; preflight must
 # vet the same profile or it smoke-tests features the service will not run.

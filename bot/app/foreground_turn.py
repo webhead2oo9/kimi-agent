@@ -316,7 +316,15 @@ class ForegroundTurnRunner:
                 deliver=lambda: adapter.deliver(turn_result, conversation_id=conversation_id),
             )
             result = receipt.delivered_result or turn_result
-            await self._persist_assistant_replies(conversation_id, result, receipt)
+            try:
+                await self._persist_assistant_replies(conversation_id, result, receipt)
+            except Exception:
+                # Delivery is already externally visible. Preserve that result
+                # rather than letting an outer surface replace it with an error.
+                log.exception(
+                    "Could not persist delivered assistant replies for conversation %s",
+                    conversation_id,
+                )
             if receipt.delivery_failed and not result.delivery_failed:
                 result = replace(result, delivery_failed=True)
             outcome_kind = (

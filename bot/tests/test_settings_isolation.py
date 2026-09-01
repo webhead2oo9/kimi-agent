@@ -89,6 +89,14 @@ class _SettingsCallVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def test_operator_scripts_construct_settings_after_import() -> None:
+    for script_name in ("preflight", "codex-login"):
+        source = (PROJECT_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert "from config.settings import settings" not in source
+        assert "from config.settings import Settings" in source
+        assert "Settings()" in source
+
+
 def test_settings_constructions_disable_dotenv_loading() -> None:
     allowed_calls: set[tuple[str, str]] = set()
     unisolated_calls: list[tuple[str, str, int]] = []

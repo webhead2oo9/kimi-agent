@@ -341,4 +341,3 @@ CREATE INDEX IF NOT EXISTS idx_coding_jobs_task
 
 INSERT INTO schema_version (version, name, applied_at)
 VALUES (1, 'initial_schema', '2026-08-25T09:30:12.000Z');
-

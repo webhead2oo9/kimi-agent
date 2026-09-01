@@ -69,22 +69,27 @@ def register_learn_command(
     blocked-user store, and shared privacy-consent flow.
     """
 
-    @app_commands.context_menu(name=learn_menu_name(bot_name))
-    async def teach_from_message(
-        interaction: discord.Interaction,
-        message: discord.Message,
-    ) -> None:
+    async def authorized(interaction: discord.Interaction) -> bool:
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
         tier = trust_resolver.resolve(member, str(interaction.user.id), guild_id)
         if tier < TrustTier.STAFF:
             await _send_message(interaction, _NO_STANDING)
-            return
+            return False
         if await is_blocked(str(interaction.user.id)):
             await _send_message(interaction, _BLOCKED)
-            return
+            return False
         if guild_id is None:
             await _send_message(interaction, _NO_GUILD)
+            return False
+        return True
+
+    @app_commands.context_menu(name=learn_menu_name(bot_name))
+    async def teach_from_message(
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> None:
+        if not await authorized(interaction):
             return
         if message.author.bot:
             await _send_message(interaction, _BOT_MESSAGE)
@@ -94,6 +99,10 @@ def register_learn_command(
             return
 
         async def run(resume_interaction: discord.Interaction) -> None:
+            # Consent can leave this callback pending while standing or a block
+            # changes, so authorize the component interaction again at use time.
+            if not await authorized(resume_interaction):
+                return
             target = LearnTarget(
                 content=message.content or "",
                 author_name=getattr(message.author, "display_name", str(message.author)),

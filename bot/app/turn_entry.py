@@ -126,7 +126,7 @@ class TurnEntryHooks:
 @dataclass(frozen=True, slots=True)
 class TurnEntryServices:
     settings: Settings
-    bot_user: object | None
+    get_bot_user: Callable[[], object | None]
     provider_manager: ProviderManager
     context_manager: TurnContextManager
     registry: ToolRegistry
@@ -137,7 +137,7 @@ class TurnEntryServices:
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     llm_semaphore: asyncio.Semaphore
-    memory_client: object | None
+    get_memory_client: Callable[[], object | None]
     skills_index: Callable[[str | None], str]
     personal_skills_index: Callable[[str], str]
     resolve_reference_hints: ResolveReferenceHints
@@ -307,7 +307,7 @@ async def build_turn_dependencies(
     def chat_model_name_for_turn(*, images: bool = False) -> str:
         return chat_model_name_for_scope(services.provider_manager, chat_scope, images=images)
 
-    image_probe_kwargs: dict[str, Any] = {"bot_user": services.bot_user}
+    image_probe_kwargs: dict[str, Any] = {"bot_user": services.get_bot_user()}
     if getattr(source, "allow_bot_authored_reply_context", False):
         image_probe_kwargs["allow_bot_authored"] = True
     has_images = bool(services.settings.max_turn_images > 0) and await hooks.turn_has_image_input(
@@ -406,7 +406,7 @@ async def build_turn_dependencies(
         workspace_manager=services.workspace_manager,
         workspace_locks=services.workspace_locks,
         llm_semaphore=services.llm_semaphore,
-        memory_client=services.memory_client,
+        memory_client=services.get_memory_client(),
         preference_store=services.preference_store,
         ensure_user_bank=hooks.ensure_user_bank,
         recall_current_user_context=hooks.recall_current_user_context,

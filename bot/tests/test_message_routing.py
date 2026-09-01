@@ -148,6 +148,12 @@ def _build_test_app(monkeypatch):
     return app
 
 
+def _install_foreground_runner(app, store: ConversationStore) -> None:
+    app.context_manager = ContextManager(store)
+    app.conversation_store = store
+    app.turn_runner = app._make_foreground_turn_runner()
+
+
 @pytest.mark.asyncio
 async def test_new_message_root_records_owner_before_transcript_persistence(
     routing_database: Database,
@@ -209,6 +215,7 @@ def _text_message(
     message.content = content
     message.type = message_type
     message.id = 555
+    message.created_at = datetime.fromtimestamp(message.id, tz=UTC)
     message.add_reaction = AsyncMock()
     message.remove_reaction = AsyncMock()
     return message
@@ -218,9 +225,8 @@ async def _capture_conversation_call(monkeypatch, app, message, store: Conversat
     """Run one mention-path turn and return the ConversationRunRequest fields."""
     from agent.attachments import TurnImages
 
-    app.context_manager = ContextManager(store)
-    app.conversation_store = None
     app.preference_store = EmptyPersonaPreferenceStore()
+    _install_foreground_runner(app, store)
     monkeypatch.setattr(
         app_runtime,
         "collect_turn_images",
@@ -287,12 +293,10 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
     monkeypatch, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    manager = ContextManager(ConversationStore(routing_database))
-    app.context_manager = manager
-    app.conversation_store = None
     app.memory_manager.client = object()
     app.memory_manager.ready = True
     app.preference_store = EmptyPersonaPreferenceStore()
+    _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
     monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
     from agent.attachments import TurnImages
@@ -339,11 +343,9 @@ async def test_trigger_newlines_are_neutralized_for_model_input(
     monkeypatch, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    manager = ContextManager(ConversationStore(routing_database))
-    app.context_manager = manager
-    app.conversation_store = None
     app.memory_manager.client = None
     app.preference_store = None
+    _install_foreground_runner(app, ConversationStore(routing_database))
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
@@ -377,9 +379,6 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
     monkeypatch, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    manager = ContextManager(ConversationStore(routing_database))
-    app.context_manager = manager
-    app.conversation_store = None
     app.memory_manager.client = object()
     app.memory_manager.ready = True
 
@@ -397,6 +396,7 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
 
     preferences = DisabledPreferenceStore()
     app.preference_store = preferences
+    _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
     monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
     from agent.attachments import TurnImages
@@ -426,13 +426,16 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
     ensure_user_bank.assert_not_awaited()
 
 
-def test_handle_message_wires_usage_dependencies_with_scoped_model(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_message_wires_usage_dependencies_with_scoped_model(
+    monkeypatch,
+    routing_database: Database,
+):
     app = _build_test_app(monkeypatch)
     app.settings.thread_handoff_suggest_after_tool_calls = 8
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = None
     app.memory_manager.client = None
     app.preference_store = None
+    _install_foreground_runner(app, ConversationStore(routing_database))
 
     model_config = ModelConfig.model_validate(
         {
@@ -468,7 +471,7 @@ def test_handle_message_wires_usage_dependencies_with_scoped_model(monkeypatch):
 
     message = _text_message(content="hello")
 
-    asyncio.run(app.handle_message(message, lock_acquired=True))
+    await app.handle_message(message, lock_acquired=True)
 
     dependencies = captured["dependencies"]
     assert dependencies.usage_store is not None
@@ -615,6 +618,7 @@ def _wire_handle_message(
     app.conversation_store = store
     app.memory_manager.client = None
     app.preference_store = None
+    app.turn_runner = app._make_foreground_turn_runner()
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(

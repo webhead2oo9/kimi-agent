@@ -1823,106 +1823,6 @@ async def test_processing_reaction_cleanup_is_bounded(
     await cleanup_cancelled.wait()
 
 
-def test_root_lock_evicts_entry_after_release(monkeypatch):
-    app = _build_test_app(monkeypatch)
-    locks = RootLockProbe(app)
-
-    async def run():
-        async with locks.hold("root:1"):
-            snapshot = locks.snapshot()
-            assert "root:1" in snapshot.keys
-            assert snapshot.refcounts["root:1"] == 1
-        snapshot = locks.snapshot()
-        assert snapshot.keys == ()
-        assert snapshot.refcounts == {}
-
-    asyncio.run(run())
-
-
-def test_root_lock_shares_one_lock_for_concurrent_same_root(monkeypatch):
-    app = _build_test_app(monkeypatch)
-    locks = RootLockProbe(app)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def hold():
-        async with locks.hold("root:1"):
-            started.set()
-            await release.wait()
-
-    async def waiter():
-        async with locks.hold("root:1"):
-            pass
-
-    async def run():
-        first = asyncio.create_task(hold())
-        await started.wait()
-        second = asyncio.create_task(waiter())
-        await asyncio.sleep(0)  # let the waiter register and block on the lock
-        # Same Lock object, refcounted to 2: never two locks for one root.
-        snapshot = locks.snapshot()
-        assert len(snapshot.keys) == 1
-        assert snapshot.refcounts["root:1"] == 2
-        release.set()
-        await asyncio.gather(first, second)
-        snapshot = locks.snapshot()
-        assert snapshot.keys == ()
-        assert snapshot.refcounts == {}
-
-    asyncio.run(run())
-
-
-def test_privacy_conversation_lock_drains_shared_root_turn(monkeypatch):
-    app = _build_test_app(monkeypatch)
-    locks = RootLockProbe(app)
-    turn_started = asyncio.Event()
-    release_turn = asyncio.Event()
-    deletion_entered = asyncio.Event()
-
-    class _AffectedRoots:
-        async def list_user_conversation_keys(self, user_id: str) -> list[str]:
-            assert user_id == "alice"
-            return ["shared-root"]
-
-    app.conversation_store = cast(ConversationStore, _AffectedRoots())
-
-    async def active_other_user_turn():
-        async with locks.hold("shared-root"):
-            turn_started.set()
-            await release_turn.wait()
-
-    async def delete_after_drain():
-        async with locks.hold_user_conversations("alice"):
-            deletion_entered.set()
-
-    async def run():
-        active = asyncio.create_task(active_other_user_turn())
-        await turn_started.wait()
-        deletion = asyncio.create_task(delete_after_drain())
-        await asyncio.sleep(0)
-        assert not deletion_entered.is_set()
-        release_turn.set()
-        await asyncio.gather(active, deletion)
-        assert deletion_entered.is_set()
-
-    asyncio.run(run())
-
-
-def test_root_lock_evicts_on_exception(monkeypatch):
-    app = _build_test_app(monkeypatch)
-    locks = RootLockProbe(app)
-
-    async def run():
-        with pytest.raises(RuntimeError):
-            async with locks.hold("root:1"):
-                raise RuntimeError("boom")
-        snapshot = locks.snapshot()
-        assert snapshot.keys == ()
-        assert snapshot.refcounts == {}
-
-    asyncio.run(run())
-
-
 def _enable_thread_handoff(app, store: ConversationStore) -> ThreadHandoffManager:
     app.thread_handoff = ThreadHandoffManager(store)
     return app.thread_handoff
@@ -2030,7 +1930,7 @@ async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_d
     await app.handle_message(message, lock_acquired=True)
 
     message.create_thread.assert_awaited_once_with(name="Quest help")
-    message.add_reaction.assert_awaited_once_with(app_runtime.THREAD_HANDOFF_REACTION)
+    message.add_reaction.assert_awaited_once_with(thread_boundary.THREAD_HANDOFF_REACTION)
     assert send_calls["channel"] is thread
     assert send_calls["reference"] is None
     assert await store.get_thread_conversation("5555") is not None
@@ -2322,7 +2222,8 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
             events.append(("finalize", task_id, kwargs))
             return True
 
-    app.coding_tasks = cast(Any, CodingTasks())
+    coding_tasks = CodingTasks()
+    monkeypatch.setattr(type(app), "coding_tasks", property(lambda _app: coding_tasks))
     fake_thread_cls = type("_FakeThread", (), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
     thread = fake_thread_cls()

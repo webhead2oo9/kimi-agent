@@ -61,7 +61,7 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
 | `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
 
-`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, and ingress gates), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery and handoffs), `user_app_turn_adapter.py` (deferred `/chat` delivery), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
+`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, and ingress gates), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery and handoffs), `user_app_turn_adapter.py` (deferred `/chat` delivery), `coding_tasks.py` (durable worker scheduling), `coding_delivery.py` (durable Discord projection and control), `root_locks.py` (refcounted conversation serialization), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
 ## Design choices that matter
 

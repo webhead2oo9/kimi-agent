@@ -26,6 +26,7 @@ from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
+from app.root_locks import RootLockSnapshot
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
@@ -198,19 +199,6 @@ class CommandSyncProbe:
         self._app._retired_global_sync_tasks.update(tasks)
 
 
-class CodingDeliveryDriver:
-    """Transitional test seam for the future ``app.coding_delivery`` module."""
-
-    def __init__(self, app: Any) -> None:
-        self._app = app
-
-    async def result_channel(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._coding_result_channel(*args, **kwargs)
-
-    async def moderate_text(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._moderate_coding_text(*args, **kwargs)
-
-
 class PersonalChatDriver:
     """Transitional test seam for the future ``app.user_app_chat`` module."""
 
@@ -249,39 +237,27 @@ class WorkCancellationDriver:
         return await self._app._handle_stop_message(*args, **kwargs)
 
 
-@dataclass(frozen=True, slots=True)
-class RootLockSnapshot:
-    """Read-only lock state until the root-lock owner becomes its own module."""
-
-    keys: tuple[str, ...]
-    refcounts: Mapping[str, int]
-
-
 class RootLockProbe:
-    """Transitional test seam for the future root-lock owner under ``app``."""
+    """Compatibility seam while callers move to ``app.root_locks`` directly."""
 
     def __init__(self, app: Any) -> None:
         self._app = app
 
     def snapshot(self) -> RootLockSnapshot:
-        return RootLockSnapshot(
-            keys=tuple(sorted(self._app.context_locks)),
-            refcounts=MappingProxyType(dict(self._app._lock_refcounts)),
-        )
+        return self._app.root_locks.snapshot()
 
     @asynccontextmanager
     async def hold(self, key: str) -> AsyncIterator[None]:
-        async with self._app._root_lock(key):
+        async with self._app.root_locks.hold(key):
             yield
 
     @asynccontextmanager
     async def hold_user_conversations(self, user_id: str) -> AsyncIterator[None]:
-        async with self._app._lock_user_conversation_turns(user_id):
+        async with self._app.root_locks.hold_user_conversations(
+            user_id,
+            self._app.conversation_store,
+        ):
             yield
-
-    def reset(self) -> None:
-        self._app.context_locks = {}
-        self._app._lock_refcounts = {}
 
 
 async def remove_processing_reaction(app: Any, *args: Any, **kwargs: Any) -> Any:

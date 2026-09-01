@@ -1001,6 +1001,11 @@ async def test_startup_replay_tombstones_failed_user_but_allows_others(
             self.calls: list[str] = []
             self.saw_later_user_tombstoned = False
 
+        async def list_user_conversation_keys(self, user_id: str) -> list[str]:
+            # Replay drains the user's active roots before deleting; this fake
+            # has none, and the drain must be reached rather than skipped.
+            return []
+
         async def delete_user_data(self, user_id: str) -> UserDataDeletion:
             self.calls.append(user_id)
             if user_id == "42":

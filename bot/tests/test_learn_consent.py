@@ -12,7 +12,7 @@ import pytest
 import app.runtime as app_runtime
 from app.user_app_consent import UserAppConsentView
 from commands.learn_cmd import learn_menu_name
-from tests.helpers import StubProviderManager, make_settings
+from tests.helpers import LifecycleProbe, StubProviderManager, make_settings
 from tools.learn import LearnTarget
 
 USER_ID = 42
@@ -142,9 +142,9 @@ async def _build_learn_app(
         )
     )
     try:
-        await app._first_init_core()
+        await LifecycleProbe(app).first_init_core()
     except BaseException:
-        await app._close_resources()
+        await app.close()
         raise
     return app, calls
 
@@ -185,7 +185,7 @@ async def test_teach_prompts_unconsented_staff_before_defer_or_learn(
         assert embed.title == app.settings.privacy_consent_title
         assert embed.description == app.settings.privacy_consent_text
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,7 @@ async def test_teach_accept_stores_consent_and_resumes_with_button_interaction(
         assert accepted.response.deferred == [{"ephemeral": True, "thinking": True}]
         assert [message["content"] for message in accepted.followup.sent] == [REPORT]
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -236,7 +236,7 @@ async def test_teach_already_consented_defers_and_runs_directly(
         assert calls[0][1] is interaction
         assert [message["content"] for message in interaction.followup.sent] == [REPORT]
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -255,7 +255,7 @@ async def test_teach_disabled_gate_never_looks_up_consent(
         assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
         assert len(calls) == 1
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -277,7 +277,7 @@ async def test_teach_blocked_staff_is_refused_before_consent_lookup(
         assert interaction.response.deferred == []
         assert calls == []
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -300,7 +300,7 @@ async def test_chat_still_prompts_through_extracted_consent_helper(
         assert prompt["ephemeral"] is True
         assert isinstance(prompt["view"], UserAppConsentView)
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -331,7 +331,7 @@ async def test_teach_consent_failures_fail_closed(
         ]
         await _assert_no_consent_state(app)
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio
@@ -376,7 +376,7 @@ async def test_chat_consent_failures_stop_before_execution(
         ]
         await _assert_no_consent_state(app)
     finally:
-        await app._close_resources()
+        await app.close()
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from app.admission import TURN_ADMISSION_BUSY_MESSAGE, TurnAdmissionController
 from app.conversation_routing import ResolvedConversation
 from config.fragments.tool_policy import THREAD_STATE_TOOLS
 from app.threads import ThreadHandoffManager
-from agent.turn import TurnResult
+from agent.turn import TurnResult, handle_turn
 from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from config.model_config import ModelConfig
@@ -38,9 +38,13 @@ from storage.conversations import (
 )
 from storage.db import Database
 from tests.helpers import (
+    LifecycleProbe,
     NobodyBlocked,
+    RootLockProbe,
     StubProviderManager,
+    WorkCancellationDriver,
     install_foreground_turn_handler,
+    remove_processing_reaction,
 )
 
 
@@ -155,7 +159,7 @@ def _build_test_app(monkeypatch):
 def _install_foreground_runner(app, store: ConversationStore) -> None:
     app.context_manager = ContextManager(store)
     app.conversation_store = store
-    app.turn_runner = app._make_foreground_turn_runner()
+    install_foreground_turn_handler(app, handle_turn)
 
 
 @pytest.mark.asyncio
@@ -622,7 +626,7 @@ def _wire_handle_message(
     app.conversation_store = store
     app.memory_manager.client = None
     app.preference_store = None
-    app.turn_runner = app._make_foreground_turn_runner()
+    install_foreground_turn_handler(app, handle_turn)
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
@@ -1089,8 +1093,6 @@ async def test_on_message_mapped_reply_with_mention_continues_existing_root(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
         "general",
@@ -1147,8 +1149,6 @@ async def test_on_message_text_invocation_reply_continues_existing_root(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
         "general",
@@ -1199,8 +1199,6 @@ async def test_on_message_mapped_reply_without_mention_is_ignored(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
         "general",
@@ -1250,8 +1248,6 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
 
     class _NoConsentStore:
         async def has_consented(self, user_id: str) -> bool:
@@ -1302,8 +1298,6 @@ async def test_on_message_no_turn_result_adds_no_success_reaction(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     monkeypatch.setattr(
         app_runtime,
         "should_respond",
@@ -1333,8 +1327,6 @@ async def test_on_message_unmapped_reply_without_mention_is_ignored(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     monkeypatch.setattr(app, "handle_message", AsyncMock())
 
     message = _trigger_message(
@@ -1363,8 +1355,6 @@ async def _drive_on_message_root_concurrency(
     app.context_manager = ContextManager(store)
     app.conversation_store = store
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     for root_message_id, mapped_message_id in mappings.items():
         conv_id = await store.get_or_create(
             f"guild:999:channel:100:thread:main:root:{root_message_id}",
@@ -1401,7 +1391,7 @@ async def _drive_on_message_root_concurrency(
     monkeypatch.setattr(app, "handle_message", fake_handle)
 
     def second_is_queued_on_a_root_lock() -> bool:
-        return any(count >= 2 for count in app._lock_refcounts.values())
+        return any(count >= 2 for count in RootLockProbe(app).snapshot().refcounts.values())
 
     async def run():
         first = asyncio.create_task(app.on_message(messages[0]))
@@ -1574,7 +1564,7 @@ async def test_stop_cancels_turn_between_admission_and_root_registration(
 
     turn = asyncio.create_task(app.on_message(message))
     await admitted.wait()
-    summary = await app._cancel_user_work(
+    summary = await WorkCancellationDriver(app).cancel_user_work(
         user_id="123",
         scopes=[(str(message.channel.id), "resolved-root")],
         all_work=False,
@@ -1632,7 +1622,7 @@ async def test_root_stop_does_not_cancel_other_resolved_provisional_turn(
     second = asyncio.create_task(app.on_message(second_message))
     await asyncio.gather(*(event.wait() for event in reaction_started.values()))
 
-    summary = await app._cancel_user_work(
+    summary = await WorkCancellationDriver(app).cancel_user_work(
         user_id="123",
         scopes=[(str(first_message.channel.id), "root-1")],
         all_work=False,
@@ -1747,7 +1737,7 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
 
     routing = asyncio.create_task(app.on_message(message))
     await reaction_accepted.wait()
-    app._closed = True
+    LifecycleProbe(app).set_closed()
     routing.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -1793,7 +1783,7 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
 
     routing = asyncio.create_task(app.on_message(message))
     await cleanup_started.wait()
-    app._closed = True
+    LifecycleProbe(app).set_closed()
     routing.cancel()
     await asyncio.sleep(0)
     cancellation_propagated_before_cleanup = routing.done()
@@ -1828,40 +1818,40 @@ async def test_processing_reaction_cleanup_is_bounded(
     monkeypatch.setattr(app_runtime, "_STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS", 0.01)
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
-    await app._remove_processing_reaction(message)
+    await remove_processing_reaction(app, message)
     await cleanup_started.wait()
     await cleanup_cancelled.wait()
 
 
 def test_root_lock_evicts_entry_after_release(monkeypatch):
     app = _build_test_app(monkeypatch)
-    app.context_locks = {}
-    app._lock_refcounts = {}
+    locks = RootLockProbe(app)
 
     async def run():
-        async with app._root_lock("root:1"):
-            assert "root:1" in app.context_locks
-            assert app._lock_refcounts["root:1"] == 1
-        assert app.context_locks == {}
-        assert app._lock_refcounts == {}
+        async with locks.hold("root:1"):
+            snapshot = locks.snapshot()
+            assert "root:1" in snapshot.keys
+            assert snapshot.refcounts["root:1"] == 1
+        snapshot = locks.snapshot()
+        assert snapshot.keys == ()
+        assert snapshot.refcounts == {}
 
     asyncio.run(run())
 
 
 def test_root_lock_shares_one_lock_for_concurrent_same_root(monkeypatch):
     app = _build_test_app(monkeypatch)
-    app.context_locks = {}
-    app._lock_refcounts = {}
+    locks = RootLockProbe(app)
     started = asyncio.Event()
     release = asyncio.Event()
 
     async def hold():
-        async with app._root_lock("root:1"):
+        async with locks.hold("root:1"):
             started.set()
             await release.wait()
 
     async def waiter():
-        async with app._root_lock("root:1"):
+        async with locks.hold("root:1"):
             pass
 
     async def run():
@@ -1870,20 +1860,21 @@ def test_root_lock_shares_one_lock_for_concurrent_same_root(monkeypatch):
         second = asyncio.create_task(waiter())
         await asyncio.sleep(0)  # let the waiter register and block on the lock
         # Same Lock object, refcounted to 2: never two locks for one root.
-        assert len(app.context_locks) == 1
-        assert app._lock_refcounts["root:1"] == 2
+        snapshot = locks.snapshot()
+        assert len(snapshot.keys) == 1
+        assert snapshot.refcounts["root:1"] == 2
         release.set()
         await asyncio.gather(first, second)
-        assert app.context_locks == {}
-        assert app._lock_refcounts == {}
+        snapshot = locks.snapshot()
+        assert snapshot.keys == ()
+        assert snapshot.refcounts == {}
 
     asyncio.run(run())
 
 
 def test_privacy_conversation_lock_drains_shared_root_turn(monkeypatch):
     app = _build_test_app(monkeypatch)
-    app.context_locks = {}
-    app._lock_refcounts = {}
+    locks = RootLockProbe(app)
     turn_started = asyncio.Event()
     release_turn = asyncio.Event()
     deletion_entered = asyncio.Event()
@@ -1896,12 +1887,12 @@ def test_privacy_conversation_lock_drains_shared_root_turn(monkeypatch):
     app.conversation_store = cast(ConversationStore, _AffectedRoots())
 
     async def active_other_user_turn():
-        async with app._root_lock("shared-root"):
+        async with locks.hold("shared-root"):
             turn_started.set()
             await release_turn.wait()
 
     async def delete_after_drain():
-        async with app._lock_user_conversation_turns("alice"):
+        async with locks.hold_user_conversations("alice"):
             deletion_entered.set()
 
     async def run():
@@ -1919,15 +1910,15 @@ def test_privacy_conversation_lock_drains_shared_root_turn(monkeypatch):
 
 def test_root_lock_evicts_on_exception(monkeypatch):
     app = _build_test_app(monkeypatch)
-    app.context_locks = {}
-    app._lock_refcounts = {}
+    locks = RootLockProbe(app)
 
     async def run():
         with pytest.raises(RuntimeError):
-            async with app._root_lock("root:1"):
+            async with locks.hold("root:1"):
                 raise RuntimeError("boom")
-        assert app.context_locks == {}
-        assert app._lock_refcounts == {}
+        snapshot = locks.snapshot()
+        assert snapshot.keys == ()
+        assert snapshot.refcounts == {}
 
     asyncio.run(run())
 
@@ -2784,8 +2775,6 @@ async def test_on_message_delivery_failure_adds_failure_reaction(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     monkeypatch.setattr(
         app_runtime,
         "should_respond",
@@ -2818,8 +2807,6 @@ async def test_on_message_attachment_error_adds_failure_reaction(
     app.conversation_store = store
     app.blocked_user_store = NobodyBlocked()
     app.settings.allowed_channel_ids = ""
-    app.context_locks = {}
-    app._lock_refcounts = {}
     monkeypatch.setattr(
         app_runtime,
         "should_respond",

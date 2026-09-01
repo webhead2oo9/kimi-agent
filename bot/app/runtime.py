@@ -50,7 +50,9 @@ from config.fragments.tool_policy import (
 )
 from agent.core import run_conversation
 from agent.turn import (
+    TurnDependencies,
     TurnExecutionConfig,
+    TurnPreparationConfig,
     TurnPreparationInput,
     TurnRequest,
     TurnResult,
@@ -71,7 +73,13 @@ from app.conversation_routing import (
 )
 from app.consent import PrivacyConsentGate
 from app.consent import build_consent_embed
-from app.foreground_turn import ForegroundTurnRunner, deliver_with_workspace_guard
+from app.foreground_turn import (
+    ForegroundTurnInvocation,
+    ForegroundTurnRunner,
+    TurnConversationSpec,
+    deliver_with_workspace_guard,
+)
+from app.user_app_turn_adapter import UserAppInteractionTurnAdapter
 from app.user_app_consent import UserAppConsentView
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
@@ -90,6 +98,7 @@ from app.providers import (
 from utils.privacy_barrier import PrivacyDeletionPendingError, UserPrivacyBarrier
 from app.tools import RuntimeTools, build_runtime_tools
 from app.turn_entry import (
+    _PERSONAL_CHAT_BLOCKED_TOOLS,
     TurnDependencyFactory,
     TurnEntryHooks,
     TurnEntryServices,
@@ -134,7 +143,6 @@ from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
     AttachmentDeliveryPlan,
     DiscordActivityReporter,
-    InteractionActivityReporter,
     apply_attachment_delivery_notice,
     attachment_delivery_notice,
     can_send_reply,
@@ -145,11 +153,7 @@ from discord_adapter.io import (
     strip_mention,
     suppress_link_previews,
 )
-from discord_adapter.interaction_io import (
-    PartialPublicDeliveryError,
-    send_interaction_result,
-    send_interaction_status,
-)
+from discord_adapter.interaction_io import send_interaction_status
 from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
@@ -359,6 +363,23 @@ async def _send_user_app_status(
         content,
         ephemeral=not requested_public,
         original_ephemeral=not requested_public,
+    )
+
+
+async def _handle_foreground_turn(
+    source: TurnPreparationInput,
+    *,
+    dependencies: TurnDependencies,
+    preparation_config: TurnPreparationConfig,
+    execution_config: TurnExecutionConfig,
+) -> TurnResult | None:
+    # Resolve the runtime hook at call time so focused tests and deployment
+    # instrumentation can replace the same seam used before the runner existed.
+    return await handle_turn(
+        source,
+        dependencies=dependencies,
+        preparation_config=preparation_config,
+        execution_config=execution_config,
     )
 
 
@@ -1244,6 +1265,7 @@ class KimiApplication:
             active_operations=self.active_operations,
             privacy_barrier=self.privacy_barrier,
             workspace_locks=self.tools.workspace_locks,
+            handle_turn_hook=_handle_foreground_turn,
         )
         if self.settings.thread_handoff_enabled:
             self.thread_handoff = ThreadHandoffManager(self.conversation_store)
@@ -2577,9 +2599,6 @@ class KimiApplication:
         trust_tier: TrustTier,
         turn_stop_event: asyncio.Event,
     ) -> TurnResult | None:
-        assert self.context_manager is not None
-        assert self.conversation_store is not None
-        conversation_store = self.conversation_store
         user_id = str(interaction.user.id)
         user_name = interaction.user.display_name
         root_key = f"userchat:{user_id}"
@@ -2616,8 +2635,11 @@ class KimiApplication:
         actual_thread_id = (
             actual_channel_id if isinstance(interaction.channel, discord.Thread) else None
         )
-        result: TurnResult | None = None
-        activity_reporter = InteractionActivityReporter(interaction)
+        adapter = UserAppInteractionTurnAdapter(
+            interaction=interaction,
+            requested_public=public,
+            context_channel_id=scope_channel_id,
+        )
 
         try:
             async with admission.lease:
@@ -2638,42 +2660,6 @@ class KimiApplication:
                         )
                         return None
                     trust_tier = current_trust_tier
-                    conversation_id = await conversation_store.get_or_create(
-                        root_key,
-                        "Personal chat",
-                        guild_id=None,
-                        channel_id=scope_channel_id,
-                        thread_id=None,
-                        root_discord_message_id=str(interaction.id),
-                        owner_user_id=user_id,
-                        access_scope=OWNER_ONLY,
-                    )
-
-                    async def persist_user(
-                        source: TurnPreparationInput,
-                        turn: TurnRequest,
-                    ) -> None:
-                        await conversation_store.save_channel_messages(
-                            conversation_id,
-                            [
-                                ChannelMessageRecord(
-                                    discord_message_id=str(source.source_message.id),
-                                    role="user",
-                                    author_id=user_id,
-                                    author_name=sanitize_author_name(user_name),
-                                    content=turn.content,
-                                    source_created_at=message_source_timestamp(
-                                        source.source_message
-                                    ),
-                                    content_parts=[
-                                        ContentPart.from_text(turn.content),
-                                        *list(turn.input_parts),
-                                    ],
-                                )
-                            ],
-                            context_channel_id=scope_channel_id,
-                        )
-
                     turn_input = TurnPreparationInput(
                         raw_content=clean_message_text(message),
                         source_message=source_message,
@@ -2695,157 +2681,34 @@ class KimiApplication:
                         platform_thread_id=actual_thread_id,
                         workspace_key=user_app_workspace_key(user_id),
                     )
-                    dependencies = await build_turn_dependencies(
-                        self._make_turn_dependency_factory(),
-                        turn_input,
-                        hooks=_turn_entry_hooks(),
-                        command_template="chat",
-                        collect_reply_context_func=collect_reply_context,
-                        collect_turn_attachments_func=collect_turn_attachments,
-                        strip_mention_func=lambda content, **_kwargs: content.strip(),
-                        persist_prepared_user_message=persist_user,
-                        count_user_prior_messages=None,
-                        activity_reporter=activity_reporter,
-                    )
-
-                    @asynccontextmanager
-                    async def child_activity(activity_user_id: str) -> AsyncIterator[None]:
-                        async with self.active_operations.register(
-                            user_id=activity_user_id,
-                            root_key=root_key,
+                    invocation = ForegroundTurnInvocation(
+                        conversation=TurnConversationSpec(
+                            key=root_key,
+                            channel_name="Personal chat",
+                            guild_id=None,
                             channel_id=scope_channel_id,
-                            cancel_on_stop=False,
-                            stop_event=turn_stop_event,
-                        ):
-                            async with self.privacy_barrier.activity(activity_user_id):
-                                yield
-
-                    dependencies = replace(
-                        dependencies,
-                        user_activity=child_activity,
+                            thread_id=None,
+                            root_discord_message_id=str(interaction.id),
+                            owner_user_id=user_id,
+                            access_scope=OWNER_ONLY,
+                        ),
+                        source=turn_input,
+                        prepared_user_discord_message_id=f"userapp:{interaction.id}",
+                        prepared_user_source_created_at=message_source_timestamp(source_message),
+                        prepared_user_context_channel_id=scope_channel_id,
+                        collect_reply_context=collect_reply_context,
+                        strip_mention=lambda content, **_kwargs: content.strip(),
                         stop_event=turn_stop_event,
+                        hooks=_turn_entry_hooks(),
+                        collect_turn_attachments=collect_turn_attachments,
+                        command_template="chat",
+                        count_user_prior_messages=None,
+                        new_user_onboarding_turns=0,
+                        timeout_seconds=self.settings.user_app_chat_timeout_seconds,
+                        thread_handoff_suggest_after_tool_calls=0,
+                        extra_blocked_tools=_PERSONAL_CHAT_BLOCKED_TOOLS,
                     )
-                    try:
-                        result = await handle_turn(
-                            turn_input,
-                            dependencies=dependencies,
-                            preparation_config=build_turn_preparation_config(
-                                self.settings,
-                                recent_image_lookback=self.settings.recent_image_lookback,
-                                new_user_onboarding_turns=0,
-                            ),
-                            execution_config=TurnExecutionConfig(
-                                max_iterations=self.settings.react_max_iterations,
-                                max_tokens=self.settings.react_max_tokens,
-                                temperature=self.settings.react_temperature,
-                                bot_name=self.settings.bot_name,
-                                command_template="chat",
-                                timeout_seconds=self.settings.user_app_chat_timeout_seconds,
-                                thread_handoff_suggest_after_tool_calls=0,
-                            ),
-                        )
-                    finally:
-                        await activity_reporter.finish()
-
-                    if result is None:
-                        await _send_user_app_status(
-                            interaction,
-                            "There wasn't anything I could process in that request.",
-                            requested_public=public,
-                        )
-                        return None
-
-                    turn_result = result
-                    delivered_content: str | None = None
-
-                    async def record_delivered_content(content: str) -> None:
-                        nonlocal delivered_content
-                        delivered_content = content
-
-                    async def persist_delivered_assistant() -> None:
-                        assert delivered_content is not None
-                        if (
-                            turn_result.blocked_by_moderation
-                            or turn_result.termination_reason == "attachment_error"
-                        ):
-                            return
-                        transcript_text = delivered_content
-                        if not transcript_text and turn_result.embed is not None:
-                            transcript_text = embed_transcript_summary(turn_result.embed)
-                        if not transcript_text:
-                            return
-                        await conversation_store.save_channel_messages(
-                            conversation_id,
-                            [
-                                ChannelMessageRecord(
-                                    discord_message_id=f"userapp:{interaction.id}:assistant",
-                                    role="assistant",
-                                    author_id=None,
-                                    author_name=None,
-                                    content=transcript_text,
-                                    source_created_at=interaction.created_at.timestamp(),
-                                )
-                            ],
-                            context_channel_id=scope_channel_id,
-                        )
-
-                    async def deliver() -> None:
-                        await send_interaction_result(
-                            interaction,
-                            turn_result.response_text,
-                            ephemeral=not public,
-                            original_ephemeral=not public,
-                            output_files=turn_result.output_files,
-                            output_file_descriptions=turn_result.output_file_descriptions,
-                            allowed_file_roots=turn_result.allowed_file_roots,
-                            embed=turn_result.embed,
-                            on_primary_delivered=record_delivered_content,
-                        )
-
-                    try:
-                        await self._deliver_with_workspace_guard(
-                            workspace_key=turn_result.workspace_key,
-                            output_files=turn_result.output_files,
-                            deliver=deliver,
-                        )
-                        if delivered_content is None:
-                            result = replace(turn_result, delivery_failed=True)
-                        else:
-                            await persist_delivered_assistant()
-                    except PartialPublicDeliveryError:
-                        if delivered_content is not None:
-                            await persist_delivered_assistant()
-                        result = replace(turn_result, delivery_failed=True)
-                        log.warning(
-                            "Personal chat public followup delivery was incomplete for user %s",
-                            user_id,
-                            exc_info=True,
-                        )
-                        with suppress(discord.HTTPException):
-                            await interaction.followup.send(
-                                "I posted the first part, but couldn't deliver the complete response.",
-                                ephemeral=True,
-                                allowed_mentions=discord.AllowedMentions.none(),
-                            )
-                    except discord.HTTPException:
-                        if delivered_content is not None:
-                            await persist_delivered_assistant()
-                        result = replace(turn_result, delivery_failed=True)
-                        log.warning(
-                            "Personal chat result delivery failed for user %s",
-                            user_id,
-                            exc_info=True,
-                        )
-                        with suppress(discord.HTTPException):
-                            await _send_user_app_status(
-                                interaction,
-                                (
-                                    "I finished the turn but couldn't deliver the response here. "
-                                    "Try again privately."
-                                ),
-                                requested_public=public,
-                            )
-                    return result
+                    return await self.turn_runner.run(invocation, adapter=adapter)
         except PrivacyDeletionPendingError:
             await _send_user_app_status(
                 interaction,

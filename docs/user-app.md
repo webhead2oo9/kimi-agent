@@ -60,6 +60,8 @@ Each Discord user has exactly one owner-only transcript, keyed internally as `us
 
 The assistant uses the ordinary agent and tool registry rather than a second chat implementation. Trust and owner-only tool gates still apply. Deployment-wide tool blocks and tool configuration still apply, while the guild/channel pins, blocks, model overrides, and instructions of the invocation location don't leak into the personal thread. Thread-handoff actions are unavailable because personal chat is guild-less; `_PERSONAL_CHAT_BLOCKED_TOOLS` masks them on both entry paths.
 
+`/chat` runs that lifecycle through the shared foreground-turn runner, with an interaction adapter that owns deferred-response activity, delivery, and user-facing outcome status.
+
 Personal chat is guild-less for every trust, policy, and data-scope decision, in both directions. The invocation location grants no standing: a tool scoped to specific guilds isn't dispatchable, and tools whose target is a guild or deployment artifact are unavailable rather than silently aimed at wherever the command was typed. Those are community memory (`teach`, `recall_community`, `reflect_community`) and shared skill management (`skill_create`, `skill_edit`, `skill_delete`). User-app trust is granted by ID allowlist independently of guild roles, so letting it reach into a guild's shared state would hand someone standing in a server they hold no role in. Personal skills and the user's own long-term memory remain available and are the personal-surface equivalents.
 
 The scopes are intentionally split:

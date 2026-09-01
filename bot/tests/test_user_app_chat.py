@@ -18,6 +18,7 @@ from agent.activity import ActivityUpdate
 from agent.core import ConversationRunRequest, ConversationRunResult
 from agent.turn import TurnResult
 from app.admission import TURN_ADMISSION_BUSY_MESSAGE, TurnAdmissionController
+from app import user_app_turn_adapter
 from commands.chat_cmd import register_user_app_chat_commands
 from app import runtime as app_runtime
 from config.fragments.prompt import resolve_template_path
@@ -465,7 +466,7 @@ async def test_chat_newlines_are_neutralized_for_model_input(
         await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     interaction = _UserAppImageInteraction()
     command = cast(Any, app.bot.tree.get_command("chat"))
     assert command is not None
@@ -501,7 +502,7 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
         await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", capture_result)
     attachment = _UserAppImageAttachment()
     interaction = _UserAppImageInteraction()
     command = cast(Any, app.bot.tree.get_command("chat"))
@@ -554,7 +555,7 @@ async def test_registered_chat_reports_unreadable_image_without_provider_or_tran
         await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", capture_result)
     attachment = _UserAppImageAttachment(unreadable=True)
     interaction = _UserAppImageInteraction()
     command = cast(Any, app.bot.tree.get_command("chat"))
@@ -809,14 +810,14 @@ async def test_public_personal_chat_finishes_activity_before_every_outcome(
         raise AssertionError("unreachable")
 
     delivered: list[tuple[bool, bool]] = []
-    real_send_result = app_runtime.send_interaction_result
+    real_send_result = user_app_turn_adapter.send_interaction_result
 
     async def record_result(*args: object, **kwargs: object) -> None:
         delivered.append((bool(kwargs["ephemeral"]), bool(kwargs["original_ephemeral"])))
         await real_send_result(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(app_runtime, "handle_turn", failed_turn)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", record_result)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", record_result)
     interaction = FakeInteraction()
 
     try:
@@ -878,7 +879,7 @@ async def test_same_root_chat_delivery_finishes_before_next_turn_starts(
         events.append(f"deliver:{content}:end")
 
     monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     first = asyncio.create_task(
         app._execute_user_app_chat(
             _UserAppImageInteraction(7),  # type: ignore[arg-type]
@@ -949,7 +950,7 @@ async def test_chat_admission_stays_active_through_delivery(
         await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     task = asyncio.create_task(
         app._execute_user_app_chat(
             _UserAppImageInteraction(),  # type: ignore[arg-type]
@@ -1110,7 +1111,7 @@ async def test_chat_delivery_failure_does_not_persist_assistant(
         raise discord.HTTPException(response, "delivery failed")  # type: ignore[arg-type]
 
     monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", fail_delivery)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", fail_delivery)
     interaction = _UserAppImageInteraction()
 
     try:
@@ -1201,7 +1202,7 @@ async def test_chat_file_delivery_uses_workspace_activity_lock(
         await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
-    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     task: asyncio.Task[TurnResult | None] | None = None
 
     try:

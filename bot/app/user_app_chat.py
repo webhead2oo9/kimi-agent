@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import discord
 from discord.ext import commands
@@ -33,14 +33,12 @@ from workspace import user_app_workspace_key
 
 log = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.lifecycle import ShutdownSignal
+
 
 class BlockedUserCheck(Protocol):
     async def __call__(self, user_id: str, /) -> bool: ...
-
-
-class ShutdownSignal(Protocol):
-    @property
-    def closed(self) -> bool: ...
 
 
 class PersonalWorkCanceller(Protocol):

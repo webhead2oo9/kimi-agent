@@ -12,6 +12,7 @@ import pytest
 
 from agent.context import ContextManager
 from app.memory import MemoryManager
+from app import lifecycle as app_lifecycle
 from app import providers as provider_runtime
 from app import runtime as app_runtime
 from utils.privacy_barrier import PrivacyDeletionPendingError
@@ -29,6 +30,9 @@ from tests.helpers import (
     LifecycleProbe,
     NobodyBlocked,
     StubProviderManager,
+    replace_app_database,
+    replace_app_repositories,
+    replace_lifecycle_resources,
 )
 from tools.workspace.common import UserLocks
 
@@ -103,9 +107,9 @@ def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.KimiApplicat
     )
     app = app_runtime.build_app(_settings(discord_bot_token="discord-token"))
 
-    # The runtime's block gate raises on an uninitialised store rather than
-    # guessing; lifecycle tests that drive on_message bypass _first_init_core.
-    app.blocked_user_store = NobodyBlocked()  # type: ignore[assignment]
+    # The runtime's block gate reaches SQLite rather than guessing; lifecycle
+    # tests that drive on_message bypass lifecycle database initialization.
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     return app
 
 
@@ -114,8 +118,8 @@ async def test_gateway_resume_restores_admission_after_disconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.gateway_ready = True
+    LifecycleProbe(app).set_db_initialized()
+    LifecycleProbe(app).set_gateway_ready()
 
     await app.on_disconnect()
     assert app.gateway_ready is False
@@ -129,13 +133,13 @@ async def test_gateway_resume_does_not_restore_failed_or_closed_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     failed = _build_test_app(monkeypatch)
-    failed.db_initialized = True
+    LifecycleProbe(failed).set_db_initialized(True)
     LifecycleProbe(failed).set_startup_error(RuntimeError("startup failed"))
     await failed.on_resumed()
     assert failed.gateway_ready is False
 
     closed = _build_test_app(monkeypatch)
-    closed.db_initialized = True
+    LifecycleProbe(closed).set_db_initialized(True)
     LifecycleProbe(closed).set_closed()
     await closed.on_resumed()
     assert closed.gateway_ready is False
@@ -146,8 +150,10 @@ async def test_ready_preamble_error_restores_initialized_admission_and_unregiste
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    monkeypatch.setattr(app, "_log_ready_state", MagicMock(side_effect=RuntimeError("log failed")))
+    LifecycleProbe(app).set_db_initialized()
+    monkeypatch.setattr(
+        app.lifecycle, "log_ready_state", MagicMock(side_effect=RuntimeError("log failed"))
+    )
 
     with pytest.raises(RuntimeError, match="log failed"):
         await app.on_ready()
@@ -168,8 +174,8 @@ async def test_component_interaction_readiness_closes_before_resource_shutdown(
         close_started.set()
         await release_close.wait()
 
-    monkeypatch.setattr(app, "_close_resources", slow_close_resources)
-    app.gateway_ready = True
+    monkeypatch.setattr(app.lifecycle, "close_resources", slow_close_resources)
+    LifecycleProbe(app).set_gateway_ready()
     assert app.gateway_interactions_ready() is True
 
     closing = asyncio.create_task(app.close())
@@ -199,10 +205,10 @@ async def test_ready_does_not_initialize_after_close_has_started(
         close_started.set()
         await release_close.wait()
 
-    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
-    monkeypatch.setattr(app, "_initialize_ready_locked", initialize)
+    monkeypatch.setattr(app.lifecycle, "close_resources", blocked_close_resources)
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", initialize)
     monkeypatch.setattr(app.bot.tree, "sync", sync)
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", start_background)
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", start_background)
 
     closing = asyncio.create_task(app.close())
     await close_started.wait()
@@ -239,10 +245,10 @@ async def test_close_cancels_ready_initialization_then_prevents_reentry(
         events.append("close")
         close_started.set()
 
-    monkeypatch.setattr(app, "_initialize_ready_locked", blocked_initialize)
-    monkeypatch.setattr(app, "_close_resources", close_resources)
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
-    app.workspace_sweeper_started = True
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", blocked_initialize)
+    monkeypatch.setattr(app.lifecycle, "close_resources", close_resources)
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", MagicMock())
+    LifecycleProbe(app).set_workspace_sweeper_started()
 
     ready = asyncio.create_task(app.on_ready())
     await initialize_started.wait()
@@ -273,7 +279,7 @@ async def test_concurrent_close_waits_for_the_single_teardown(
         close_started.set()
         await release_close.wait()
 
-    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
+    monkeypatch.setattr(app.lifecycle, "close_resources", blocked_close_resources)
 
     first = asyncio.create_task(app.close())
     await close_started.wait()
@@ -299,7 +305,7 @@ async def test_close_cancellation_waits_for_owned_teardown(
         close_started.set()
         await release_close.wait()
 
-    monkeypatch.setattr(app, "_close_resources", blocked_close_resources)
+    monkeypatch.setattr(app.lifecycle, "close_resources", blocked_close_resources)
 
     closing = asyncio.create_task(app.close())
     await close_started.wait()
@@ -395,7 +401,7 @@ async def test_on_ready_closes_client_when_required_startup_fails(
         raise failure
 
     close = AsyncMock()
-    monkeypatch.setattr(app, "_first_init_core", fail_startup)
+    monkeypatch.setattr(app.lifecycle, "initialize", fail_startup)
     monkeypatch.setattr(app.bot, "close", close)
 
     await app.on_ready()
@@ -426,7 +432,7 @@ async def test_on_message_is_ignored_before_ready_initialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = cast(ContextManager, object())
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
     handler = AsyncMock()
     monkeypatch.setattr(app, "_on_message_for_user", handler)
 
@@ -454,12 +460,16 @@ async def test_on_ready_delegates_memory_manager_and_starts_one_activation_refre
     async def fake_sync() -> list[object]:
         return []
 
-    app.db_initialized = True
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = cast(ConversationStore, conversation_store)
-    app.preference_store = cast(PreferenceStore, preference_store)
-    app.memory_manager = cast(MemoryManager, manager)
-    app.workspace_sweeper_started = True
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, conversation_store),
+        preference_store=cast(PreferenceStore, preference_store),
+    )
+    replace_lifecycle_resources(app, memory_manager=cast(MemoryManager, manager))
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
     monkeypatch.setattr(asyncio, "create_task", fake_create_task)
@@ -480,9 +490,12 @@ async def test_concurrent_ready_starts_one_attachment_and_workspace_sweeper_pair
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
-    app.workspace_sweeper_started = False
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
+    LifecycleProbe(app).set_workspace_sweeper_started(False)
+    LifecycleProbe(app).set_video_session_sweeper_started()
     LifecycleProbe(app).set_guild_activation_refresh_task(cast(asyncio.Task, object()))
     sweep_started = asyncio.Event()
     release_sweep = asyncio.Event()
@@ -512,7 +525,7 @@ async def test_concurrent_ready_starts_one_attachment_and_workspace_sweeper_pair
 
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
-    monkeypatch.setattr(app_runtime, "sweep_attachment_orphans_once", fake_startup_sweep)
+    monkeypatch.setattr(app_lifecycle, "sweep_attachment_orphans_once", fake_startup_sweep)
     monkeypatch.setattr(asyncio, "create_task", fake_background_task)
 
     first = real_create_task(app.on_ready())
@@ -540,10 +553,12 @@ async def test_concurrent_ready_installs_one_nonblocking_video_sweeper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
-    app.workspace_sweeper_started = True
-    app.video_session_store = cast(Any, object())
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    replace_app_repositories(app, video_session_store=cast(Any, object()))
     lifecycle = LifecycleProbe(app)
     lifecycle.set_guild_activation_refresh_task(cast(asyncio.Task, object()))
     sweep_started = asyncio.Event()
@@ -573,7 +588,7 @@ async def test_concurrent_ready_installs_one_nonblocking_video_sweeper(
     await asyncio.wait_for(sweep_started.wait(), timeout=0.5)
 
     assert sweep_calls == 1
-    assert app.video_session_sweeper_started is True
+    assert LifecycleProbe(app).snapshot().video_session_sweeper_started is True
     assert lifecycle.snapshot().video_session_sweeper_task is not None
     release_sweep.set()
     lifecycle.set_guild_activation_refresh_task(None)
@@ -585,9 +600,11 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
-    app.workspace_sweeper_started = False
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
+    LifecycleProbe(app).set_workspace_sweeper_started(False)
     sweep_started = asyncio.Event()
 
     async def fake_sync(*, guild: object | None = None) -> list[object]:
@@ -607,7 +624,7 @@ async def test_close_during_startup_attachment_sweep_does_not_start_sweepers(
 
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
-    monkeypatch.setattr(app_runtime, "sweep_attachment_orphans_once", fake_startup_sweep)
+    monkeypatch.setattr(app_lifecycle, "sweep_attachment_orphans_once", fake_startup_sweep)
 
     ready_task = asyncio.get_running_loop().create_task(app.on_ready())
     await sweep_started.wait()
@@ -639,8 +656,8 @@ async def test_close_bounds_ready_task_that_ignores_cancellation(
                 continue
         return True
 
-    monkeypatch.setattr(app, "_initialize_ready_locked", stubborn_initialize)
-    monkeypatch.setattr(app, "_close_resources", AsyncMock())
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", stubborn_initialize)
+    monkeypatch.setattr(app.lifecycle, "close_resources", AsyncMock())
 
     ready = asyncio.create_task(app.on_ready())
     await initialize_started.wait()
@@ -658,8 +675,10 @@ async def test_stubborn_startup_sweep_cannot_install_tasks_after_close(
 ) -> None:
     monkeypatch.setattr(app_runtime, "READY_EVENT_DRAIN_SECONDS", 0.01)
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
     sweep_started = asyncio.Event()
     release_sweep = asyncio.Event()
     start_background = MagicMock()
@@ -674,10 +693,10 @@ async def test_stubborn_startup_sweep_cannot_install_tasks_after_close(
                 continue
         return 0
 
-    monkeypatch.setattr(app_runtime, "sweep_attachment_orphans_once", stubborn_sweep)
+    monkeypatch.setattr(app_lifecycle, "sweep_attachment_orphans_once", stubborn_sweep)
     monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(return_value=[]))
-    monkeypatch.setattr(app, "_close_resources", AsyncMock())
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", start_background)
+    monkeypatch.setattr(app.lifecycle, "close_resources", AsyncMock())
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", start_background)
 
     ready = asyncio.create_task(app.on_ready())
     await sweep_started.wait()
@@ -712,12 +731,16 @@ async def test_on_ready_ensures_memory_before_sync_on_reconnect(
         events.append("sync")
         return []
 
-    app.db_initialized = True
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = cast(ConversationStore, object())
-    app.preference_store = cast(PreferenceStore, object())
-    app.memory_manager = cast(MemoryManager, OrderingMemoryManager())
-    app.workspace_sweeper_started = True
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, object()),
+        preference_store=cast(PreferenceStore, object()),
+    )
+    replace_lifecycle_resources(app, memory_manager=cast(MemoryManager, OrderingMemoryManager()))
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
 
@@ -743,9 +766,12 @@ async def test_on_ready_waits_for_first_startup_before_reconnect_ready_continues
         events.append("init-start")
         first_init_started.set()
         await release_first_init.wait()
-        app.context_manager = cast(ContextManager, object())
-        app.conversation_store = cast(ConversationStore, object())
-        app.preference_store = cast(PreferenceStore, object())
+        replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+        replace_app_repositories(
+            app,
+            conversation_store=cast(ConversationStore, object()),
+            preference_store=cast(PreferenceStore, object()),
+        )
         events.append("init-finish")
 
     class OrderingMemoryManager(FakeMemoryManager):
@@ -764,10 +790,11 @@ async def test_on_ready_waits_for_first_startup_before_reconnect_ready_continues
         return []
 
     manager = OrderingMemoryManager()
-    app.memory_manager = cast(MemoryManager, manager)
-    app.workspace_sweeper_started = True
+    replace_lifecycle_resources(app, memory_manager=cast(MemoryManager, manager))
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
-    monkeypatch.setattr(app, "_first_init_core", fake_first_init_core)
+    monkeypatch.setattr(app.lifecycle, "initialize", fake_first_init_core)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
 
     first_ready = asyncio.create_task(app.on_ready())
@@ -805,12 +832,16 @@ async def test_on_ready_skips_memory_manager_when_no_client(
     async def fake_sync() -> list[object]:
         return []
 
-    app.db_initialized = True
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = cast(ConversationStore, object())
-    app.preference_store = cast(PreferenceStore, object())
-    app.memory_manager = cast(MemoryManager, manager)
-    app.workspace_sweeper_started = True
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, object()),
+        preference_store=cast(PreferenceStore, object()),
+    )
+    replace_lifecycle_resources(app, memory_manager=cast(MemoryManager, manager))
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
     monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
     monkeypatch.setattr(asyncio, "create_task", fake_create_task)
@@ -828,8 +859,11 @@ async def test_application_close_runs_memory_and_provider_cleanup(
     app = _build_test_app(monkeypatch)
     memory_manager = FakeMemoryManager()
     provider_manager = StubProviderManager(app.settings)
-    app.memory_manager = cast(MemoryManager, memory_manager)
-    app.provider_manager = cast(provider_runtime.ProviderManager, provider_manager)
+    replace_lifecycle_resources(
+        app,
+        memory_manager=cast(MemoryManager, memory_manager),
+        provider_manager=cast(provider_runtime.ProviderManager, provider_manager),
+    )
 
     await app.close()
     await app.close()
@@ -843,9 +877,9 @@ async def test_application_close_drains_active_message_before_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.gateway_ready = True
-    app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = cast(Any, NobodyBlocked())
+    LifecycleProbe(app).set_gateway_ready()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(app, blocked_user_store=cast(Any, NobodyBlocked()))
     events: list[str] = []
     entered = asyncio.Event()
 
@@ -873,8 +907,11 @@ async def test_application_close_drains_active_message_before_resources(
     monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app, "_on_message_for_user", active_message)
     monkeypatch.setattr(app.provider_manager, "close", close_provider)
-    app.memory_manager = cast(MemoryManager, _OrderingMemoryManager())
-    app.database = cast(Database, _OrderingDatabase())
+    replace_lifecycle_resources(
+        app,
+        memory_manager=cast(MemoryManager, _OrderingMemoryManager()),
+        database=cast(Database, _OrderingDatabase()),
+    )
     channel = MagicMock(spec=discord.TextChannel)
     channel.id = 100
     guild = MagicMock()
@@ -932,13 +969,13 @@ async def test_close_cancels_video_session_sweeper(monkeypatch: pytest.MonkeyPat
     await started.wait()
     lifecycle = LifecycleProbe(app)
     lifecycle.set_video_session_sweeper_task(task)
-    app.video_session_sweeper_started = True
+    LifecycleProbe(app).set_video_session_sweeper_started()
 
     await app.close()
 
     assert task.cancelled()
     assert lifecycle.snapshot().video_session_sweeper_task is None
-    assert app.video_session_sweeper_started is False
+    assert LifecycleProbe(app).snapshot().video_session_sweeper_started is False
 
 
 @pytest.mark.asyncio
@@ -960,10 +997,13 @@ async def test_application_close_drains_privacy_deletions_before_state_clients(
     async def drain_privacy_deletions() -> None:
         events.append("privacy")
 
-    app.memory_manager = cast(MemoryManager, _OrderingMemoryManager())
-    app.database = cast(Database, _OrderingDatabase())
+    replace_lifecycle_resources(
+        app,
+        memory_manager=cast(MemoryManager, _OrderingMemoryManager()),
+        database=cast(Database, _OrderingDatabase()),
+    )
     monkeypatch.setattr(
-        app_runtime,
+        app_lifecycle,
         "drain_confirmed_privacy_deletions",
         drain_privacy_deletions,
     )
@@ -979,9 +1019,11 @@ async def test_startup_replay_tombstones_failed_user_but_allows_others(
     tmp_path,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.database = Database(tmp_path / "bot.db")
+    replace_app_database(app, Database(tmp_path / "bot.db"))
     await app.database.connect()
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
 
     class _Conversations:
         def __init__(self) -> None:
@@ -1011,9 +1053,12 @@ async def test_startup_replay_tombstones_failed_user_but_allows_others(
             return None
 
     conversations = _Conversations()
-    app.conversation_store = cast(ConversationStore, conversations)
-    app.preference_store = cast(PreferenceStore, _Preferences())
-    app.privacy_deletion_store = PrivacyDeletionRequestStore(app.database)
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, conversations),
+        preference_store=cast(PreferenceStore, _Preferences()),
+        privacy_deletion_store=PrivacyDeletionRequestStore(app.database),
+    )
     for user_id in ("42", "99"):
         await app.privacy_deletion_store.request(
             user_id=user_id,
@@ -1099,18 +1144,22 @@ async def test_on_ready_starts_retention_sweeper_when_window_configured(
     async def fake_sync() -> list[object]:
         return []
 
-    app.db_initialized = True
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = cast(ConversationStore, object())
-    app.preference_store = cast(PreferenceStore, object())
-    app.memory_manager = cast(MemoryManager, manager)
-    app.workspace_sweeper_started = True
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, object()),
+        preference_store=cast(PreferenceStore, object()),
+    )
+    replace_lifecycle_resources(app, memory_manager=cast(MemoryManager, manager))
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
     monkeypatch.setattr(app.bot.tree, "sync", fake_sync)
     monkeypatch.setattr(asyncio, "create_task", fake_create_task)
 
     await app.on_ready()
 
-    assert app.transcript_retention_sweeper_started is True
+    assert LifecycleProbe(app).snapshot().transcript_retention_sweeper_started is True
     assert len(created_tasks) == 2
     # Idempotent: a reconnect does not start a second sweeper.
     await app.on_ready()
@@ -1122,12 +1171,18 @@ async def test_global_command_sync_failure_does_not_block_local_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.context_manager = cast(ContextManager, object())
-    app.conversation_store = cast(ConversationStore, object())
-    app.preference_store = cast(PreferenceStore, object())
-    app.memory_manager = cast(MemoryManager, FakeMemoryManager(client=None))
-    app.workspace_sweeper_started = True
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(
+        app,
+        conversation_store=cast(ConversationStore, object()),
+        preference_store=cast(PreferenceStore, object()),
+    )
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started()
 
     async def fail_sync(*args: object, **kwargs: object) -> list[object]:
         raise discord.HTTPException(
@@ -1147,11 +1202,11 @@ async def test_transport_error_during_command_sync_does_not_mute_initialized_bot
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
-    app.workspace_sweeper_started = True
-    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    LifecycleProbe(app).set_db_initialized()
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", AsyncMock(return_value=True))
     monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(side_effect=OSError("offline")))
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", MagicMock())
 
     await app.on_ready()
 
@@ -1163,7 +1218,7 @@ async def test_attachment_sweep_error_does_not_mute_or_block_background_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
+    LifecycleProbe(app).set_db_initialized()
     created: list[Any] = []
 
     def create_task(coro: Any) -> object:
@@ -1171,20 +1226,20 @@ async def test_attachment_sweep_error_does_not_mute_or_block_background_startup(
         coro.close()
         return object()
 
-    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", AsyncMock(return_value=True))
     monkeypatch.setattr(app.bot.tree, "sync", AsyncMock(return_value=[]))
     monkeypatch.setattr(
-        app_runtime,
+        app_lifecycle,
         "sweep_attachment_orphans_once",
         AsyncMock(side_effect=OSError("disk unavailable")),
     )
     monkeypatch.setattr(asyncio, "create_task", create_task)
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", MagicMock())
 
     await app.on_ready()
 
     assert app.gateway_ready is True
-    assert app.workspace_sweeper_started is True
+    assert LifecycleProbe(app).snapshot().workspace_sweeper_started is True
     assert len(created) == 2
 
 
@@ -1415,7 +1470,7 @@ async def test_disconnect_does_not_cancel_a_newer_ready_while_pause_yields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.db_initialized = True
+    LifecycleProbe(app).set_db_initialized()
     pause_started = asyncio.Event()
     release_pause = asyncio.Event()
     global_started = asyncio.Event()
@@ -1445,10 +1500,10 @@ async def test_disconnect_does_not_cancel_a_newer_ready_while_pause_yields(
         return []
 
     monkeypatch.setattr(app.bot.tree, "sync", global_sync)
-    monkeypatch.setattr(app, "_log_ready_state", MagicMock())
-    monkeypatch.setattr(app, "_initialize_ready_locked", AsyncMock(return_value=True))
-    monkeypatch.setattr(app, "_start_filesystem_sweepers_locked", AsyncMock())
-    monkeypatch.setattr(app, "_start_ready_background_tasks_locked", MagicMock())
+    monkeypatch.setattr(app.lifecycle, "log_ready_state", MagicMock())
+    monkeypatch.setattr(app.lifecycle, "initialize_ready", AsyncMock(return_value=True))
+    monkeypatch.setattr(app.lifecycle, "start_filesystem_sweepers", AsyncMock())
+    monkeypatch.setattr(app.lifecycle, "start_ready_background_tasks", MagicMock())
 
     disconnecting = asyncio.create_task(app.on_disconnect())
     await pause_started.wait()

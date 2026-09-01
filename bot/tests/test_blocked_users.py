@@ -24,7 +24,12 @@ import app.runtime as app_runtime
 from commands.learn_cmd import learn_menu_name
 from config.settings import Settings
 from pydantic import SecretStr
-from tests.helpers import LifecycleProbe, StubProviderManager
+from tests.helpers import (
+    LifecycleProbe,
+    StubProviderManager,
+    replace_app_repositories,
+    replace_lifecycle_resources,
+)
 
 BLOCKED_USER_ID = 4242
 GUILD_ID = 999
@@ -135,10 +140,10 @@ async def _blocked_app(
     )
     try:
         await LifecycleProbe(app).first_init_core()
-        app.gateway_ready = True
+        LifecycleProbe(app).set_gateway_ready()
         store = _BlockedStore({str(BLOCKED_USER_ID)})
-        app.blocked_user_store = cast(Any, store)
-        app.privacy_barrier = cast(Any, _NeverLeased())
+        replace_app_repositories(app, blocked_user_store=cast(Any, store))
+        replace_lifecycle_resources(app, privacy_barrier=cast(Any, _NeverLeased()))
 
         async def never_runs(**_kwargs: object) -> None:
             raise AssertionError("a blocked user reached the provider")
@@ -247,7 +252,7 @@ async def test_the_guild_gate_sits_directly_before_the_stop_check(
     failure of the fake message."""
     app, _ = await _blocked_app(tmp_path, monkeypatch)
     control_store = _BlockedStore(set())
-    app.blocked_user_store = cast(Any, control_store)
+    replace_app_repositories(app, blocked_user_store=cast(Any, control_store))
     try:
         with pytest.raises(_ReachedPastGate):
             await _via_guild_message(app, monkeypatch)

@@ -194,6 +194,6 @@ If the memory service is unavailable and local tracking says a user may have sto
 
 ### How it runs
 
-The bot records the deletion request before it begins and blocks new activity for that user while the request is in progress. In-flight turns that could write to affected conversations are allowed to finish first. If the bot stops or a dependency fails, the request stays pending and resumes after restart. Repeating a deletion is safe.
+The bot records the deletion request before it begins and blocks new activity for that user while the request is in progress. In-flight turns that could write to affected conversations are allowed to finish first. If the bot stops or a dependency fails, the request stays pending and `app/lifecycle.py:ApplicationLifecycle` resumes it during READY initialization after restart. Repeating a deletion is safe.
 
 Deleting SQLite transcript data leaves both usage ledgers alone, and it leaves active rate-limit markers alone too.

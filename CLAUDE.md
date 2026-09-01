@@ -193,7 +193,7 @@ The staff gesture for adding shared knowledge: a **fact** goes to community memo
 
 ### Storage
 
-`storage/db.py` is async SQLite (`aiosqlite`, WAL), initialized in `on_ready`; optional SQLCipher via `DATABASE_ENCRYPTION_KEY`. `messages` is the per-root transcript (one row per Discord message, deduped by `(conversation_id, discord_message_id)`); `message_contexts` maps ids to roots; `usage_ledger` and `paid_usage_ledger` feed `/usage`; `provider_circuits` persists safe normalized cooldown state. Transcripts age out after `transcript_retention_days` (30) via the retention sweeper; usage ledgers, circuit state, and Hindsight memory are excluded. Module schemas have independent versions in `module_schema_versions`. See [`docs/database.md`](docs/database.md).
+`storage/db.py` is async SQLite (`aiosqlite`, WAL), connected by `app/lifecycle.py` during `on_ready`; `app/lifecycle.py:AppRepositories` owns the database-backed stores from composition onward. Optional SQLCipher is enabled via `DATABASE_ENCRYPTION_KEY`. `messages` is the per-root transcript (one row per Discord message, deduped by `(conversation_id, discord_message_id)`); `message_contexts` maps ids to roots; `usage_ledger` and `paid_usage_ledger` feed `/usage`; `provider_circuits` persists safe normalized cooldown state. Transcripts age out after `transcript_retention_days` (30) via the retention sweeper; usage ledgers, circuit state, and Hindsight memory are excluded. Module schemas have independent versions in `module_schema_versions`. See [`docs/database.md`](docs/database.md).
 
 ### Observability and Evals
 

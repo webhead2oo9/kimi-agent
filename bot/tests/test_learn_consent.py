@@ -16,7 +16,12 @@ from app.user_app_consent import (
     UserAppConsentView,
 )
 from commands.learn_cmd import learn_menu_name, register_learn_command
-from tests.helpers import LifecycleProbe, StubProviderManager, make_settings
+from tests.helpers import (
+    LifecycleProbe,
+    StubProviderManager,
+    make_settings,
+    replace_app_repositories,
+)
 from tools.learn import LearnTarget
 
 USER_ID = 42
@@ -309,7 +314,7 @@ async def test_teach_blocked_staff_is_refused_before_consent_lookup(
     interaction = _Interaction()
     blocked = _BlockedStore()
     try:
-        app.blocked_user_store = cast(Any, blocked)
+        replace_app_repositories(app, blocked_user_store=cast(Any, blocked))
         _bind_teach_consent(
             app,
             _consent_prompter(app, _ConsentLookupForbidden()),

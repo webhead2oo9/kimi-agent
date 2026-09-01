@@ -372,6 +372,41 @@ async def test_delivery_failure_propagates_without_assistant_persistence(
 
 
 @pytest.mark.asyncio
+async def test_delivery_delivered_result_is_returned_and_reported(
+    foreground_database: Database,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    store = RecordingConversationStore(foreground_database, events)
+    locks = UserLocks()
+    original = TurnResult(response_text="coding task started")
+    override = TurnResult(response_text="coding task was cancelled")
+    adapter = FakeAdapter(
+        events,
+        receipt=TurnDeliveryReceipt(
+            replies=(DeliveredReply("assistant-1", override.response_text),),
+            context_channel_id="channel-1",
+            delivered_result=override,
+        ),
+    )
+    runner = _runner(
+        store,
+        FakeDependencyFactory(events, tmp_path, locks),
+        locks,
+        _successful_handle_turn(events, result=original),
+    )
+
+    result = await runner.run(_invocation(), adapter=adapter)
+
+    assert result is override
+    assert adapter.outcomes[-1].result is override
+    assert await _transcript_rows(foreground_database) == [
+        ("user", "hello"),
+        ("assistant", "coding task was cancelled"),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["handle_turn", "deliver"])
 async def test_reporter_finishes_when_turn_or_delivery_raises(
     foreground_database: Database,

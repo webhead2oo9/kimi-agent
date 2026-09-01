@@ -5,7 +5,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -42,7 +42,6 @@ from config.fragments.guild_config import (
 )
 from agent.context import ContextManager
 from utils.asyncio import await_uncancellable
-from utils.format import sanitize_author_name
 from config.fragments.tool_config import load_tool_configs
 from config.fragments.tool_policy import (
     load_blocked_tools,
@@ -54,7 +53,6 @@ from agent.turn import (
     TurnExecutionConfig,
     TurnPreparationConfig,
     TurnPreparationInput,
-    TurnRequest,
     TurnResult,
     handle_turn,
 )
@@ -79,6 +77,7 @@ from app.foreground_turn import (
     TurnConversationSpec,
     deliver_with_workspace_guard,
 )
+from app.guild_turn_adapter import GuildMessageTurnAdapter
 from app.user_app_turn_adapter import UserAppInteractionTurnAdapter
 from app.user_app_consent import UserAppConsentView
 from app.coding_jobs import CodingJobManager
@@ -102,9 +101,7 @@ from app.turn_entry import (
     TurnDependencyFactory,
     TurnEntryHooks,
     TurnEntryServices,
-    build_turn_dependencies,
     chat_model_name_for_scope,
-    build_turn_preparation_config,
     resolve_parent_channel_id,
 )
 from discord_adapter.lifecycle import (
@@ -142,7 +139,6 @@ from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
     AttachmentDeliveryPlan,
-    DiscordActivityReporter,
     apply_attachment_delivery_notice,
     attachment_delivery_notice,
     can_send_reply,
@@ -161,7 +157,6 @@ from moderation.types import Direction
 from storage.auto_retain import AutoRetainStore
 from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from providers.assets import write_generated_assets
-from providers.types import ContentPart
 from skills.loader import SkillsIndexCache
 from app.learn_log import LearnLogFeed, build_learn_log_feed
 from app.learn_turn import run_learn_turn
@@ -183,7 +178,6 @@ from storage.provider_circuits import ProviderCircuitStore
 from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
-from tools.embeds import embed_transcript_summary
 from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
 from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
 from tools.user_memory import set_user_memory_preference_store
@@ -1258,15 +1252,7 @@ class KimiApplication:
             is_available=self.gateway_interactions_ready,
         )
         self.context_manager = ContextManager(store=self.conversation_store)
-        self.turn_runner = ForegroundTurnRunner(
-            settings=self.settings,
-            conversation_store=self.conversation_store,
-            dependency_factory=self._make_turn_dependency_factory(),
-            active_operations=self.active_operations,
-            privacy_barrier=self.privacy_barrier,
-            workspace_locks=self.tools.workspace_locks,
-            handle_turn_hook=_handle_foreground_turn,
-        )
+        self.turn_runner = self._make_foreground_turn_runner()
         if self.settings.thread_handoff_enabled:
             self.thread_handoff = ThreadHandoffManager(self.conversation_store)
             await self.thread_handoff.load()
@@ -3024,7 +3010,6 @@ class KimiApplication:
         personal_dm_tier = self._dm_personal_chat_tier(message)
         personal_dm = personal_dm_tier is not None
 
-        target_channel: discord.abc.Messageable = message.channel
         context_channel_id = USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)
         context_thread_id = (
             None
@@ -3062,83 +3047,7 @@ class KimiApplication:
             else self.trust_resolver.resolve(member, user_id, guild_id)
         )
 
-        conv_id = resolved_conversation.db_conversation_id
-        if (
-            self.conversation_store is not None
-            and conv_id is not None
-            and not await self.conversation_store.touch(conv_id)
-        ):
-            # A retention sweep may have won the race immediately before the
-            # touch. Recreate the logical root rather than carrying a dead FK
-            # through preparation and failing at transcript persistence.
-            conv_id = None
-        if self.conversation_store is not None and conv_id is None:
-            conv_id = await self.conversation_store.get_or_create(
-                conversation_key,
-                context_channel_name,
-                guild_id=guild_id,
-                channel_id=context_channel_id,
-                thread_id=context_thread_id,
-                root_discord_message_id=str(message.id),
-                owner_user_id=resolved_conversation.owner_user_id,
-                access_scope=resolved_conversation.access_scope,
-            )
-
-        turn_result: TurnResult | None = None
-        coding_handoff_task_id: str | None = None
-        coding_handoff_prepared = False
-        coding_handoff_finalized = False
-        original_target_channel = target_channel
-        mapped_building_ids: set[str] = set()
-
-        async def map_building_message(message_id: int) -> None:
-            if self.conversation_store is None or conv_id is None:
-                return
-            mid = str(message_id)
-            if mid in mapped_building_ids:
-                return
-            try:
-                await self.conversation_store.map_message_context(
-                    mid,
-                    conv_id,
-                    context_channel_id,
-                )
-            except Exception:
-                log.debug("Could not map Discord activity log route", exc_info=True)
-                return
-            mapped_building_ids.add(mid)
-
-        activity_reporter = DiscordActivityReporter(
-            target_channel,
-            reference=message,
-            on_committed_message=map_building_message,
-        )
-
-        async def persist_prepared_user_message(
-            source: TurnPreparationInput,
-            turn: TurnRequest,
-        ) -> None:
-            if self.conversation_store is None or conv_id is None:
-                return
-            content_parts = [
-                ContentPart.from_text(turn.content),
-                *list(turn.input_parts),
-            ]
-            await self.conversation_store.save_channel_messages(
-                conv_id,
-                [
-                    ChannelMessageRecord(
-                        discord_message_id=str(source.source_message.id),
-                        role="user",
-                        author_id=user_id,
-                        author_name=sanitize_author_name(user_name),
-                        content=turn.content,
-                        source_created_at=message_source_timestamp(source.source_message),
-                        content_parts=content_parts,
-                    )
-                ],
-                context_channel_id=context_channel_id,
-            )
+        assert self.conversation_store is not None
 
         async def count_user_prior_messages(
             user_id: str, exclude_discord_message_id: str | None, limit: int
@@ -3174,75 +3083,44 @@ class KimiApplication:
             workspace_key=user_app_workspace_key(user_id) if personal_dm else None,
         )
         turn_stop_event = asyncio.Event()
-        turn_dependencies = await build_turn_dependencies(
-            self._make_turn_dependency_factory(),
-            turn_input,
-            hooks=_turn_entry_hooks(),
-            command_template="chat" if personal_dm else None,
-            collect_reply_context_func=collect_reply_context,
-            collect_turn_attachments_func=collect_turn_attachments,
-            strip_mention_func=self._strip_message_invocation,
-            persist_prepared_user_message=persist_prepared_user_message,
-            count_user_prior_messages=(
-                count_user_prior_messages
-                if not personal_dm and self.conversation_store is not None
-                else None
-            ),
-            activity_reporter=activity_reporter,
-            extra_blocked_tools=self.threads._thread_state_blocked_tools(message),
-        )
-
-        @asynccontextmanager
-        async def foreground_child_activity(activity_user_id: str) -> AsyncIterator[None]:
-            # Mutable work is shielded from root cancellation so thread-backed
-            # operations can finish safely. Register each child independently so
-            # STOP waits for real completion and can still find cleanup after the
-            # foreground response root has exited.
-            async with self.active_operations.register(
-                user_id=activity_user_id,
-                root_key=conversation_key,
+        invocation = ForegroundTurnInvocation(
+            conversation=TurnConversationSpec(
+                key=conversation_key,
+                channel_name=context_channel_name,
+                guild_id=guild_id,
                 channel_id=context_channel_id,
-                # A child may be awaiting asyncio.to_thread; cancelling its
-                # wrapper would unregister it while the OS thread kept mutating.
-                # Stop the response root, retain the child as cleanup-pending,
-                # and let its privacy/workspace lease prove actual completion.
-                cancel_on_stop=False,
-                stop_event=turn_stop_event,
-            ):
-                async with self.privacy_barrier.activity(activity_user_id):
-                    yield
-
-        turn_dependencies = replace(
-            turn_dependencies,
-            user_activity=foreground_child_activity,
+                thread_id=context_thread_id,
+                root_discord_message_id=str(message.id),
+                owner_user_id=resolved_conversation.owner_user_id,
+                access_scope=resolved_conversation.access_scope,
+                existing_conversation_id=resolved_conversation.db_conversation_id,
+            ),
+            source=turn_input,
+            prepared_user_discord_message_id=str(message.id),
+            prepared_user_source_created_at=message_source_timestamp(message),
+            prepared_user_context_channel_id=context_channel_id,
+            collect_reply_context=collect_reply_context,
+            strip_mention=self._strip_message_invocation,
             stop_event=turn_stop_event,
-        )
-        turn_config = build_turn_preparation_config(
-            self.settings,
-            recent_image_lookback=self.settings.recent_image_lookback,
+            hooks=_turn_entry_hooks(),
+            collect_turn_attachments=collect_turn_attachments,
+            command_template="chat" if personal_dm else None,
+            count_user_prior_messages=(count_user_prior_messages if not personal_dm else None),
             new_user_onboarding_turns=(
                 0 if personal_dm else self.settings.new_user_onboarding_turns
             ),
+            timeout_seconds=self.settings.react_turn_timeout_seconds,
+            thread_handoff_suggest_after_tool_calls=(
+                self.settings.thread_handoff_suggest_after_tool_calls
+            ),
+            extra_blocked_tools=self.threads._thread_state_blocked_tools(message),
         )
-
-        async def run_locked() -> None:
-            nonlocal turn_result
-            turn_result = await handle_turn(
-                turn_input,
-                dependencies=turn_dependencies,
-                preparation_config=turn_config,
-                execution_config=TurnExecutionConfig(
-                    max_iterations=self.settings.react_max_iterations,
-                    max_tokens=self.settings.react_max_tokens,
-                    temperature=self.settings.react_temperature,
-                    bot_name=self.settings.bot_name,
-                    command_template="chat" if personal_dm else None,
-                    timeout_seconds=self.settings.react_turn_timeout_seconds,
-                    thread_handoff_suggest_after_tool_calls=(
-                        self.settings.thread_handoff_suggest_after_tool_calls
-                    ),
-                ),
-            )
+        adapter = GuildMessageTurnAdapter(
+            application=self,
+            message=message,
+            context_channel_id=context_channel_id,
+            personal_chat=personal_dm,
+        )
 
         active_registration = self.active_operations.register(
             user_id=user_id,
@@ -3252,307 +3130,18 @@ class KimiApplication:
         )
         await active_registration.__aenter__()
         try:
-            source_binding = self.discord_gateway.bind_turn_source(
-                conversation_key,
-                str(message.id),
-                message,
-            )
-            try:
-                if lock_acquired:
-                    await run_locked()
-                else:
-                    async with self._root_lock(
-                        self.response_lock_key(
-                            message,
-                            resolved_conversation=resolved_conversation,
-                        )
-                    ):
-                        await run_locked()
-            finally:
-                self.discord_gateway.unbind_turn_source(source_binding)
-
-            if turn_result is None:
-                return None
-
-            if (
-                turn_result.terminal_handoff is not None
-                and turn_result.terminal_handoff.reason == "coding_task"
-            ):
-                coding_handoff_task_id = turn_result.terminal_handoff.task_id
-
-            reply_reference: discord.Message | None = message
-            # The model may have requested a thread itself; otherwise the
-            # operator-gated backstop synthesizes one for an over-long reply in an
-            # opted-in channel. Either way the same creation/enrollment path runs.
-            thread_request = turn_result.thread_request
-            if (
-                turn_result.blocked_by_moderation
-                or turn_result.termination_reason == "attachment_error"
-            ):
-                # A blocked or attachment-validation reply gets no thread at all.
-                # Same-channel that would be merely untidy; a cross-channel one
-                # would post an anchor where nobody is awaiting the failed turn.
-                thread_request = None
-            elif (
-                thread_request is None
-                and self.settings.thread_auto_handoff_enabled
-                and self.settings.thread_handoff_enabled
-                and self.thread_handoff is not None
-                and not isinstance(message.channel, discord.Thread)
-            ):
-                channel_id = str(message.channel.id)
-                # Automatic handoff observes the exact same creation policy as
-                # move_to_thread. In particular, a global/guild/channel deny
-                # cannot be bypassed by auto_thread_* thresholds.
-                auto_cfg = (
-                    load_channel_auto_thread(channel_id)
-                    if self.threads._thread_handoff_creation_allowed(message)
-                    else None
-                )
-                if auto_cfg is not None:
-                    auto_request = build_auto_handoff_request(
-                        response_text=turn_result.response_text,
-                        question_text=self._strip_message_invocation(
-                            message.content,
-                            bot_user=self.bot.user,
-                        ),
-                        bot_name=self.settings.bot_name,
-                        min_lines=auto_cfg.min_lines,
-                        min_chars=auto_cfg.min_chars,
-                        always=auto_cfg.always,
-                    )
-                    if auto_request is not None:
-                        thread_request = auto_request
-
-            handoff_thread: discord.Thread | None = None
-            cross_channel = False
-            if thread_request is not None:
-                handoff_thread = await self.threads._create_handoff_thread(
+            if lock_acquired:
+                return await self.turn_runner.run(invocation, adapter=adapter)
+            async with self._root_lock(
+                self.response_lock_key(
                     message,
-                    thread_request,
-                    conv_id,
+                    resolved_conversation=resolved_conversation,
                 )
-                if handoff_thread is not None:
-                    # The reply is delivered inside the new thread after its
-                    # starter message. A cross-channel reply reference is not
-                    # possible, and the anchor remains in the target parent channel.
-                    cross_channel = thread_request.target_channel_id is not None
-                    target_channel = handoff_thread
-                    reply_reference = None
-
-            if coding_handoff_task_id is not None and self.coding_tasks is not None:
-                if isinstance(target_channel, discord.Thread):
-                    parent_id = getattr(target_channel, "parent_id", None)
-                    route_channel_id = (
-                        str(parent_id) if parent_id is not None else context_channel_id
-                    )
-                    route_thread_id = str(target_channel.id)
-                else:
-                    route_channel_id = str(getattr(target_channel, "id", context_channel_id))
-                    route_thread_id = None
-                coding_handoff_prepared = await self.coding_tasks.prepare_handoff(
-                    coding_handoff_task_id,
-                    channel_id=route_channel_id,
-                    thread_id=route_thread_id,
-                )
-                if not coding_handoff_prepared:
-                    turn_result = replace(
-                        turn_result,
-                        response_text=(
-                            f"Coding task `{coding_handoff_task_id[:8]}` was cancelled "
-                            "before it started."
-                        ),
-                    )
-
-            if handoff_thread is not None:
-                await self.discord_gateway.add_status_reaction(message, THREAD_HANDOFF_REACTION)
-
-            sent_messages = await self.send_response(
-                target_channel,
-                turn_result.response_text,
-                reference=reply_reference,
-                output_files=list(turn_result.output_files),
-                output_file_descriptions=dict(turn_result.output_file_descriptions),
-                allowed_file_roots=list(turn_result.allowed_file_roots),
-                embed=turn_result.embed,
-                mention_author=True,
-                workspace_key=turn_result.workspace_key,
-            )
-
-            initial_handoff_delivery_failed = bool(
-                not sent_messages or getattr(sent_messages, "delivery_failed", False)
-            )
-            if (
-                coding_handoff_task_id is not None
-                and coding_handoff_prepared
-                and handoff_thread is not None
-                and initial_handoff_delivery_failed
-                and self.coding_tasks is not None
             ):
-                task = (
-                    await self.coding_task_store.get_task(coding_handoff_task_id)
-                    if self.coding_task_store is not None
-                    else None
-                )
-                if task is not None:
-                    await self._delete_coding_status_message(
-                        handoff_thread,
-                        task,
-                        self._coding_task_marker(task.id),
-                    )
-                if self.thread_handoff is not None:
-                    await self.thread_handoff.prune(handoff_thread.id)
-                if cross_channel:
-                    await self.threads._discard_cross_channel_thread(handoff_thread)
+                return await self.turn_runner.run(invocation, adapter=adapter)
 
-                target_channel = original_target_channel
-                reply_reference = message
-                handoff_thread = None
-                cross_channel = False
-                fallback_channel_id = str(
-                    getattr(original_target_channel, "id", context_channel_id)
-                )
-                fallback_thread_id = (
-                    str(original_target_channel.id)
-                    if isinstance(original_target_channel, discord.Thread)
-                    else None
-                )
-                coding_handoff_prepared = await self.coding_tasks.prepare_handoff(
-                    coding_handoff_task_id,
-                    channel_id=fallback_channel_id,
-                    thread_id=fallback_thread_id,
-                )
-                if coding_handoff_prepared:
-                    sent_messages = await self.send_response(
-                        target_channel,
-                        turn_result.response_text,
-                        reference=reply_reference,
-                        output_files=list(turn_result.output_files),
-                        output_file_descriptions=dict(turn_result.output_file_descriptions),
-                        allowed_file_roots=list(turn_result.allowed_file_roots),
-                        embed=turn_result.embed,
-                        mention_author=True,
-                        workspace_key=turn_result.workspace_key,
-                    )
-
-            if (
-                coding_handoff_task_id is not None
-                and coding_handoff_prepared
-                and self.coding_tasks is not None
-            ):
-                coding_handoff_finalized = await self.coding_tasks.release_handoff(
-                    coding_handoff_task_id
-                )
-
-            # "The turn meant to say something." Both the thread cleanup below and
-            # the ❌ reaction further down key on it: an embed-only or files-only
-            # reply is just as real as a text one, so a failed send has to prune
-            # and tidy up for those too, not only when there was text.
-            expected_delivery = bool(
-                turn_result.response_text.strip()
-                or turn_result.embed is not None
-                or turn_result.output_files
-            )
-
-            if (
-                self.thread_handoff is not None
-                and isinstance(target_channel, discord.Thread)
-                and self.thread_handoff.is_managed(target_channel.id)
-                and not sent_messages
-                and expected_delivery
-            ):
-                # send_response logs and swallows per-chunk HTTP failures, so a
-                # deleted/locked managed thread surfaces as nothing sent: revert
-                # it to mention-only rather than failing silently forever.
-                await self.thread_handoff.prune(target_channel.id)
-                if cross_channel:
-                    # Nothing landed in it, so nothing should be left over in the
-                    # target channel advertising that it exists.
-                    await self.threads._discard_cross_channel_thread(target_channel)
-            elif cross_channel and handoff_thread is not None and sent_messages:
-                await self.threads._send_cross_channel_pointer(message, handoff_thread)
-
-            if (
-                self.conversation_store is not None
-                and conv_id is not None
-                and sent_messages
-                and not turn_result.blocked_by_moderation
-                and turn_result.termination_reason != "attachment_error"
-            ):
-                # An embed-only reply has empty content; persist a text summary so the
-                # embed stays visible in the transcript that seeds later turns.
-                embed_summary = (
-                    embed_transcript_summary(turn_result.embed)
-                    if turn_result.embed is not None
-                    else ""
-                )
-                reply_records = []
-                for index, sent in enumerate(sent_messages):
-                    content = strip_chunk_marker(sent.content)
-                    if index == 0 and not content and embed_summary:
-                        content = embed_summary
-                    reply_records.append(
-                        ChannelMessageRecord(
-                            discord_message_id=str(sent.id),
-                            role="assistant",
-                            author_id=None,
-                            author_name=None,
-                            content=content,
-                            source_created_at=message_source_timestamp(sent),
-                        )
-                    )
-                # Map replies under the channel they actually landed in: after a
-                # thread handoff that is the new thread, and the reply-continuation
-                # lookup filters message_contexts by the incoming message's channel.
-                sent_channel = getattr(sent_messages[0], "channel", None)
-                # Personal chat keeps both sides of the transcript under the one
-                # scope sentinel; a DM channel id would split one root's
-                # message_contexts rows across two channel values.
-                persist_channel_id = (
-                    context_channel_id
-                    if personal_dm or sent_channel is None
-                    else str(sent_channel.id)
-                )
-                await self.conversation_store.save_channel_messages(
-                    conv_id,
-                    reply_records,
-                    context_channel_id=persist_channel_id,
-                )
-            if turn_result.thread_close_request is not None:
-                await self.threads._close_handoff_thread(
-                    target_channel,
-                    turn_result.thread_close_request,
-                )
-            partial_delivery_failed = bool(getattr(sent_messages, "delivery_failed", False))
-            if (
-                expected_delivery
-                and (not sent_messages or partial_delivery_failed)
-                and not turn_result.blocked_by_moderation
-            ):
-                # send_response swallows per-chunk HTTP failures; surface a total
-                # delivery failure so on_message reacts ❌ instead of ✅.
-                return replace(turn_result, delivery_failed=True)
-            return turn_result
         finally:
-            if (
-                coding_handoff_task_id is not None
-                and not coding_handoff_finalized
-                and self.coding_tasks is not None
-            ):
-                try:
-                    coding_handoff_finalized = await self.coding_tasks.finalize_handoff(
-                        coding_handoff_task_id
-                    )
-                except Exception:
-                    log.exception(
-                        "Could not release coding task %s after foreground routing failed",
-                        coding_handoff_task_id,
-                    )
             await active_registration.__aexit__(None, None, None)
-            await activity_reporter.finish()
-            kept_id = activity_reporter.committed_message_id
-            if kept_id is not None:
-                await map_building_message(kept_id)
 
     async def send_response(
         self,
@@ -3731,6 +3320,18 @@ class KimiApplication:
                 image_distillation_store=self.image_distillation_store,
                 user_activity=self.privacy_barrier.activity,
             )
+        )
+
+    def _make_foreground_turn_runner(self) -> ForegroundTurnRunner:
+        assert self.conversation_store is not None
+        return ForegroundTurnRunner(
+            settings=self.settings,
+            conversation_store=self.conversation_store,
+            dependency_factory=self._make_turn_dependency_factory(),
+            active_operations=self.active_operations,
+            privacy_barrier=self.privacy_barrier,
+            workspace_locks=self.tools.workspace_locks,
+            handle_turn_hook=_handle_foreground_turn,
         )
 
     def _model_log_label(self, role: str) -> str:

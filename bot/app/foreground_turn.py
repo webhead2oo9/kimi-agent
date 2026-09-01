@@ -90,6 +90,12 @@ class TurnDeliveryReceipt:
     replies: tuple[DeliveredReply, ...] = ()
     context_channel_id: str = ""
     delivery_failed: bool = False
+    # Set only when the surface had to deliver something other than the
+    # model's result (a cancelled coding handoff acknowledgement, for
+    # instance). The runner then returns and reports that result; the
+    # transcript already comes from `replies`, so this is not a persistence
+    # hook.
+    delivered_result: TurnResult | None = None
 
 
 class TurnSurfaceOutcomeKind(StrEnum):
@@ -308,9 +314,10 @@ class ForegroundTurnRunner:
                 output_files=turn_result.output_files,
                 deliver=lambda: adapter.deliver(turn_result, conversation_id=conversation_id),
             )
-            await self._persist_assistant_replies(conversation_id, turn_result, receipt)
-            if receipt.delivery_failed and not turn_result.delivery_failed:
-                result = replace(turn_result, delivery_failed=True)
+            result = receipt.delivered_result or turn_result
+            await self._persist_assistant_replies(conversation_id, result, receipt)
+            if receipt.delivery_failed and not result.delivery_failed:
+                result = replace(result, delivery_failed=True)
             outcome_kind = (
                 TurnSurfaceOutcomeKind.DELIVERY_FAILED
                 if result.delivery_failed

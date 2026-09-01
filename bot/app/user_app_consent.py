@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 import discord
 
 from storage.preferences import PreferenceStore
+
+log = logging.getLogger(__name__)
 
 
 class UserAppConsentView(discord.ui.View):
@@ -41,11 +45,21 @@ class UserAppConsentView(discord.ui.View):
             return
         self._claimed = True
         self.stop()
-        await self._store.set_consent(str(self._author_id), True)
-        # thinking=True creates a fresh deferred command-style response for the
-        # component interaction. Its visibility carries through live activity,
-        # the final result, and any post-defer failure.
-        await interaction.response.defer(ephemeral=not self._public_response, thinking=True)
+        try:
+            await self._store.set_consent(str(self._author_id), True)
+            # thinking=True creates a fresh deferred command-style response for the
+            # component interaction. Its visibility carries through live activity,
+            # the final result, and any post-defer failure.
+            await interaction.response.defer(ephemeral=not self._public_response, thinking=True)
+        except Exception:
+            log.exception("User-app privacy consent acceptance failed for user %s", self._author_id)
+            with suppress(discord.HTTPException):
+                await interaction.response.edit_message(
+                    content="I couldn't save your privacy choice. Please try again.",
+                    embed=None,
+                    view=None,
+                )
+            return
         await self._on_accept(interaction)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary)

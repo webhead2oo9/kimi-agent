@@ -483,7 +483,12 @@ block, and input validation first, then consults consent before deferring the
 interaction or running a provider turn. Accepting records consent, defers the
 button interaction, and resumes the retained request on that interaction; both
 prompts are ephemeral, while `/chat` may still deliver the resumed answer
-publicly when the user selected public visibility.
+publicly when the user selected public visibility. This interaction gate also
+fails closed: an error reading consent or posting the prompt is logged, an
+ephemeral retry notice is attempted, and the retained request does not run. If
+the Accept button cannot record consent or defer its response, it edits the
+prompt to a failure notice when possible and does not invoke the retained
+callback.
 
 ### Components
 
@@ -496,7 +501,7 @@ publicly when the user selected public visibility.
 - `app/user_app_consent.py:UserAppConsentView` is the ephemeral interaction
   prompt shared by `/chat` and **Teach <bot>**. It records consent, defers the
   accept-button interaction with the requested response visibility, and invokes
-  the retained callback exactly once.
+  the retained callback exactly once only after both steps succeed.
 - `storage/preferences.py` provides `has_consented(user_id)` (defaults
   **False**, because consent must be explicit) and
   `set_consent(user_id, granted)`.

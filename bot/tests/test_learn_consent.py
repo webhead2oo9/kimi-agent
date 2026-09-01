@@ -24,6 +24,7 @@ class _Response:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
         self.deferred: list[dict[str, object]] = []
+        self.edited: list[dict[str, object]] = []
 
     def is_done(self) -> bool:
         return bool(self.sent or self.deferred)
@@ -34,6 +35,9 @@ class _Response:
 
     async def defer(self, **kwargs: object) -> None:
         self.deferred.append(kwargs)
+
+    async def edit_message(self, **kwargs: object) -> None:
+        self.edited.append(kwargs)
 
 
 class _Followup:
@@ -59,6 +63,23 @@ class _Interaction:
 class _ConsentLookupForbidden:
     async def has_consented(self, user_id: str) -> bool:
         raise AssertionError(f"consent was looked up for {user_id}")
+
+
+class _FailingConsentLookup:
+    async def has_consented(self, _user_id: str) -> bool:
+        raise RuntimeError("consent database unavailable")
+
+
+class _PromptFailingResponse(_Response):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def send_message(self, content: object = None, **kwargs: object) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("Discord prompt construction failed")
+        await super().send_message(content, **kwargs)
 
 
 class _BlockedStore:
@@ -273,3 +294,106 @@ async def test_chat_still_prompts_through_extracted_consent_helper(
         assert isinstance(prompt["view"], UserAppConsentView)
     finally:
         await app._close_resources()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["chat", "teach"])
+@pytest.mark.parametrize("failure", ["lookup", "prompt"])
+async def test_interaction_consent_failures_gate_chat_and_teach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+    failure: str,
+) -> None:
+    app, learn_calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
+    interaction = _Interaction(guild=surface == "teach")
+    execute_calls: list[discord.Interaction] = []
+
+    async def capture_chat_execute(
+        resume_interaction: discord.Interaction,
+        **_kwargs: object,
+    ) -> None:
+        execute_calls.append(resume_interaction)
+
+    monkeypatch.setattr(app, "_execute_user_app_chat", capture_chat_execute)
+    if failure == "lookup":
+        app.preference_store = cast(Any, _FailingConsentLookup())
+    else:
+        interaction.response = _PromptFailingResponse()
+
+    try:
+        if surface == "chat":
+            command = app.bot.tree.get_command("chat")
+            assert command is not None
+            await cast(Any, command).callback(cast(Any, interaction), "hello")
+        else:
+            await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
+
+        assert interaction.response.deferred == []
+        assert execute_calls == []
+        assert learn_calls == []
+        assert interaction.response.sent == [
+            {
+                "content": "I couldn't verify your privacy consent. Please try again.",
+                "ephemeral": True,
+            }
+        ]
+        async with app.database.conn.execute("SELECT COUNT(*) AS count FROM messages") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and int(row["count"]) == 0
+        async with app.database.conn.execute(
+            "SELECT COUNT(*) AS count FROM conversations"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and int(row["count"]) == 0
+        async with app.database.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_preferences"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and int(row["count"]) == 0
+    finally:
+        await app._close_resources()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["write", "defer"])
+async def test_user_app_consent_accept_failure_does_not_resume_request(failure: str) -> None:
+    class FailingConsentStore:
+        async def set_consent(self, _user_id: str, _granted: bool) -> bool:
+            if failure == "write":
+                raise RuntimeError("consent database unavailable")
+            return True
+
+    class FailingDeferResponse(_Response):
+        async def defer(self, **_kwargs: object) -> None:
+            raise RuntimeError("interaction defer failed")
+
+    accepted: list[discord.Interaction] = []
+
+    async def on_accept(interaction: discord.Interaction) -> None:
+        accepted.append(interaction)
+
+    view = UserAppConsentView(
+        author_id=USER_ID,
+        store=cast(Any, FailingConsentStore()),
+        on_accept=on_accept,
+        timeout=60.0,
+    )
+    button = next(
+        child for child in view.children if getattr(child, "label", None) == "Accept and continue"
+    )
+    interaction = _Interaction()
+    if failure == "defer":
+        interaction.response = FailingDeferResponse()
+
+    await cast(Any, button).callback(cast(discord.Interaction, interaction))
+
+    assert accepted == []
+    assert interaction.response.deferred == []
+    assert interaction.response.edited == [
+        {
+            "content": "I couldn't save your privacy choice. Please try again.",
+            "embed": None,
+            "view": None,
+        }
+    ]

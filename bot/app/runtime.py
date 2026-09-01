@@ -2459,7 +2459,7 @@ class KimiApplication:
         attachment: discord.Attachment | None,
         public: bool,
         request_generation: int,
-    ) -> None:
+    ) -> TurnResult | None:
         user_id = str(interaction.user.id)
         root_key = f"userchat:{user_id}"
         turn_stop_event = asyncio.Event()
@@ -2485,7 +2485,7 @@ class KimiApplication:
                             ),
                             requested_public=public,
                         )
-                        return
+                        return None
                     trust_tier = self.user_app_access.resolve(user_id)
                     if trust_tier is None:
                         await _send_user_app_status(
@@ -2493,17 +2493,17 @@ class KimiApplication:
                             "You no longer have access to this app's personal chat.",
                             requested_public=public,
                         )
-                        return
+                        return None
                     if await self._user_is_blocked(user_id):
                         await _send_user_app_status(
                             interaction,
                             "You can't use personal chat right now.",
                             requested_public=public,
                         )
-                        return
+                        return None
                     try:
                         async with asyncio.timeout_at(deadline):
-                            await self._run_user_app_chat_turn(
+                            return await self._run_user_app_chat_turn(
                                 interaction,
                                 message=message,
                                 attachment=attachment,
@@ -2537,6 +2537,7 @@ class KimiApplication:
                     requested_public=public,
                 )
             log.info("Stopped personal chat response for user %s", user_id)
+        return None
 
     async def _run_user_app_chat_turn(
         self,
@@ -2547,7 +2548,7 @@ class KimiApplication:
         public: bool,
         trust_tier: TrustTier,
         turn_stop_event: asyncio.Event,
-    ) -> None:
+    ) -> TurnResult | None:
         assert self.context_manager is not None
         assert self.conversation_store is not None
         conversation_store = self.conversation_store
@@ -2563,7 +2564,7 @@ class KimiApplication:
                 TURN_ADMISSION_BUSY_MESSAGE,
                 requested_public=public,
             )
-            return
+            return None
 
         source_message = _UserAppMessageSource(
             id=int(interaction.id),
@@ -2697,36 +2698,113 @@ class KimiApplication:
                         )
                     finally:
                         await activity_reporter.finish()
-                    if (
-                        result is not None
-                        and not result.blocked_by_moderation
-                        and result.termination_reason != "attachment_error"
-                    ):
-                        transcript_text = result.response_text
-                        if not transcript_text and result.embed is not None:
-                            transcript_text = embed_transcript_summary(result.embed)
-                        if transcript_text:
-                            await conversation_store.save_channel_messages(
-                                conversation_id,
-                                [
-                                    ChannelMessageRecord(
-                                        discord_message_id=(f"userapp:{interaction.id}:assistant"),
-                                        role="assistant",
-                                        author_id=None,
-                                        author_name=None,
-                                        content=transcript_text,
-                                        source_created_at=interaction.created_at.timestamp(),
-                                    )
-                                ],
-                                context_channel_id=scope_channel_id,
+
+                    if result is None:
+                        await _send_user_app_status(
+                            interaction,
+                            "There wasn't anything I could process in that request.",
+                            requested_public=public,
+                        )
+                        return None
+
+                    turn_result = result
+                    delivered_content: str | None = None
+
+                    async def record_delivered_content(content: str) -> None:
+                        nonlocal delivered_content
+                        delivered_content = content
+
+                    async def persist_delivered_assistant() -> None:
+                        assert delivered_content is not None
+                        if (
+                            turn_result.blocked_by_moderation
+                            or turn_result.termination_reason == "attachment_error"
+                        ):
+                            return
+                        transcript_text = delivered_content
+                        if not transcript_text and turn_result.embed is not None:
+                            transcript_text = embed_transcript_summary(turn_result.embed)
+                        if not transcript_text:
+                            return
+                        await conversation_store.save_channel_messages(
+                            conversation_id,
+                            [
+                                ChannelMessageRecord(
+                                    discord_message_id=f"userapp:{interaction.id}:assistant",
+                                    role="assistant",
+                                    author_id=None,
+                                    author_name=None,
+                                    content=transcript_text,
+                                    source_created_at=interaction.created_at.timestamp(),
+                                )
+                            ],
+                            context_channel_id=scope_channel_id,
+                        )
+
+                    async def deliver() -> None:
+                        await send_interaction_result(
+                            interaction,
+                            turn_result.response_text,
+                            ephemeral=not public,
+                            original_ephemeral=not public,
+                            output_files=turn_result.output_files,
+                            output_file_descriptions=turn_result.output_file_descriptions,
+                            allowed_file_roots=turn_result.allowed_file_roots,
+                            embed=turn_result.embed,
+                            on_primary_delivered=record_delivered_content,
+                        )
+
+                    try:
+                        await self._deliver_with_workspace_guard(
+                            workspace_key=turn_result.workspace_key,
+                            output_files=turn_result.output_files,
+                            deliver=deliver,
+                        )
+                        if delivered_content is None:
+                            result = replace(turn_result, delivery_failed=True)
+                        else:
+                            await persist_delivered_assistant()
+                    except PartialPublicDeliveryError:
+                        if delivered_content is not None:
+                            await persist_delivered_assistant()
+                        result = replace(turn_result, delivery_failed=True)
+                        log.warning(
+                            "Personal chat public followup delivery was incomplete for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
+                        with suppress(discord.HTTPException):
+                            await interaction.followup.send(
+                                "I posted the first part, but couldn't deliver the complete response.",
+                                ephemeral=True,
+                                allowed_mentions=discord.AllowedMentions.none(),
                             )
+                    except discord.HTTPException:
+                        if delivered_content is not None:
+                            await persist_delivered_assistant()
+                        result = replace(turn_result, delivery_failed=True)
+                        log.warning(
+                            "Personal chat result delivery failed for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
+                        with suppress(discord.HTTPException):
+                            await _send_user_app_status(
+                                interaction,
+                                (
+                                    "I finished the turn but couldn't deliver the response here. "
+                                    "Try again privately."
+                                ),
+                                requested_public=public,
+                            )
+                    return result
         except PrivacyDeletionPendingError:
             await _send_user_app_status(
                 interaction,
                 "Your data deletion is still in progress. Try again when it finishes.",
                 requested_public=public,
             )
-            return
+            return None
         except Exception:
             log.exception("Personal user-app chat failed for user %s", user_id)
             with suppress(discord.HTTPException):
@@ -2735,49 +2813,7 @@ class KimiApplication:
                     "I couldn't complete that chat turn. Please try again.",
                     requested_public=public,
                 )
-            return
-
-        if result is None:
-            await _send_user_app_status(
-                interaction,
-                "There wasn't anything I could process in that request.",
-                requested_public=public,
-            )
-            return
-        try:
-            await send_interaction_result(
-                interaction,
-                result.response_text,
-                ephemeral=not public,
-                original_ephemeral=not public,
-                output_files=result.output_files,
-                output_file_descriptions=result.output_file_descriptions,
-                allowed_file_roots=result.allowed_file_roots,
-                embed=result.embed,
-            )
-        except PartialPublicDeliveryError:
-            log.warning(
-                "Personal chat public followup delivery was incomplete for user %s",
-                user_id,
-                exc_info=True,
-            )
-            with suppress(discord.HTTPException):
-                await interaction.followup.send(
-                    "I posted the first part, but couldn't deliver the complete response.",
-                    ephemeral=True,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-        except discord.HTTPException:
-            log.warning("Personal chat result delivery failed for user %s", user_id, exc_info=True)
-            with suppress(discord.HTTPException):
-                await _send_user_app_status(
-                    interaction,
-                    (
-                        "I finished the turn but couldn't deliver the response here. "
-                        "Try again privately."
-                    ),
-                    requested_public=public,
-                )
+            return None
 
     async def _handle_user_app_chat_reset(self, interaction: discord.Interaction) -> str:
         assert self.conversation_store is not None
@@ -3630,13 +3666,26 @@ class KimiApplication:
                 mention_author=mention_author,
             )
 
+        return await self._deliver_with_workspace_guard(
+            workspace_key=workspace_key,
+            output_files=output_files,
+            deliver=send,
+        )
+
+    async def _deliver_with_workspace_guard[T](
+        self,
+        *,
+        workspace_key: WorkspaceKey | None,
+        output_files: Sequence[str] | None,
+        deliver: Callable[[], Awaitable[T]],
+    ) -> T:
         # Only local attachments need their workspace protected until Discord
         # has consumed them. A text-only response must remain deliverable while
         # a durable coding worker owns the workspace writer lease.
         if workspace_key and output_files:
             async with self.tools.workspace_locks.activity(workspace_key):
-                return await send()
-        return await send()
+                return await deliver()
+        return await deliver()
 
     async def _resolve_personal_dm_conversation(
         self,

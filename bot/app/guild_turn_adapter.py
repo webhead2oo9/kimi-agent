@@ -4,7 +4,6 @@ import logging
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Protocol
 
 import discord
@@ -20,14 +19,13 @@ from app.foreground_turn import (
     TurnSurfaceOutcome,
 )
 from app.coding_delivery import CodingHandoffControl, MessageInvocationStripper
+from app.response_delivery import DiscordResponseSender
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
 from config.fragments.channel_pins import load_channel_auto_thread
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import DiscordActivityReporter
-from tools.embeds import EmbedSpec
 from tools.embeds import embed_transcript_summary
-from workspace import WorkspaceKey
 
 log = logging.getLogger(__name__)
 
@@ -41,71 +39,6 @@ class GuildTurnDeliveryConfig:
 
 class BotUserProvider(Protocol):
     def __call__(self) -> discord.ClientUser | None: ...
-
-
-class DiscordResponseCallback(Protocol):
-    async def __call__(
-        self,
-        channel: discord.abc.Messageable,
-        content: str,
-        /,
-        *,
-        reference: discord.Message | None = None,
-        output_files: list[str] | None = None,
-        output_file_descriptions: dict[str, str] | None = None,
-        allowed_file_roots: list[str | Path] | None = None,
-        embed: EmbedSpec | None = None,
-        mention_author: bool = False,
-        workspace_key: WorkspaceKey | None = None,
-    ) -> list[discord.Message]: ...
-
-
-class DiscordResponseSender(Protocol):
-    async def send(
-        self,
-        channel: discord.abc.Messageable,
-        content: str,
-        /,
-        *,
-        reference: discord.Message | None = None,
-        output_files: list[str] | None = None,
-        output_file_descriptions: dict[str, str] | None = None,
-        allowed_file_roots: list[str | Path] | None = None,
-        embed: EmbedSpec | None = None,
-        mention_author: bool = False,
-        workspace_key: WorkspaceKey | None = None,
-    ) -> list[discord.Message]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class CallbackDiscordResponseSender:
-    callback: DiscordResponseCallback
-
-    async def send(
-        self,
-        channel: discord.abc.Messageable,
-        content: str,
-        /,
-        *,
-        reference: discord.Message | None = None,
-        output_files: list[str] | None = None,
-        output_file_descriptions: dict[str, str] | None = None,
-        allowed_file_roots: list[str | Path] | None = None,
-        embed: EmbedSpec | None = None,
-        mention_author: bool = False,
-        workspace_key: WorkspaceKey | None = None,
-    ) -> list[discord.Message]:
-        return await self.callback(
-            channel,
-            content,
-            reference=reference,
-            output_files=output_files,
-            output_file_descriptions=output_file_descriptions,
-            allowed_file_roots=allowed_file_roots,
-            embed=embed,
-            mention_author=mention_author,
-            workspace_key=workspace_key,
-        )
 
 
 @dataclass(frozen=True, slots=True)

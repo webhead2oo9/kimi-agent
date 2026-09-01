@@ -1,6 +1,6 @@
 """The scoped agent turn behind the bot-name-derived teaching context menu.
 
-This is deliberately *not* ``KimiApplication.handle_message``. That path
+This is deliberately *not* ``DiscordMessageController.handle_message``. That path
 resolves trust from the message's author, persists a transcript, and answers in
 the channel. All of that is wrong here, where the staff member acting is someone
 other than the quoted message's author, the reply is ephemeral, and nothing

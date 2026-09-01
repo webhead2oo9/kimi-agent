@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager, suppress
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -14,65 +13,28 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from agent.attachments import (
-    collect_reply_context,
-    collect_turn_attachments,
-    collect_turn_images,
-    turn_has_image_input,
-)
-from agent.backfill import clean_message_text, message_source_timestamp
-from workspace import WorkspaceKey
-from config.fragments.channel_pins import (
-    filter_pins_to_searchable,
-    load_channel_blocked_tools,
-    load_channel_pinned_tools,
-)
 from config.fragments.guild_config import (
-    load_guild_blocked_tools,
-    load_guild_pinned_tools,
     load_guild_trust,
     server_setup_activation,
 )
 from agent.context import ContextManager
-from config.fragments.tool_config import load_tool_configs
 from config.fragments.tool_policy import load_global_blocked_tools
-from agent.core import run_conversation
 from agent.turn import (
-    TurnPreparationInput,
     TurnResult,
 )
 from app.admission import (
-    TURN_ADMISSION_BUSY_MESSAGE,
-    AdmissionRejection,
     TurnAdmissionController,
 )
 from app.cancellation import ActiveOperationRegistry
 from app.command_sync import CommandSyncConfig, DiscordCommandSync
 from app.conversation_routing import (
     ResolvedConversation,
-    conversation_key_for_message,
-    referenced_message_id,
-    resolve_conversation_for_message,
-    response_lock_key,
 )
 from app.consent import PrivacyConsentGate
 from app.coding_delivery import (
     CodingDelivery,
     CodingDeliveryConfig,
     CodingTaskController,
-)
-from app.foreground_turn import (
-    ForegroundTurnInvocation,
-    ForegroundTurnRunner,
-    HandleTurn,
-    TurnConversationSpec,
-    deliver_with_workspace_guard,
-)
-from app.guild_turn_adapter import (
-    CallbackDiscordResponseSender,
-    GuildMessageTurnAdapter,
-    GuildTurnCollaborators,
-    GuildTurnDeliveryConfig,
 )
 from app.guild_activation import GuildActivationConfig, GuildActivationService
 from app.lifecycle import (
@@ -82,10 +44,16 @@ from app.lifecycle import (
     LifecycleResources,
     ShutdownSignal,
 )
+from app.message_runtime import (
+    DiscordMessageController,
+    MessageEntryConfig,
+    MessageRuntimeBindings,
+    RepositoryBlockedUserCheck,
+)
+from app.response_delivery import DiscordResponseSender
 from app.user_app_chat import UserAppChatConfig, UserAppChatController
 from app.user_app_consent import UserAppConsentConfig, UserAppConsentPrompter
-from app.work_cancellation import WorkCancellationCoordinator, WorkScope, is_stop_message
-from app.proposals import ConfigProposalService
+from app.work_cancellation import WorkCancellationCoordinator, WorkScope
 from app.root_locks import RootLockPool
 from app.thread_handoff_boundary import ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
@@ -97,34 +65,17 @@ from app.providers import (
     build_provider_manager,
     codex_startup_check,
 )
-from utils.privacy_barrier import PrivacyDeletionPendingError, UserPrivacyBarrier
+from utils.privacy_barrier import UserPrivacyBarrier
 from app.tools import RuntimeTools, build_runtime_tools
-from app.turn_entry import (
-    TurnDependencyFactory,
-    TurnEntryHooks,
-    TurnEntryServices,
-    chat_model_name_for_scope,
-    resolve_parent_channel_id,
-)
 from config import paths
-from config.model_config import Scope
 from config.operator_settings import apply_operator_settings, settings_values
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
-    can_send_reply,
     is_allowed_guild_interaction,
-    is_eligible_to_respond,
-    should_respond,
-    strip_mention,
 )
-from memory.banks import ensure_user_bank
-from memory.recall import recall_current_user_context
-from providers.assets import write_generated_assets
 from skills.loader import SkillsIndexCache
 from app.learn_log import LearnLogFeed, build_learn_log_feed
-from app.learn_turn import run_learn_turn
-from tools.learn import LearnTarget
 from storage.blocked_users import BlockedUserStore
 from storage.coding_tasks import CodingTaskStore
 from storage.image_distillations import ImageDistillationStore
@@ -136,17 +87,12 @@ from storage.preferences import PreferenceStore
 from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
-from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
+from tools.registry import ToolRegistry
 from trust.resolver import TrustResolver
 from trust.user_app import UserAppAccess
-from workspace import user_app_workspace_key
 
 if TYPE_CHECKING:
     from moderation.service import ModerationService
-    from tools.embeds import EmbedSpec
-
-_STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS = 2.0
-
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +207,9 @@ class KimiApplication:
     _turn_admission: TurnAdmissionController = field(init=False, repr=False)
     skills_index_cache: SkillsIndexCache = field(init=False)
     user_app_access: UserAppAccess = field(init=False)
+    user_blocked: RepositoryBlockedUserCheck = field(init=False, repr=False)
+    response_sender: DiscordResponseSender = field(init=False, repr=False)
+    message_controller: DiscordMessageController = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Discord-facing thread handoff lives in its own boundary; the manager is
@@ -281,11 +230,63 @@ class KimiApplication:
             regular_ids=frozenset(self.settings.user_app_regular_id_set),
             staff_ids=frozenset(self.settings.user_app_staff_id_set),
         )
+        self.user_blocked = RepositoryBlockedUserCheck(lambda: self.blocked_user_store)
+        self.response_sender = DiscordResponseSender(
+            gateway=self.discord_gateway,
+            workspace_locks=self.tools.workspace_locks,
+        )
+        self.message_controller = DiscordMessageController(
+            config=MessageEntryConfig(
+                allowed_channels=frozenset(self.settings.allowed_channels),
+                bot_name=self.settings.bot_name,
+                new_user_onboarding_turns=self.settings.new_user_onboarding_turns,
+                react_turn_timeout_seconds=self.settings.react_turn_timeout_seconds,
+                thread_handoff_suggest_after_tool_calls=(
+                    self.settings.thread_handoff_suggest_after_tool_calls
+                ),
+                thread_auto_handoff_enabled=self.settings.thread_auto_handoff_enabled,
+                thread_handoff_enabled=self.settings.thread_handoff_enabled,
+            ),
+            turn_settings=self.settings,
+            bot=self.bot,
+            gateway=self.discord_gateway,
+            responses=self.response_sender,
+            blocked_user=self.user_blocked,
+            root_locks=self.root_locks,
+            provider_manager=self.provider_manager,
+            memory_manager=self.memory_manager,
+            tools=self.tools,
+            llm_semaphore=self.llm_semaphore,
+            skills_index_cache=self.skills_index_cache,
+            threads=self.threads,
+            bindings=MessageRuntimeBindings(
+                interactions_ready=self.gateway_interactions_ready,
+                closed=lambda: self.lifecycle.closed,
+                active_guilds=self.active_guilds,
+                active_operations=lambda: self.active_operations,
+                privacy_barrier=lambda: self.privacy_barrier,
+                turn_admission=lambda: self.turn_admission,
+                trust_resolver=lambda: self.trust_resolver,
+                conversation_store=lambda: self.conversation_store,
+                preference_store=lambda: self.preference_store,
+                usage_store=lambda: self.repositories.usage_store,
+                image_distillation_store=lambda: self.repositories.image_distillation_store,
+                context_manager=lambda: self.lifecycle.resources.context_manager,
+                turn_runner=lambda: self.lifecycle.resources.turn_runner,
+                consent_gate=lambda: self.lifecycle.resources.consent_gate,
+                personal_chat=lambda: self.user_app_chat,
+                work_cancellation=lambda: self.work_cancellation,
+                thread_handoff=lambda: self.thread_handoff,
+                coding=lambda: self.lifecycle.resources.coding_tasks,
+                moderation_service=lambda: self.moderation_service,
+            ),
+        )
 
     def gateway_interactions_ready(self) -> bool:
         """Whether a new Discord interaction may enter application code."""
 
-        return self.lifecycle.interactions_ready()
+        lifecycle = getattr(self, "lifecycle", None)
+        return lifecycle is not None and lifecycle.interactions_ready()
 
     @property
     def trust_resolver(self) -> TrustResolver:
@@ -349,10 +350,6 @@ class KimiApplication:
         )
 
     @property
-    def closed(self) -> bool:
-        return self.lifecycle.closed
-
-    @property
     def db_initialized(self) -> bool:
         return self.lifecycle.db_initialized
 
@@ -378,40 +375,12 @@ class KimiApplication:
         return self.repositories.blocked_user_store
 
     @property
-    def model_selection_store(self) -> ModelSelectionStore:
-        return self.repositories.model_selection_store
-
-    @property
-    def image_distillation_store(self) -> ImageDistillationStore:
-        return self.repositories.image_distillation_store
-
-    @property
-    def usage_store(self) -> UsageStore:
-        return self.repositories.usage_store
-
-    @property
     def video_session_store(self) -> VideoSessionStore:
         return self.repositories.video_session_store
 
     @property
     def privacy_deletion_store(self) -> PrivacyDeletionRequestStore:
         return self.repositories.privacy_deletion_store
-
-    @property
-    def user_memory_bank_state_store(self) -> UserMemoryBankStateStore:
-        return self.repositories.user_memory_bank_state_store
-
-    @property
-    def context_manager(self) -> ContextManager:
-        return self.lifecycle.resources.context_manager
-
-    @property
-    def turn_runner(self) -> ForegroundTurnRunner:
-        return self.lifecycle.resources.turn_runner
-
-    @property
-    def consent_gate(self) -> PrivacyConsentGate:
-        return self.lifecycle.resources.consent_gate
 
     @property
     def user_app_consent(self) -> UserAppConsentPrompter:
@@ -430,10 +399,6 @@ class KimiApplication:
         return self.lifecycle.thread_handoff
 
     @property
-    def proposal_service(self) -> ConfigProposalService | None:
-        return self.lifecycle.proposal_service
-
-    @property
     def registry(self) -> ToolRegistry:
         return self.tools.registry
 
@@ -443,16 +408,8 @@ class KimiApplication:
         # from the same instance.
         return self.repositories.coding_task_store
 
-    @property
-    def coding_tasks(self) -> CodingTaskController | None:
-        controller = self.lifecycle.resources.coding_tasks
-        return controller if controller is not None and controller.running else None
-
     def active_guilds(self) -> set[int]:
         return self.guild_activation.active_guilds()
-
-    def guild_activation_state(self, guild_id: int) -> dict[str, Any]:
-        return self.guild_activation.guild_activation_state(guild_id).as_dict()
 
     async def refresh_guild_activation(self, guild_id: int | None = None) -> None:
         await self.guild_activation.refresh_guild_activation(guild_id)
@@ -512,282 +469,16 @@ class KimiApplication:
         await self.lifecycle.disconnect()
 
     async def on_resumed(self) -> None:
-        """Restore admission after Discord resumes the existing gateway session."""
         await self.lifecycle.resume()
 
     async def on_ready(self) -> None:
         await self.lifecycle.ready()
 
-    async def _user_is_blocked(self, user_id: str) -> bool:
-        """The one block answer every entry point asks before doing anything.
-
-        Guild messages, personal chat, the teach context menu, and coding-task
-        claim all route through here so a block cannot be honoured on one path
-        and missed on another. Every entry point registers during lifecycle
-        initialization after repository composition, so an absent store is a
-        wiring bug, and a privilege gate does not guess in that state.
-        """
-        return await self.blocked_user_store.is_blocked(user_id)
-
-    async def _run_learn_turn(
-        self,
-        target: LearnTarget,
-        interaction: discord.Interaction,
-    ) -> str:
-        """Bind the bot-name-derived teaching context menu to a scoped agent turn.
-
-        The command module owns the Discord boundary and the staff check; this
-        supplies the live provider, registry, and skills index. Exceptions
-        propagate so the command surfaces one ephemeral failure message.
-        """
-        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        channel = interaction.channel
-        member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        return await run_learn_turn(
-            provider_manager=self.provider_manager,
-            registry=self.tools.registry,
-            target=target,
-            user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
-            guild_id=guild_id,
-            guild_name=interaction.guild.name if interaction.guild else "",
-            channel_id=str(interaction.channel_id) if interaction.channel_id else "",
-            channel_name=getattr(channel, "name", "") or "",
-            skills_index=self.skills_index_cache.index(guild_id or None),
-            bot_name=self.settings.bot_name,
-            platform_member=member,
-            llm_semaphore=self.llm_semaphore,
-        )
-
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        if guild.id in self.active_guilds():
-            log.info("Joined active guild %s (%s)", guild.id, getattr(guild, "name", "?"))
-            return
-        log.warning(
-            "Joined inactive guild %s (%s); staying connected but ignoring "
-            "guild messages and commands until activation changes",
-            guild.id,
-            getattr(guild, "name", "?"),
-        )
-
-    def _strip_message_invocation(
-        self,
-        content: str,
-        *,
-        bot_user: discord.ClientUser | None,
-    ) -> str:
-        return strip_mention(
-            content,
-            bot_user=bot_user,
-            bot_name=self.settings.bot_name,
-        )
-
-    async def _handle_stop_message(self, message: discord.Message) -> None:
-        await self.work_cancellation.handle_stop_message(message)
+        await self.guild_activation.on_guild_join(guild)
 
     async def on_message(self, message: discord.Message) -> None:
-        if not self.gateway_interactions_ready():
-            return
-        active_guilds = self.active_guilds()
-        if not is_eligible_to_respond(
-            message,
-            bot_user=self.bot.user,
-            allowed_channels=self.settings.allowed_channels or None,
-            allowed_guilds=active_guilds,
-        ):
-            return
-        personal_dm = (
-            isinstance(message.channel, discord.DMChannel)
-            and self.user_app_chat.classify_dm(message) is not None
-        )
-        if isinstance(message.channel, discord.DMChannel) and not personal_dm:
-            # DMs are ignored unless this user has personal-chat access. Return
-            # silently: replying would confirm the bot is listening and invite
-            # probing from anyone who shares a guild with it.
-            return
-
-        # Pure routing check before taking a lease; messages the bot will ignore
-        # have no state to coordinate with /privacy. A DM needs no invocation
-        # gate: there is nothing else in the channel for it to be addressed to.
-        if not personal_dm and not self._should_respond(message, active_guilds=active_guilds):
-            return
-
-        # Hard block gate precedes reactions, transcript writes, every lock or
-        # privacy lease, tools, and provider calls.
-        if await self._user_is_blocked(str(message.author.id)):
-            log.info("Ignoring blocked user %s", message.author.id)
-            return
-
-        # Cancellation has its own lane before admission and the response lock;
-        # otherwise a STOP message could queue behind the work it needs to end.
-        if is_stop_message(
-            message.content,
-            bot_user=self.bot.user,
-            strip_message_invocation=self._strip_message_invocation,
-        ) and (
-            not personal_dm or self.active_operations.has_active_for_user(str(message.author.id))
-        ):
-            await self._handle_stop_message(message)
-            return
-
-        # Reject before taking a privacy lease or doing any conversation,
-        # attachment, moderation, memory, provider, or tool work. Admission is
-        # deliberately non-waiting, so Discord event tasks cannot form a second
-        # unbounded queue ahead of the provider semaphore.
-        bot_member = message.guild.me if message.guild is not None else None
-        if not can_send_reply(message.channel, bot_member=bot_member):
-            log.info(
-                "Skipping mention in channel %s: missing send permission",
-                message.channel.id,
-            )
-            return
-        admission = await self.turn_admission.try_acquire(str(message.author.id))
-        if admission.lease is None:
-            if admission.rejection is AdmissionRejection.SHUTTING_DOWN:
-                return
-            log.info(
-                "Rejecting turn from user %s at admission boundary: %s",
-                message.author.id,
-                admission.rejection,
-            )
-            await self.send_response(
-                message.channel,
-                TURN_ADMISSION_BUSY_MESSAGE,
-                reference=message,
-            )
-            return
-
-        # Hold this across every await below: consent/routing, model tools,
-        # Discord delivery, and transcript persistence. Complete privacy deletion
-        # drains already-started leases before wiping and blocks later ones until
-        # the wipe finishes.
-        try:
-            with self.active_operations.register_provisional(
-                user_id=str(message.author.id),
-                channel_id=(USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)),
-            ):
-                async with admission.lease:
-                    async with self.privacy_barrier.activity(str(message.author.id)):
-                        await self._on_message_for_user(message)
-        except PrivacyDeletionPendingError:
-            log.info(
-                "Ignoring user %s while their privacy deletion remains pending",
-                message.author.id,
-            )
-        except asyncio.CancelledError:
-            if self.closed:
-                raise
-            log.info("Stopped active response for user %s", message.author.id)
-
-    async def _on_message_for_user(self, message: discord.Message) -> None:
-        # First-interaction privacy gate. Sits before conversation resolution, the
-        # lock, and the model turn, so an un-consented message never reaches the
-        # provider or SQLite (resolve_conversation_for_message persists a
-        # conversations row). On accept, the gate re-dispatches this message
-        # through on_message.
-        if await self.consent_gate.maybe_prompt(message):
-            return
-
-        resolved: ResolvedConversation | None
-        if (
-            isinstance(message.channel, discord.DMChannel)
-            and self.user_app_chat.classify_dm(message) is not None
-        ):
-            resolved = await self.user_app_chat.resolve_dm_conversation(message)
-        else:
-            resolved = await self.resolve_conversation_for_message(
-                message,
-                allow_new_root=True,
-            )
-        if resolved is None:
-            return
-        self.active_operations.bind_current_provisional(resolved.key)
-
-        lock_key = self.response_lock_key(message, resolved_conversation=resolved)
-        # Ack before acquiring the lock so a continuation that queues behind an
-        # in-flight turn on the same root (rapid replies / handoff-thread bursts)
-        # shows ⏳ immediately instead of waiting silently for the lock.
-        try:
-            await self.discord_gateway.add_status_reaction(message, "⏳")
-            async with self._root_lock(lock_key):
-                # Re-check now that we hold the root lock. An earlier turn on this
-                # root may have paused the thread while this message queued behind
-                # it, and a paused thread must be neither answered nor transcribed
-                # (docs/thread-handoff.md). The pre-lock check was made against the
-                # old mode.
-                # Re-read the cheap activation snapshot after waiting for the root
-                # lock so an operator deactivation stops queued work immediately.
-                # A DM has no invocation gate; its live equivalent is personal-chat
-                # access, which an operator may have revoked while this queued.
-                if isinstance(message.channel, discord.DMChannel):
-                    if self.user_app_chat.classify_dm(message) is None:
-                        return
-                elif not self._should_respond(message):
-                    return
-                try:
-                    result = await self.handle_message(
-                        message,
-                        lock_acquired=True,
-                        resolved_conversation=resolved,
-                    )
-                    if result is None:
-                        # No turn ran: a bare @mention with no text/attachment to act
-                        # on. Acknowledge the ping with a wave rather than leaving the
-                        # user with no signal; not ✅, since no reply was sent.
-                        await self.discord_gateway.add_status_reaction(message, "👋")
-                    elif result.blocked_by_moderation:
-                        await self.discord_gateway.add_status_reaction(message, "🚫")
-                    elif result.termination_reason == "attachment_error" or result.delivery_failed:
-                        await self.discord_gateway.add_status_reaction(message, "❌")
-                    else:
-                        await self.discord_gateway.add_status_reaction(message, "✅")
-                except Exception:
-                    log.exception("Error handling message %s", message.id)
-                    await self.discord_gateway.add_status_reaction(message, "❌")
-        finally:
-            await self._remove_processing_reaction(message)
-
-    async def _remove_processing_reaction(self, message: discord.Message) -> None:
-        """Remove the working reaction without letting cancellation strand it."""
-
-        removal = asyncio.create_task(self.discord_gateway.remove_status_reaction(message, "⏳"))
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS
-        cancellation: asyncio.CancelledError | None = None
-
-        while not removal.done():
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            try:
-                await asyncio.wait((removal,), timeout=remaining)
-            except asyncio.CancelledError as exc:
-                # asyncio.wait does not cancel the task it is watching. Finish
-                # the bounded cleanup before preserving the caller's cancellation.
-                if cancellation is None:
-                    cancellation = exc
-
-        if not removal.done():
-            removal.cancel()
-
-            def consume_result(completed: asyncio.Task[None]) -> None:
-                with suppress(asyncio.CancelledError, Exception):
-                    completed.result()
-
-            removal.add_done_callback(consume_result)
-            log.warning("Timed out removing Discord processing reaction")
-        else:
-            try:
-                removal.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                # Reaction cleanup is cosmetic and must not replace a provider,
-                # routing, or cancellation outcome.
-                log.debug("Could not remove Discord processing reaction", exc_info=True)
-
-        if cancellation is not None:
-            raise cancellation
+        await self.message_controller.on_message(message)
 
     async def handle_message(
         self,
@@ -796,385 +487,11 @@ class KimiApplication:
         lock_acquired: bool = False,
         resolved_conversation: ResolvedConversation | None = None,
     ) -> TurnResult | None:
-        assert self.context_manager is not None
-
-        # A DM from an allowlisted user is personal chat arriving as a real
-        # message instead of a slash interaction. It scopes exactly like /chat:
-        # one guild-less root, the shared "userapp" scope channel, the personal
-        # workspace, personal prompt template, and no first-guild-turn onboarding.
-        personal_dm_tier = (
-            self.user_app_chat.classify_dm(message)
-            if isinstance(message.channel, discord.DMChannel)
-            else None
-        )
-        personal_dm = personal_dm_tier is not None
-
-        context_channel_id = USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)
-        context_thread_id = (
-            None
-            if personal_dm
-            else (str(message.channel.id) if isinstance(message.channel, discord.Thread) else None)
-        )
-        context_channel_name = (
-            "Personal chat" if personal_dm else getattr(message.channel, "name", "DM")
-        )
-        if resolved_conversation is None:
-            resolved_conversation = (
-                await self.user_app_chat.resolve_dm_conversation(message)
-                if personal_dm
-                else await self.resolve_conversation_for_message(
-                    message,
-                    allow_new_root=True,
-                )
-            )
-        if resolved_conversation is None:
-            return None
-        conversation_key = resolved_conversation.key
-
-        member = message.author if isinstance(message.author, discord.Member) else None
-        user_id = str(message.author.id)
-        user_name = message.author.display_name
-
-        guild_id = str(message.guild.id) if message.guild else None
-        guild_name = message.guild.name if message.guild else ""
-
-        # Personal-chat standing comes from the USER_APP_* allowlists, never from
-        # guild roles, and a DM has no guild to resolve against anyway.
-        trust_tier = (
-            personal_dm_tier
-            if personal_dm_tier is not None
-            else self.trust_resolver.resolve(member, user_id, guild_id)
-        )
-
-        assert self.conversation_store is not None
-
-        async def count_user_prior_messages(
-            user_id: str, exclude_discord_message_id: str | None, limit: int
-        ) -> int:
-            assert self.conversation_store is not None
-            return await self.conversation_store.count_user_messages(
-                user_id, exclude_discord_message_id=exclude_discord_message_id, limit=limit
-            )
-
-        turn_input = TurnPreparationInput(
-            raw_content=clean_message_text(message.content),
-            source_message=message,
-            bot_user=self.bot.user,
-            guild_id=guild_id,
-            guild_name=guild_name,
-            channel_id=context_channel_id,
-            thread_id=context_thread_id,
-            parent_channel_id=resolve_parent_channel_id(message.channel),
-            channel_name=context_channel_name,
-            user_id=user_id,
-            user_name=user_name,
-            trust_tier=trust_tier,
-            conversation_key=conversation_key,
-            trigger_discord_message_id=str(message.id),
-            referenced_message_id=self.referenced_message_id(message),
-            conversation_owner_user_id=resolved_conversation.owner_user_id,
-            conversation_access_scope=resolved_conversation.access_scope,
-            allow_bot_authored_reply_context=(
-                resolved_conversation.allow_bot_authored_reply_context
-            ),
-            personal_chat=personal_dm,
-            platform_channel_id=str(message.channel.id) if personal_dm else "",
-            workspace_key=user_app_workspace_key(user_id) if personal_dm else None,
-        )
-        turn_stop_event = asyncio.Event()
-        invocation = ForegroundTurnInvocation(
-            conversation=TurnConversationSpec(
-                key=conversation_key,
-                channel_name=context_channel_name,
-                guild_id=guild_id,
-                channel_id=context_channel_id,
-                thread_id=context_thread_id,
-                root_discord_message_id=str(message.id),
-                owner_user_id=resolved_conversation.owner_user_id,
-                access_scope=resolved_conversation.access_scope,
-                existing_conversation_id=resolved_conversation.db_conversation_id,
-            ),
-            source=turn_input,
-            prepared_user_discord_message_id=str(message.id),
-            prepared_user_source_created_at=message_source_timestamp(message),
-            prepared_user_context_channel_id=context_channel_id,
-            collect_reply_context=collect_reply_context,
-            strip_mention=self._strip_message_invocation,
-            stop_event=turn_stop_event,
-            hooks=_turn_entry_hooks(),
-            collect_turn_attachments=collect_turn_attachments,
-            command_template="chat" if personal_dm else None,
-            count_user_prior_messages=(count_user_prior_messages if not personal_dm else None),
-            new_user_onboarding_turns=(
-                0 if personal_dm else self.settings.new_user_onboarding_turns
-            ),
-            timeout_seconds=self.settings.react_turn_timeout_seconds,
-            thread_handoff_suggest_after_tool_calls=(
-                self.settings.thread_handoff_suggest_after_tool_calls
-            ),
-            extra_blocked_tools=self.threads._thread_state_blocked_tools(message),
-        )
-        adapter = GuildMessageTurnAdapter(
-            collaborators=self.guild_turn_collaborators(),
-            message=message,
-            context_channel_id=context_channel_id,
-            personal_chat=personal_dm,
-        )
-
-        active_registration = self.active_operations.register(
-            user_id=user_id,
-            root_key=conversation_key,
-            channel_id=context_channel_id,
-            stop_event=turn_stop_event,
-        )
-        await active_registration.__aenter__()
-        try:
-            if lock_acquired:
-                return await self.turn_runner.run(invocation, adapter=adapter)
-            async with self._root_lock(
-                self.response_lock_key(
-                    message,
-                    resolved_conversation=resolved_conversation,
-                )
-            ):
-                return await self.turn_runner.run(invocation, adapter=adapter)
-
-        finally:
-            await active_registration.__aexit__(None, None, None)
-
-    def guild_turn_collaborators(self) -> GuildTurnCollaborators:
-        """Compose the post-initialization capabilities used for guild delivery."""
-
-        resources = self.lifecycle.resources
-        coding = self.coding_tasks
-        return GuildTurnCollaborators(
-            config=GuildTurnDeliveryConfig(
-                thread_auto_handoff_enabled=self.settings.thread_auto_handoff_enabled,
-                thread_handoff_enabled=self.settings.thread_handoff_enabled,
-                bot_name=self.settings.bot_name,
-            ),
-            gateway=self.discord_gateway,
-            threads=self.threads,
-            thread_handoff=self.thread_handoff,
-            coding=coding if coding is not None else resources.coding_tasks,
-            responses=CallbackDiscordResponseSender(self.send_response),
-            bot_user=lambda: self.bot.user,
-            strip_invocation=self._strip_message_invocation,
-        )
-
-    async def send_response(
-        self,
-        channel: discord.abc.Messageable,
-        content: str,
-        reference: discord.Message | None = None,
-        output_files: list[str] | None = None,
-        output_file_descriptions: dict[str, str] | None = None,
-        allowed_file_roots: list[str | Path] | None = None,
-        embed: EmbedSpec | None = None,
-        mention_author: bool = False,
-        workspace_key: WorkspaceKey | None = None,
-    ) -> list[discord.Message]:
-        async def send() -> list[discord.Message]:
-            return await self.discord_gateway.send_response(
-                channel,
-                content,
-                reference=reference,
-                output_files=output_files,
-                output_file_descriptions=output_file_descriptions,
-                allowed_file_roots=allowed_file_roots,
-                embed=embed,
-                mention_author=mention_author,
-            )
-
-        return await self._deliver_with_workspace_guard(
-            workspace_key=workspace_key,
-            output_files=output_files,
-            deliver=send,
-        )
-
-    async def _deliver_with_workspace_guard[T](
-        self,
-        *,
-        workspace_key: WorkspaceKey | None,
-        output_files: Sequence[str] | None,
-        deliver: Callable[[], Awaitable[T]],
-    ) -> T:
-        return await deliver_with_workspace_guard(
-            workspace_locks=self.tools.workspace_locks,
-            workspace_key=workspace_key,
-            output_files=output_files,
-            deliver=deliver,
-        )
-
-    async def resolve_conversation_for_message(
-        self,
-        message: discord.Message,
-        *,
-        allow_new_root: bool,
-    ) -> ResolvedConversation | None:
-        return await resolve_conversation_for_message(
+        return await self.message_controller.handle_message(
             message,
-            allow_new_root=allow_new_root,
-            conversation_store=self.conversation_store,
-            thread_handoff=self.thread_handoff,
-        )
-
-    def _should_respond(
-        self,
-        message: discord.Message,
-        *,
-        active_guilds: set[int] | None = None,
-    ) -> bool:
-        """The full response gate for a channel message (pure, no side effects)."""
-        return should_respond(
-            message,
-            bot_user=self.bot.user,
-            bot_name=self.settings.bot_name,
-            responds_without_mention=self.responds_without_mention,
-            allowed_channels=self.settings.allowed_channels or None,
-            allowed_guilds=active_guilds if active_guilds is not None else self.active_guilds(),
-        )
-
-    def responds_without_mention(self, thread_id: int) -> bool:
-        """Whether a managed thread currently answers without being mentioned.
-
-        False when handoff is disabled, when the thread is not one the bot
-        created, and when the thread is paused. A paused thread stays mapped to
-        its root but falls back to the ordinary channel gates.
-        """
-        manager = self.thread_handoff
-        return manager is not None and manager.is_auto_responding(thread_id)
-
-    def referenced_message_id(self, message: discord.Message) -> str | None:
-        return referenced_message_id(message)
-
-    def conversation_key_for_message(self, message: discord.Message) -> str:
-        return conversation_key_for_message(message)
-
-    def response_lock_key(
-        self,
-        message: discord.Message,
-        *,
-        resolved_conversation: ResolvedConversation | None = None,
-    ) -> str:
-        return response_lock_key(
-            message,
+            lock_acquired=lock_acquired,
             resolved_conversation=resolved_conversation,
         )
-
-    def _resolved_chat_model_name(self, scope: Scope, *, images: bool = False) -> str:
-        return chat_model_name_for_scope(self.provider_manager, scope, images=images)
-
-    def _make_turn_dependency_factory(
-        self,
-        *,
-        context_manager: ContextManager | None = None,
-    ) -> TurnDependencyFactory:
-        if context_manager is None:
-            context_manager = self.context_manager
-        return TurnDependencyFactory(
-            TurnEntryServices(
-                settings=self.settings,
-                bot_user=self.bot.user,
-                provider_manager=self.provider_manager,
-                context_manager=context_manager,
-                registry=self.registry,
-                preference_store=self.preference_store,
-                usage_store=self.usage_store,
-                attachment_store=self.tools.attachment_store,
-                workspace_dir=self.tools.workspace_dir,
-                workspace_manager=self.tools.workspace_manager,
-                workspace_locks=self.tools.workspace_locks,
-                llm_semaphore=self.llm_semaphore,
-                memory_client=self.memory_manager.active_client(),
-                skills_index=self.skills_index_cache.index,
-                personal_skills_index=self.tools.personal_skill_manager.index,
-                resolve_reference_hints=self.discord_gateway.resolve_reference_hints,
-                moderation_service=self.moderation_service,
-                image_distillation_store=self.image_distillation_store,
-                user_activity=self.privacy_barrier.activity,
-            )
-        )
-
-    def _make_foreground_turn_runner(
-        self,
-        *,
-        handle_turn_hook: HandleTurn | None = None,
-        conversation_store: ConversationStore | None = None,
-        context_manager: ContextManager | None = None,
-    ) -> ForegroundTurnRunner:
-        if conversation_store is None:
-            conversation_store = self.conversation_store
-        if handle_turn_hook is None:
-            return ForegroundTurnRunner(
-                settings=self.settings,
-                conversation_store=conversation_store,
-                dependency_factory=self._make_turn_dependency_factory(
-                    context_manager=context_manager
-                ),
-                active_operations=self.active_operations,
-                privacy_barrier=self.privacy_barrier,
-                workspace_locks=self.tools.workspace_locks,
-            )
-        return ForegroundTurnRunner(
-            settings=self.settings,
-            conversation_store=conversation_store,
-            dependency_factory=self._make_turn_dependency_factory(context_manager=context_manager),
-            active_operations=self.active_operations,
-            privacy_barrier=self.privacy_barrier,
-            workspace_locks=self.tools.workspace_locks,
-            handle_turn_hook=handle_turn_hook,
-        )
-
-    def _model_log_label(self, role: str) -> str:
-        model_config = getattr(self.provider_manager, "model_config", None)
-        if model_config is None:
-            provider = getattr(self.provider_manager, "main", None)
-            return getattr(provider, "model", "?")
-        model_name = model_config.model_name_for_role(role)
-        entry = model_config.models[model_name]
-        profile = model_config.profile_for_model(model_name)
-        return f"{model_name}={profile.type}/{entry.model}"
-
-    @asynccontextmanager
-    async def _lock_user_conversation_turns(
-        self,
-        user_id: str,
-    ) -> AsyncIterator[None]:
-        async with self.root_locks.hold_user_conversations(
-            user_id,
-            self.conversation_store,
-        ):
-            yield
-
-    @asynccontextmanager
-    async def _root_lock(self, key: str) -> AsyncIterator[None]:
-        async with self.root_locks.hold(key):
-            yield
-
-
-# Chat-command wiring helpers. Module-level (not methods) so tests can drive
-# them with a plain attribute-bag stand-in for the application.
-
-
-def _turn_entry_hooks() -> TurnEntryHooks:
-    return TurnEntryHooks(
-        turn_has_image_input=turn_has_image_input,
-        collect_turn_images=collect_turn_images,
-        collect_reply_context=collect_reply_context,
-        collect_turn_attachments=collect_turn_attachments,
-        run_conversation=run_conversation,
-        ensure_user_bank=ensure_user_bank,
-        recall_current_user_context=recall_current_user_context,
-        write_generated_assets=write_generated_assets,
-        load_channel_pinned_tools=load_channel_pinned_tools,
-        load_guild_pinned_tools=load_guild_pinned_tools,
-        load_channel_blocked_tools=load_channel_blocked_tools,
-        load_guild_blocked_tools=load_guild_blocked_tools,
-        load_global_blocked_tools=load_global_blocked_tools,
-        load_tool_configs=load_tool_configs,
-        filter_pins_to_searchable=filter_pins_to_searchable,
-    )
 
 
 def build_app(settings: Settings) -> KimiApplication:
@@ -1330,7 +647,7 @@ def build_app(settings: Settings) -> KimiApplication:
     )
     application._command_sync = command_sync
     context_manager = ContextManager(store=repositories.conversation_store)
-    turn_runner = application._make_foreground_turn_runner(
+    turn_runner = application.message_controller.make_foreground_turn_runner(
         conversation_store=repositories.conversation_store,
         context_manager=context_manager,
     )
@@ -1361,7 +678,7 @@ def build_app(settings: Settings) -> KimiApplication:
         tools=application.tools,
         llm_semaphore=application.llm_semaphore,
         privacy_barrier=application.privacy_barrier,
-        user_blocked=application._user_is_blocked,
+        user_blocked=application.user_blocked,
         delivery=CodingDelivery(
             bot=bot,
             store=repositories.coding_task_store,
@@ -1376,7 +693,7 @@ def build_app(settings: Settings) -> KimiApplication:
                 thread_auto_handoff_enabled=settings.thread_auto_handoff_enabled,
                 bot_name=settings.bot_name,
             ),
-            strip_message_invocation=application._strip_message_invocation,
+            strip_message_invocation=application.message_controller.strip_message_invocation,
         ),
     )
     work_cancellation: WorkCancellationCoordinator | None = None
@@ -1403,7 +720,7 @@ def build_app(settings: Settings) -> KimiApplication:
         ),
         bot=bot,
         access=application.user_app_access,
-        user_blocked=application._user_is_blocked,
+        user_blocked=application.user_blocked,
         consent=user_app_consent,
         conversation_store=repositories.conversation_store,
         active_operations=application.active_operations,
@@ -1413,7 +730,7 @@ def build_app(settings: Settings) -> KimiApplication:
         turn_runner=turn_runner,
         shutdown=shutdown_signal,
         cancel_personal_work=cancel_personal_work,
-        turn_entry_hooks=_turn_entry_hooks(),
+        turn_entry_hooks=application.message_controller.turn_entry_hooks(),
     )
     work_cancellation = WorkCancellationCoordinator(
         bot=bot,
@@ -1423,9 +740,9 @@ def build_app(settings: Settings) -> KimiApplication:
         coding_tasks=coding_task_controller,
         trust_resolver=trust_resolver,
         discord_gateway=gateway,
-        conversation_resolver=application.resolve_conversation_for_message,
-        response_sender=application.send_response,
-        strip_message_invocation=application._strip_message_invocation,
+        conversation_resolver=application.message_controller.resolve_conversation_for_message,
+        response_sender=application.response_sender.send,
+        strip_message_invocation=application.message_controller.strip_message_invocation,
         cleanup_wait_seconds=settings.coding_stop_cleanup_wait_seconds,
         global_staff_ids=frozenset(settings.staff_ids),
     )
@@ -1457,10 +774,15 @@ def build_app(settings: Settings) -> KimiApplication:
                 gateway_interactions_ready=application.gateway_interactions_ready,
                 active_guilds=application.active_guilds,
                 refresh_guild_activation=application.refresh_guild_activation,
-                lock_user_conversations=application._lock_user_conversation_turns,
-                run_learn=application._run_learn_turn,
-                is_user_blocked=application._user_is_blocked,
-                model_log_label=application._model_log_label,
+                lock_user_conversations=lambda user_id: (
+                    application.root_locks.hold_user_conversations(
+                        user_id,
+                        application.conversation_store,
+                    )
+                ),
+                run_learn=application.message_controller.run_learn_turn,
+                is_user_blocked=application.user_blocked,
+                model_log_label=application.message_controller.model_log_label,
             ),
         )
     )

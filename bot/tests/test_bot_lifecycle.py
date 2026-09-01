@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
+from app import message_runtime
+
 from agent.context import ContextManager
 from app.memory import MemoryManager
 from app import lifecycle as app_lifecycle
@@ -434,7 +436,7 @@ async def test_on_message_is_ignored_before_ready_initialization(
     app = _build_test_app(monkeypatch)
     replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
     handler = AsyncMock()
-    monkeypatch.setattr(app, "_on_message_for_user", handler)
+    monkeypatch.setattr(app.message_controller, "_on_message_for_user", handler)
 
     await app.on_message(cast(discord.Message, object()))
 
@@ -902,10 +904,10 @@ async def test_application_close_drains_active_message_before_resources(
         async def close(self) -> None:
             events.append("database")
 
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_on_message_for_user", active_message)
+    monkeypatch.setattr(message_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "_should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "_on_message_for_user", active_message)
     monkeypatch.setattr(app.provider_manager, "close", close_provider)
     replace_lifecycle_resources(
         app,

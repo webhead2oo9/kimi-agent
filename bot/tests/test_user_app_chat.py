@@ -11,6 +11,8 @@ from typing import Any, cast
 
 import discord
 import pytest
+
+from app import message_runtime
 from discord.ext import commands
 from pydantic import ValidationError
 
@@ -489,7 +491,7 @@ async def test_chat_newlines_are_neutralized_for_model_input(
         requests.append(request)
         return ConversationRunResult(text="ok")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    monkeypatch.setattr(message_runtime, "run_conversation", capture_run)
     app = await _user_app_chat_app(tmp_path, monkeypatch)
 
     async def deliver(_interaction: object, content: str, **kwargs: object) -> None:
@@ -525,7 +527,7 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
         requests.append(request)
         return ConversationRunResult(text="I can see the image.")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    monkeypatch.setattr(message_runtime, "run_conversation", capture_run)
     app = await _image_chat_app(tmp_path, monkeypatch)
 
     async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
@@ -579,7 +581,7 @@ async def test_registered_chat_reports_unreadable_image_without_provider_or_tran
         requests.append(request)
         return ConversationRunResult(text="unexpected")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    monkeypatch.setattr(message_runtime, "run_conversation", capture_run)
     app = await _image_chat_app(tmp_path, monkeypatch)
 
     async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
@@ -1479,7 +1481,7 @@ async def test_dm_registers_provisional_work_in_personal_scope(
         return None
 
     monkeypatch.setattr(app.active_operations, "register_provisional", record_registration)
-    monkeypatch.setattr(app, "_on_message_for_user", stop_after_registration)
+    monkeypatch.setattr(app.message_controller, "_on_message_for_user", stop_after_registration)
 
     await app.on_message(_dm_message(42))  # type: ignore[arg-type]
 

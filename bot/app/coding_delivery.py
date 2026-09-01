@@ -447,7 +447,7 @@ class CodingDelivery:
             return fallback
         auto_cfg = (
             load_channel_auto_thread(task.channel_id)
-            if self._threads._thread_handoff_creation_allowed(trigger)
+            if self._threads.thread_handoff_creation_allowed(trigger)
             else None
         )
         if auto_cfg is None:
@@ -465,7 +465,7 @@ class CodingDelivery:
         )
         if request is None:
             return fallback
-        thread = await self._threads._create_handoff_thread(
+        thread = await self._threads.create_handoff_thread(
             trigger,
             request,
             task.conversation_id,

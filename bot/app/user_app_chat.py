@@ -35,10 +35,7 @@ log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.lifecycle import ShutdownSignal
-
-
-class BlockedUserCheck(Protocol):
-    async def __call__(self, user_id: str, /) -> bool: ...
+    from app.message_runtime import BlockedUserCheck
 
 
 class PersonalWorkCanceller(Protocol):

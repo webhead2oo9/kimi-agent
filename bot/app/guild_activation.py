@@ -159,6 +159,17 @@ class GuildActivationService:
             return "module guild settings would disable this guild"
         return ""
 
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        if guild.id in self.active_guilds():
+            log.info("Joined active guild %s (%s)", guild.id, getattr(guild, "name", "?"))
+            return
+        log.warning(
+            "Joined inactive guild %s (%s); staying connected but ignoring "
+            "guild messages and commands until activation changes",
+            guild.id,
+            getattr(guild, "name", "?"),
+        )
+
     def start(self) -> None:
         if self._refresh_task is not None:
             return

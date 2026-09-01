@@ -99,11 +99,11 @@ class FakeThreads:
     async def _adopt_managed_handoff_thread(self, message: object) -> object | None:
         return await self.adopt(message)
 
-    def _thread_handoff_creation_allowed(self, message: object) -> bool:
+    def thread_handoff_creation_allowed(self, message: object) -> bool:
         del message
         return self.creation_allowed
 
-    async def _create_handoff_thread(
+    async def create_handoff_thread(
         self,
         message: object,
         request: object,

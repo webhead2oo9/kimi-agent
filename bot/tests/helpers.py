@@ -28,6 +28,7 @@ from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
 from app.command_sync import CommandSyncSnapshot
 from app.lifecycle import AppRepositories, LifecycleSnapshot
+from app.message_runtime import remove_processing_reaction as remove_message_processing_reaction
 from app.root_locks import RootLockSnapshot
 from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
@@ -202,7 +203,7 @@ class PersonalChatDriver:
 
 
 class RootLockProbe:
-    """Compatibility seam while callers move to ``app.root_locks`` directly."""
+    """Test probe for the public ``app.root_locks`` pool."""
 
     def __init__(self, app: Any) -> None:
         self._app = app
@@ -224,16 +225,21 @@ class RootLockProbe:
             yield
 
 
-async def remove_processing_reaction(app: Any, *args: Any, **kwargs: Any) -> Any:
-    """Route tests through the future message-routing module's reaction seam."""
+async def remove_processing_reaction(
+    app: Any,
+    message: Any,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    """Exercise the public message-runtime reaction cleanup seam."""
 
-    return await app._remove_processing_reaction(*args, **kwargs)
+    await remove_message_processing_reaction(app.discord_gateway, message, timeout)
 
 
 def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> None:
     """Replace one application's foreground provider seam for a focused test."""
 
-    runner = app._make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
+    runner = app.message_controller.make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
     replace_lifecycle_resources(app, turn_runner=runner)
     app.user_app_chat._turn_runner = runner
 

@@ -29,6 +29,7 @@ _NO_RESULT_STATUS = "There wasn't anything I could process in that request."
 _PARTIAL_PUBLIC_DELIVERY_STATUS = (
     "I posted the first part, but couldn't deliver the complete response."
 )
+_PARTIAL_PRIVATE_DELIVERY_STATUS = "I delivered part of the response, but couldn't send the rest."
 _DELIVERY_FAILURE_STATUS = (
     "I finished the turn but couldn't deliver the response here. Try again privately."
 )
@@ -113,7 +114,17 @@ class UserAppInteractionTurnAdapter:
                 exc_info=True,
             )
             with suppress(discord.HTTPException):
-                await self._send_status(_DELIVERY_FAILURE_STATUS)
+                if delivered_content is None:
+                    await self._send_status(_DELIVERY_FAILURE_STATUS)
+                else:
+                    # The original response is already visible and is the
+                    # source of the receipt below. Never replace it with a
+                    # status after a later private followup fails.
+                    await self.interaction.followup.send(
+                        _PARTIAL_PRIVATE_DELIVERY_STATUS,
+                        ephemeral=True,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
 
         replies: tuple[DeliveredReply, ...] = ()
         if delivered_content is not None:

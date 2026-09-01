@@ -196,28 +196,51 @@ def test_runtime_mounts_refuse_an_interpreter_directly_in_the_home(
         sandbox_module._runtime_mounts(interpreter.absolute())
 
 
-@pytest.mark.parametrize("resolved_ancestor", ["parent", "higher"])
-def test_runtime_mounts_refuse_a_symlink_resolving_above_the_home(
+def test_runtime_mounts_canonicalize_a_symlinked_service_home(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    resolved_ancestor: str,
 ) -> None:
-    service_root = tmp_path / "service"
-    home = service_root / "home"
-    home.mkdir(parents=True)
-    target = service_root if resolved_ancestor == "parent" else tmp_path
-    (target / "python").write_text("", encoding="utf-8")
-    aliases = tmp_path / "aliases"
-    aliases.mkdir()
-    alias = aliases / "runtime"
+    real_home = tmp_path / "real" / "service-home"
+    real_home.mkdir(parents=True)
+    logical_home = tmp_path / "logical-home"
+    runtime_alias = tmp_path / "runtime-alias"
+    executable = tmp_path / "python-runtime" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
     try:
-        alias.symlink_to(target, target_is_directory=True)
+        logical_home.symlink_to(real_home, target_is_directory=True)
+        runtime_alias.symlink_to(real_home.parent, target_is_directory=True)
     except OSError:
         pytest.skip("symlink creation unavailable on this host")
-    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(
+        sandbox_module.Path,
+        "home",
+        classmethod(lambda cls: logical_home),
+    )
+    monkeypatch.setattr(sandbox_module.sys, "executable", str(executable))
+    monkeypatch.setattr(sandbox_module.sys, "prefix", str(runtime_alias))
+    monkeypatch.setattr(sandbox_module.sys, "base_prefix", str(executable.parent))
 
     with pytest.raises(SandboxUnavailableError, match="service home"):
-        sandbox_module._runtime_mounts((alias / "python").absolute())
+        sandbox_module._runtime_mounts(executable)
+
+
+def test_runtime_mounts_fail_closed_when_home_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_home = tmp_path / "missing-home"
+    interpreter = tmp_path / "runtime" / "python"
+    interpreter.parent.mkdir()
+    interpreter.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        sandbox_module.Path,
+        "home",
+        classmethod(lambda cls: missing_home),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="Could not resolve the service home"):
+        sandbox_module._runtime_mounts(interpreter)
 
 
 def test_runtime_mounts_fail_closed_on_dotdot_across_an_alias(tmp_path: Path) -> None:

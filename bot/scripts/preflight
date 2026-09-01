@@ -78,7 +78,7 @@ if settings.browser_enabled:
     print("\nRunning browser runtime smoke test...")
     from deploy.betterwright.smoke_test import main as browser_smoke
 
-    asyncio.run(browser_smoke())
+    asyncio.run(browser_smoke(settings))
 else:
     print("\nSkipping browser runtime smoke test (BROWSER_ENABLED=false).")
 PY

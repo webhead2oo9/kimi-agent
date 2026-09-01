@@ -232,7 +232,13 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
     if resolved_interpreter == Path(sys.executable).resolve():
         candidates.extend((Path(sys.prefix), Path(sys.base_prefix)))
 
-    home = Path.home()
+    lexical_home = Path.home()
+    try:
+        resolved_home = lexical_home.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SandboxUnavailableError(
+            f"Could not resolve the service home for interpreter mounts: {lexical_home}"
+        ) from exc
     mounts: list[Path] = []
     for candidate in candidates:
         normalized = Path(os.path.normpath(candidate))
@@ -242,10 +248,10 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
                 "Refusing to expose the host root as an interpreter mount"
             )
         if (
-            normalized == home
-            or home.is_relative_to(normalized)
-            or resolved == home
-            or home.is_relative_to(resolved)
+            normalized == lexical_home
+            or lexical_home.is_relative_to(normalized)
+            or resolved == resolved_home
+            or resolved_home.is_relative_to(resolved)
         ):
             # An interpreter sitting directly in (or above) the service home
             # would ro-bind the whole home - credentials, config, databases -

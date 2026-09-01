@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
+from config.operator_settings import apply_operator_settings
 from config.settings import Settings
 from sandbox.runner import SandboxConfig, SandboxNetworkMode, sandbox_available
 from tools.visuals import verify_rendered_png
@@ -80,8 +81,13 @@ def build_probe(settings: Settings) -> SandboxConfig:
     )
 
 
-async def main() -> None:
+def load_effective_settings() -> Settings:
     settings = Settings()
+    apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
+    return settings
+
+
+async def main(settings: Settings) -> None:
     service = build_service(settings)
     unavailable = service.availability_error()
     if unavailable:
@@ -206,4 +212,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(load_effective_settings()))

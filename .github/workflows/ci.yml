@@ -76,7 +76,8 @@ jobs:
 
       - name: Check browser runtime lock
         run: |
-          npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
+          npm ci --prefix deploy/betterwright \
+            --omit=dev --omit=optional --ignore-scripts
           npm audit --prefix deploy/betterwright --omit=dev
           node --check web_browser/bridge.mjs
           node --check web_browser/visual_bridge.mjs
@@ -119,26 +120,36 @@ jobs:
       - name: Mypy
         run: |
           uv run mypy .
-          uv run mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests
+          uv run mypy --config-file modules/example/pyproject.toml \
+            modules/example/src modules/example/tests
 
       - name: Tests
         run: uv run python -m pytest -q
 
       - name: Build module API and reference consumer
         run: |
-          uv build --package kimi-agent-module-api --no-sources --out-dir dist/module-api
-          uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
+          uv build --package kimi-agent-module-api --no-sources \
+            --out-dir dist/module-api
+          uv build --package community-agent-reference-module --no-sources \
+            --out-dir dist/reference-module
 
       - name: Test built module API through the reference wheel
         shell: bash
         run: |
-          api_wheel=$(find dist/module-api -maxdepth 1 -name '*.whl' -print -quit)
-          api_sdist=$(find dist/module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
-          reference_wheel=$(find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit)
+          api_wheel=$(
+            find dist/module-api -maxdepth 1 -name '*.whl' -print -quit
+          )
+          api_sdist=$(
+            find dist/module-api -maxdepth 1 -name '*.tar.gz' -print -quit
+          )
+          reference_wheel=$(
+            find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit
+          )
           test -n "${api_wheel}"
           test -n "${api_sdist}"
           test -n "${reference_wheel}"
-          uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"
+          uv run python scripts/verify_module_api_dist.py verify \
+            "${api_wheel}" "${api_sdist}" "${reference_wheel}"
 
   # The check job's runner has no Bubblewrap and ships Apport's piped
   # core_pattern, so every live-jail test skips there and the most
@@ -175,7 +186,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bubblewrap libseccomp2 util-linux dbus-user-session apparmor-profiles
+            bubblewrap libseccomp2 util-linux dbus-user-session \
+            apparmor-profiles
 
       - name: Configure the host like a deployment
         shell: bash
@@ -201,7 +213,8 @@ jobs:
           # Set the restriction deliberately rather than trusting the image
           # default, so the job tests the documented posture even if a future
           # image ships it relaxed.
-          if [ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          apparmor_knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ ! -e "$apparmor_knob" ]; then
             echo "kernel has no apparmor_restrict_unprivileged_userns knob" >&2
             exit 1
           fi
@@ -217,11 +230,15 @@ jobs:
           done
           test -S "/run/user/${uid}/bus"
           echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
-          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" \
+            >> "$GITHUB_ENV"
           # --wait blocks until the manager leaves initializing/starting, so a
           # slow boot is not read as failure; the exit code is dropped only so
           # the accept-list below is the single verdict.
-          state=$(XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user is-system-running --wait || true)
+          state=$(
+            XDG_RUNTIME_DIR="/run/user/${uid}" \
+              systemctl --user is-system-running --wait || true
+          )
           echo "user manager: ${state}"
           case "${state}" in
             running|degraded) ;;

@@ -158,6 +158,13 @@ def _teach_menu(app: Any) -> Any:
     return menu
 
 
+async def _assert_no_consent_state(app: Any) -> None:
+    for table in ("messages", "conversations", "user_preferences"):
+        async with app.database.conn.execute(f"SELECT COUNT(*) AS count FROM {table}") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None and int(row["count"]) == 0
+
+
 @pytest.mark.asyncio
 async def test_teach_prompts_unconsented_staff_before_defer_or_learn(
     tmp_path: Path,
@@ -297,16 +304,48 @@ async def test_chat_still_prompts_through_extracted_consent_helper(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("surface", ["chat", "teach"])
 @pytest.mark.parametrize("failure", ["lookup", "prompt"])
-async def test_interaction_consent_failures_gate_chat_and_teach(
+async def test_teach_consent_failures_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    surface: str,
     failure: str,
 ) -> None:
     app, learn_calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
-    interaction = _Interaction(guild=surface == "teach")
+    interaction = _Interaction()
+
+    if failure == "lookup":
+        app.preference_store = cast(Any, _FailingConsentLookup())
+    else:
+        interaction.response = _PromptFailingResponse()
+
+    try:
+        await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
+
+        assert interaction.response.deferred == []
+        assert learn_calls == []
+        assert interaction.response.sent == [
+            {
+                "content": "I couldn't verify your privacy consent. Please try again.",
+                "ephemeral": True,
+            }
+        ]
+        await _assert_no_consent_state(app)
+    finally:
+        await app._close_resources()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["lookup", "prompt"])
+async def test_chat_consent_failures_stop_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Both surfaces share the consent helper, but /chat is asserted directly
+    rather than inferred from the teach menu."""
+
+    app, learn_calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
+    interaction = _Interaction(guild=False)
     execute_calls: list[discord.Interaction] = []
 
     async def capture_chat_execute(
@@ -315,19 +354,16 @@ async def test_interaction_consent_failures_gate_chat_and_teach(
     ) -> None:
         execute_calls.append(resume_interaction)
 
-    monkeypatch.setattr(app, "_execute_user_app_chat", capture_chat_execute)
+    monkeypatch.setattr(app, "_run_user_app_chat", capture_chat_execute)
     if failure == "lookup":
         app.preference_store = cast(Any, _FailingConsentLookup())
     else:
         interaction.response = _PromptFailingResponse()
 
     try:
-        if surface == "chat":
-            command = app.bot.tree.get_command("chat")
-            assert command is not None
-            await cast(Any, command).callback(cast(Any, interaction), "hello")
-        else:
-            await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
+        command = app.bot.tree.get_command("chat")
+        assert command is not None
+        await cast(Any, command).callback(cast(Any, interaction), "hello")
 
         assert interaction.response.deferred == []
         assert execute_calls == []
@@ -338,19 +374,7 @@ async def test_interaction_consent_failures_gate_chat_and_teach(
                 "ephemeral": True,
             }
         ]
-        async with app.database.conn.execute("SELECT COUNT(*) AS count FROM messages") as cursor:
-            row = await cursor.fetchone()
-        assert row is not None and int(row["count"]) == 0
-        async with app.database.conn.execute(
-            "SELECT COUNT(*) AS count FROM conversations"
-        ) as cursor:
-            row = await cursor.fetchone()
-        assert row is not None and int(row["count"]) == 0
-        async with app.database.conn.execute(
-            "SELECT COUNT(*) AS count FROM user_preferences"
-        ) as cursor:
-            row = await cursor.fetchone()
-        assert row is not None and int(row["count"]) == 0
+        await _assert_no_consent_state(app)
     finally:
         await app._close_resources()
 

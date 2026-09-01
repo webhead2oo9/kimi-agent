@@ -49,12 +49,8 @@ from config.fragments.tool_policy import (
 )
 from agent.core import run_conversation
 from agent.turn import (
-    TurnDependencies,
-    TurnExecutionConfig,
-    TurnPreparationConfig,
     TurnPreparationInput,
     TurnResult,
-    handle_turn,
 )
 from app.admission import (
     TURN_ADMISSION_BUSY_MESSAGE,
@@ -74,6 +70,7 @@ from app.consent import build_consent_embed
 from app.foreground_turn import (
     ForegroundTurnInvocation,
     ForegroundTurnRunner,
+    HandleTurn,
     TurnConversationSpec,
     deliver_with_workspace_guard,
 )
@@ -357,23 +354,6 @@ async def _send_user_app_status(
         content,
         ephemeral=not requested_public,
         original_ephemeral=not requested_public,
-    )
-
-
-async def _handle_foreground_turn(
-    source: TurnPreparationInput,
-    *,
-    dependencies: TurnDependencies,
-    preparation_config: TurnPreparationConfig,
-    execution_config: TurnExecutionConfig,
-) -> TurnResult | None:
-    # Resolve the runtime hook at call time so focused tests and deployment
-    # instrumentation can replace the same seam used before the runner existed.
-    return await handle_turn(
-        source,
-        dependencies=dependencies,
-        preparation_config=preparation_config,
-        execution_config=execution_config,
     )
 
 
@@ -2461,7 +2441,7 @@ class KimiApplication:
             return
 
         async def execute(resume_interaction: discord.Interaction) -> None:
-            await self._execute_user_app_chat(
+            await self._run_user_app_chat(
                 resume_interaction,
                 message=message,
                 attachment=attachment,
@@ -2487,7 +2467,7 @@ class KimiApplication:
     def _invalidate_user_app_chat_requests(self, user_id: str) -> None:
         self._user_app_chat_generations[user_id] = self._user_app_chat_generation(user_id) + 1
 
-    async def _execute_user_app_chat(
+    async def _run_user_app_chat(
         self,
         interaction: discord.Interaction,
         *,
@@ -2539,14 +2519,157 @@ class KimiApplication:
                         return None
                     try:
                         async with asyncio.timeout_at(deadline):
-                            return await self._run_user_app_chat_turn(
-                                interaction,
-                                message=message,
-                                attachment=attachment,
-                                public=public,
-                                trust_tier=trust_tier,
-                                turn_stop_event=turn_stop_event,
+                            admission = await self.turn_admission.try_acquire(user_id)
+                            if admission.lease is None:
+                                if admission.rejection is AdmissionRejection.SHUTTING_DOWN:
+                                    log.info(
+                                        "Ignoring personal chat turn from user %s during shutdown",
+                                        user_id,
+                                    )
+                                    return None
+                                log.info(
+                                    "Rejecting personal chat turn from user %s at admission "
+                                    "boundary: %s",
+                                    user_id,
+                                    admission.rejection,
+                                )
+                                await _send_user_app_status(
+                                    interaction,
+                                    TURN_ADMISSION_BUSY_MESSAGE,
+                                    requested_public=public,
+                                )
+                                return None
+
+                            source_message = _UserAppMessageSource(
+                                id=int(interaction.id),
+                                content=message,
+                                author=interaction.user,
+                                channel=interaction.channel,
+                                guild=interaction.guild,
+                                attachments=[attachment] if attachment is not None else [],
+                                created_at=interaction.created_at,
                             )
+                            actual_guild_id = (
+                                str(interaction.guild_id) if interaction.guild_id else None
+                            )
+                            actual_channel_id = str(interaction.channel_id or "")
+                            actual_thread_id = (
+                                actual_channel_id
+                                if isinstance(interaction.channel, discord.Thread)
+                                else None
+                            )
+                            adapter = UserAppInteractionTurnAdapter(
+                                interaction=interaction,
+                                requested_public=public,
+                                context_channel_id=USER_APP_SCOPE_CHANNEL_ID,
+                            )
+
+                            try:
+                                async with admission.lease:
+                                    async with self._root_lock(root_key):
+                                        current_trust_tier = self.user_app_access.resolve(user_id)
+                                        if current_trust_tier is None:
+                                            await _send_user_app_status(
+                                                interaction,
+                                                (
+                                                    "You no longer have access to this app's "
+                                                    "personal chat."
+                                                ),
+                                                requested_public=public,
+                                            )
+                                            return None
+                                        if await self._user_is_blocked(user_id):
+                                            await _send_user_app_status(
+                                                interaction,
+                                                "You can't use personal chat right now.",
+                                                requested_public=public,
+                                            )
+                                            return None
+                                        trust_tier = current_trust_tier
+                                        turn_input = TurnPreparationInput(
+                                            raw_content=clean_message_text(message),
+                                            source_message=source_message,
+                                            bot_user=self.bot.user,
+                                            guild_id=None,
+                                            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+                                            thread_id=None,
+                                            channel_name="Personal chat",
+                                            user_id=user_id,
+                                            user_name=interaction.user.display_name,
+                                            trust_tier=trust_tier,
+                                            conversation_key=root_key,
+                                            trigger_discord_message_id=str(interaction.id),
+                                            conversation_owner_user_id=user_id,
+                                            conversation_access_scope=OWNER_ONLY,
+                                            personal_chat=True,
+                                            platform_guild_id=actual_guild_id,
+                                            platform_channel_id=actual_channel_id,
+                                            platform_thread_id=actual_thread_id,
+                                            workspace_key=user_app_workspace_key(user_id),
+                                        )
+                                        invocation = ForegroundTurnInvocation(
+                                            conversation=TurnConversationSpec(
+                                                key=root_key,
+                                                channel_name="Personal chat",
+                                                guild_id=None,
+                                                channel_id=USER_APP_SCOPE_CHANNEL_ID,
+                                                thread_id=None,
+                                                root_discord_message_id=str(interaction.id),
+                                                owner_user_id=user_id,
+                                                access_scope=OWNER_ONLY,
+                                            ),
+                                            source=turn_input,
+                                            prepared_user_discord_message_id=(
+                                                f"userapp:{interaction.id}"
+                                            ),
+                                            prepared_user_source_created_at=(
+                                                message_source_timestamp(source_message)
+                                            ),
+                                            prepared_user_context_channel_id=(
+                                                USER_APP_SCOPE_CHANNEL_ID
+                                            ),
+                                            collect_reply_context=collect_reply_context,
+                                            strip_mention=(
+                                                lambda content, **_kwargs: content.strip()
+                                            ),
+                                            stop_event=turn_stop_event,
+                                            hooks=_turn_entry_hooks(),
+                                            collect_turn_attachments=collect_turn_attachments,
+                                            command_template="chat",
+                                            count_user_prior_messages=None,
+                                            new_user_onboarding_turns=0,
+                                            timeout_seconds=(
+                                                self.settings.user_app_chat_timeout_seconds
+                                            ),
+                                            thread_handoff_suggest_after_tool_calls=0,
+                                            extra_blocked_tools=_PERSONAL_CHAT_BLOCKED_TOOLS,
+                                        )
+                                        return await self.turn_runner.run(
+                                            invocation,
+                                            adapter=adapter,
+                                        )
+                            except PrivacyDeletionPendingError:
+                                await _send_user_app_status(
+                                    interaction,
+                                    (
+                                        "Your data deletion is still in progress. Try again "
+                                        "when it finishes."
+                                    ),
+                                    requested_public=public,
+                                )
+                                return None
+                            except Exception:
+                                log.exception(
+                                    "Personal user-app chat failed for user %s",
+                                    user_id,
+                                )
+                                with suppress(discord.HTTPException):
+                                    await _send_user_app_status(
+                                        interaction,
+                                        "I couldn't complete that chat turn. Please try again.",
+                                        requested_public=public,
+                                    )
+                                return None
                     except TimeoutError:
                         await _send_user_app_status(
                             interaction,
@@ -2574,143 +2697,6 @@ class KimiApplication:
                 )
             log.info("Stopped personal chat response for user %s", user_id)
         return None
-
-    async def _run_user_app_chat_turn(
-        self,
-        interaction: discord.Interaction,
-        *,
-        message: str,
-        attachment: discord.Attachment | None,
-        public: bool,
-        trust_tier: TrustTier,
-        turn_stop_event: asyncio.Event,
-    ) -> TurnResult | None:
-        user_id = str(interaction.user.id)
-        user_name = interaction.user.display_name
-        root_key = f"userchat:{user_id}"
-        scope_channel_id = USER_APP_SCOPE_CHANNEL_ID
-
-        admission = await self.turn_admission.try_acquire(user_id)
-        if admission.lease is None:
-            if admission.rejection is AdmissionRejection.SHUTTING_DOWN:
-                log.info("Ignoring personal chat turn from user %s during shutdown", user_id)
-                return None
-            log.info(
-                "Rejecting personal chat turn from user %s at admission boundary: %s",
-                user_id,
-                admission.rejection,
-            )
-            await _send_user_app_status(
-                interaction,
-                TURN_ADMISSION_BUSY_MESSAGE,
-                requested_public=public,
-            )
-            return None
-
-        source_message = _UserAppMessageSource(
-            id=int(interaction.id),
-            content=message,
-            author=interaction.user,
-            channel=interaction.channel,
-            guild=interaction.guild,
-            attachments=[attachment] if attachment is not None else [],
-            created_at=interaction.created_at,
-        )
-        actual_guild_id = str(interaction.guild_id) if interaction.guild_id else None
-        actual_channel_id = str(interaction.channel_id or "")
-        actual_thread_id = (
-            actual_channel_id if isinstance(interaction.channel, discord.Thread) else None
-        )
-        adapter = UserAppInteractionTurnAdapter(
-            interaction=interaction,
-            requested_public=public,
-            context_channel_id=scope_channel_id,
-        )
-
-        try:
-            async with admission.lease:
-                async with self._root_lock(root_key):
-                    current_trust_tier = self.user_app_access.resolve(user_id)
-                    if current_trust_tier is None:
-                        await _send_user_app_status(
-                            interaction,
-                            "You no longer have access to this app's personal chat.",
-                            requested_public=public,
-                        )
-                        return None
-                    if await self._user_is_blocked(user_id):
-                        await _send_user_app_status(
-                            interaction,
-                            "You can't use personal chat right now.",
-                            requested_public=public,
-                        )
-                        return None
-                    trust_tier = current_trust_tier
-                    turn_input = TurnPreparationInput(
-                        raw_content=clean_message_text(message),
-                        source_message=source_message,
-                        bot_user=self.bot.user,
-                        guild_id=None,
-                        channel_id=scope_channel_id,
-                        thread_id=None,
-                        channel_name="Personal chat",
-                        user_id=user_id,
-                        user_name=user_name,
-                        trust_tier=trust_tier,
-                        conversation_key=root_key,
-                        trigger_discord_message_id=str(interaction.id),
-                        conversation_owner_user_id=user_id,
-                        conversation_access_scope=OWNER_ONLY,
-                        personal_chat=True,
-                        platform_guild_id=actual_guild_id,
-                        platform_channel_id=actual_channel_id,
-                        platform_thread_id=actual_thread_id,
-                        workspace_key=user_app_workspace_key(user_id),
-                    )
-                    invocation = ForegroundTurnInvocation(
-                        conversation=TurnConversationSpec(
-                            key=root_key,
-                            channel_name="Personal chat",
-                            guild_id=None,
-                            channel_id=scope_channel_id,
-                            thread_id=None,
-                            root_discord_message_id=str(interaction.id),
-                            owner_user_id=user_id,
-                            access_scope=OWNER_ONLY,
-                        ),
-                        source=turn_input,
-                        prepared_user_discord_message_id=f"userapp:{interaction.id}",
-                        prepared_user_source_created_at=message_source_timestamp(source_message),
-                        prepared_user_context_channel_id=scope_channel_id,
-                        collect_reply_context=collect_reply_context,
-                        strip_mention=lambda content, **_kwargs: content.strip(),
-                        stop_event=turn_stop_event,
-                        hooks=_turn_entry_hooks(),
-                        collect_turn_attachments=collect_turn_attachments,
-                        command_template="chat",
-                        count_user_prior_messages=None,
-                        new_user_onboarding_turns=0,
-                        timeout_seconds=self.settings.user_app_chat_timeout_seconds,
-                        thread_handoff_suggest_after_tool_calls=0,
-                        extra_blocked_tools=_PERSONAL_CHAT_BLOCKED_TOOLS,
-                    )
-                    return await self.turn_runner.run(invocation, adapter=adapter)
-        except PrivacyDeletionPendingError:
-            await _send_user_app_status(
-                interaction,
-                "Your data deletion is still in progress. Try again when it finishes.",
-                requested_public=public,
-            )
-            return None
-        except Exception:
-            log.exception("Personal user-app chat failed for user %s", user_id)
-            with suppress(discord.HTTPException):
-                await _send_user_app_status(
-                    interaction,
-                    "I couldn't complete that chat turn. Please try again.",
-                    requested_public=public,
-                )
-            return None
 
     async def _handle_user_app_chat_reset(self, interaction: discord.Interaction) -> str:
         assert self.conversation_store is not None
@@ -3322,8 +3308,21 @@ class KimiApplication:
             )
         )
 
-    def _make_foreground_turn_runner(self) -> ForegroundTurnRunner:
+    def _make_foreground_turn_runner(
+        self,
+        *,
+        handle_turn_hook: HandleTurn | None = None,
+    ) -> ForegroundTurnRunner:
         assert self.conversation_store is not None
+        if handle_turn_hook is None:
+            return ForegroundTurnRunner(
+                settings=self.settings,
+                conversation_store=self.conversation_store,
+                dependency_factory=self._make_turn_dependency_factory(),
+                active_operations=self.active_operations,
+                privacy_barrier=self.privacy_barrier,
+                workspace_locks=self.tools.workspace_locks,
+            )
         return ForegroundTurnRunner(
             settings=self.settings,
             conversation_store=self.conversation_store,
@@ -3331,7 +3330,7 @@ class KimiApplication:
             active_operations=self.active_operations,
             privacy_barrier=self.privacy_barrier,
             workspace_locks=self.tools.workspace_locks,
-            handle_turn_hook=_handle_foreground_turn,
+            handle_turn_hook=handle_turn_hook,
         )
 
     def _model_log_label(self, role: str) -> str:

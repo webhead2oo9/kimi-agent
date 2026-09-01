@@ -154,6 +154,7 @@ class HandleTurn(Protocol):
     async def __call__(
         self,
         source: TurnPreparationInput,
+        /,
         *,
         dependencies: TurnDependencies,
         preparation_config: TurnPreparationConfig,

@@ -22,6 +22,7 @@ from agent.attachments import TurnImages
 from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
+from app.foreground_turn import HandleTurn
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
@@ -59,6 +60,12 @@ class NobodyBlocked:
 
     async def is_blocked(self, user_id: str) -> bool:
         return False
+
+
+def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> None:
+    """Replace one application's foreground provider seam for a focused test."""
+
+    app.turn_runner = app._make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
 
 
 PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"

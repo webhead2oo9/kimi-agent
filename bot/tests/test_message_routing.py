@@ -37,7 +37,11 @@ from storage.conversations import (
     ConversationStore,
 )
 from storage.db import Database
-from tests.helpers import NobodyBlocked, StubProviderManager
+from tests.helpers import (
+    NobodyBlocked,
+    StubProviderManager,
+    install_foreground_turn_handler,
+)
 
 
 def test_user_memory_recall_types_parses_comma_separated_values():
@@ -466,7 +470,7 @@ async def test_handle_message_wires_usage_dependencies_with_scoped_model(
 
         return TurnResult(response_text="ok")
 
-    monkeypatch.setattr(app_runtime, "handle_turn", fake_handle_turn)
+    install_foreground_turn_handler(app, fake_handle_turn)
     monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
 
     message = _text_message(content="hello")
@@ -1725,6 +1729,9 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
     app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
+    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
 
     reaction_accepted = asyncio.Event()
 
@@ -1738,8 +1745,9 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
     monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", remove_reaction)
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
-    routing = asyncio.create_task(app._on_message_for_user(message))
+    routing = asyncio.create_task(app.on_message(message))
     await reaction_accepted.wait()
+    app._closed = True
     routing.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -1757,7 +1765,9 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
     app.context_manager = ContextManager(ConversationStore(routing_database))
     app.conversation_store = None
     app.settings.allowed_channel_ids = ""
-    monkeypatch.setattr(app, "_should_respond", lambda _message: True)
+    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         app,
         "handle_message",
@@ -1781,8 +1791,9 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
     monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", slow_remove)
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
-    routing = asyncio.create_task(app._on_message_for_user(message))
+    routing = asyncio.create_task(app.on_message(message))
     await cleanup_started.wait()
+    app._closed = True
     routing.cancel()
     await asyncio.sleep(0)
     cancellation_propagated_before_cleanup = routing.done()
@@ -2226,7 +2237,7 @@ async def _cross_channel_turn(
             termination_reason=termination_reason,
         )
 
-    monkeypatch.setattr(app_runtime, "handle_turn", fake_handle_turn)
+    install_foreground_turn_handler(app, fake_handle_turn)
 
     created: list[ThreadRequest] = []
 
@@ -2339,7 +2350,7 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
             terminal_handoff=handoff,
         )
 
-    monkeypatch.setattr(app_runtime, "handle_turn", fake_handle_turn)
+    install_foreground_turn_handler(app, fake_handle_turn)
 
     async def create_thread(message, request, conv_id):
         await app.thread_handoff.enroll(
@@ -2434,7 +2445,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
             thread_request=ThreadRequest(name="Quest help", target_channel_id=200),
         )
 
-    monkeypatch.setattr(app_runtime, "handle_turn", fake_handle_turn)
+    install_foreground_turn_handler(app, fake_handle_turn)
 
     async def create_thread(message, request, conv_id):
         await app.thread_handoff.enroll(

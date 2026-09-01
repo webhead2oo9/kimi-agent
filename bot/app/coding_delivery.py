@@ -53,6 +53,7 @@ class MessageInvocationStripper(Protocol):
     def __call__(
         self,
         content: str,
+        /,
         *,
         bot_user: discord.ClientUser | None,
     ) -> str: ...
@@ -62,16 +63,18 @@ class CodingHandoffControl(Protocol):
     async def prepare_handoff(
         self,
         task_id: str,
+        /,
         *,
         channel_id: str | None = None,
         thread_id: str | None = None,
     ) -> bool: ...
 
-    async def release_handoff(self, task_id: str) -> bool: ...
+    async def release_handoff(self, task_id: str, /) -> bool: ...
 
     async def finalize_handoff(
         self,
         task_id: str,
+        /,
         *,
         channel_id: str | None = None,
         thread_id: str | None = None,
@@ -82,11 +85,14 @@ class CodingHandoffControl(Protocol):
         channel: discord.TextChannel | discord.Thread,
         task: CodingTask,
         marker: str,
+        /,
         *,
         message: discord.Message | None = None,
     ) -> None: ...
 
-    def task_marker(self, task_id: str) -> str: ...
+    def task_marker(self, task_id: str, /) -> str: ...
+
+    async def failed_handoff_task(self, task_id: str, /) -> CodingTask | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +901,9 @@ class CodingTaskController:
 
     def task_marker(self, task_id: str) -> str:
         return self._delivery.task_marker(task_id)
+
+    async def failed_handoff_task(self, task_id: str, /) -> CodingTask | None:
+        return await self._store.get_task(task_id)
 
     async def cancel_task(self, task_id: str, *, reason: str = "") -> bool:
         return await self._running_service().cancel_task(task_id, reason=reason)

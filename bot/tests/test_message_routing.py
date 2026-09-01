@@ -2067,7 +2067,7 @@ async def _cross_channel_turn(
         )
         return thread
 
-    monkeypatch.setattr(app.threads, "_create_handoff_thread", create_thread)
+    monkeypatch.setattr(app.threads, "create_handoff_thread", create_thread)
 
     async def send_response(channel, content, reference=None, **kwargs):
         sent = MagicMock()
@@ -2150,6 +2150,29 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
             events.append(("finalize", task_id, kwargs))
             return True
 
+        async def failed_handoff_task(self, task_id: str):
+            store = app.coding_task_store
+            assert store is not None
+            return await store.get_task(task_id)
+
+        async def delete_status_message(
+            self,
+            channel,
+            task,
+            marker,
+            *,
+            message=None,
+        ) -> None:
+            await app.lifecycle.resources.coding_tasks.delete_status_message(
+                channel,
+                task,
+                marker,
+                message=message,
+            )
+
+        def task_marker(self, task_id: str) -> str:
+            return app.lifecycle.resources.coding_tasks.task_marker(task_id)
+
     coding_tasks = CodingTasks()
     monkeypatch.setattr(type(app), "coding_tasks", property(lambda _app: coding_tasks))
     fake_thread_cls = type("_FakeThread", (), {})
@@ -2181,9 +2204,9 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
         )
         return thread
 
-    monkeypatch.setattr(app.threads, "_create_handoff_thread", create_thread)
+    monkeypatch.setattr(app.threads, "create_handoff_thread", create_thread)
     discard_thread = AsyncMock()
-    monkeypatch.setattr(app.threads, "_discard_cross_channel_thread", discard_thread)
+    monkeypatch.setattr(app.threads, "discard_cross_channel_thread", discard_thread)
     send_attempts = 0
 
     async def send_response(channel, content, reference=None, **kwargs):
@@ -2250,7 +2273,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
     _enable_thread_handoff(app, store)
     discarded: list[Any] = []
     monkeypatch.setattr(
-        app.threads, "_discard_cross_channel_thread", AsyncMock(side_effect=discarded.append)
+        app.threads, "discard_cross_channel_thread", AsyncMock(side_effect=discarded.append)
     )
 
     fake_thread_cls = type("_FakeThread", (), {})
@@ -2276,7 +2299,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
         )
         return thread
 
-    monkeypatch.setattr(app.threads, "_create_handoff_thread", create_thread)
+    monkeypatch.setattr(app.threads, "create_handoff_thread", create_thread)
     monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
 
     message = _trigger_message(

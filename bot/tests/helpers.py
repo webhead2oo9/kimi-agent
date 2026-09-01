@@ -13,12 +13,12 @@ import base64
 import re
 import tempfile
 import zlib
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 from agent.attachments import TurnImages
@@ -26,6 +26,7 @@ from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
+from app.command_sync import CommandSyncSnapshot
 from app.root_locks import RootLockSnapshot
 from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
@@ -93,7 +94,7 @@ class LifecycleProbe:
             closed=self._app._closed,
             close_complete=self._app._close_complete.is_set(),
             startup_error=self._app._startup_error,
-            guild_activation_refresh_task=self._app._guild_activation_refresh_task,
+            guild_activation_refresh_task=self._app.guild_activation.refresh_task,
             video_session_sweeper_task=self._app._video_session_sweeper_task,
             workspace_sweeper_task=self._app._workspace_sweeper_task,
             attachment_sweeper_task=self._app._attachment_sweeper_task,
@@ -112,9 +113,6 @@ class LifecycleProbe:
             auto_retain_watermarks=auto_retain_watermarks
         )
 
-    async def guild_activation_refresh_loop(self) -> None:
-        await self._app._guild_activation_refresh_loop()
-
     def set_closed(self, value: bool = True) -> None:
         self._app._closed = value
 
@@ -122,7 +120,7 @@ class LifecycleProbe:
         self._app._startup_error = error
 
     def set_guild_activation_refresh_task(self, task: Any | None) -> None:
-        self._app._guild_activation_refresh_task = task
+        self._app.guild_activation._refresh_task = task
 
     def set_video_session_sweeper_task(self, task: Any | None) -> None:
         self._app._video_session_sweeper_task = task
@@ -134,70 +132,14 @@ class LifecycleProbe:
         self._app._module_interaction_runtime = runtime
 
 
-@dataclass(frozen=True, slots=True)
-class CommandSyncSnapshot:
-    """Read-only command state until ``app.command_sync`` owns it."""
-
-    gateway_generation: int
-    global_sync_task: asyncio.Task[None] | None
-    global_sync_generation: int | None
-    retired_global_sync_tasks: tuple[asyncio.Task[None], ...]
-    ready_event_tasks: tuple[asyncio.Task[Any], ...]
-    ready_event_generations: Mapping[asyncio.Task[Any], int]
-
-
 class CommandSyncProbe:
-    """Transitional test seam for the future ``app.command_sync`` module."""
+    """Test seam for the extracted ``app.command_sync`` module."""
 
     def __init__(self, app: Any) -> None:
         self._app = app
 
     def snapshot(self) -> CommandSyncSnapshot:
-        return CommandSyncSnapshot(
-            gateway_generation=self._app._gateway_generation,
-            global_sync_task=self._app._global_sync_task,
-            global_sync_generation=self._app._global_sync_generation,
-            retired_global_sync_tasks=tuple(self._app._retired_global_sync_tasks),
-            ready_event_tasks=tuple(self._app._ready_event_tasks),
-            ready_event_generations=MappingProxyType(dict(self._app._ready_event_generations)),
-        )
-
-    async def sync_global_commands(self, generation: int | None = None) -> None:
-        await self._app._sync_global_commands(generation)
-
-    def release_completed_command_sync(self) -> None:
-        self._app._release_completed_command_sync()
-
-    async def cancel_global_command_sync(
-        self,
-        *,
-        tasks: Iterable[asyncio.Task[None]] | None = None,
-    ) -> None:
-        task_set = set(tasks) if tasks is not None else None
-        await self._app._cancel_global_command_sync(tasks=task_set)
-
-    def set_gateway_generation(self, generation: int) -> None:
-        self._app._gateway_generation = generation
-
-    def set_ready_cohort(
-        self,
-        tasks: Iterable[asyncio.Task[Any]],
-        generations: Mapping[asyncio.Task[Any], int],
-    ) -> None:
-        self._app._ready_event_tasks.clear()
-        self._app._ready_event_tasks.update(tasks)
-        self._app._ready_event_generations.clear()
-        self._app._ready_event_generations.update(generations)
-
-    def add_retired_global_sync_task(self, task: asyncio.Task[None]) -> None:
-        self._app._retired_global_sync_tasks.add(task)
-
-    def discard_retired_global_sync_task(self, task: asyncio.Task[None]) -> None:
-        self._app._retired_global_sync_tasks.discard(task)
-
-    def set_retired_global_sync_tasks(self, tasks: Iterable[asyncio.Task[None]]) -> None:
-        self._app._retired_global_sync_tasks.clear()
-        self._app._retired_global_sync_tasks.update(tasks)
+        return self._app.command_sync.snapshot()
 
 
 class PersonalChatDriver:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,8 +12,6 @@ import pytest
 from app import runtime as app_runtime
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
-from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
-from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from storage.db import Database
 from storage.model_selection import ModelSelectionStore
 from tests.helpers import LifecycleProbe, StubProviderManager
@@ -239,7 +236,9 @@ def test_app_command_tree_rejects_unapproved_guild_before_dispatch(
     )
 
 
-def test_saved_server_setup_activates_guild_without_restart(monkeypatch, tmp_path: Path) -> None:
+def test_saved_server_setup_activates_command_tree_without_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
         app_runtime,
         "build_provider_manager",
@@ -267,67 +266,6 @@ def test_saved_server_setup_activates_guild_without_restart(monkeypatch, tmp_pat
     assert allowed is True
     assert app.active_guilds() == {999}
     response.send_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_module_guild_settings_refresh_notifies_on_event_loop(tmp_path: Path) -> None:
-    guild_id = 999
-    document = tmp_path / GUILD_MODULES_DIR / str(guild_id) / "mod.md"
-    document.parent.mkdir(parents=True)
-    document.write_text("---\ncount: nope\n---\n", encoding="utf-8")
-    loop_thread = threading.get_ident()
-    read_threads: list[int] = []
-    callback_threads: list[int] = []
-    health_threads: list[int] = []
-
-    def config_dir() -> Path:
-        read_threads.append(threading.get_ident())
-        return tmp_path
-
-    service = GuildSettingsService(
-        config_dir=config_dir,
-        schemas={
-            "mod": GuildSettingsSchema(
-                fields=(GuildSettingField("count", "int", required=True),),
-                invalid_policy="disable_module",
-            )
-        },
-        on_health=lambda _module, _state, _detail: health_threads.append(threading.get_ident()),
-    )
-    service.subscribe("mod", lambda _guild_id: callback_threads.append(threading.get_ident()))
-    app = cast(
-        app_runtime.KimiApplication,
-        SimpleNamespace(
-            tools=SimpleNamespace(module_manager=SimpleNamespace(guild_settings=service))
-        ),
-    )
-
-    await app_runtime.KimiApplication._refresh_module_guild_settings(app, guild_id)
-
-    assert read_threads and all(thread_id != loop_thread for thread_id in read_threads)
-    assert callback_threads == [loop_thread]
-    assert health_threads == [loop_thread]
-
-
-def test_saved_deactivation_overrides_environment_allowlist(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(
-        app_runtime,
-        "build_provider_manager",
-        lambda settings: StubProviderManager(settings),
-    )
-    servers = tmp_path / "servers"
-    servers.mkdir()
-    (servers / "999.md").write_text("---\nbot_active: false\n---\n", encoding="utf-8")
-
-    app = app_runtime.build_app(_settings(allowed_guild_ids="999", config_dir=str(tmp_path)))
-
-    assert app.active_guilds() == set()
-    assert app.guild_activation_state(999) == {
-        "active": False,
-        "activation": "deactivated",
-        "setup_state": "deactivated",
-        "environment_approved": True,
-    }
 
 
 def test_unconfigured_guild_join_stays_connected(monkeypatch, tmp_path: Path) -> None:

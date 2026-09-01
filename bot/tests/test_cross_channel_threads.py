@@ -413,7 +413,7 @@ def _enable(app, monkeypatch) -> Any:
     handoff = MagicMock()
     handoff.enroll = AsyncMock()
     handoff.is_managed.return_value = False
-    app.thread_handoff = handoff
+    app.lifecycle.set_thread_handoff_for_test(handoff)
     monkeypatch.setattr(app.threads, "_thread_handoff_creation_allowed", lambda message: True)
     monkeypatch.setattr(app.threads, "_thread_auto_respond_default", lambda message: True)
     return handoff

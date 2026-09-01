@@ -38,12 +38,15 @@ from storage.conversations import (
 )
 from storage.db import Database
 from tests.helpers import (
+    replace_app_database,
     LifecycleProbe,
     NobodyBlocked,
     RootLockProbe,
     StubProviderManager,
     install_foreground_turn_handler,
     remove_processing_reaction,
+    replace_app_repositories,
+    replace_lifecycle_resources,
 )
 
 
@@ -148,22 +151,25 @@ def _build_test_app(monkeypatch):
             moderation_enabled=False,
         )
     )
-    app.gateway_ready = True
-    # The runtime's block gate raises on an uninitialised store rather than
-    # guessing; these tests bypass _first_init_core, so give it a real answer.
-    app.blocked_user_store = NobodyBlocked()  # type: ignore[assignment]
+    LifecycleProbe(app).set_gateway_ready()
+    # The runtime's block gate reaches SQLite rather than guessing; these tests
+    # bypass lifecycle database initialization, so give it a real answer.
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     # These guild-routing fixtures likewise stop before store-backed subsystem
     # construction. Stop behavior is covered directly by test_work_cancellation.
-    app.work_cancellation = cast(
-        Any,
-        SimpleNamespace(is_stop_message=lambda _message: False),
+    replace_lifecycle_resources(
+        app,
+        work_cancellation=cast(
+            Any,
+            SimpleNamespace(is_stop_message=lambda _message: False),
+        ),
     )
     return app
 
 
 def _install_foreground_runner(app, store: ConversationStore) -> None:
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
     install_foreground_turn_handler(app, handle_turn)
 
 
@@ -238,7 +244,7 @@ async def _capture_conversation_call(monkeypatch, app, message, store: Conversat
     """Run one mention-path turn and return the ConversationRunRequest fields."""
     from agent.attachments import TurnImages
 
-    app.preference_store = EmptyPersonaPreferenceStore()
+    replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
     _install_foreground_runner(app, store)
     monkeypatch.setattr(
         app_runtime,
@@ -308,7 +314,7 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
     app = _build_test_app(monkeypatch)
     app.memory_manager.client = object()
     app.memory_manager.ready = True
-    app.preference_store = EmptyPersonaPreferenceStore()
+    replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
     _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
     monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
@@ -357,7 +363,7 @@ async def test_trigger_newlines_are_neutralized_for_model_input(
 ):
     app = _build_test_app(monkeypatch)
     app.memory_manager.client = None
-    app.preference_store = None
+    replace_app_repositories(app, preference_store=None)
     _install_foreground_runner(app, ConversationStore(routing_database))
     from agent.attachments import TurnImages
 
@@ -408,7 +414,7 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
             return ""
 
     preferences = DisabledPreferenceStore()
-    app.preference_store = preferences
+    replace_app_repositories(app, preference_store=preferences)
     _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
     monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
@@ -447,7 +453,7 @@ async def test_handle_message_wires_usage_dependencies_with_scoped_model(
     app = _build_test_app(monkeypatch)
     app.settings.thread_handoff_suggest_after_tool_calls = 8
     app.memory_manager.client = None
-    app.preference_store = None
+    replace_app_repositories(app, preference_store=None)
     _install_foreground_runner(app, ConversationStore(routing_database))
 
     model_config = ModelConfig.model_validate(
@@ -627,10 +633,10 @@ def _wire_handle_message(
     sent_message_id: int = 777,
 ):
     manager = ContextManager(store)
-    app.context_manager = manager
-    app.conversation_store = store
+    replace_lifecycle_resources(app, context_manager=manager)
+    replace_app_repositories(app, conversation_store=store)
     app.memory_manager.client = None
-    app.preference_store = None
+    replace_app_repositories(app, preference_store=None)
     install_foreground_turn_handler(app, handle_turn)
     from agent.attachments import TurnImages
 
@@ -1094,9 +1100,9 @@ async def test_on_message_mapped_reply_with_mention_continues_existing_root(
     # rather than opening a fresh one.
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
@@ -1150,9 +1156,9 @@ async def test_on_message_text_invocation_reply_continues_existing_root(
     # then use the same continuation routing as an @mention reply.
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
@@ -1200,9 +1206,9 @@ async def test_on_message_mapped_reply_without_mention_is_ignored(
     # mention has already qualified the message for a response.
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     conv_id = await store.get_or_create(
         "guild:999:channel:100:thread:main:root:900",
@@ -1249,9 +1255,9 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
 
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
 
     class _NoConsentStore:
@@ -1264,13 +1270,16 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
     async def _redispatch(message) -> None:  # pragma: no cover - not exercised
         return None
 
-    app.consent_gate = PrivacyConsentGate(
-        enabled=True,
-        title="Privacy",
-        text="Body",
-        timeout=60.0,
-        preference_store=_NoConsentStore(),
-        redispatch=_redispatch,
+    replace_lifecycle_resources(
+        app,
+        consent_gate=PrivacyConsentGate(
+            enabled=True,
+            title="Privacy",
+            text="Body",
+            timeout=60.0,
+            preference_store=_NoConsentStore(),
+            redispatch=_redispatch,
+        ),
     )
     monkeypatch.setattr(
         app_runtime,
@@ -1299,9 +1308,9 @@ async def test_on_message_no_turn_result_adds_no_success_reaction(
     # get a ✅: the user received no reply, so signalling success is misleading.
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
         app_runtime,
@@ -1328,9 +1337,9 @@ async def test_on_message_unmapped_reply_without_mention_is_ignored(
 ):
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(app, "handle_message", AsyncMock())
 
@@ -1357,8 +1366,8 @@ async def _drive_on_message_root_concurrency(
 ):
     app = _build_test_app(monkeypatch)
     store = ConversationStore(database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
     app.settings.allowed_channel_ids = ""
     for root_message_id, mapped_message_id in mappings.items():
         conv_id = await store.get_or_create(
@@ -1483,11 +1492,14 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = cast(ContextManager, object())
-    app.blocked_user_store = NobodyBlocked()
-    app.turn_admission = TurnAdmissionController(
-        max_active=2,
-        max_active_per_user=1,
+    replace_lifecycle_resources(app, context_manager=cast(ContextManager, object()))
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
+    replace_lifecycle_resources(
+        app,
+        turn_admission=TurnAdmissionController(
+            max_active=2,
+            max_active_per_user=1,
+        ),
     )
     monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
@@ -1547,21 +1559,23 @@ async def test_blocked_user_is_ignored_before_status_and_turn(
     monkeypatch, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(ConversationStore(routing_database))
-    app.conversation_store = None
+    replace_lifecycle_resources(
+        app, context_manager=ContextManager(ConversationStore(routing_database))
+    )
+    replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
 
     class BlockedStore:
         async def is_blocked(self, user_id: str) -> bool:
             return user_id == "123"
 
-    app.blocked_user_store = BlockedStore()
+    replace_app_repositories(app, blocked_user_store=BlockedStore())
 
     class FailIfLeased:
         def activity(self, user_id: str) -> Any:
             raise AssertionError(f"blocked user {user_id} acquired privacy lease")
 
-    app.privacy_barrier = FailIfLeased()  # type: ignore[assignment]
+    replace_lifecycle_resources(app, privacy_barrier=cast(Any, FailIfLeased()))
     monkeypatch.setattr(
         app_runtime,
         "should_respond",
@@ -1589,8 +1603,10 @@ async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_databa
     privacy boundary.
     """
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(ConversationStore(routing_database))
-    app.conversation_store = None
+    replace_lifecycle_resources(
+        app, context_manager=ContextManager(ConversationStore(routing_database))
+    )
+    replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
 
     verdicts = iter([True, False])
@@ -1621,8 +1637,10 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
     routing_database: Database,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(ConversationStore(routing_database))
-    app.conversation_store = None
+    replace_lifecycle_resources(
+        app, context_manager=ContextManager(ConversationStore(routing_database))
+    )
+    replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
@@ -1657,8 +1675,10 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
     routing_database: Database,
 ) -> None:
     app = _build_test_app(monkeypatch)
-    app.context_manager = ContextManager(ConversationStore(routing_database))
-    app.conversation_store = None
+    replace_lifecycle_resources(
+        app, context_manager=ContextManager(ConversationStore(routing_database))
+    )
+    replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
@@ -1729,7 +1749,7 @@ async def test_processing_reaction_cleanup_is_bounded(
 
 
 def _enable_thread_handoff(app, store: ConversationStore) -> ThreadHandoffManager:
-    app.thread_handoff = ThreadHandoffManager(store)
+    app.lifecycle.set_thread_handoff_for_test(ThreadHandoffManager(store))
     return app.thread_handoff
 
 
@@ -2099,6 +2119,9 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
     monkeypatch, fail_thread_ack: bool, routing_database: Database
 ):
     app = _build_test_app(monkeypatch)
+    # The failed-acknowledgement path cleans up through the coding task store,
+    # so the repositories must sit on the connected test database.
+    replace_app_database(app, routing_database)
     store = ConversationStore(routing_database)
     _wire_handle_message(monkeypatch, app, store)
     _enable_thread_handoff(app, store)
@@ -2577,9 +2600,9 @@ async def test_on_message_delivery_failure_adds_failure_reaction(
 
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
         app_runtime,
@@ -2609,9 +2632,9 @@ async def test_on_message_attachment_error_adds_failure_reaction(
 ):
     app = _build_test_app(monkeypatch)
     store = ConversationStore(routing_database)
-    app.context_manager = ContextManager(store)
-    app.conversation_store = store
-    app.blocked_user_store = NobodyBlocked()
+    replace_lifecycle_resources(app, context_manager=ContextManager(store))
+    replace_app_repositories(app, conversation_store=store)
+    replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
         app_runtime,

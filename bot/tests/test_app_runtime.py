@@ -10,6 +10,7 @@ import discord
 import pytest
 
 from app import runtime as app_runtime
+from app import lifecycle as app_lifecycle
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
 from storage.db import Database
@@ -95,7 +96,7 @@ async def test_file_response_waits_for_workspace_writer() -> None:
 def test_settings_secret_values_collects_nonempty_secret_fields() -> None:
     settings = _settings(compaction_api_key="compact-key", brave_api_key="")
 
-    values = app_runtime._settings_secret_values(settings)
+    values = app_lifecycle.settings_secret_values(settings)
 
     assert "discord-token" in values
     assert "main-key" in values
@@ -217,7 +218,7 @@ def test_app_command_tree_rejects_unapproved_guild_before_dispatch(
         lambda settings: StubProviderManager(settings),
     )
     app = app_runtime.build_app(_settings(allowed_guild_ids="111", config_dir=str(tmp_path)))
-    app.gateway_ready = True
+    LifecycleProbe(app).set_gateway_ready()
     response = SimpleNamespace(is_done=lambda: False, send_message=AsyncMock())
     interaction: Any = SimpleNamespace(
         id=42,
@@ -245,7 +246,7 @@ def test_saved_server_setup_activates_command_tree_without_restart(
         lambda settings: StubProviderManager(settings),
     )
     app = app_runtime.build_app(_settings(config_dir=str(tmp_path)))
-    app.gateway_ready = True
+    LifecycleProbe(app).set_gateway_ready()
     assert app.active_guilds() == set()
 
     servers = tmp_path / "servers"

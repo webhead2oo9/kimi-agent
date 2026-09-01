@@ -1189,7 +1189,7 @@ async def test_runtime_registers_user_commands_only_when_enabled(
             }
         )
     )
-    await off._first_init_core()
+    await LifecycleProbe(off).first_init_core()
     assert off.bot.tree.get_command("chat") is None
     assert off.bot.tree.get_command("chat-reset") is None
     assert off.bot.tree.allowed_installs.guild is True
@@ -1208,7 +1208,7 @@ async def test_runtime_registers_user_commands_only_when_enabled(
             }
         )
     )
-    await on._first_init_core()
+    await LifecycleProbe(on).first_init_core()
     for name in ("chat", "chat-reset", "privacy", "memory", "stop"):
         command = on.bot.tree.get_command(name)
         assert command is not None
@@ -1465,7 +1465,7 @@ async def test_dm_registers_provisional_work_in_personal_scope(
     tmp_path: Path,
 ) -> None:
     app = await _dm_app(tmp_path, monkeypatch)
-    app.gateway_ready = True
+    LifecycleProbe(app).set_gateway_ready()
     channels: list[str] = []
     original_register = app.active_operations.register_provisional
 

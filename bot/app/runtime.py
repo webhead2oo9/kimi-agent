@@ -13,9 +13,6 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord import app_commands
 from discord.ext import commands
-from kimi_agent_module_api import ModuleSpec
-from kimi_agent_module_api.contracts import InteractionRouter
-from pydantic import SecretStr
 
 from agent.attachments import (
     collect_reply_context,
@@ -34,12 +31,9 @@ from config.fragments.guild_config import (
     load_guild_blocked_tools,
     load_guild_pinned_tools,
     load_guild_trust,
-    load_proposal_channel_id,
-    proposal_channel_id_is_configured,
     server_setup_activation,
 )
 from agent.context import ContextManager
-from utils.asyncio import await_uncancellable
 from config.fragments.tool_config import load_tool_configs
 from config.fragments.tool_policy import load_global_blocked_tools
 from agent.core import run_conversation
@@ -76,11 +70,17 @@ from app.foreground_turn import (
 )
 from app.guild_turn_adapter import GuildMessageTurnAdapter
 from app.guild_activation import GuildActivationConfig, GuildActivationService
+from app.lifecycle import (
+    AppRepositories,
+    ApplicationLifecycle,
+    LifecycleCallbacks,
+    LifecycleResources,
+    ShutdownSignal,
+)
 from app.user_app_chat import UserAppChatConfig, UserAppChatController
 from app.user_app_consent import UserAppConsentConfig, UserAppConsentPrompter
 from app.work_cancellation import WorkCancellationCoordinator, WorkScope, is_stop_message
-from app.modules import ModuleRuntimeBase, module_capabilities
-from app.proposals import ConfigProposalService, ProposalHost, ROUTER_NAME
+from app.proposals import ConfigProposalService
 from app.root_locks import RootLockPool
 from app.thread_handoff_boundary import ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
@@ -101,34 +101,6 @@ from app.turn_entry import (
     chat_model_name_for_scope,
     resolve_parent_channel_id,
 )
-from discord_adapter.lifecycle import (
-    attachment_orphan_sweeper,
-    auto_retain_sweeper,
-    sweep_attachment_orphans_once,
-    transcript_retention_sweeper,
-    video_session_sweeper,
-    workspace_sweeper,
-)
-from commands.learn_cmd import register_learn_command
-from commands.memory_cmd import register_memory_command
-from commands.models_cmd import register_models_command
-from commands.moderation_cmd import register_moderation_command
-from commands.privacy_cmd import (
-    drain_confirmed_privacy_deletions,
-    register_privacy_command,
-    run_privacy_deletion,
-)
-from commands.modules_cmd import register_modules_command
-from discord_adapter.module_actions import DiscordActionsImpl, TrustLookupImpl
-from discord_adapter.module_events import ModuleEventPublisher
-from discord_adapter.module_interactions import InteractionRuntime
-from modules.events import EventBusImpl
-from modules.guild_settings import GuildSettingsService
-from modules.http import ModuleHttpRuntime
-from modules.scheduler import DurableScheduler
-from commands.usage_cmd import register_usage_command
-from commands.stop_cmd import register_stop_command
-from commands.chat_cmd import register_user_app_chat_commands
 from config import paths
 from config.model_config import Scope
 from config.operator_settings import apply_operator_settings, settings_values
@@ -141,11 +113,8 @@ from discord_adapter.io import (
     should_respond,
     strip_mention,
 )
-from memory.auto_retain import AutoRetainFlusher
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
-from storage.auto_retain import AutoRetainStore
-from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from providers.assets import write_generated_assets
 from skills.loader import SkillsIndexCache
 from app.learn_log import LearnLogFeed, build_learn_log_feed
@@ -158,17 +127,14 @@ from storage.coding_tasks import (
 )
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
-from storage.module_commands import GuildCommandScopeStore
 from storage.conversations import ConversationStore
 from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
 from storage.preferences import PreferenceStore
-from storage.provider_circuits import ProviderCircuitStore
 from storage.privacy import PrivacyDeletionRequestStore
 from storage.usage import UsageStore
 from storage.video_sessions import VideoSessionStore
 from tools.registry import ToolRegistry, USER_APP_SCOPE_CHANNEL_ID
-from tools.user_memory import set_user_memory_preference_store
 from trust.resolver import TrustResolver
 from trust.user_app import UserAppAccess
 from workspace import user_app_workspace_key
@@ -180,25 +146,22 @@ if TYPE_CHECKING:
 _STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
-def _settings_secret_values(settings: Settings) -> tuple[str, ...]:
-    """Every non-empty secret the settings hold, for the event log to redact.
-
-    Reads the declared fields rather than a hand-kept list, so a new ``SecretStr``
-    setting is covered the day it is added.
-    """
-    values = (getattr(settings, field_name) for field_name in type(settings).model_fields)
-    return tuple(
-        secret
-        for value in values
-        if isinstance(value, SecretStr)
-        if (secret := value.get_secret_value())
-    )
-
-
 log = logging.getLogger(__name__)
 
 GUILD_ACTIVATION_REFRESH_SECONDS = 5.0
 READY_EVENT_DRAIN_SECONDS = 5.0
+
+
+class _DeferredShutdownSignal(ShutdownSignal):
+    def __init__(self, get_lifecycle: Callable[[], ApplicationLifecycle | None]) -> None:
+        self._get_lifecycle = get_lifecycle
+
+    @property
+    def closed(self) -> bool:
+        lifecycle = self._get_lifecycle()
+        if lifecycle is None:
+            raise RuntimeError("Application lifecycle is not composed")
+        return lifecycle.closed
 
 
 class KimiCommandTree(app_commands.CommandTree):
@@ -275,62 +238,27 @@ class KimiApplication:
     settings: Settings
     inherited_settings_values: Mapping[str, Any]
     bot: KimiBot
-    trust_resolver: TrustResolver
+    _trust_resolver: TrustResolver = field(repr=False)
     discord_gateway: DiscordGateway
-    provider_manager: ProviderManager
-    memory_manager: MemoryManager
-    tools: RuntimeTools
-    database: Database
-    proposal_service: ConfigProposalService | None = None
-    context_manager: ContextManager | None = None
-    conversation_store: ConversationStore | None = None
-    preference_store: PreferenceStore | None = None
-    blocked_user_store: BlockedUserStore | None = None
-    model_selection_store: ModelSelectionStore | None = None
+    _provider_manager: ProviderManager = field(repr=False)
+    _memory_manager: MemoryManager = field(repr=False)
+    _tools: RuntimeTools = field(repr=False)
+    _database: Database = field(repr=False)
+    _repository_bundle: AppRepositories = field(repr=False)
     learn_log: LearnLogFeed | None = None
-    image_distillation_store: ImageDistillationStore | None = None
-    usage_store: UsageStore | None = None
-    video_session_store: VideoSessionStore | None = None
-    _coding_task_controller: CodingTaskController | None = field(
-        default=None, init=False, repr=False
+    _privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier, repr=False)
+    _active_operations: ActiveOperationRegistry = field(
+        default_factory=ActiveOperationRegistry, repr=False
     )
-    user_app_consent: UserAppConsentPrompter = field(init=False, repr=False)
-    user_app_chat: UserAppChatController = field(init=False, repr=False)
-    work_cancellation: WorkCancellationCoordinator = field(init=False, repr=False)
-    _module_event_publisher: ModuleEventPublisher | None = None
-    _module_interaction_runtime: InteractionRuntime | None = None
-    privacy_deletion_store: PrivacyDeletionRequestStore | None = None
-    user_memory_bank_state_store: UserMemoryBankStateStore | None = None
-    privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier)
-    active_operations: ActiveOperationRegistry = field(default_factory=ActiveOperationRegistry)
-    consent_gate: PrivacyConsentGate | None = None
-    moderation_service: ModerationService | None = None
-    thread_handoff: ThreadHandoffManager | None = None
-    db_initialized: bool = False
-    workspace_sweeper_started: bool = False
-    auto_retain_sweeper_started: bool = False
-    transcript_retention_sweeper_started: bool = False
-    video_session_sweeper_started: bool = False
-    gateway_ready: bool = False
-    active_transcript_retention_days: int = 0
-    active_transcript_retention_sweep_interval_seconds: int | None = None
-    _auto_retain_task: asyncio.Task | None = None
-    _attachment_sweeper_task: asyncio.Task | None = None
-    _workspace_sweeper_task: asyncio.Task | None = None
-    _transcript_retention_task: asyncio.Task | None = None
-    _video_session_sweeper_task: asyncio.Task | None = None
-    command_sync: DiscordCommandSync = field(init=False, repr=False)
-    guild_activation: GuildActivationService = field(init=False, repr=False)
+    _moderation_service: ModerationService | None = field(default=None, repr=False)
+    lifecycle: ApplicationLifecycle = field(init=False, repr=False)
+    _command_sync: DiscordCommandSync = field(init=False, repr=False)
+    _guild_activation: GuildActivationService = field(init=False, repr=False)
     root_locks: RootLockPool = field(default_factory=RootLockPool, init=False, repr=False)
     llm_semaphore: asyncio.Semaphore = field(init=False)
-    turn_admission: TurnAdmissionController = field(init=False)
-    turn_runner: ForegroundTurnRunner = field(init=False, repr=False)
+    _turn_admission: TurnAdmissionController = field(init=False, repr=False)
     skills_index_cache: SkillsIndexCache = field(init=False)
     user_app_access: UserAppAccess = field(init=False)
-    _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
-    _closed: bool = False
-    _close_complete: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
-    _startup_error: Exception | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Discord-facing thread handoff lives in its own boundary; the manager is
@@ -341,7 +269,7 @@ class KimiApplication:
             get_manager=lambda: self.thread_handoff,
         )
         self.llm_semaphore = asyncio.Semaphore(self.settings.llm_max_concurrency)
-        self.turn_admission = TurnAdmissionController(
+        self._turn_admission = TurnAdmissionController(
             max_active=self.settings.turn_max_concurrency,
             max_active_per_user=self.settings.turn_max_concurrency_per_user,
         )
@@ -351,34 +279,157 @@ class KimiApplication:
             regular_ids=frozenset(self.settings.user_app_regular_id_set),
             staff_ids=frozenset(self.settings.user_app_staff_id_set),
         )
-        self.command_sync = DiscordCommandSync(
-            tree=self.bot.tree,
-            get_guild_sync_port=lambda: self._module_interaction_runtime,
-            config=CommandSyncConfig(
-                drain_timeout_seconds=READY_EVENT_DRAIN_SECONDS,
-            ),
-            shutdown=self,
-        )
-        self.guild_activation = GuildActivationService(
-            config=GuildActivationConfig(
-                config_dir=Path(self.settings.config_dir).resolve(),
-                allowed_guilds=frozenset(self.settings.allowed_guilds),
-                refresh_seconds=GUILD_ACTIVATION_REFRESH_SECONDS,
-            ),
-            bot=self.bot,
-            module_manager=self.tools.module_manager,
-            activation_parser=server_setup_activation,
-        )
-        self._ready_init_lock = asyncio.Lock()
 
     def gateway_interactions_ready(self) -> bool:
         """Whether a new Discord interaction may enter application code."""
 
-        return self.gateway_ready and self._startup_error is None and not self._closed
+        return self.lifecycle.interactions_ready()
+
+    @property
+    def trust_resolver(self) -> TrustResolver:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._trust_resolver if lifecycle is None else lifecycle.resources.trust_resolver
+
+    @property
+    def privacy_barrier(self) -> UserPrivacyBarrier:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._privacy_barrier if lifecycle is None else lifecycle.resources.privacy_barrier
+
+    @property
+    def active_operations(self) -> ActiveOperationRegistry:
+        lifecycle = getattr(self, "lifecycle", None)
+        return (
+            self._active_operations if lifecycle is None else lifecycle.resources.active_operations
+        )
+
+    @property
+    def turn_admission(self) -> TurnAdmissionController:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._turn_admission if lifecycle is None else lifecycle.resources.turn_admission
+
+    @property
+    def command_sync(self) -> DiscordCommandSync:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._command_sync if lifecycle is None else lifecycle.resources.command_sync
+
+    @property
+    def guild_activation(self) -> GuildActivationService:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._guild_activation if lifecycle is None else lifecycle.resources.guild_activation
+
+    @property
+    def provider_manager(self) -> ProviderManager:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._provider_manager if lifecycle is None else lifecycle.resources.provider_manager
+
+    @property
+    def memory_manager(self) -> MemoryManager:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._memory_manager if lifecycle is None else lifecycle.resources.memory_manager
+
+    @property
+    def tools(self) -> RuntimeTools:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._tools if lifecycle is None else lifecycle.resources.tools
+
+    @property
+    def database(self) -> Database:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._database if lifecycle is None else lifecycle.resources.database
+
+    @property
+    def moderation_service(self) -> ModerationService | None:
+        lifecycle = getattr(self, "lifecycle", None)
+        return (
+            self._moderation_service
+            if lifecycle is None
+            else lifecycle.resources.moderation_service
+        )
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self.lifecycle.closed
+
+    @property
+    def db_initialized(self) -> bool:
+        return self.lifecycle.db_initialized
+
+    @property
+    def gateway_ready(self) -> bool:
+        return self.lifecycle.gateway_ready
+
+    @property
+    def repositories(self) -> AppRepositories:
+        lifecycle = getattr(self, "lifecycle", None)
+        return self._repository_bundle if lifecycle is None else lifecycle.repositories
+
+    @property
+    def conversation_store(self) -> ConversationStore:
+        return self.repositories.conversation_store
+
+    @property
+    def preference_store(self) -> PreferenceStore:
+        return self.repositories.preference_store
+
+    @property
+    def blocked_user_store(self) -> BlockedUserStore:
+        return self.repositories.blocked_user_store
+
+    @property
+    def model_selection_store(self) -> ModelSelectionStore:
+        return self.repositories.model_selection_store
+
+    @property
+    def image_distillation_store(self) -> ImageDistillationStore:
+        return self.repositories.image_distillation_store
+
+    @property
+    def usage_store(self) -> UsageStore:
+        return self.repositories.usage_store
+
+    @property
+    def video_session_store(self) -> VideoSessionStore:
+        return self.repositories.video_session_store
+
+    @property
+    def privacy_deletion_store(self) -> PrivacyDeletionRequestStore:
+        return self.repositories.privacy_deletion_store
+
+    @property
+    def user_memory_bank_state_store(self) -> UserMemoryBankStateStore:
+        return self.repositories.user_memory_bank_state_store
+
+    @property
+    def context_manager(self) -> ContextManager:
+        return self.lifecycle.resources.context_manager
+
+    @property
+    def turn_runner(self) -> ForegroundTurnRunner:
+        return self.lifecycle.resources.turn_runner
+
+    @property
+    def consent_gate(self) -> PrivacyConsentGate:
+        return self.lifecycle.resources.consent_gate
+
+    @property
+    def user_app_consent(self) -> UserAppConsentPrompter:
+        return self.lifecycle.resources.user_app_consent
+
+    @property
+    def user_app_chat(self) -> UserAppChatController:
+        return self.lifecycle.resources.user_app_chat
+
+    @property
+    def work_cancellation(self) -> WorkCancellationCoordinator:
+        return self.lifecycle.resources.work_cancellation
+
+    @property
+    def thread_handoff(self) -> ThreadHandoffManager | None:
+        return self.lifecycle.thread_handoff
+
+    @property
+    def proposal_service(self) -> ConfigProposalService | None:
+        return self.lifecycle.proposal_service
 
     @property
     def registry(self) -> ToolRegistry:
@@ -386,12 +437,13 @@ class KimiApplication:
 
     @property
     def coding_task_store(self) -> CodingTaskStore | None:
-        controller = self._coding_task_controller
-        return controller.store if controller is not None else None
+        # The repository bundle is the canonical owner; the controller was built
+        # from the same instance.
+        return self.repositories.coding_task_store
 
     @property
     def coding_tasks(self) -> CodingTaskController | None:
-        controller = self._coding_task_controller
+        controller = self.lifecycle.resources.coding_tasks
         return controller if controller is not None and controller.running else None
 
     def active_guilds(self) -> set[int]:
@@ -438,26 +490,12 @@ class KimiApplication:
             self.settings.discord_bot_token.get_secret_value(),
             log_handler=None,
         )
-        if self._startup_error is not None:
-            raise RuntimeError("Kimi Agent startup failed") from self._startup_error
+        if self.lifecycle.startup_error is not None:
+            raise RuntimeError("Kimi Agent startup failed") from self.lifecycle.startup_error
         return 0
 
     async def close(self) -> None:
-        if self._closed:
-            await self._close_complete.wait()
-            return
-        # There is no await between this check and assignment, so competing
-        # close calls cannot both become the teardown owner on one event loop.
-        self._closed = True
-        owner_task = asyncio.current_task()
-        try:
-            await await_uncancellable(self._finish_close(owner_task))
-        finally:
-            self._close_complete.set()
-
-    async def _finish_close(self, owner_task: asyncio.Task[Any] | None) -> None:
-        await self.command_sync.cancel_ready_events(exclude=owner_task)
-        await self._close_resources()
+        await self.lifecycle.close()
 
     async def drain_interactions(self) -> None:
         """Stop admitting module interactions and wait for in-flight handlers.
@@ -466,704 +504,24 @@ class KimiApplication:
         teardown repeats it for callers that close the application directly.
         """
 
-        if self._module_interaction_runtime is not None:
-            try:
-                # Close the guild-sync gate synchronously inside drain() before
-                # a stubborn global PUT can return and enter guild publication.
-                await self._module_interaction_runtime.drain()
-            except Exception:
-                log.exception("Error draining module interaction handlers")
-        await self.command_sync.cancel_all()
-
-    async def _close_resources(self) -> None:
-        self.gateway_ready = False
-        await self.drain_interactions()
-        if self._module_event_publisher is not None:
-            self._module_event_publisher.uninstall()
-            self._module_event_publisher = None
-        await self.turn_admission.close()
-        await self.guild_activation.close()
-        if self._auto_retain_task is not None:
-            self._auto_retain_task.cancel()
-            try:
-                await self._auto_retain_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping auto-retain sweeper")
-            self._auto_retain_task = None
-        if self._workspace_sweeper_task is not None:
-            self._workspace_sweeper_task.cancel()
-            try:
-                await self._workspace_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping workspace sweeper")
-            self._workspace_sweeper_task = None
-        if self._attachment_sweeper_task is not None:
-            self._attachment_sweeper_task.cancel()
-            try:
-                await self._attachment_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping attachment orphan sweeper")
-            self._attachment_sweeper_task = None
-        if self._video_session_sweeper_task is not None:
-            self._video_session_sweeper_task.cancel()
-            try:
-                await self._video_session_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping video session sweeper")
-            self._video_session_sweeper_task = None
-            self.video_session_sweeper_started = False
-        if self._transcript_retention_task is not None:
-            self._transcript_retention_task.cancel()
-            try:
-                await self._transcript_retention_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping transcript retention sweeper")
-            self._transcript_retention_task = None
-            self.transcript_retention_sweeper_started = False
-            self.active_transcript_retention_days = 0
-            self.active_transcript_retention_sweep_interval_seconds = None
-        if not await self.active_operations.cancel_all():
-            log.warning("Timed out waiting for active operations during shutdown")
-        await drain_confirmed_privacy_deletions()
-        await stop_event_writer()
-        if self._coding_task_controller is not None:
-            await self._coding_task_controller.close()
-        try:
-            await self.tools.browser_service.close()
-        except Exception:
-            log.exception("Error closing browser service")
-        if self.moderation_service is not None:
-            try:
-                await self.moderation_service.close()
-            except Exception:
-                log.exception("Error closing moderation service")
-        # Order matters: stop claiming jobs, then close modules (which cancels
-        # each module's in-flight event handlers via events.close_module), then
-        # tear down the shared HTTP client and event bus nothing can reach anymore.
-        if self.tools.module_manager.scheduler is not None:
-            try:
-                await self.tools.module_manager.scheduler.close()
-            except Exception:
-                log.exception("Error closing the module scheduler")
-        await self.tools.module_manager.close()
-        if self.tools.module_manager.http is not None:
-            await self.tools.module_manager.http.close()
-        if self.tools.module_manager.events is not None:
-            await self.tools.module_manager.events.close()
-        await self.memory_manager.close()
-        await self.provider_manager.close()
-        try:
-            await self.tools.video_service.close()
-        except Exception:
-            log.exception("Error closing video understanding service")
-        await self.database.close()
+        await self.lifecycle.drain_interactions()
 
     async def on_disconnect(self) -> None:
-        self.gateway_ready = False
-        await self.command_sync.disconnect()
+        await self.lifecycle.disconnect()
 
     async def on_resumed(self) -> None:
         """Restore admission after Discord resumes the existing gateway session."""
-        self.gateway_ready = self._can_restore_gateway_readiness()
-        await self.command_sync.resume()
+        await self.lifecycle.resume()
 
     async def on_ready(self) -> None:
-        if self._closed:
-            return
-        async with self.command_sync.ready_cohort() as gateway_generation:
-            self.gateway_ready = False
-            try:
-                self._log_ready_state()
-                async with self._ready_init_lock:
-                    if self._closed or self._startup_error is not None:
-                        return
-                    startup_succeeded = await self._initialize_ready_locked()
-                if not startup_succeeded:
-                    await self.bot.close()
-                    return
-                if self._closed:
-                    return
-
-                await self.command_sync.sync_for_ready(gateway_generation)
-                if gateway_generation != self.command_sync.current_generation:
-                    return
-
-                # READY events can overlap on reconnect. Serialize the check/start pair so
-                # only one copy of each filesystem maintenance loop is created.
-                async with self._ready_init_lock:
-                    if self._closed:
-                        return
-                    await self._start_filesystem_sweepers_locked()
-                    if self._closed:
-                        return
-                    self._start_ready_background_tasks_locked()
-            finally:
-                if gateway_generation == self.command_sync.current_generation:
-                    self.gateway_ready = self._can_restore_gateway_readiness()
-
-    def _log_ready_state(self) -> None:
-        log.info(
-            "Logged in as %s (ID: %s)",
-            self.bot.user,
-            self.bot.user.id if self.bot.user else "?",
-        )
-        log.info(
-            "LLM Models: chat=%s | compaction=%s",
-            self._model_log_label("chat"),
-            self._model_log_label("compaction"),
-        )
-        log.info(
-            "Trust tiers: StaffRoleIDs=%s, RegularRoleIDs=%s",
-            self.settings.staff_role_ids,
-            self.settings.regular_role_ids,
-        )
-        active_guilds = self.active_guilds()
-        pending_guilds = sum(1 for guild in self.bot.guilds if guild.id not in active_guilds)
-        log.info(
-            "Guild activation: %d active, %d connected and silent",
-            len(active_guilds),
-            pending_guilds,
-        )
-
-    def _can_restore_gateway_readiness(self) -> bool:
-        return self.db_initialized and self._startup_error is None and not self._closed
-
-    async def _initialize_ready_locked(self) -> bool:
-        """Initialize READY-owned resources while ``_ready_init_lock`` is held."""
-
-        if self.settings.tool_event_log_enabled:
-            start_event_writer(
-                self.settings.tool_event_log_path,
-                self.settings.tool_event_log_max_field_bytes,
-                content_mode=self.settings.tool_event_log_content_mode,
-                secret_values=_settings_secret_values(self.settings),
-            )
-            if self.settings.tool_event_log_content_mode == "full":
-                log.warning(
-                    "Tool event log enabled at %s in full mode; sensitive content may be written",
-                    self.settings.tool_event_log_path,
-                )
-            else:
-                log.info(
-                    "Tool event log enabled at %s in %s mode",
-                    self.settings.tool_event_log_path,
-                    self.settings.tool_event_log_content_mode,
-                )
-
-        first_init = not self.db_initialized
-        if first_init:
-            try:
-                await self._first_init_core()
-            except Exception as exc:
-                self._startup_error = exc
-                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
-                return False
-
-        try:
-            if self.memory_manager.client:
-                assert self.conversation_store is not None
-                assert self.preference_store is not None
-                await self.memory_manager.ensure_ready(
-                    self.conversation_store,
-                    self.preference_store,
-                )
-            else:
-                log.warning("No Hindsight URL configured - running without memory")
-        except Exception as exc:
-            if first_init:
-                self._startup_error = exc
-                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
-                return False
-            log.warning("Could not refresh memory integration after READY", exc_info=True)
-
-        if first_init:
-            self.db_initialized = True
-            log.info("Database initialized at %s", self.settings.database_path)
-
-        return True
-
-    async def _start_filesystem_sweepers_locked(self) -> None:
-        """Install filesystem maintenance tasks once after best-effort cleanup."""
-        if self.workspace_sweeper_started:
-            return
-        try:
-            await sweep_attachment_orphans_once(
-                self.tools.attachment_store,
-                max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
-                max_files=self.settings.attachment_orphan_sweep_max_files,
-            )
-        except OSError:
-            log.warning("Initial attachment orphan sweep failed", exc_info=True)
-        if self._closed:
-            return
-        self._workspace_sweeper_task = asyncio.create_task(
-            workspace_sweeper(
-                self.tools.workspace_manager,
-                sweep_interval=self.settings.workspace_sweep_interval,
-                workspace_locks=self.tools.workspace_locks,
-                browser_profiles=self.tools.browser_service,
-            )
-        )
-        self._attachment_sweeper_task = asyncio.create_task(
-            attachment_orphan_sweeper(
-                self.tools.attachment_store,
-                sweep_interval=self.settings.attachment_orphan_sweep_interval_seconds,
-                max_age_seconds=self.settings.attachment_orphan_ttl_seconds,
-                max_files=self.settings.attachment_orphan_sweep_max_files,
-            )
-        )
-        self.workspace_sweeper_started = True
-        log.info(
-            "Filesystem sweepers started (workspace TTL: %ds; "
-            "attachment orphan TTL: %ds, every %ds)",
-            self.settings.workspace_file_ttl,
-            self.settings.attachment_orphan_ttl_seconds,
-            self.settings.attachment_orphan_sweep_interval_seconds,
-        )
-
-    def _start_ready_background_tasks_locked(self) -> None:
-        """Install READY-owned singleton tasks while ``_ready_init_lock`` is held."""
-
-        if not self.video_session_sweeper_started and self.video_session_store is not None:
-            # Its first background iteration performs startup cleanup without
-            # blocking READY or this lock.
-            sweep_interval = self.settings.transcript_retention_sweep_interval_seconds
-            self._video_session_sweeper_task = asyncio.create_task(
-                video_session_sweeper(
-                    self.tools.video_service,
-                    sweep_interval=sweep_interval,
-                )
-            )
-            self.video_session_sweeper_started = True
-            log.info("Video session sweeper started (every %ds)", sweep_interval)
-
-        if (
-            not self.transcript_retention_sweeper_started
-            and self.settings.transcript_retention_days > 0
-            and self.conversation_store is not None
-        ):
-            retention_days = self.settings.transcript_retention_days
-            sweep_interval = self.settings.transcript_retention_sweep_interval_seconds
-            self._transcript_retention_task = asyncio.create_task(
-                transcript_retention_sweeper(
-                    self.conversation_store,
-                    retention_days=retention_days,
-                    sweep_interval=sweep_interval,
-                )
-            )
-            self.transcript_retention_sweeper_started = True
-            self.active_transcript_retention_days = retention_days
-            self.active_transcript_retention_sweep_interval_seconds = sweep_interval
-            log.info(
-                "Transcript retention sweeper started (window: %dd, every %ds)",
-                retention_days,
-                sweep_interval,
-            )
-
-        active_memory_client = self.memory_manager.active_client()
-        if (
-            not self.auto_retain_sweeper_started
-            and self.settings.memory_auto_retain_enabled
-            and active_memory_client is not None
-            and self.preference_store is not None
-        ):
-            flusher = AutoRetainFlusher(
-                store=AutoRetainStore(self.database),
-                preference_store=self.preference_store,
-                memory_client=active_memory_client,
-                ensure_user_bank=ensure_user_bank,
-                get_bot_name=lambda: self.settings.bot_name,
-                idle_seconds=self.settings.memory_auto_retain_idle_minutes * 60,
-                backfill_horizon_seconds=(
-                    self.settings.memory_auto_retain_backfill_horizon_hours * 3600
-                ),
-                min_user_chars=self.settings.memory_auto_retain_min_user_chars,
-                max_content_chars=self.settings.memory_auto_retain_max_content_chars,
-                max_flushes_per_sweep=(self.settings.memory_auto_retain_max_flushes_per_sweep),
-            )
-            self._auto_retain_task = asyncio.create_task(
-                auto_retain_sweeper(
-                    flusher,
-                    sweep_interval=(self.settings.memory_auto_retain_sweep_interval_seconds),
-                )
-            )
-            self.auto_retain_sweeper_started = True
-            log.info(
-                "Auto-retain sweeper started (idle: %dm, every %ds)",
-                self.settings.memory_auto_retain_idle_minutes,
-                self.settings.memory_auto_retain_sweep_interval_seconds,
-            )
-
-        self.guild_activation.start()
-
-    async def _first_init_core(self) -> None:
-        """One-time startup wiring: DB connect, stores, gates, slash commands.
-
-        Runs under the READY initialization lock in ``on_ready``; the caller
-        marks ``db_initialized`` only after the complete startup path succeeds.
-        """
-        await self.database.connect()
-        self.conversation_store = ConversationStore(self.database)
-        self.preference_store = PreferenceStore(self.database)
-        self.blocked_user_store = BlockedUserStore(self.database)
-        self.image_distillation_store = ImageDistillationStore(self.database)
-        self.model_selection_store = ModelSelectionStore(self.database)
-        await self.provider_manager.initialize_circuits(ProviderCircuitStore(self.database))
-        await self.provider_manager.refresh_selectable_chat_models()
-        selected_model = await self.model_selection_store.get()
-        try:
-            self.provider_manager.set_active_chat_model(selected_model)
-        except ValueError:
-            log.warning(
-                "Stored chat model %r is no longer operator-selectable; reverting to config",
-                selected_model,
-            )
-            await self.model_selection_store.set(None)
-            self.provider_manager.set_active_chat_model(None)
-        self.usage_store = UsageStore(self.database)
-        self.video_session_store = VideoSessionStore(self.database)
-        assert self.conversation_store is not None
-        assert self.usage_store is not None
-        coding_task_store = CodingTaskStore(self.database)
-        self._coding_task_controller = CodingTaskController(
-            settings=self.settings,
-            store=coding_task_store,
-            usage_store=self.usage_store,
-            provider_manager=self.provider_manager,
-            source_registry=self.registry,
-            tools=self.tools,
-            llm_semaphore=self.llm_semaphore,
-            privacy_barrier=self.privacy_barrier,
-            user_blocked=self._user_is_blocked,
-            delivery=CodingDelivery(
-                bot=self.bot,
-                store=coding_task_store,
-                conversation_store=self.conversation_store,
-                discord_gateway=self.discord_gateway,
-                workspace_locks=self.tools.workspace_locks,
-                root_locks=self.root_locks,
-                threads=self.threads,
-                moderation_service=self.moderation_service,
-                config=CodingDeliveryConfig(
-                    thread_handoff_enabled=self.settings.thread_handoff_enabled,
-                    thread_auto_handoff_enabled=self.settings.thread_auto_handoff_enabled,
-                    bot_name=self.settings.bot_name,
-                ),
-                strip_message_invocation=self._strip_message_invocation,
-            ),
-        )
-        self.privacy_deletion_store = PrivacyDeletionRequestStore(self.database)
-        self.user_memory_bank_state_store = UserMemoryBankStateStore(self.database)
-        configure_bank_tracking = getattr(
-            self.memory_manager.client,
-            "set_user_bank_state_store",
-            None,
-        )
-        if configure_bank_tracking is not None:
-            configure_bank_tracking(self.user_memory_bank_state_store)
-        set_user_memory_preference_store(self.preference_store)
-        auto_retain_watermarks = AutoRetainStore(self.database)
-        await self._resume_pending_privacy_deletions(
-            auto_retain_watermarks=auto_retain_watermarks,
-        )
-        self.consent_gate = PrivacyConsentGate(
-            enabled=self.settings.privacy_consent_enabled,
-            title=self.settings.privacy_consent_title,
-            text=self.settings.privacy_consent_text,
-            timeout=self.settings.privacy_consent_timeout,
-            preference_store=self.preference_store,
-            redispatch=self.on_message,
-            is_available=self.gateway_interactions_ready,
-        )
-        self.context_manager = ContextManager(store=self.conversation_store)
-        self.turn_runner = self._make_foreground_turn_runner()
-        self.user_app_consent = UserAppConsentPrompter(
-            config=UserAppConsentConfig(
-                enabled=self.settings.privacy_consent_enabled,
-                title=self.settings.privacy_consent_title,
-                text=self.settings.privacy_consent_text,
-                timeout=self.settings.privacy_consent_timeout,
-            ),
-            preference_store=self.preference_store,
-        )
-        coding_task_controller = self._coding_task_controller
-        if coding_task_controller is None:
-            raise RuntimeError("Coding task controller is not initialized")
-        work_cancellation: WorkCancellationCoordinator | None = None
-
-        async def cancel_personal_work(
-            *,
-            user_id: str,
-            channel_id: str,
-            root_key: str,
-        ) -> bool:
-            coordinator = work_cancellation
-            if coordinator is None:
-                raise RuntimeError("Work cancellation coordinator is not initialized")
-            summary = await coordinator.cancel_for_reset(
-                user_id=user_id,
-                scope=WorkScope(channel_id=channel_id, root_key=root_key),
-            )
-            return summary.clean
-
-        self.user_app_chat = UserAppChatController(
-            config=UserAppChatConfig(
-                timeout_seconds=self.settings.user_app_chat_timeout_seconds,
-                dm_enabled=self.settings.user_app_dm_enabled,
-            ),
-            bot=self.bot,
-            access=self.user_app_access,
-            user_blocked=self._user_is_blocked,
-            consent=self.user_app_consent,
-            conversation_store=self.conversation_store,
-            active_operations=self.active_operations,
-            privacy_barrier=self.privacy_barrier,
-            turn_admission=self.turn_admission,
-            root_locks=self.root_locks,
-            turn_runner=self.turn_runner,
-            shutdown=self,
-            cancel_personal_work=cancel_personal_work,
-            turn_entry_hooks=_turn_entry_hooks(),
-        )
-        self.work_cancellation = WorkCancellationCoordinator(
-            bot=self.bot,
-            consent_gate=self.consent_gate,
-            personal_requests=self.user_app_chat,
-            active_operations=self.active_operations,
-            coding_tasks=coding_task_controller,
-            trust_resolver=self.trust_resolver,
-            discord_gateway=self.discord_gateway,
-            conversation_resolver=self.resolve_conversation_for_message,
-            response_sender=self.send_response,
-            strip_message_invocation=self._strip_message_invocation,
-            cleanup_wait_seconds=self.settings.coding_stop_cleanup_wait_seconds,
-            global_staff_ids=frozenset(self.settings.staff_ids),
-        )
-        work_cancellation = self.work_cancellation
-        if self.settings.thread_handoff_enabled:
-            self.thread_handoff = ThreadHandoffManager(self.conversation_store)
-            await self.thread_handoff.load()
-            log.info(
-                "Thread handoff enabled (%d managed thread(s), %d auto-responding)",
-                self.thread_handoff.managed_count,
-                self.thread_handoff.auto_respond_count,
-            )
-        register_memory_command(
-            self.bot,
-            self.preference_store,
-            privacy_barrier=self.privacy_barrier,
-            user_install_enabled=self.settings.user_app_chat_enabled,
-        )
-        register_models_command(
-            self.bot,
-            self.provider_manager,
-            self.model_selection_store,
-            owner_user_id=self.settings.owner_user_id,
-        )
-        register_moderation_command(
-            self.bot,
-            self.blocked_user_store,
-            self.trust_resolver,
-        )
-        module_manager = self.tools.module_manager
-        register_modules_command(
-            self.bot,
-            owner_user_id=self.settings.owner_user_id,
-            requested=lambda: module_manager.load_state.requested,
-            specs=lambda: module_manager.specs,
-            health=module_manager.health_snapshot,
-            disabled=lambda: module_manager.disabled_modules,
-            tools=module_manager.tool_names,
-            resolved_hosts=lambda name: tuple(
-                f"{rule.host}{' (private)' if rule.private else ''}"
-                for rule in module_manager.host_rules(name)
-            ),
-        )
-        register_usage_command(
-            self.bot,
-            self.usage_store,
-            self.trust_resolver,
-        )
-        register_stop_command(
-            self.bot,
-            self.work_cancellation.handle_stop_interaction,
-            user_install_enabled=self.settings.user_app_chat_enabled,
-        )
-        register_learn_command(
-            self.bot,
-            self.trust_resolver,
-            run_learn=self._run_learn_turn,
-            is_blocked=self._user_is_blocked,
-            request_consent=lambda interaction, resume: self.user_app_consent.prompt_if_needed(
-                interaction,
-                on_accept=resume,
-                public_response=False,
-            ),
-            bot_name=self.settings.bot_name,
-        )
-        register_privacy_command(
-            self.bot,
-            self.conversation_store,
-            self.preference_store,
-            memory_client=self.memory_manager.client,
-            auto_retain_watermarks=auto_retain_watermarks,
-            deletion_request_store=self.privacy_deletion_store,
-            memory_bank_state_store=self.user_memory_bank_state_store,
-            conversation_turn_lock=self._lock_user_conversation_turns,
-            workspace_manager=self.tools.workspace_manager,
-            workspace_locks=self.tools.workspace_locks,
-            privacy_barrier=self.privacy_barrier,
-            retention_days=self.settings.transcript_retention_days,
-            bot_name=self.settings.bot_name,
-            policy_url=self.settings.privacy_policy_url,
-            browser_data_store=self.tools.browser_service,
-            video_data_store=self.tools.video_service,
-            cancel_user_work=self.work_cancellation.cancel_for_privacy,
-            is_available=self.gateway_interactions_ready,
-            user_install_enabled=self.settings.user_app_chat_enabled,
-        )
-        if self.settings.user_app_chat_enabled:
-            register_user_app_chat_commands(
-                self.bot,
-                run_chat=self.user_app_chat.handle,
-                reset_chat=self.user_app_chat.reset,
-                bot_name=self.settings.bot_name,
-            )
-        module_manager = self.tools.module_manager
-        module_manager.health.on_change = lambda name, health: emit_module_health(
-            module=name, state=health.state, detail=health.detail, metrics=dict(health.metrics)
-        )
-        module_manager.events = EventBusImpl(metrics_sink=module_manager.health.merge_metrics)
-        module_manager.scheduler = DurableScheduler(
-            self.database,
-            max_concurrent=self.settings.module_scheduler_max_concurrent_jobs,
-            on_health=lambda module, state, detail: module_manager.health.mark(
-                module, state, detail, source="scheduler"
-            ),
-        )
-        module_manager.http = ModuleHttpRuntime(user_agent=f"{self.settings.bot_name}-modules")
-        module_manager.guild_settings = GuildSettingsService(
-            config_dir=lambda: Path(self.settings.config_dir),
-            schemas=module_manager.guild_settings_schemas,
-            on_health=lambda module, state, detail: module_manager.health.mark(
-                module, state, detail, source="guild_settings"
-            ),
-        )
-        await self.guild_activation.refresh_module_guild_settings(None)
-        self._module_event_publisher = ModuleEventPublisher(
-            self.bot, module_manager.events.publish_core
-        )
-        self._module_event_publisher.install()
-        module_trust = TrustLookupImpl(self.bot, self.trust_resolver)
-        is_guild_active = lambda guild_id: guild_id in self.active_guilds()  # noqa: E731
-        interaction_runtime = InteractionRuntime(
-            self.bot,
-            is_available=self.gateway_interactions_ready,
-            scope_store=GuildCommandScopeStore(self.database),
-            on_sync_health=lambda module, state, detail: module_manager.health.mark(
-                module,
-                state,
-                detail,
-                source="guild_commands",
-            ),
-        )
-        self._module_interaction_runtime = interaction_runtime
-        interaction_runtime.install()
-        proposal_actions = DiscordActionsImpl(
-            bot=self.bot,
-            trust=module_trust,
-            module_name=ROUTER_NAME,
-            is_guild_active=is_guild_active,
-        )
-        self.proposal_service = ConfigProposalService(
-            self.database,
-            ProposalHost(
-                config_dir=lambda: Path(self.settings.config_dir),
-                review_channel_id=lambda guild_id: load_proposal_channel_id(
-                    guild_id, config_dir=Path(self.settings.config_dir)
-                ),
-                channel_guild_id=self.guild_activation.channel_guild_id,
-                known_modules=lambda: module_manager.load_state.loaded,
-                post_review=proposal_actions.send_message,
-                on_applied=self.refresh_guild_activation,
-                verify_guild=self.guild_activation.proposal_guild_health,
-                review_channel_configured=lambda guild_id: proposal_channel_id_is_configured(
-                    guild_id, config_dir=Path(self.settings.config_dir)
-                ),
-            ),
-        )
-        self.proposal_service.install(
-            interaction_runtime.router_for(
-                ROUTER_NAME,
-                trust=module_trust,
-                is_guild_active=is_guild_active,
-            )
-        )
-        await self.proposal_service.warn_unattached()
-
-        def module_discord_actions(
-            spec: ModuleSpec, module_is_guild_active: Callable[[int], bool]
-        ) -> DiscordActionsImpl:
-            return DiscordActionsImpl(
-                bot=self.bot,
-                trust=module_trust,
-                module_name=spec.name,
-                is_guild_active=module_is_guild_active,
-                override_target_policy=spec.permissions.override_target_policy,
-            )
-
-        def module_interactions(
-            module_name: str, module_is_guild_active: Callable[[int], bool]
-        ) -> InteractionRouter:
-            return interaction_runtime.router_for(
-                module_name, trust=module_trust, is_guild_active=module_is_guild_active
-            )
-
-        await module_manager.start(
-            ModuleRuntimeBase(
-                database=self.database,
-                bot=self.bot,
-                is_guild_active=is_guild_active,
-                current_config_dir=lambda: Path(self.settings.config_dir),
-                capabilities=module_capabilities(self.settings),
-                trust=module_trust,
-                discord_actions=module_discord_actions,
-                interactions=module_interactions,
-                proposals=self.proposal_service,
-            )
-        )
-        # Persisted module jobs re-bind to handlers registered during start().
-        module_manager.scheduler.start()
-        # Start the durable scheduler only after pending privacy deletions have
-        # replayed and their barriers are installed. This prevents recovered
-        # work from racing a deletion request during READY initialization.
-        await self._init_coding_tasks()
-
-    async def _init_coding_tasks(self) -> None:
-        controller = self._coding_task_controller
-        if controller is None:
-            raise RuntimeError("Coding task controller was not constructed during initialization")
-        await controller.start()
+        await self.lifecycle.ready()
 
     async def _publish_coding_task(
         self,
         task: CodingTask,
         context: Any | None,
     ) -> None:
-        controller = self._coding_task_controller
-        if controller is None:
-            raise RuntimeError("Coding task controller is not initialized")
-        await controller.delivery.publish(task, context)
+        await self.lifecycle.resources.coding_tasks.delivery.publish(task, context)
 
     async def _delete_coding_status_message(
         self,
@@ -1173,10 +531,7 @@ class KimiApplication:
         *,
         message: discord.Message | None = None,
     ) -> None:
-        controller = self._coding_task_controller
-        if controller is None:
-            raise RuntimeError("Coding task controller is not initialized")
-        await controller.delete_status_message(
+        await self.lifecycle.resources.coding_tasks.delete_status_message(
             channel,
             task,
             marker,
@@ -1192,12 +547,10 @@ class KimiApplication:
 
         Guild messages, personal chat, the teach context menu, and coding-task
         claim all route through here so a block cannot be honoured on one path
-        and missed on another. Every entry point registers inside
-        _first_init_core after the store exists, so an absent store is a wiring
-        bug, and a privilege gate does not guess in that state.
+        and missed on another. Every entry point registers during lifecycle
+        initialization after repository composition, so an absent store is a
+        wiring bug, and a privilege gate does not guess in that state.
         """
-        if self.blocked_user_store is None:
-            raise RuntimeError("blocked_user_store is not initialised; no entry point may run yet")
         return await self.blocked_user_store.is_blocked(user_id)
 
     async def _run_learn_turn(
@@ -1230,79 +583,6 @@ class KimiApplication:
             llm_semaphore=self.llm_semaphore,
         )
 
-    async def _resume_pending_privacy_deletions(
-        self,
-        *,
-        auto_retain_watermarks: AutoRetainStore,
-    ) -> None:
-        """Replay durable requests before exposing context or starting writers."""
-
-        assert self.conversation_store is not None
-        assert self.preference_store is not None
-        assert self.privacy_deletion_store is not None
-        if self.user_memory_bank_state_store is None:
-            # Keep the replay helper usable in recovery/tests that compose the
-            # stores directly instead of going through _first_init_core.
-            self.user_memory_bank_state_store = UserMemoryBankStateStore(self.database)
-        if self.video_session_store is None:
-            self.video_session_store = VideoSessionStore(self.database)
-
-        pending = await self.privacy_deletion_store.list_pending()
-        if not pending:
-            return
-
-        # Tombstone every affected user before starting the first worker. This is
-        # redundant while context_manager is still hidden, but protects the
-        # ordering if startup composition changes later.
-        for request in pending:
-            await self.privacy_barrier.mark_deletion_pending(request.user_id)
-
-        failed: list[str] = []
-        for request in pending:
-            try:
-                outcome = await run_privacy_deletion(
-                    scope=request.scope,
-                    user_id=request.user_id,
-                    conversation_store=self.conversation_store,
-                    preference_store=self.preference_store,
-                    memory_client=self.memory_manager.client,
-                    auto_retain_watermarks=auto_retain_watermarks,
-                    workspace_manager=self.tools.workspace_manager,
-                    workspace_locks=self.tools.workspace_locks,
-                    privacy_barrier=self.privacy_barrier,
-                    deletion_request_store=self.privacy_deletion_store,
-                    pending_request=request,
-                    memory_bank_state_store=self.user_memory_bank_state_store,
-                    conversation_turn_lock=self._lock_user_conversation_turns,
-                    browser_data_store=self.tools.browser_service,
-                    video_data_store=self.tools.video_service,
-                )
-            except Exception:
-                log.exception(
-                    "Startup privacy deletion replay failed for %s",
-                    request.user_id,
-                )
-                failed.append(request.user_id)
-                continue
-            if not outcome.ok:
-                log.error(
-                    "Startup privacy deletion remains incomplete for %s: %s",
-                    request.user_id,
-                    " ".join(outcome.lines),
-                )
-                failed.append(request.user_id)
-
-        remaining = await self.privacy_deletion_store.list_pending()
-        if failed or remaining:
-            affected = sorted({request.user_id for request in remaining} | set(failed))
-            log.error(
-                "Pending privacy deletion could not be completed at startup for "
-                "%d user(s); their activity remains paused while unaffected users "
-                "continue normally: %s",
-                len(affected),
-                ", ".join(affected),
-            )
-
     async def on_guild_join(self, guild: discord.Guild) -> None:
         if guild.id in self.active_guilds():
             log.info("Joined active guild %s (%s)", guild.id, getattr(guild, "name", "?"))
@@ -1330,12 +610,7 @@ class KimiApplication:
         await self.work_cancellation.handle_stop_message(message)
 
     async def on_message(self, message: discord.Message) -> None:
-        if (
-            not self.gateway_ready
-            or self._startup_error is not None
-            or self._closed
-            or self.context_manager is None
-        ):
+        if not self.gateway_interactions_ready():
             return
         active_guilds = self.active_guilds()
         if not is_eligible_to_respond(
@@ -1424,7 +699,7 @@ class KimiApplication:
                 message.author.id,
             )
         except asyncio.CancelledError:
-            if self._closed:
+            if self.closed:
                 raise
             log.info("Stopped active response for user %s", message.author.id)
 
@@ -1434,7 +709,7 @@ class KimiApplication:
         # provider or SQLite (resolve_conversation_for_message persists a
         # conversations row). On accept, the gate re-dispatches this message
         # through on_message.
-        if self.consent_gate is not None and await self.consent_gate.maybe_prompt(message):
+        if await self.consent_gate.maybe_prompt(message):
             return
 
         resolved: ResolvedConversation | None
@@ -1794,22 +1069,22 @@ class KimiApplication:
     def _resolved_chat_model_name(self, scope: Scope, *, images: bool = False) -> str:
         return chat_model_name_for_scope(self.provider_manager, scope, images=images)
 
-    def _usage_store(self) -> UsageStore:
-        if self.usage_store is None:
-            self.usage_store = UsageStore(self.database)
-        return self.usage_store
-
-    def _make_turn_dependency_factory(self) -> TurnDependencyFactory:
-        assert self.context_manager is not None
+    def _make_turn_dependency_factory(
+        self,
+        *,
+        context_manager: ContextManager | None = None,
+    ) -> TurnDependencyFactory:
+        if context_manager is None:
+            context_manager = self.context_manager
         return TurnDependencyFactory(
             TurnEntryServices(
                 settings=self.settings,
                 bot_user=self.bot.user,
                 provider_manager=self.provider_manager,
-                context_manager=self.context_manager,
+                context_manager=context_manager,
                 registry=self.registry,
                 preference_store=self.preference_store,
-                usage_store=self._usage_store(),
+                usage_store=self.usage_store,
                 attachment_store=self.tools.attachment_store,
                 workspace_dir=self.tools.workspace_dir,
                 workspace_manager=self.tools.workspace_manager,
@@ -1829,21 +1104,26 @@ class KimiApplication:
         self,
         *,
         handle_turn_hook: HandleTurn | None = None,
+        conversation_store: ConversationStore | None = None,
+        context_manager: ContextManager | None = None,
     ) -> ForegroundTurnRunner:
-        assert self.conversation_store is not None
+        if conversation_store is None:
+            conversation_store = self.conversation_store
         if handle_turn_hook is None:
             return ForegroundTurnRunner(
                 settings=self.settings,
-                conversation_store=self.conversation_store,
-                dependency_factory=self._make_turn_dependency_factory(),
+                conversation_store=conversation_store,
+                dependency_factory=self._make_turn_dependency_factory(
+                    context_manager=context_manager
+                ),
                 active_operations=self.active_operations,
                 privacy_barrier=self.privacy_barrier,
                 workspace_locks=self.tools.workspace_locks,
             )
         return ForegroundTurnRunner(
             settings=self.settings,
-            conversation_store=self.conversation_store,
-            dependency_factory=self._make_turn_dependency_factory(),
+            conversation_store=conversation_store,
+            dependency_factory=self._make_turn_dependency_factory(context_manager=context_manager),
             active_operations=self.active_operations,
             privacy_barrier=self.privacy_barrier,
             workspace_locks=self.tools.workspace_locks,
@@ -1986,17 +1266,29 @@ def build_app(settings: Settings) -> KimiApplication:
         path=settings.database_path,
         encryption_key=settings.database_encryption_key.get_secret_value() or None,
     )
+    repositories = AppRepositories(
+        conversation_store=ConversationStore(database),
+        preference_store=PreferenceStore(database),
+        blocked_user_store=BlockedUserStore(database),
+        model_selection_store=ModelSelectionStore(database),
+        image_distillation_store=ImageDistillationStore(database),
+        usage_store=UsageStore(database),
+        video_session_store=VideoSessionStore(database),
+        coding_task_store=CodingTaskStore(database),
+        privacy_deletion_store=PrivacyDeletionRequestStore(database),
+        user_memory_bank_state_store=UserMemoryBankStateStore(database),
+    )
     application = KimiApplication(
         settings=settings,
         inherited_settings_values=inherited_settings_values,
         bot=bot,
-        trust_resolver=trust_resolver,
+        _trust_resolver=trust_resolver,
         discord_gateway=gateway,
-        provider_manager=provider_manager,
-        memory_manager=memory_manager,
-        moderation_service=moderation_service,
+        _provider_manager=provider_manager,
+        _memory_manager=memory_manager,
+        _moderation_service=moderation_service,
         learn_log=learn_log,
-        tools=build_runtime_tools(
+        _tools=build_runtime_tools(
             settings,
             gateway,
             provider_manager,
@@ -2014,8 +1306,170 @@ def build_app(settings: Settings) -> KimiApplication:
                 ctx, thread_id
             ),
         ),
-        database=database,
+        _database=database,
+        _repository_bundle=repositories,
     )
+    guild_activation = GuildActivationService(
+        config=GuildActivationConfig(
+            config_dir=Path(settings.config_dir).resolve(),
+            allowed_guilds=frozenset(settings.allowed_guilds),
+            refresh_seconds=GUILD_ACTIVATION_REFRESH_SECONDS,
+        ),
+        bot=bot,
+        module_manager=application.tools.module_manager,
+        activation_parser=server_setup_activation,
+    )
+    application._guild_activation = guild_activation
+    lifecycle_ref: ApplicationLifecycle | None = None
+    shutdown_signal = _DeferredShutdownSignal(lambda: lifecycle_ref)
+    command_sync = DiscordCommandSync(
+        tree=bot.tree,
+        get_guild_sync_port=lambda: (
+            lifecycle_ref.module_interaction_runtime if lifecycle_ref is not None else None
+        ),
+        config=CommandSyncConfig(
+            drain_timeout_seconds=READY_EVENT_DRAIN_SECONDS,
+        ),
+        shutdown=shutdown_signal,
+    )
+    application._command_sync = command_sync
+    context_manager = ContextManager(store=repositories.conversation_store)
+    turn_runner = application._make_foreground_turn_runner(
+        conversation_store=repositories.conversation_store,
+        context_manager=context_manager,
+    )
+    consent_gate = PrivacyConsentGate(
+        enabled=settings.privacy_consent_enabled,
+        title=settings.privacy_consent_title,
+        text=settings.privacy_consent_text,
+        timeout=settings.privacy_consent_timeout,
+        preference_store=repositories.preference_store,
+        redispatch=application.on_message,
+        is_available=application.gateway_interactions_ready,
+    )
+    user_app_consent = UserAppConsentPrompter(
+        config=UserAppConsentConfig(
+            enabled=settings.privacy_consent_enabled,
+            title=settings.privacy_consent_title,
+            text=settings.privacy_consent_text,
+            timeout=settings.privacy_consent_timeout,
+        ),
+        preference_store=repositories.preference_store,
+    )
+    coding_task_controller = CodingTaskController(
+        settings=settings,
+        store=repositories.coding_task_store,
+        usage_store=repositories.usage_store,
+        provider_manager=provider_manager,
+        source_registry=application.registry,
+        tools=application.tools,
+        llm_semaphore=application.llm_semaphore,
+        privacy_barrier=application.privacy_barrier,
+        user_blocked=application._user_is_blocked,
+        delivery=CodingDelivery(
+            bot=bot,
+            store=repositories.coding_task_store,
+            conversation_store=repositories.conversation_store,
+            discord_gateway=gateway,
+            workspace_locks=application.tools.workspace_locks,
+            root_locks=application.root_locks,
+            threads=application.threads,
+            moderation_service=moderation_service,
+            config=CodingDeliveryConfig(
+                thread_handoff_enabled=settings.thread_handoff_enabled,
+                thread_auto_handoff_enabled=settings.thread_auto_handoff_enabled,
+                bot_name=settings.bot_name,
+            ),
+            strip_message_invocation=application._strip_message_invocation,
+        ),
+    )
+    work_cancellation: WorkCancellationCoordinator | None = None
+
+    async def cancel_personal_work(
+        *,
+        user_id: str,
+        channel_id: str,
+        root_key: str,
+    ) -> bool:
+        coordinator = work_cancellation
+        if coordinator is None:
+            raise RuntimeError("Work cancellation coordinator is not initialized")
+        summary = await coordinator.cancel_for_reset(
+            user_id=user_id,
+            scope=WorkScope(channel_id=channel_id, root_key=root_key),
+        )
+        return summary.clean
+
+    user_app_chat = UserAppChatController(
+        config=UserAppChatConfig(
+            timeout_seconds=settings.user_app_chat_timeout_seconds,
+            dm_enabled=settings.user_app_dm_enabled,
+        ),
+        bot=bot,
+        access=application.user_app_access,
+        user_blocked=application._user_is_blocked,
+        consent=user_app_consent,
+        conversation_store=repositories.conversation_store,
+        active_operations=application.active_operations,
+        privacy_barrier=application.privacy_barrier,
+        turn_admission=application.turn_admission,
+        root_locks=application.root_locks,
+        turn_runner=turn_runner,
+        shutdown=shutdown_signal,
+        cancel_personal_work=cancel_personal_work,
+        turn_entry_hooks=_turn_entry_hooks(),
+    )
+    work_cancellation = WorkCancellationCoordinator(
+        bot=bot,
+        consent_gate=consent_gate,
+        personal_requests=user_app_chat,
+        active_operations=application.active_operations,
+        coding_tasks=coding_task_controller,
+        trust_resolver=trust_resolver,
+        discord_gateway=gateway,
+        conversation_resolver=application.resolve_conversation_for_message,
+        response_sender=application.send_response,
+        strip_message_invocation=application._strip_message_invocation,
+        cleanup_wait_seconds=settings.coding_stop_cleanup_wait_seconds,
+        global_staff_ids=frozenset(settings.staff_ids),
+    )
+    lifecycle = ApplicationLifecycle(
+        LifecycleResources(
+            settings=settings,
+            bot=bot,
+            database=database,
+            provider_manager=provider_manager,
+            memory_manager=memory_manager,
+            tools=application.tools,
+            repositories=repositories,
+            turn_admission=application.turn_admission,
+            active_operations=application.active_operations,
+            consent_gate=consent_gate,
+            privacy_barrier=application.privacy_barrier,
+            moderation_service=moderation_service,
+            guild_activation=guild_activation,
+            command_sync=command_sync,
+            coding_tasks=coding_task_controller,
+            module_manager=application.tools.module_manager,
+            trust_resolver=trust_resolver,
+            context_manager=context_manager,
+            turn_runner=turn_runner,
+            user_app_consent=user_app_consent,
+            user_app_chat=user_app_chat,
+            work_cancellation=work_cancellation,
+            callbacks=LifecycleCallbacks(
+                gateway_interactions_ready=application.gateway_interactions_ready,
+                active_guilds=application.active_guilds,
+                refresh_guild_activation=application.refresh_guild_activation,
+                lock_user_conversations=application._lock_user_conversation_turns,
+                run_learn=application._run_learn_turn,
+                is_user_blocked=application._user_is_blocked,
+                model_log_label=application._model_log_label,
+            ),
+        )
+    )
+    lifecycle_ref = lifecycle
+    application.lifecycle = lifecycle
     bot._agent_application = application
     bot.event(application.on_ready)
     bot.event(application.on_disconnect)

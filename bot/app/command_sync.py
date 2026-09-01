@@ -6,11 +6,14 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from discord import app_commands
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.lifecycle import ShutdownSignal
 
 
 class GuildCommandSyncPort(Protocol):
@@ -19,11 +22,6 @@ class GuildCommandSyncPort(Protocol):
     async def pause_sync(self) -> None: ...
 
     async def resume_sync(self, *, is_current: Callable[[], bool]) -> None: ...
-
-
-class ShutdownSignal(Protocol):
-    @property
-    def closed(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)

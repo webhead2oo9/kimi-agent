@@ -15,7 +15,7 @@ import tempfile
 import zlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,12 +27,24 @@ from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
 from app.command_sync import CommandSyncSnapshot
+from app.lifecycle import AppRepositories, LifecycleSnapshot
 from app.root_locks import RootLockSnapshot
 from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
 from providers.types import ProviderCapability
+from storage.blocked_users import BlockedUserStore
+from storage.coding_tasks import CodingTaskStore
+from storage.conversations import ConversationStore
+from storage.db import Database
+from storage.image_distillations import ImageDistillationStore
+from storage.memory_banks import UserMemoryBankStateStore
+from storage.model_selection import ModelSelectionStore
+from storage.preferences import PreferenceStore
+from storage.privacy import PrivacyDeletionRequestStore
+from storage.usage import UsageStore
+from storage.video_sessions import VideoSessionStore
 from tools.registry import MessageContext
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -68,68 +80,86 @@ class NobodyBlocked:
         return False
 
 
-@dataclass(frozen=True, slots=True)
-class LifecycleSnapshot:
-    """Read-only lifecycle state until ``app.lifecycle`` owns it."""
-
-    closed: bool
-    close_complete: bool
-    startup_error: Exception | None
-    guild_activation_refresh_task: Any | None
-    video_session_sweeper_task: Any | None
-    workspace_sweeper_task: Any | None
-    attachment_sweeper_task: Any | None
-    module_event_publisher: Any | None
-    module_interaction_runtime: Any | None
-
-
 class LifecycleProbe:
-    """Transitional test seam for the future ``app.lifecycle`` module."""
+    """Test seam for the extracted ``app.lifecycle`` module."""
 
     def __init__(self, app: Any) -> None:
         self._app = app
 
     def snapshot(self) -> LifecycleSnapshot:
-        return LifecycleSnapshot(
-            closed=self._app._closed,
-            close_complete=self._app._close_complete.is_set(),
-            startup_error=self._app._startup_error,
-            guild_activation_refresh_task=self._app.guild_activation.refresh_task,
-            video_session_sweeper_task=self._app._video_session_sweeper_task,
-            workspace_sweeper_task=self._app._workspace_sweeper_task,
-            attachment_sweeper_task=self._app._attachment_sweeper_task,
-            module_event_publisher=self._app._module_event_publisher,
-            module_interaction_runtime=self._app._module_interaction_runtime,
-        )
+        return self._app.lifecycle.snapshot()
 
     async def first_init_core(self) -> None:
-        await self._app._first_init_core()
+        await self._app.lifecycle.initialize()
 
     async def close_resources(self) -> None:
-        await self._app._close_resources()
+        await self._app.lifecycle.close()
 
     async def resume_pending_privacy_deletions(self, *, auto_retain_watermarks: Any) -> None:
-        await self._app._resume_pending_privacy_deletions(
+        await self._app.lifecycle.resume_pending_privacy_deletions(
             auto_retain_watermarks=auto_retain_watermarks
         )
 
     def set_closed(self, value: bool = True) -> None:
-        self._app._closed = value
+        self._app.lifecycle.set_closed_for_test(value)
 
     def set_startup_error(self, error: Exception | None) -> None:
-        self._app._startup_error = error
+        self._app.lifecycle.set_startup_error_for_test(error)
+
+    def set_db_initialized(self, value: bool = True) -> None:
+        self._app.lifecycle.set_db_initialized_for_test(value)
+
+    def set_gateway_ready(self, value: bool = True) -> None:
+        self._app.lifecycle.set_gateway_ready_for_test(value)
+
+    def set_workspace_sweeper_started(self, value: bool = True) -> None:
+        self._app.lifecycle.set_workspace_sweeper_started_for_test(value)
+
+    def set_video_session_sweeper_started(self, value: bool = True) -> None:
+        self._app.lifecycle.set_video_session_sweeper_started_for_test(value)
 
     def set_guild_activation_refresh_task(self, task: Any | None) -> None:
-        self._app.guild_activation._refresh_task = task
+        self._app.lifecycle.set_guild_activation_refresh_task_for_test(task)
 
     def set_video_session_sweeper_task(self, task: Any | None) -> None:
-        self._app._video_session_sweeper_task = task
+        self._app.lifecycle.set_video_session_sweeper_task_for_test(task)
 
     def set_module_event_publisher(self, publisher: Any | None) -> None:
-        self._app._module_event_publisher = publisher
+        self._app.lifecycle.set_module_event_publisher_for_test(publisher)
 
     def set_module_interaction_runtime(self, runtime: Any | None) -> None:
-        self._app._module_interaction_runtime = runtime
+        self._app.lifecycle.set_module_interaction_runtime_for_test(runtime)
+
+
+def replace_app_repositories(app: Any, **changes: Any) -> None:
+    """Substitute stores in the frozen ``app.lifecycle.AppRepositories`` bundle."""
+
+    app.lifecycle.replace_repositories_for_test(replace(app.repositories, **changes))
+
+
+def replace_app_database(app: Any, database: Database) -> None:
+    """Rebuild the complete ``app.lifecycle.AppRepositories`` bundle for one test DB."""
+
+    repositories = AppRepositories(
+        conversation_store=ConversationStore(database),
+        preference_store=PreferenceStore(database),
+        blocked_user_store=BlockedUserStore(database),
+        model_selection_store=ModelSelectionStore(database),
+        image_distillation_store=ImageDistillationStore(database),
+        usage_store=UsageStore(database),
+        video_session_store=VideoSessionStore(database),
+        coding_task_store=CodingTaskStore(database),
+        privacy_deletion_store=PrivacyDeletionRequestStore(database),
+        user_memory_bank_state_store=UserMemoryBankStateStore(database),
+    )
+    replace_lifecycle_resources(app, database=database)
+    app.lifecycle.replace_repositories_for_test(repositories)
+
+
+def replace_lifecycle_resources(app: Any, **changes: Any) -> None:
+    """Substitute collaborators in the frozen ``app.lifecycle.LifecycleResources`` bundle."""
+
+    app.lifecycle.replace_resources_for_test(**changes)
 
 
 class CommandSyncProbe:
@@ -203,9 +233,9 @@ async def remove_processing_reaction(app: Any, *args: Any, **kwargs: Any) -> Any
 def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> None:
     """Replace one application's foreground provider seam for a focused test."""
 
-    app.turn_runner = app._make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
-    if hasattr(app, "user_app_chat"):
-        app.user_app_chat._turn_runner = app.turn_runner
+    runner = app._make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
+    replace_lifecycle_resources(app, turn_runner=runner)
+    app.user_app_chat._turn_runner = runner
 
 
 PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"

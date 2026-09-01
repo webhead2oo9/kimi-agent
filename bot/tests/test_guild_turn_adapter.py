@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -315,6 +316,33 @@ async def test_thread_and_coding_handoffs_keep_prepare_send_release_order(
     assert result.thread_request is thread_request
     assert result.thread_close_request is close_request
     assert result.terminal_handoff is terminal_handoff
+
+
+@pytest.mark.asyncio
+async def test_thread_cleanup_failure_preserves_delivered_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel = FakeChannel(100)
+    app = FakeCollaborators(channel)
+    close_request = ThreadCloseRequest(thread_id=200)
+
+    async def fail_close(_channel: object, _request: ThreadCloseRequest) -> None:
+        app.events.append("close-thread")
+        raise RuntimeError("thread state deletion failed")
+
+    monkeypatch.setattr(app.threads, "close_handoff_thread", fail_close)
+    caplog.set_level(logging.ERROR, logger="app.guild_turn_adapter")
+
+    receipt = await _adapter(app, FakeMessage(channel)).deliver(
+        TurnResult(response_text="answer", thread_close_request=close_request),
+        conversation_id=9,
+    )
+
+    assert [reply.content for reply in receipt.replies] == ["answer"]
+    assert receipt.delivery_failed is False
+    assert app.events.index("send") < app.events.index("close-thread")
+    assert "Could not close handoff thread 200" in caplog.text
 
 
 @pytest.mark.asyncio

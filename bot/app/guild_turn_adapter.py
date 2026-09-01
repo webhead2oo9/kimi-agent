@@ -304,10 +304,19 @@ class GuildMessageTurnAdapter:
                 else str(sent_channel.id)
             )
             if delivery_result.thread_close_request is not None:
-                await collaborators.threads.close_handoff_thread(
-                    target_channel,
-                    delivery_result.thread_close_request,
-                )
+                try:
+                    await collaborators.threads.close_handoff_thread(
+                        target_channel,
+                        delivery_result.thread_close_request,
+                    )
+                except Exception:
+                    # The reply is already visible. Preserve its receipt so the
+                    # transcript matches Discord even if thread cleanup fails.
+                    log.exception(
+                        "Could not close handoff thread %s after delivering conversation %s",
+                        delivery_result.thread_close_request.thread_id,
+                        conversation_id,
+                    )
             partial_delivery_failed = bool(getattr(sent_messages, "delivery_failed", False))
             delivery_failed = bool(
                 expected_delivery

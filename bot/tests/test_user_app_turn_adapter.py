@@ -166,6 +166,47 @@ async def test_partial_public_delivery_returns_delivered_prefix_and_private_warn
 
 
 @pytest.mark.asyncio
+async def test_partial_private_delivery_preserves_visible_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interaction = FakeInteraction()
+    status_calls: list[str] = []
+
+    async def send_partial(
+        _interaction: object,
+        _content: str,
+        **kwargs: object,
+    ) -> None:
+        callback = cast(
+            Callable[[str], Awaitable[None]],
+            kwargs["on_primary_delivered"],
+        )
+        await callback("delivered prefix")
+        response = SimpleNamespace(status=500, reason="Server Error")
+        raise discord.HTTPException(response, "followup failed")  # type: ignore[arg-type]
+
+    async def replace_original(*_args: object, **_kwargs: object) -> None:
+        status_calls.append("replaced")
+
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", send_partial)
+    monkeypatch.setattr(user_app_turn_adapter, "send_interaction_status", replace_original)
+
+    receipt = await _adapter(interaction).deliver(
+        TurnResult(response_text="full answer"),
+        conversation_id=9,
+    )
+
+    assert receipt.delivery_failed is True
+    assert [reply.content for reply in receipt.replies] == ["delivered prefix"]
+    assert status_calls == []
+    assert interaction.edits == []
+    assert len(interaction.followup.messages) == 1
+    warning = interaction.followup.messages[0]
+    assert warning["ephemeral"] is True
+    assert warning["content"] == "I delivered part of the response, but couldn't send the rest."
+
+
+@pytest.mark.asyncio
 async def test_embed_only_delivery_receipt_uses_transcript_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -68,7 +68,12 @@ from app.foreground_turn import (
     TurnConversationSpec,
     deliver_with_workspace_guard,
 )
-from app.guild_turn_adapter import GuildMessageTurnAdapter
+from app.guild_turn_adapter import (
+    CallbackDiscordResponseSender,
+    GuildMessageTurnAdapter,
+    GuildTurnCollaborators,
+    GuildTurnDeliveryConfig,
+)
 from app.guild_activation import GuildActivationConfig, GuildActivationService
 from app.lifecycle import (
     AppRepositories,
@@ -121,10 +126,7 @@ from app.learn_log import LearnLogFeed, build_learn_log_feed
 from app.learn_turn import run_learn_turn
 from tools.learn import LearnTarget
 from storage.blocked_users import BlockedUserStore
-from storage.coding_tasks import (
-    CodingTask,
-    CodingTaskStore,
-)
+from storage.coding_tasks import CodingTaskStore
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
 from storage.conversations import ConversationStore
@@ -515,32 +517,6 @@ class KimiApplication:
 
     async def on_ready(self) -> None:
         await self.lifecycle.ready()
-
-    async def _publish_coding_task(
-        self,
-        task: CodingTask,
-        context: Any | None,
-    ) -> None:
-        await self.lifecycle.resources.coding_tasks.delivery.publish(task, context)
-
-    async def _delete_coding_status_message(
-        self,
-        channel: discord.TextChannel | discord.Thread,
-        task: CodingTask,
-        marker: str,
-        *,
-        message: discord.Message | None = None,
-    ) -> None:
-        await self.lifecycle.resources.coding_tasks.delete_status_message(
-            channel,
-            task,
-            marker,
-            message=message,
-        )
-
-    @staticmethod
-    def _coding_task_marker(task_id: str) -> str:
-        return CodingDelivery.task_marker(task_id)
 
     async def _user_is_blocked(self, user_id: str) -> bool:
         """The one block answer every entry point asks before doing anything.
@@ -939,7 +915,7 @@ class KimiApplication:
             extra_blocked_tools=self.threads._thread_state_blocked_tools(message),
         )
         adapter = GuildMessageTurnAdapter(
-            application=self,
+            collaborators=self.guild_turn_collaborators(),
             message=message,
             context_channel_id=context_channel_id,
             personal_chat=personal_dm,
@@ -965,6 +941,26 @@ class KimiApplication:
 
         finally:
             await active_registration.__aexit__(None, None, None)
+
+    def guild_turn_collaborators(self) -> GuildTurnCollaborators:
+        """Compose the post-initialization capabilities used for guild delivery."""
+
+        resources = self.lifecycle.resources
+        coding = self.coding_tasks
+        return GuildTurnCollaborators(
+            config=GuildTurnDeliveryConfig(
+                thread_auto_handoff_enabled=self.settings.thread_auto_handoff_enabled,
+                thread_handoff_enabled=self.settings.thread_handoff_enabled,
+                bot_name=self.settings.bot_name,
+            ),
+            gateway=self.discord_gateway,
+            threads=self.threads,
+            thread_handoff=self.thread_handoff,
+            coding=coding if coding is not None else resources.coding_tasks,
+            responses=CallbackDiscordResponseSender(self.send_response),
+            bot_user=lambda: self.bot.user,
+            strip_invocation=self._strip_message_invocation,
+        )
 
     async def send_response(
         self,

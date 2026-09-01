@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -9,7 +10,14 @@ import pytest
 
 from agent.turn import TurnPreparationInput, TurnResult
 from app import guild_turn_adapter
-from app.guild_turn_adapter import GuildMessageTurnAdapter
+from app import runtime as app_runtime
+from app.guild_turn_adapter import (
+    CallbackDiscordResponseSender,
+    GuildMessageTurnAdapter,
+    GuildTurnCollaborators,
+    GuildTurnDeliveryConfig,
+)
+from tests.helpers import StubProviderManager, make_settings
 from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
 
@@ -86,10 +94,10 @@ class FakeThreads:
         self.pointers: list[tuple[object, object]] = []
         self.discarded: list[object] = []
 
-    def _thread_handoff_creation_allowed(self, _message: object) -> bool:
+    def thread_handoff_creation_allowed(self, _message: object) -> bool:
         return False
 
-    async def _create_handoff_thread(
+    async def create_handoff_thread(
         self,
         message: object,
         request: ThreadRequest,
@@ -99,7 +107,7 @@ class FakeThreads:
         self.created.append((message, request, conversation_id))
         return self.created_thread
 
-    async def _close_handoff_thread(
+    async def close_handoff_thread(
         self,
         channel: object,
         request: ThreadCloseRequest,
@@ -107,14 +115,14 @@ class FakeThreads:
         self.events.append("close-thread")
         self.closed.append((channel, request))
 
-    async def _send_cross_channel_pointer(
+    async def send_cross_channel_pointer(
         self,
         message: object,
         thread: object,
     ) -> None:
         self.pointers.append((message, thread))
 
-    async def _discard_cross_channel_thread(self, thread: object) -> None:
+    async def discard_cross_channel_thread(self, thread: object) -> None:
         self.discarded.append(thread)
 
 
@@ -158,8 +166,17 @@ class FakeCodingTasks:
         self.finalized.append(task_id)
         return True
 
+    async def failed_handoff_task(self, _task_id: str) -> None:
+        return None
 
-class FakeApplication:
+    async def delete_status_message(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def task_marker(self, task_id: str) -> str:
+        return task_id
+
+
+class FakeCollaborators:
     def __init__(
         self,
         channel: FakeChannel,
@@ -168,17 +185,16 @@ class FakeApplication:
         sent_contents: tuple[str, ...] = ("answer",),
     ) -> None:
         self.events: list[str] = []
-        self.settings = SimpleNamespace(
+        self.config = GuildTurnDeliveryConfig(
             thread_auto_handoff_enabled=False,
             thread_handoff_enabled=True,
             bot_name="Kimi",
         )
-        self.bot = SimpleNamespace(user=object())
+        self.bot_user = object()
         self.discord_gateway = FakeGateway(self.events)
         self.threads = FakeThreads(self.events, created_thread=created_thread)
         self.thread_handoff = FakeThreadHandoff()
-        self.coding_tasks: FakeCodingTasks | None = None
-        self.coding_task_store = None
+        self.coding = FakeCodingTasks(self.events)
         self.sent_contents = sent_contents
         self.send_calls: list[tuple[object, str, dict[str, object]]] = []
         self.channel = channel
@@ -187,7 +203,7 @@ class FakeApplication:
         _ = bot_user
         return content
 
-    async def send_response(
+    async def send(
         self,
         channel: object,
         content: str,
@@ -200,13 +216,25 @@ class FakeApplication:
             for index, chunk in enumerate(self.sent_contents)
         ]
 
+    def bundle(self) -> GuildTurnCollaborators:
+        return GuildTurnCollaborators(
+            config=self.config,
+            gateway=cast(Any, self.discord_gateway),
+            threads=cast(Any, self.threads),
+            thread_handoff=cast(Any, self.thread_handoff),
+            coding=cast(Any, self.coding),
+            responses=cast(Any, self),
+            bot_user=cast(Any, lambda: self.bot_user),
+            strip_invocation=cast(Any, self._strip_message_invocation),
+        )
+
 
 def _adapter(
-    app: FakeApplication,
+    app: FakeCollaborators,
     message: FakeMessage,
 ) -> GuildMessageTurnAdapter:
     return GuildMessageTurnAdapter(
-        application=cast(Any, app),
+        collaborators=app.bundle(),
         message=cast(discord.Message, message),
         context_channel_id=str(message.channel.id),
         personal_chat=False,
@@ -223,7 +251,7 @@ async def test_receipt_preserves_sent_chunks_and_actual_destination(
     thread = FakeThread(200, parent_id=100) if in_thread else None
     if thread is not None:
         monkeypatch.setattr(guild_turn_adapter.discord, "Thread", FakeThread)
-    app = FakeApplication(
+    app = FakeCollaborators(
         channel,
         created_thread=thread,
         sent_contents=("first `(1/2)`", "second"),
@@ -256,9 +284,9 @@ async def test_thread_and_coding_handoffs_keep_prepare_send_release_order(
     monkeypatch.setattr(guild_turn_adapter.discord, "Thread", FakeThread)
     channel = FakeChannel(100)
     thread = FakeThread(200, parent_id=100)
-    app = FakeApplication(channel, created_thread=thread)
+    app = FakeCollaborators(channel, created_thread=thread)
     coding = FakeCodingTasks(app.events)
-    app.coding_tasks = coding
+    app.coding = coding
     message = FakeMessage(channel)
     thread_request = ThreadRequest(name="coding")
     close_request = ThreadCloseRequest(thread_id=200)
@@ -292,7 +320,7 @@ async def test_thread_and_coding_handoffs_keep_prepare_send_release_order(
 @pytest.mark.asyncio
 async def test_delivery_failure_is_explicit_when_no_message_was_sent() -> None:
     channel = FakeChannel(100)
-    app = FakeApplication(channel, sent_contents=())
+    app = FakeCollaborators(channel, sent_contents=())
     receipt = await _adapter(app, FakeMessage(channel)).deliver(
         TurnResult(response_text="answer"),
         conversation_id=9,
@@ -305,7 +333,7 @@ async def test_delivery_failure_is_explicit_when_no_message_was_sent() -> None:
 
 def test_bind_turn_source_scopes_gateway_binding() -> None:
     channel = FakeChannel(100)
-    app = FakeApplication(channel)
+    app = FakeCollaborators(channel)
     message = FakeMessage(channel)
     source_message = object()
     source = cast(
@@ -326,5 +354,44 @@ def test_bind_turn_source_scopes_gateway_binding() -> None:
 
 
 def test_guild_activity_finishes_after_delivery() -> None:
-    app = FakeApplication(FakeChannel(100))
+    app = FakeCollaborators(FakeChannel(100))
     assert _adapter(app, FakeMessage(app.channel)).activity_must_finish_before_delivery is False
+
+
+@pytest.mark.asyncio
+async def test_build_app_populates_guild_turn_collaborators_after_init(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
+    )
+    app = app_runtime.build_app(
+        make_settings(
+            config_dir=str(tmp_path),
+            database_path=str(tmp_path / "guild-turn.db"),
+            model_api_key="test-key",
+        )
+    )
+
+    try:
+        await app.lifecycle.initialize()
+        collaborators = app.guild_turn_collaborators()
+
+        assert collaborators.config == GuildTurnDeliveryConfig(
+            thread_auto_handoff_enabled=app.settings.thread_auto_handoff_enabled,
+            thread_handoff_enabled=app.settings.thread_handoff_enabled,
+            bot_name=app.settings.bot_name,
+        )
+        assert collaborators.gateway is app.discord_gateway
+        assert collaborators.threads is app.threads
+        assert collaborators.thread_handoff is app.thread_handoff
+        assert collaborators.thread_handoff is not None
+        assert collaborators.coding is app.lifecycle.resources.coding_tasks
+        assert isinstance(collaborators.responses, CallbackDiscordResponseSender)
+        assert callable(collaborators.bot_user)
+        assert callable(collaborators.strip_invocation)
+    finally:
+        await app.close()

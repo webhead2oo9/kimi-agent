@@ -4,7 +4,8 @@ import logging
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import Protocol
 
 import discord
 
@@ -18,22 +19,112 @@ from app.foreground_turn import (
     TurnDeliveryReceipt,
     TurnSurfaceOutcome,
 )
-from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION
+from app.coding_delivery import CodingHandoffControl, MessageInvocationStripper
+from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
+from app.threads import ThreadHandoffManager
 from config.fragments.channel_pins import load_channel_auto_thread
+from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import DiscordActivityReporter
+from tools.embeds import EmbedSpec
 from tools.embeds import embed_transcript_summary
-
-if TYPE_CHECKING:
-    from app.runtime import KimiApplication
+from workspace import WorkspaceKey
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class GuildTurnDeliveryConfig:
+    thread_auto_handoff_enabled: bool
+    thread_handoff_enabled: bool
+    bot_name: str
+
+
+class BotUserProvider(Protocol):
+    def __call__(self) -> discord.ClientUser | None: ...
+
+
+class DiscordResponseCallback(Protocol):
+    async def __call__(
+        self,
+        channel: discord.abc.Messageable,
+        content: str,
+        /,
+        *,
+        reference: discord.Message | None = None,
+        output_files: list[str] | None = None,
+        output_file_descriptions: dict[str, str] | None = None,
+        allowed_file_roots: list[str | Path] | None = None,
+        embed: EmbedSpec | None = None,
+        mention_author: bool = False,
+        workspace_key: WorkspaceKey | None = None,
+    ) -> list[discord.Message]: ...
+
+
+class DiscordResponseSender(Protocol):
+    async def send(
+        self,
+        channel: discord.abc.Messageable,
+        content: str,
+        /,
+        *,
+        reference: discord.Message | None = None,
+        output_files: list[str] | None = None,
+        output_file_descriptions: dict[str, str] | None = None,
+        allowed_file_roots: list[str | Path] | None = None,
+        embed: EmbedSpec | None = None,
+        mention_author: bool = False,
+        workspace_key: WorkspaceKey | None = None,
+    ) -> list[discord.Message]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CallbackDiscordResponseSender:
+    callback: DiscordResponseCallback
+
+    async def send(
+        self,
+        channel: discord.abc.Messageable,
+        content: str,
+        /,
+        *,
+        reference: discord.Message | None = None,
+        output_files: list[str] | None = None,
+        output_file_descriptions: dict[str, str] | None = None,
+        allowed_file_roots: list[str | Path] | None = None,
+        embed: EmbedSpec | None = None,
+        mention_author: bool = False,
+        workspace_key: WorkspaceKey | None = None,
+    ) -> list[discord.Message]:
+        return await self.callback(
+            channel,
+            content,
+            reference=reference,
+            output_files=output_files,
+            output_file_descriptions=output_file_descriptions,
+            allowed_file_roots=allowed_file_roots,
+            embed=embed,
+            mention_author=mention_author,
+            workspace_key=workspace_key,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GuildTurnCollaborators:
+    config: GuildTurnDeliveryConfig
+    gateway: DiscordGateway
+    threads: ThreadHandoffBoundary
+    thread_handoff: ThreadHandoffManager | None
+    coding: CodingHandoffControl
+    responses: DiscordResponseSender
+    bot_user: BotUserProvider
+    strip_invocation: MessageInvocationStripper
 
 
 @dataclass(frozen=True, slots=True)
 class GuildMessageTurnAdapter:
     """Adapt a gateway message to guild and personal-DM turn delivery."""
 
-    application: KimiApplication
+    collaborators: GuildTurnCollaborators
     message: discord.Message
     context_channel_id: str
     personal_chat: bool
@@ -59,7 +150,7 @@ class GuildMessageTurnAdapter:
     ) -> AbstractContextManager[None]:
         @contextmanager
         def bound_source() -> Iterator[None]:
-            source_binding = self.application.discord_gateway.bind_turn_source(
+            source_binding = self.collaborators.gateway.bind_turn_source(
                 source.conversation_key,
                 source.trigger_discord_message_id,
                 source.source_message,
@@ -67,7 +158,7 @@ class GuildMessageTurnAdapter:
             try:
                 yield
             finally:
-                self.application.discord_gateway.unbind_turn_source(source_binding)
+                self.collaborators.gateway.unbind_turn_source(source_binding)
 
         return bound_source()
 
@@ -77,7 +168,7 @@ class GuildMessageTurnAdapter:
         *,
         conversation_id: int,
     ) -> TurnDeliveryReceipt:
-        app = self.application
+        collaborators = self.collaborators
         message = self.message
         target_channel: discord.abc.Messageable = message.channel
         original_target_channel = target_channel
@@ -101,25 +192,25 @@ class GuildMessageTurnAdapter:
                 thread_request = None
             elif (
                 thread_request is None
-                and app.settings.thread_auto_handoff_enabled
-                and app.settings.thread_handoff_enabled
-                and app.thread_handoff is not None
+                and collaborators.config.thread_auto_handoff_enabled
+                and collaborators.config.thread_handoff_enabled
+                and collaborators.thread_handoff is not None
                 and not isinstance(message.channel, discord.Thread)
             ):
                 channel_id = str(message.channel.id)
                 auto_cfg = (
                     load_channel_auto_thread(channel_id)
-                    if app.threads._thread_handoff_creation_allowed(message)
+                    if collaborators.threads.thread_handoff_creation_allowed(message)
                     else None
                 )
                 if auto_cfg is not None:
                     thread_request = build_auto_handoff_request(
                         response_text=delivery_result.response_text,
-                        question_text=app._strip_message_invocation(
+                        question_text=collaborators.strip_invocation(
                             message.content,
-                            bot_user=app.bot.user,
+                            bot_user=collaborators.bot_user(),
                         ),
-                        bot_name=app.settings.bot_name,
+                        bot_name=collaborators.config.bot_name,
                         min_lines=auto_cfg.min_lines,
                         min_chars=auto_cfg.min_chars,
                         always=auto_cfg.always,
@@ -128,7 +219,7 @@ class GuildMessageTurnAdapter:
             handoff_thread: discord.Thread | None = None
             cross_channel = False
             if thread_request is not None:
-                handoff_thread = await app.threads._create_handoff_thread(
+                handoff_thread = await collaborators.threads.create_handoff_thread(
                     message,
                     thread_request,
                     conversation_id,
@@ -138,7 +229,7 @@ class GuildMessageTurnAdapter:
                     target_channel = handoff_thread
                     reply_reference = None
 
-            if coding_handoff_task_id is not None and app.coding_tasks is not None:
+            if coding_handoff_task_id is not None:
                 if isinstance(target_channel, discord.Thread):
                     parent_id = getattr(target_channel, "parent_id", None)
                     route_channel_id = (
@@ -148,7 +239,7 @@ class GuildMessageTurnAdapter:
                 else:
                     route_channel_id = str(getattr(target_channel, "id", self.context_channel_id))
                     route_thread_id = None
-                coding_handoff_prepared = await app.coding_tasks.prepare_handoff(
+                coding_handoff_prepared = await collaborators.coding.prepare_handoff(
                     coding_handoff_task_id,
                     channel_id=route_channel_id,
                     thread_id=route_thread_id,
@@ -163,7 +254,7 @@ class GuildMessageTurnAdapter:
                     )
 
             if handoff_thread is not None:
-                await app.discord_gateway.add_status_reaction(
+                await collaborators.gateway.add_status_reaction(
                     message,
                     THREAD_HANDOFF_REACTION,
                 )
@@ -171,7 +262,7 @@ class GuildMessageTurnAdapter:
             # ForegroundTurnRunner already holds the workspace activity guard.
             # Leaving the key unset here avoids reacquiring that same lock while
             # preserving the app-instance send seam used by routing tests.
-            sent_messages = await app.send_response(
+            sent_messages = await collaborators.responses.send(
                 target_channel,
                 delivery_result.response_text,
                 reference=reply_reference,
@@ -190,23 +281,18 @@ class GuildMessageTurnAdapter:
                 and coding_handoff_prepared
                 and handoff_thread is not None
                 and initial_handoff_delivery_failed
-                and app.coding_tasks is not None
             ):
-                task = (
-                    await app.coding_task_store.get_task(coding_handoff_task_id)
-                    if app.coding_task_store is not None
-                    else None
-                )
+                task = await collaborators.coding.failed_handoff_task(coding_handoff_task_id)
                 if task is not None:
-                    await app._delete_coding_status_message(
+                    await collaborators.coding.delete_status_message(
                         handoff_thread,
                         task,
-                        app._coding_task_marker(task.id),
+                        collaborators.coding.task_marker(task.id),
                     )
-                if app.thread_handoff is not None:
-                    await app.thread_handoff.prune(handoff_thread.id)
+                if collaborators.thread_handoff is not None:
+                    await collaborators.thread_handoff.prune(handoff_thread.id)
                 if cross_channel:
-                    await app.threads._discard_cross_channel_thread(handoff_thread)
+                    await collaborators.threads.discard_cross_channel_thread(handoff_thread)
 
                 target_channel = original_target_channel
                 reply_reference = message
@@ -220,13 +306,13 @@ class GuildMessageTurnAdapter:
                     if isinstance(original_target_channel, discord.Thread)
                     else None
                 )
-                coding_handoff_prepared = await app.coding_tasks.prepare_handoff(
+                coding_handoff_prepared = await collaborators.coding.prepare_handoff(
                     coding_handoff_task_id,
                     channel_id=fallback_channel_id,
                     thread_id=fallback_thread_id,
                 )
                 if coding_handoff_prepared:
-                    sent_messages = await app.send_response(
+                    sent_messages = await collaborators.responses.send(
                         target_channel,
                         delivery_result.response_text,
                         reference=reply_reference,
@@ -237,12 +323,8 @@ class GuildMessageTurnAdapter:
                         mention_author=True,
                     )
 
-            if (
-                coding_handoff_task_id is not None
-                and coding_handoff_prepared
-                and app.coding_tasks is not None
-            ):
-                coding_handoff_finalized = await app.coding_tasks.release_handoff(
+            if coding_handoff_task_id is not None and coding_handoff_prepared:
+                coding_handoff_finalized = await collaborators.coding.release_handoff(
                     coding_handoff_task_id
                 )
 
@@ -252,17 +334,17 @@ class GuildMessageTurnAdapter:
                 or delivery_result.output_files
             )
             if (
-                app.thread_handoff is not None
+                collaborators.thread_handoff is not None
                 and isinstance(target_channel, discord.Thread)
-                and app.thread_handoff.is_managed(target_channel.id)
+                and collaborators.thread_handoff.is_managed(target_channel.id)
                 and not sent_messages
                 and expected_delivery
             ):
-                await app.thread_handoff.prune(target_channel.id)
+                await collaborators.thread_handoff.prune(target_channel.id)
                 if cross_channel:
-                    await app.threads._discard_cross_channel_thread(target_channel)
+                    await collaborators.threads.discard_cross_channel_thread(target_channel)
             elif cross_channel and handoff_thread is not None and sent_messages:
-                await app.threads._send_cross_channel_pointer(message, handoff_thread)
+                await collaborators.threads.send_cross_channel_pointer(message, handoff_thread)
 
             replies: list[DeliveredReply] = []
             embed_summary = (
@@ -289,7 +371,7 @@ class GuildMessageTurnAdapter:
                 else str(sent_channel.id)
             )
             if delivery_result.thread_close_request is not None:
-                await app.threads._close_handoff_thread(
+                await collaborators.threads.close_handoff_thread(
                     target_channel,
                     delivery_result.thread_close_request,
                 )
@@ -306,13 +388,9 @@ class GuildMessageTurnAdapter:
                 delivered_result=(delivery_result if delivery_result is not result else None),
             )
         finally:
-            if (
-                coding_handoff_task_id is not None
-                and not coding_handoff_finalized
-                and app.coding_tasks is not None
-            ):
+            if coding_handoff_task_id is not None and not coding_handoff_finalized:
                 try:
-                    await app.coding_tasks.finalize_handoff(coding_handoff_task_id)
+                    await collaborators.coding.finalize_handoff(coding_handoff_task_id)
                 except Exception:
                     log.exception(
                         "Could not release coding task %s after foreground routing failed",

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import discord
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
+from agent.activity import ActivityReporter
 from agent.attachments import (
     collect_reply_context,
     collect_turn_attachments,
@@ -17,7 +20,7 @@ from config.fragments.channel_pins import (
     load_channel_pinned_tools,
     load_channel_thread_handoff,
 )
-from agent.core import run_conversation
+from agent.core import UserActivityGuard, run_conversation
 from agent.discord_references import ResolvedDiscordReferenceHint
 from config.fragments.guild_config import (
     load_guild_blocked_tools,
@@ -31,40 +34,151 @@ from config.fragments.tool_policy import (
     thread_handoff_creation_allowed,
 )
 from agent.turn import (
+    CollectReplyContext,
+    CollectTurnAttachments,
+    CollectTurnImages,
+    CountUserPriorMessages,
     EnsureUserBank,
+    MemoryPreferenceStore,
+    PersistPreparedUserMessage,
     RecallCurrentUserContext,
     RunConversation,
+    StripMention,
     TurnDependencies,
+    TurnContextManager,
     TurnPreparationConfig,
     TurnPreparationInput,
-    UserPersonaLoader,
     WriteGeneratedAssets,
 )
 from config.model_config import Scope
+from config.settings import Settings
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
 from providers.assets import write_generated_assets
+from tools.config_spec import ToolConfigField
+from tools.registry import ToolRegistry
+from tools.workspace.common import UserLocks
+from trust.tiers import TrustTier
+from workspace import WorkspaceManager
+
+if TYPE_CHECKING:
+    from app.providers import ProviderManager
+    from moderation.service import ModerationService
+    from storage.image_distillations import ImageDistillationStore
 
 
-@dataclass(frozen=True)
+class TurnHasImageInput(Protocol):
+    async def __call__(
+        self,
+        message: object,
+        *,
+        bot_user: object | None = None,
+        allow_bot_authored: bool = False,
+    ) -> bool: ...
+
+
+type FragmentSetLoader = Callable[[str], frozenset[str]]
+type GlobalBlockedToolsLoader = Callable[[], frozenset[str]]
+type ThreadHandoffLoader = Callable[[str], bool | None]
+type FilterPinsToSearchable = Callable[
+    [frozenset[str], ToolRegistry, TrustTier, str | None], frozenset[str]
+]
+type ToolConfigLoader = Callable[
+    [Mapping[str, Sequence[ToolConfigField]]], Mapping[str, Mapping[str, Any]]
+]
+
+
+class TurnPreferenceStore(MemoryPreferenceStore, Protocol):
+    async def get_persona(self, user_id: str) -> str: ...
+
+
+class ResolveReferenceHints(Protocol):
+    async def __call__(
+        self,
+        source_message: object,
+        content: str,
+        *,
+        excluded_channel_ids: frozenset[str],
+    ) -> tuple[ResolvedDiscordReferenceHint, ...]: ...
+
+
+@dataclass(frozen=True, slots=True)
 class TurnEntryHooks:
-    turn_has_image_input: Any = turn_has_image_input
-    collect_turn_images: Any = collect_turn_images
-    collect_reply_context: Any = collect_reply_context
-    collect_turn_attachments: Any = collect_turn_attachments
-    run_conversation: Any = run_conversation
-    ensure_user_bank: Any = ensure_user_bank
-    recall_current_user_context: Any = recall_current_user_context
-    write_generated_assets: Any = write_generated_assets
-    load_channel_pinned_tools: Any = load_channel_pinned_tools
-    load_guild_pinned_tools: Any = load_guild_pinned_tools
-    load_channel_blocked_tools: Any = load_channel_blocked_tools
-    load_guild_blocked_tools: Any = load_guild_blocked_tools
-    load_global_blocked_tools: Any = load_global_blocked_tools
-    load_tool_configs: Any = load_tool_configs
-    load_channel_thread_handoff: Any = load_channel_thread_handoff
-    load_guild_thread_handoff: Any = load_guild_thread_handoff
-    filter_pins_to_searchable: Any = filter_pins_to_searchable
+    turn_has_image_input: TurnHasImageInput = turn_has_image_input
+    collect_turn_images: CollectTurnImages = collect_turn_images
+    collect_reply_context: CollectReplyContext = collect_reply_context
+    collect_turn_attachments: CollectTurnAttachments = collect_turn_attachments
+    run_conversation: RunConversation = run_conversation
+    ensure_user_bank: EnsureUserBank = ensure_user_bank
+    recall_current_user_context: RecallCurrentUserContext = recall_current_user_context
+    write_generated_assets: WriteGeneratedAssets = write_generated_assets
+    load_channel_pinned_tools: FragmentSetLoader = load_channel_pinned_tools
+    load_guild_pinned_tools: FragmentSetLoader = load_guild_pinned_tools
+    load_channel_blocked_tools: FragmentSetLoader = load_channel_blocked_tools
+    load_guild_blocked_tools: FragmentSetLoader = load_guild_blocked_tools
+    load_global_blocked_tools: GlobalBlockedToolsLoader = load_global_blocked_tools
+    load_tool_configs: ToolConfigLoader = load_tool_configs
+    load_channel_thread_handoff: ThreadHandoffLoader = load_channel_thread_handoff
+    load_guild_thread_handoff: ThreadHandoffLoader = load_guild_thread_handoff
+    filter_pins_to_searchable: FilterPinsToSearchable = filter_pins_to_searchable
+
+
+@dataclass(frozen=True, slots=True)
+class TurnEntryServices:
+    settings: Settings
+    bot_user: object | None
+    provider_manager: ProviderManager
+    context_manager: TurnContextManager
+    registry: ToolRegistry
+    preference_store: TurnPreferenceStore | None
+    usage_store: object | None
+    attachment_store: object
+    workspace_dir: Path
+    workspace_manager: WorkspaceManager
+    workspace_locks: UserLocks
+    llm_semaphore: asyncio.Semaphore
+    memory_client: object | None
+    skills_index: Callable[[str | None], str]
+    personal_skills_index: Callable[[str], str]
+    resolve_reference_hints: ResolveReferenceHints
+    moderation_service: ModerationService | None
+    image_distillation_store: ImageDistillationStore | None
+    user_activity: UserActivityGuard
+
+
+@dataclass(frozen=True, slots=True)
+class TurnDependencyFactory:
+    """Build turn dependencies with application services bound once."""
+
+    services: TurnEntryServices
+
+    async def build(
+        self,
+        source: TurnPreparationInput,
+        *,
+        collect_reply_context_func: CollectReplyContext,
+        strip_mention_func: StripMention,
+        persist_prepared_user_message: PersistPreparedUserMessage,
+        hooks: TurnEntryHooks | None = None,
+        command_template: str | None = None,
+        collect_turn_attachments_func: CollectTurnAttachments | None = None,
+        count_user_prior_messages: CountUserPriorMessages | None = None,
+        activity_reporter: ActivityReporter | None = None,
+        extra_blocked_tools: frozenset[str] = frozenset(),
+    ) -> TurnDependencies:
+        return await build_turn_dependencies(
+            self,
+            source,
+            collect_reply_context_func=collect_reply_context_func,
+            strip_mention_func=strip_mention_func,
+            persist_prepared_user_message=persist_prepared_user_message,
+            hooks=hooks,
+            command_template=command_template,
+            collect_turn_attachments_func=collect_turn_attachments_func,
+            count_user_prior_messages=count_user_prior_messages,
+            activity_reporter=activity_reporter,
+            extra_blocked_tools=extra_blocked_tools,
+        )
 
 
 def _resolve_chat_provider(provider_manager: object, scope: Scope, *, images: bool = False) -> Any:
@@ -92,17 +206,8 @@ def chat_model_name_for_scope(provider_manager: Any, scope: Scope, *, images: bo
     return str(model_config.model_name_for_role("chat", scope, images=images))
 
 
-def _resolved_chat_model_name(app: Any, scope: Scope, *, images: bool = False) -> str:
-    # Test doubles stand in for the application without carrying its method, so
-    # fall back to resolving from the provider manager directly.
-    resolver = getattr(app, "_resolved_chat_model_name", None)
-    if callable(resolver):
-        return str(resolver(scope, images=images))
-    return chat_model_name_for_scope(app.provider_manager, scope, images=images)
-
-
 def build_turn_preparation_config(
-    settings: Any,
+    settings: Settings,
     *,
     recent_image_lookback: int,
     new_user_onboarding_turns: int = 0,
@@ -169,23 +274,20 @@ def _platform_scope_blocked_tools(guild_id: str | None) -> frozenset[str]:
 
 
 async def build_turn_dependencies(
-    app: Any,
+    factory: TurnDependencyFactory,
     source: TurnPreparationInput,
     *,
-    context_manager: Any,
-    registry: Any,
-    preference_store: Any | None,
-    usage_store: Any,
-    collect_reply_context_func: Any,
-    strip_mention_func: Any,
-    persist_prepared_user_message: Any,
+    collect_reply_context_func: CollectReplyContext,
+    strip_mention_func: StripMention,
+    persist_prepared_user_message: PersistPreparedUserMessage,
     hooks: TurnEntryHooks | None = None,
     command_template: str | None = None,
-    collect_turn_attachments_func: Any | None = None,
-    count_user_prior_messages: Any | None = None,
-    activity_reporter: Any | None = None,
+    collect_turn_attachments_func: CollectTurnAttachments | None = None,
+    count_user_prior_messages: CountUserPriorMessages | None = None,
+    activity_reporter: ActivityReporter | None = None,
     extra_blocked_tools: frozenset[str] = frozenset(),
 ) -> TurnDependencies:
+    services = factory.services
     hooks = hooks or TurnEntryHooks()
     collect_turn_attachments_func = collect_turn_attachments_func or hooks.collect_turn_attachments
     chat_scope = Scope(
@@ -197,37 +299,33 @@ async def build_turn_dependencies(
 
     def chat_provider_for_turn(*, images: bool = False) -> Any:
         return _resolve_chat_provider(
-            app.provider_manager,
+            services.provider_manager,
             chat_scope,
             images=images,
         )
 
     def chat_model_name_for_turn(*, images: bool = False) -> str:
-        return _resolved_chat_model_name(
-            app,
-            chat_scope,
-            images=images,
-        )
+        return chat_model_name_for_scope(services.provider_manager, chat_scope, images=images)
 
-    image_probe_kwargs: dict[str, Any] = {"bot_user": app.bot.user}
+    image_probe_kwargs: dict[str, Any] = {"bot_user": services.bot_user}
     if getattr(source, "allow_bot_authored_reply_context", False):
         image_probe_kwargs["allow_bot_authored"] = True
-    has_images = bool(app.settings.max_turn_images > 0) and await hooks.turn_has_image_input(
+    has_images = bool(services.settings.max_turn_images > 0) and await hooks.turn_has_image_input(
         source.source_message, **image_probe_kwargs
     )
     provider = chat_provider_for_turn(images=has_images)
     tool_config_channel_id = _tool_config_channel_id(source)
 
     def skills_index_builder() -> str:
-        return app.skills_index_cache.index(None if source.personal_chat else source.guild_id)
+        return services.skills_index(None if source.personal_chat else source.guild_id)
 
     def personal_skills_index_builder() -> str:
-        return app.tools.personal_skill_manager.index(source.user_id)
+        return services.personal_skills_index(source.user_id)
 
     async def user_persona_loader(user_id: str) -> str:
-        if preference_store is None:
+        if services.preference_store is None:
             return ""
-        return await preference_store.get_persona(user_id)
+        return await services.preference_store.get_persona(user_id)
 
     def channel_pinned_tools() -> frozenset[str]:
         if source.personal_chat:
@@ -239,7 +337,7 @@ async def build_turn_dependencies(
             return frozenset()
         return hooks.filter_pins_to_searchable(
             pins,
-            registry,
+            services.registry,
             source.trust_tier,
             source.guild_id,
         )
@@ -284,10 +382,7 @@ async def build_turn_dependencies(
     def tool_configs() -> Mapping[str, Mapping[str, Any]]:
         # Read fresh each turn from config/tools/<name>.md, against whatever the
         # registry for this entry path declares.
-        specs = getattr(registry, "config_specs", None)
-        if not callable(specs):
-            return {}
-        return hooks.load_tool_configs(specs())
+        return hooks.load_tool_configs(services.registry.config_specs())
 
     async def resolve_discord_references(
         content: str,
@@ -296,30 +391,28 @@ async def build_turn_dependencies(
         # invoked in a guild. Its platform location confers no read authority.
         if source.personal_chat or source.guild_id is None:
             return ()
-        return await app.discord_gateway.resolve_reference_hints(
+        return await services.resolve_reference_hints(
             source.source_message,
             content,
-            excluded_channel_ids=app.settings.discord_search_excluded_channel_ids,
+            excluded_channel_ids=services.settings.discord_search_excluded_channel_ids,
         )
 
     return TurnDependencies(
-        context_manager=context_manager,
+        context_manager=services.context_manager,
         provider=provider,
-        registry=registry,
-        attachment_store=app.tools.attachment_store,
-        workspace_dir=app.tools.workspace_dir,
-        workspace_manager=app.tools.workspace_manager,
-        workspace_locks=app.tools.workspace_locks,
-        llm_semaphore=app.llm_semaphore,
-        memory_client=app.memory_manager.active_client(),
-        preference_store=preference_store,
-        ensure_user_bank=cast(EnsureUserBank, hooks.ensure_user_bank),
-        recall_current_user_context=cast(
-            RecallCurrentUserContext, hooks.recall_current_user_context
-        ),
+        registry=services.registry,
+        attachment_store=services.attachment_store,
+        workspace_dir=services.workspace_dir,
+        workspace_manager=services.workspace_manager,
+        workspace_locks=services.workspace_locks,
+        llm_semaphore=services.llm_semaphore,
+        memory_client=services.memory_client,
+        preference_store=services.preference_store,
+        ensure_user_bank=hooks.ensure_user_bank,
+        recall_current_user_context=hooks.recall_current_user_context,
         skills_index_builder=skills_index_builder,
         personal_skills_index_builder=personal_skills_index_builder,
-        user_persona_loader=cast(UserPersonaLoader, user_persona_loader),
+        user_persona_loader=user_persona_loader,
         count_user_prior_messages=count_user_prior_messages,
         channel_pinned_tools=channel_pinned_tools,
         blocked_tools=blocked_tools,
@@ -329,17 +422,17 @@ async def build_turn_dependencies(
         collect_reply_context=collect_reply_context_func,
         collect_turn_attachments=collect_turn_attachments_func,
         strip_mention=strip_mention_func,
-        run_conversation=cast(RunConversation, hooks.run_conversation),
+        run_conversation=hooks.run_conversation,
         chat_provider_resolver=chat_provider_for_turn,
         chat_model_name_resolver=chat_model_name_for_turn,
         persist_prepared_user_message=persist_prepared_user_message,
-        write_generated_assets=cast(WriteGeneratedAssets, hooks.write_generated_assets),
-        compactor=app.provider_manager.build_compactor(app.llm_semaphore),
+        write_generated_assets=hooks.write_generated_assets,
+        compactor=services.provider_manager.build_compactor(services.llm_semaphore),
         activity_reporter=activity_reporter,
-        moderation_service=app.moderation_service,
-        usage_store=usage_store,
-        image_distillation_store=app.image_distillation_store,
-        model_config=getattr(app.provider_manager, "model_config", None),
+        moderation_service=services.moderation_service,
+        usage_store=services.usage_store,
+        image_distillation_store=services.image_distillation_store,
+        model_config=services.provider_manager.model_config,
         resolved_model_name=chat_model_name_for_turn(images=has_images),
-        user_activity=app.privacy_barrier.activity,
+        user_activity=services.user_activity,
     )

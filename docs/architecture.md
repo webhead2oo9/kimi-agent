@@ -57,7 +57,7 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
 | `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
 
-`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, `on_message`), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
+`app/` is a large package. The important files are `runtime.py` (`build_app`, boot, `on_message`), `foreground_turn.py` (the typed prepare/run/deliver seam), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
 ## Design choices that matter
 

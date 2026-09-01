@@ -53,6 +53,7 @@ from app.admission import (
     TurnAdmissionController,
 )
 from app.cancellation import ActiveOperationRegistry
+from app.command_sync import CommandSyncConfig, DiscordCommandSync
 from app.conversation_routing import (
     ResolvedConversation,
     conversation_key_for_message,
@@ -74,6 +75,7 @@ from app.foreground_turn import (
     deliver_with_workspace_guard,
 )
 from app.guild_turn_adapter import GuildMessageTurnAdapter
+from app.guild_activation import GuildActivationConfig, GuildActivationService
 from app.user_app_chat import UserAppChatConfig, UserAppChatController
 from app.user_app_consent import UserAppConsentConfig, UserAppConsentPrompter
 from app.work_cancellation import WorkCancellationCoordinator, WorkScope, is_stop_message
@@ -310,7 +312,6 @@ class KimiApplication:
     transcript_retention_sweeper_started: bool = False
     video_session_sweeper_started: bool = False
     gateway_ready: bool = False
-    _gateway_generation: int = 0
     active_transcript_retention_days: int = 0
     active_transcript_retention_sweep_interval_seconds: int | None = None
     _auto_retain_task: asyncio.Task | None = None
@@ -318,24 +319,15 @@ class KimiApplication:
     _workspace_sweeper_task: asyncio.Task | None = None
     _transcript_retention_task: asyncio.Task | None = None
     _video_session_sweeper_task: asyncio.Task | None = None
-    _guild_activation_refresh_task: asyncio.Task | None = None
+    command_sync: DiscordCommandSync = field(init=False, repr=False)
+    guild_activation: GuildActivationService = field(init=False, repr=False)
     root_locks: RootLockPool = field(default_factory=RootLockPool, init=False, repr=False)
     llm_semaphore: asyncio.Semaphore = field(init=False)
     turn_admission: TurnAdmissionController = field(init=False)
     turn_runner: ForegroundTurnRunner = field(init=False, repr=False)
     skills_index_cache: SkillsIndexCache = field(init=False)
     user_app_access: UserAppAccess = field(init=False)
-    _guild_activation_cache: paths.GuildActivationCache = field(init=False, repr=False)
     _ready_init_lock: asyncio.Lock = field(init=False, repr=False)
-    _global_sync_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
-    _global_sync_generation: int | None = field(default=None, init=False, repr=False)
-    _retired_global_sync_tasks: set[asyncio.Task[None]] = field(
-        default_factory=set, init=False, repr=False
-    )
-    _ready_event_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
-    _ready_event_generations: dict[asyncio.Task[Any], int] = field(
-        default_factory=dict, init=False, repr=False
-    )
     _closed: bool = False
     _close_complete: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _startup_error: Exception | None = field(default=None, init=False, repr=False)
@@ -359,11 +351,24 @@ class KimiApplication:
             regular_ids=frozenset(self.settings.user_app_regular_id_set),
             staff_ids=frozenset(self.settings.user_app_staff_id_set),
         )
-        self._guild_activation_cache = paths.GuildActivationCache(
-            Path(self.settings.config_dir).resolve(),
-            server_setup_activation,
+        self.command_sync = DiscordCommandSync(
+            tree=self.bot.tree,
+            get_guild_sync_port=lambda: self._module_interaction_runtime,
+            config=CommandSyncConfig(
+                drain_timeout_seconds=READY_EVENT_DRAIN_SECONDS,
+            ),
+            shutdown=self,
         )
-        self._guild_activation_cache.refresh()
+        self.guild_activation = GuildActivationService(
+            config=GuildActivationConfig(
+                config_dir=Path(self.settings.config_dir).resolve(),
+                allowed_guilds=frozenset(self.settings.allowed_guilds),
+                refresh_seconds=GUILD_ACTIVATION_REFRESH_SECONDS,
+            ),
+            bot=self.bot,
+            module_manager=self.tools.module_manager,
+            activation_parser=server_setup_activation,
+        )
         self._ready_init_lock = asyncio.Lock()
 
     def gateway_interactions_ready(self) -> bool:
@@ -390,95 +395,13 @@ class KimiApplication:
         return controller if controller is not None and controller.running else None
 
     def active_guilds(self) -> set[int]:
-        """Guilds enabled by validated setup or the deployment allowlist.
-
-        A validated explicit deactivation wins over the environment allowlist.
-        This hot-path read uses an immutable cache; it never scans the config
-        directory synchronously while processing a Discord event.
-        """
-        setup = self._guild_activation_cache.snapshot()
-        active = (self.settings.allowed_guilds | set(setup.active)) - set(setup.deactivated)
-        guild_settings = self.tools.module_manager.guild_settings
-        if guild_settings is not None:
-            # An enforcement module with an invalid guild document takes the
-            # guild offline rather than running unmoderated.
-            active -= guild_settings.blocked_guilds()
-        return active
+        return self.guild_activation.active_guilds()
 
     def guild_activation_state(self, guild_id: int) -> dict[str, Any]:
-        setup = self._guild_activation_cache.snapshot()
-        environment_approved = guild_id in self.settings.allowed_guilds
-        if guild_id in setup.deactivated:
-            setup_state = "deactivated"
-            activation = "deactivated"
-            active = False
-        elif guild_id in setup.active:
-            setup_state = "active"
-            activation = "server_setup"
-            active = True
-        elif guild_id in setup.invalid:
-            setup_state = "invalid"
-            active = environment_approved
-            activation = "environment" if active else "invalid_setup"
-        else:
-            setup_state = "missing"
-            active = environment_approved
-            activation = "environment" if active else "pending"
-        return {
-            "active": active,
-            "activation": activation,
-            "setup_state": setup_state,
-            "environment_approved": environment_approved,
-        }
+        return self.guild_activation.guild_activation_state(guild_id).as_dict()
 
     async def refresh_guild_activation(self, guild_id: int | None = None) -> None:
-        if guild_id is None:
-            await asyncio.to_thread(self._guild_activation_cache.refresh)
-        else:
-            await asyncio.to_thread(self._guild_activation_cache.refresh_guild, guild_id)
-        await self._refresh_module_guild_settings(guild_id)
-
-    def _known_guild_ids(self) -> set[int]:
-        setup = self._guild_activation_cache.snapshot()
-        known = set(self.settings.allowed_guilds) | set(setup.active) | set(setup.deactivated)
-        known |= {int(guild.id) for guild in getattr(self.bot, "guilds", ())}
-        return known
-
-    async def _refresh_module_guild_settings(self, guild_id: int | None) -> None:
-        service = self.tools.module_manager.guild_settings
-        if service is None:
-            return
-        targets = {guild_id} if guild_id is not None else self._known_guild_ids()
-        batch = await asyncio.to_thread(service.build_refresh, targets)
-        service.apply_refresh(batch)
-
-    async def _channel_guild_id(self, channel_id: int) -> int | None:
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except discord.NotFound, discord.Forbidden, discord.HTTPException:
-                return None
-        guild = getattr(channel, "guild", None)
-        return None if guild is None else int(guild.id)
-
-    def _proposal_guild_health(self, guild_id: int) -> str:
-        if self.guild_activation_state(guild_id)["setup_state"] == "invalid":
-            return "the guild configuration is invalid"
-        service = self.tools.module_manager.guild_settings
-        if service is not None and guild_id in service.blocked_guilds():
-            return "module guild settings would disable this guild"
-        return ""
-
-    async def _guild_activation_refresh_loop(self) -> None:
-        while True:
-            await asyncio.sleep(GUILD_ACTIVATION_REFRESH_SECONDS)
-            try:
-                await self.refresh_guild_activation()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Could not refresh guild activation config")
+        await self.guild_activation.refresh_guild_activation(guild_id)
 
     def run(self) -> int:
         if not self.settings.discord_bot_token.get_secret_value():
@@ -533,24 +456,8 @@ class KimiApplication:
             self._close_complete.set()
 
     async def _finish_close(self, owner_task: asyncio.Task[Any] | None) -> None:
-        await self._cancel_ready_events(exclude=owner_task)
+        await self.command_sync.cancel_ready_events(exclude=owner_task)
         await self._close_resources()
-
-    async def _cancel_ready_events(self, *, exclude: asyncio.Task[Any] | None) -> None:
-        """Bound shutdown on READY initialization and reconnect maintenance."""
-        tasks = {task for task in self._ready_event_tasks if task is not exclude}
-        for task in tasks:
-            task.cancel()
-        if not tasks:
-            return
-        done, pending = await asyncio.wait(tasks, timeout=READY_EVENT_DRAIN_SECONDS)
-        for task in done:
-            with suppress(BaseException):
-                task.result()
-        if pending:
-            log.warning(
-                "Timed out waiting for %d READY event task(s) during shutdown", len(pending)
-            )
 
     async def drain_interactions(self) -> None:
         """Stop admitting module interactions and wait for in-flight handlers.
@@ -566,7 +473,7 @@ class KimiApplication:
                 await self._module_interaction_runtime.drain()
             except Exception:
                 log.exception("Error draining module interaction handlers")
-        await self._cancel_global_command_sync()
+        await self.command_sync.cancel_all()
 
     async def _close_resources(self) -> None:
         self.gateway_ready = False
@@ -575,15 +482,7 @@ class KimiApplication:
             self._module_event_publisher.uninstall()
             self._module_event_publisher = None
         await self.turn_admission.close()
-        if self._guild_activation_refresh_task is not None:
-            self._guild_activation_refresh_task.cancel()
-            try:
-                await self._guild_activation_refresh_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping guild activation refresher")
-            self._guild_activation_refresh_task = None
+        await self.guild_activation.close()
         if self._auto_retain_task is not None:
             self._auto_retain_task.cancel()
             try:
@@ -670,74 +569,47 @@ class KimiApplication:
         await self.database.close()
 
     async def on_disconnect(self) -> None:
-        self._gateway_generation += 1
         self.gateway_ready = False
-        # Capture only work that predates this disconnect.  ``pause_sync`` may
-        # yield while stopping a cancellation-resistant retry, and a subsequent
-        # READY is allowed to start the new generation during that window.  The
-        # older disconnect must not cancel that newer publication when it resumes.
-        global_sync_tasks = set(self._retired_global_sync_tasks)
-        if self._global_sync_task is not None:
-            global_sync_tasks.add(self._global_sync_task)
-        if self._module_interaction_runtime is not None:
-            await self._module_interaction_runtime.pause_sync()
-        await self._cancel_global_command_sync(tasks=global_sync_tasks)
+        await self.command_sync.disconnect()
 
     async def on_resumed(self) -> None:
         """Restore admission after Discord resumes the existing gateway session."""
-        gateway_generation = self._gateway_generation
         self.gateway_ready = self._can_restore_gateway_readiness()
-        if self._module_interaction_runtime is not None:
-            try:
-                await self._module_interaction_runtime.resume_sync(
-                    is_current=lambda: (
-                        not self._closed and gateway_generation == self._gateway_generation
-                    )
-                )
-            except Exception:
-                log.warning("Failed to resume guild slash command sync", exc_info=True)
+        await self.command_sync.resume()
 
     async def on_ready(self) -> None:
         if self._closed:
             return
-        ready_task = asyncio.current_task()
-        gateway_generation = self._gateway_generation
-        if ready_task is not None:
-            self._ready_event_tasks.add(ready_task)
-            self._ready_event_generations[ready_task] = gateway_generation
-        self.gateway_ready = False
-        try:
-            self._log_ready_state()
-            async with self._ready_init_lock:
-                if self._closed or self._startup_error is not None:
+        async with self.command_sync.ready_cohort() as gateway_generation:
+            self.gateway_ready = False
+            try:
+                self._log_ready_state()
+                async with self._ready_init_lock:
+                    if self._closed or self._startup_error is not None:
+                        return
+                    startup_succeeded = await self._initialize_ready_locked()
+                if not startup_succeeded:
+                    await self.bot.close()
                     return
-                startup_succeeded = await self._initialize_ready_locked()
-            if not startup_succeeded:
-                await self.bot.close()
-                return
-            if self._closed:
-                return
-
-            await self._sync_global_commands(gateway_generation)
-            if gateway_generation != self._gateway_generation:
-                return
-
-            # READY events can overlap on reconnect. Serialize the check/start pair so
-            # only one copy of each filesystem maintenance loop is created.
-            async with self._ready_init_lock:
                 if self._closed:
                     return
-                await self._start_filesystem_sweepers_locked()
-                if self._closed:
+
+                await self.command_sync.sync_for_ready(gateway_generation)
+                if gateway_generation != self.command_sync.current_generation:
                     return
-                self._start_ready_background_tasks_locked()
-        finally:
-            if ready_task is not None:
-                self._ready_event_tasks.discard(ready_task)
-                self._ready_event_generations.pop(ready_task, None)
-            self._release_completed_command_sync()
-            if gateway_generation == self._gateway_generation:
-                self.gateway_ready = self._can_restore_gateway_readiness()
+
+                # READY events can overlap on reconnect. Serialize the check/start pair so
+                # only one copy of each filesystem maintenance loop is created.
+                async with self._ready_init_lock:
+                    if self._closed:
+                        return
+                    await self._start_filesystem_sweepers_locked()
+                    if self._closed:
+                        return
+                    self._start_ready_background_tasks_locked()
+            finally:
+                if gateway_generation == self.command_sync.current_generation:
+                    self.gateway_ready = self._can_restore_gateway_readiness()
 
     def _log_ready_state(self) -> None:
         log.info(
@@ -819,168 +691,6 @@ class KimiApplication:
             log.info("Database initialized at %s", self.settings.database_path)
 
         return True
-
-    async def _sync_global_commands(self, generation: int | None = None) -> None:
-        """Join one same-generation publication for overlapping READY callers."""
-
-        generation = self._gateway_generation if generation is None else generation
-        while not self._closed and generation == self._gateway_generation:
-            task = self._global_sync_task
-            if task is not None and self._global_sync_generation != generation:
-                # Different gateway generations never share a cached result.
-                # Retire an unfinished predecessor; the new generation's cached
-                # coordinator gives it a bounded chance to finish before deciding
-                # whether a new global PUT is safe.
-                if not task.done():
-                    task.cancel()
-                    self._retired_global_sync_tasks.add(task)
-                if self._global_sync_task is task:
-                    self._global_sync_task = None
-                    self._global_sync_generation = None
-                continue
-            if task is None:
-                task = asyncio.get_running_loop().create_task(
-                    self._publish_global_commands(generation),
-                    name=f"discord-command-sync-{generation}",
-                )
-                self._global_sync_task = task
-                self._global_sync_generation = generation
-                task.add_done_callback(self._global_command_sync_done)
-            # A cancelled READY waiter must not cancel work another READY waiter owns.
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
-                if generation != self._gateway_generation or task.cancelled():
-                    return
-                raise
-            return
-
-    async def _publish_global_commands(self, generation: int) -> None:
-        current = asyncio.current_task()
-        predecessors = {
-            task
-            for task in self._retired_global_sync_tasks
-            if task is not current and not task.done()
-        }
-        pending_predecessors: set[asyncio.Task[None]] = set()
-        if predecessors:
-            done, pending_predecessors = await asyncio.wait(
-                predecessors,
-                timeout=READY_EVENT_DRAIN_SECONDS,
-            )
-            for completed in done:
-                with suppress(BaseException):
-                    completed.result()
-                self._retired_global_sync_tasks.discard(completed)
-
-        if pending_predecessors:
-            # Never overlap Discord's global bulk-replace endpoint. Guild scopes
-            # are independent and still reconcile below so READY can complete.
-            log.warning(
-                "Skipping global command sync for gateway generation %s; "
-                "%d prior sync task(s) are still stopping",
-                generation,
-                len(pending_predecessors),
-            )
-        elif not self._closed and generation == self._gateway_generation:
-            try:
-                synced = await self.bot.tree.sync()
-                log.info("Synced %d slash command(s)", len(synced))
-            except Exception:
-                # Command propagation is retried on the next READY, but a transient
-                # transport failure must not prevent local sweepers from starting.
-                log.warning("Failed to sync global slash commands", exc_info=True)
-
-        await self._sync_guild_commands_for_generation(generation)
-
-    async def _sync_guild_commands_for_generation(self, generation: int) -> None:
-        if (
-            self._module_interaction_runtime is not None
-            and not self._closed
-            and generation == self._gateway_generation
-        ):
-            try:
-                await self._module_interaction_runtime.sync_ready(
-                    is_current=lambda: not self._closed and generation == self._gateway_generation
-                )
-            except Exception:
-                log.warning("Failed to prepare guild slash command sync", exc_info=True)
-
-    def _global_command_sync_done(self, task: asyncio.Task[None]) -> None:
-        self._retired_global_sync_tasks.discard(task)
-        with suppress(asyncio.CancelledError):
-            error = task.exception()
-            if error is not None:
-                log.error(
-                    "Discord command sync task failed",
-                    exc_info=(type(error), error, error.__traceback__),
-                )
-        if self._global_sync_task is task:
-            self._release_completed_command_sync()
-
-    def _release_completed_command_sync(self) -> None:
-        task = self._global_sync_task
-        # Keep a fast completed publication cached until every overlapping READY
-        # event leaves its cohort. A later member then joins the same result
-        # instead of issuing a duplicate PUT merely because the first PUT was fast.
-        generation = self._global_sync_generation
-        active_generation_tasks = (
-            any(
-                self._ready_event_generations.get(ready_task, generation) == generation
-                for ready_task in self._ready_event_tasks
-            )
-            if generation is not None
-            else bool(self._ready_event_tasks)
-        )
-        if task is not None and task.done() and not active_generation_tasks:
-            self._global_sync_task = None
-            self._global_sync_generation = None
-
-    async def _cancel_global_command_sync(
-        self,
-        *,
-        tasks: set[asyncio.Task[None]] | None = None,
-    ) -> None:
-        """Bound cancellation to a stable task snapshot.
-
-        ``tasks`` lets a disconnect cancel only publications that existed when
-        that disconnect began.  Shutdown omits it and snapshots all known work.
-        """
-
-        current = asyncio.current_task()
-        active = self._global_sync_task
-        targets = (
-            set(self._retired_global_sync_tasks) | ({active} if active is not None else set())
-            if tasks is None
-            else set(tasks)
-        )
-        running = {task for task in targets if task is not current and not task.done()}
-        for task in running:
-            task.cancel()
-        done: set[asyncio.Task[None]] = set()
-        pending: set[asyncio.Task[None]] = set()
-        if running:
-            done, pending = await asyncio.wait(running, timeout=READY_EVENT_DRAIN_SECONDS)
-        for task in done:
-            with suppress(BaseException):
-                task.result()
-        completed_after_wait = {task for task in pending if task.done()}
-        for task in completed_after_wait:
-            with suppress(BaseException):
-                task.result()
-        pending.difference_update(completed_after_wait)
-        if pending:
-            log.warning("Timed out cancelling %d Discord command sync task(s)", len(pending))
-        # Preserve tasks retired by another lifecycle callback while this one
-        # was awaiting its bounded cancellation window.
-        self._retired_global_sync_tasks.difference_update(targets - pending)
-        self._retired_global_sync_tasks.update(pending)
-        if active is not None and active in targets and self._global_sync_task is active:
-            self._global_sync_task = None
-            self._global_sync_generation = None
 
     async def _start_filesystem_sweepers_locked(self) -> None:
         """Install filesystem maintenance tasks once after best-effort cleanup."""
@@ -1094,14 +804,7 @@ class KimiApplication:
                 self.settings.memory_auto_retain_sweep_interval_seconds,
             )
 
-        if self._guild_activation_refresh_task is None:
-            self._guild_activation_refresh_task = asyncio.create_task(
-                self._guild_activation_refresh_loop()
-            )
-            log.info(
-                "Guild activation refresher started (every %.0fs)",
-                GUILD_ACTIVATION_REFRESH_SECONDS,
-            )
+        self.guild_activation.start()
 
     async def _first_init_core(self) -> None:
         """One-time startup wiring: DB connect, stores, gates, slash commands.
@@ -1356,7 +1059,7 @@ class KimiApplication:
                 module, state, detail, source="guild_settings"
             ),
         )
-        await self._refresh_module_guild_settings(None)
+        await self.guild_activation.refresh_module_guild_settings(None)
         self._module_event_publisher = ModuleEventPublisher(
             self.bot, module_manager.events.publish_core
         )
@@ -1389,11 +1092,11 @@ class KimiApplication:
                 review_channel_id=lambda guild_id: load_proposal_channel_id(
                     guild_id, config_dir=Path(self.settings.config_dir)
                 ),
-                channel_guild_id=self._channel_guild_id,
+                channel_guild_id=self.guild_activation.channel_guild_id,
                 known_modules=lambda: module_manager.load_state.loaded,
                 post_review=proposal_actions.send_message,
                 on_applied=self.refresh_guild_activation,
-                verify_guild=self._proposal_guild_health,
+                verify_guild=self.guild_activation.proposal_guild_health,
                 review_channel_configured=lambda guild_id: proposal_channel_id_is_configured(
                     guild_id, config_dir=Path(self.settings.config_dir)
                 ),

@@ -27,6 +27,7 @@ from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
 from app.root_locks import RootLockSnapshot
+from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
@@ -200,41 +201,32 @@ class CommandSyncProbe:
 
 
 class PersonalChatDriver:
-    """Transitional test seam for the future ``app.user_app_chat`` module."""
+    """Test driver for the extracted ``app.user_app_chat`` controller."""
 
     def __init__(self, app: Any) -> None:
         self._app = app
 
     async def run_chat(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._run_user_app_chat(*args, **kwargs)
+        request_generation = kwargs.pop("request_generation")
+        interaction = args[0] if args else kwargs.get("interaction")
+        assert interaction is not None
+        request = UserAppChatRequest(
+            user_id=str(interaction.user.id),
+            generation=request_generation,
+        )
+        return await self._app.user_app_chat.run(*args, request=request, **kwargs)
 
     async def reset(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._handle_user_app_chat_reset(*args, **kwargs)
+        return await self._app.user_app_chat.reset(*args, **kwargs)
 
     def generation(self, user_id: str) -> int:
-        return self._app._user_app_chat_generation(user_id)
+        return self._app.user_app_chat.generation(user_id)
 
     def dm_tier(self, *args: Any, **kwargs: Any) -> Any:
-        return self._app._dm_personal_chat_tier(*args, **kwargs)
+        return self._app.user_app_chat.classify_dm(*args, **kwargs)
 
     async def resolve_dm_conversation(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._resolve_personal_dm_conversation(*args, **kwargs)
-
-
-class WorkCancellationDriver:
-    """Transitional test seam for cancellation split across future app subsystems."""
-
-    def __init__(self, app: Any) -> None:
-        self._app = app
-
-    async def cancel_user_work(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._cancel_user_work(*args, **kwargs)
-
-    async def stop_interaction(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._handle_stop_interaction(*args, **kwargs)
-
-    async def stop_message(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._app._handle_stop_message(*args, **kwargs)
+        return await self._app.user_app_chat.resolve_dm_conversation(*args, **kwargs)
 
 
 class RootLockProbe:
@@ -270,6 +262,8 @@ def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> N
     """Replace one application's foreground provider seam for a focused test."""
 
     app.turn_runner = app._make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
+    if hasattr(app, "user_app_chat"):
+        app.user_app_chat._turn_runner = app.turn_runner
 
 
 PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"

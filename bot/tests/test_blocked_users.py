@@ -168,10 +168,11 @@ async def _via_guild_message(app: Any, monkeypatch: pytest.MonkeyPatch) -> str |
 
     # The stop-message check is the statement directly after the block gate, so
     # reaching it means the gate passed; a blocked user must return before it.
-    def reached(_message: object) -> bool:
+    def reached(*_args: object, **_kwargs: object) -> bool:
         raise _ReachedPastGate
 
-    monkeypatch.setattr(app, "_is_stop_message", reached)
+    # The stop check is the first thing after the block gate in on_message.
+    monkeypatch.setattr(app_runtime, "is_stop_message", reached)
     message = _guild_message()
     await app.on_message(message)
     assert message.reactions == []

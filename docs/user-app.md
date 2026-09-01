@@ -27,6 +27,8 @@ While a response is running, send `stop`, `cancel`, or `abort` by itself to end 
 
 Under the hood, DMs and `/chat` use the same `userchat:<user_id>` root, `<user_id>__userapp` workspace, and `userapp` cancellation scope. This keeps transcripts and cleanup caller-scoped across both Discord entry points.
 
+`app/user_app_chat.py:UserAppChatController` owns the personal interaction and DM policy, generation tokens, reset, and rooted execution. `app/user_app_consent.py:UserAppConsentPrompter` is the shared fail-closed consent boundary for `/chat` and **Teach <bot>**. `app/work_cancellation.py:WorkCancellationCoordinator` unifies `/stop`, reset, and privacy teardown across foreground turns and durable coding work.
+
 ## Developer Portal setup
 
 In the Discord Developer Portal for the application:

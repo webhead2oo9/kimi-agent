@@ -10,8 +10,12 @@ import discord
 import pytest
 
 import app.runtime as app_runtime
-from app.user_app_consent import UserAppConsentView
-from commands.learn_cmd import learn_menu_name
+from app.user_app_consent import (
+    UserAppConsentConfig,
+    UserAppConsentPrompter,
+    UserAppConsentView,
+)
+from commands.learn_cmd import learn_menu_name, register_learn_command
 from tests.helpers import LifecycleProbe, StubProviderManager, make_settings
 from tools.learn import LearnTarget
 
@@ -114,16 +118,6 @@ async def _build_learn_app(
         lambda settings: StubProviderManager(settings),
     )
     calls: list[tuple[LearnTarget, discord.Interaction]] = []
-
-    async def capture_learn(
-        _self: object,
-        target: LearnTarget,
-        interaction: discord.Interaction,
-    ) -> str:
-        calls.append((target, interaction))
-        return REPORT
-
-    monkeypatch.setattr(app_runtime.KimiApplication, "_run_learn_turn", capture_learn)
     app = app_runtime.build_app(
         make_settings(
             discord_bot_token="token",
@@ -143,10 +137,54 @@ async def _build_learn_app(
     )
     try:
         await LifecycleProbe(app).first_init_core()
+        _bind_teach_consent(app, app.user_app_consent, calls)
     except BaseException:
         await app.close()
         raise
     return app, calls
+
+
+def _consent_prompter(app: Any, store: object | None) -> UserAppConsentPrompter:
+    return UserAppConsentPrompter(
+        config=UserAppConsentConfig(
+            enabled=app.settings.privacy_consent_enabled,
+            title=app.settings.privacy_consent_title,
+            text=app.settings.privacy_consent_text,
+            timeout=app.settings.privacy_consent_timeout,
+        ),
+        preference_store=cast(Any, store),
+    )
+
+
+def _bind_teach_consent(
+    app: Any,
+    prompter: UserAppConsentPrompter,
+    calls: list[tuple[LearnTarget, discord.Interaction]],
+) -> None:
+    async def capture_learn(
+        target: LearnTarget,
+        interaction: discord.Interaction,
+    ) -> str:
+        calls.append((target, interaction))
+        return REPORT
+
+    async def is_blocked(user_id: str) -> bool:
+        if app.blocked_user_store is None:
+            raise RuntimeError("blocked-user store is unavailable")
+        return await app.blocked_user_store.is_blocked(user_id)
+
+    register_learn_command(
+        app.bot,
+        app.trust_resolver,
+        run_learn=capture_learn,
+        is_blocked=is_blocked,
+        request_consent=lambda interaction, resume: prompter.prompt_if_needed(
+            interaction,
+            on_accept=resume,
+            public_response=False,
+        ),
+        bot_name=app.settings.bot_name,
+    )
 
 
 def _teach_menu(app: Any) -> Any:
@@ -247,7 +285,11 @@ async def test_teach_disabled_gate_never_looks_up_consent(
     app, calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=False)
     interaction = _Interaction()
     try:
-        app.preference_store = cast(Any, _ConsentLookupForbidden())
+        _bind_teach_consent(
+            app,
+            _consent_prompter(app, _ConsentLookupForbidden()),
+            calls,
+        )
 
         await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
 
@@ -268,7 +310,11 @@ async def test_teach_blocked_staff_is_refused_before_consent_lookup(
     blocked = _BlockedStore()
     try:
         app.blocked_user_store = cast(Any, blocked)
-        app.preference_store = cast(Any, _ConsentLookupForbidden())
+        _bind_teach_consent(
+            app,
+            _consent_prompter(app, _ConsentLookupForbidden()),
+            calls,
+        )
 
         await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
 
@@ -304,7 +350,7 @@ async def test_chat_still_prompts_through_extracted_consent_helper(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["lookup", "prompt"])
+@pytest.mark.parametrize("failure", ["missing", "lookup", "prompt"])
 async def test_teach_consent_failures_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -313,10 +359,15 @@ async def test_teach_consent_failures_fail_closed(
     app, learn_calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=True)
     interaction = _Interaction()
 
-    if failure == "lookup":
-        app.preference_store = cast(Any, _FailingConsentLookup())
+    if failure == "missing":
+        prompter = _consent_prompter(app, None)
+    elif failure == "lookup":
+        prompter = _consent_prompter(app, _FailingConsentLookup())
     else:
+        assert app.preference_store is not None
+        prompter = _consent_prompter(app, app.preference_store)
         interaction.response = _PromptFailingResponse()
+    _bind_teach_consent(app, prompter, learn_calls)
 
     try:
         await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
@@ -335,7 +386,7 @@ async def test_teach_consent_failures_fail_closed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["lookup", "prompt"])
+@pytest.mark.parametrize("failure", ["missing", "lookup", "prompt"])
 async def test_chat_consent_failures_stop_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -354,11 +405,16 @@ async def test_chat_consent_failures_stop_before_execution(
     ) -> None:
         execute_calls.append(resume_interaction)
 
-    monkeypatch.setattr(app, "_run_user_app_chat", capture_chat_execute)
-    if failure == "lookup":
-        app.preference_store = cast(Any, _FailingConsentLookup())
+    if failure == "missing":
+        prompter = _consent_prompter(app, None)
+    elif failure == "lookup":
+        prompter = _consent_prompter(app, _FailingConsentLookup())
     else:
+        assert app.preference_store is not None
+        prompter = _consent_prompter(app, app.preference_store)
         interaction.response = _PromptFailingResponse()
+    monkeypatch.setattr(app.user_app_chat, "_consent", prompter)
+    monkeypatch.setattr(app.user_app_chat, "run", capture_chat_execute)
 
     try:
         command = app.bot.tree.get_command("chat")

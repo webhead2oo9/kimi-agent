@@ -452,7 +452,7 @@ click gets an ephemeral rejection.
 ### Where it sits
 
 `KimiApplication.on_message` (`app/runtime.py`; the gate call itself lives in
-the extracted `_on_message_for_user`) consults the gate immediately after it
+`_on_message_for_user`) consults the gate immediately after it
 has decided the bot would respond and **before** it acquires the response lock,
 persists the triggering message, or calls the provider:
 
@@ -478,7 +478,7 @@ errors, the gate **fails closed** and treats the message as gated rather than
 letting it through.
 
 `/chat` and the **Teach <bot>** menu share
-`KimiApplication._prompt_consent_if_needed`. Each performs its own access,
+`app/user_app_consent.py:UserAppConsentPrompter`. Each performs its own access,
 block, and input validation first, then consults consent before deferring the
 interaction or running a provider turn. Accepting records consent, defers the
 button interaction, and resumes the retained request on that interaction; both
@@ -498,10 +498,11 @@ callback.
   only on the `ConsentPreferenceStore` protocol plus a redispatch callback, so
   it is unit-testable without a live connection. `PrivacyConsentView` is the
   thin two-button `discord.ui.View`.
-- `app/user_app_consent.py:UserAppConsentView` is the ephemeral interaction
-  prompt shared by `/chat` and **Teach <bot>**. It records consent, defers the
-  accept-button interaction with the requested response visibility, and invokes
-  the retained callback exactly once only after both steps succeed.
+- `app/user_app_consent.py:UserAppConsentPrompter` owns the shared fail-closed
+  interaction decision, backed by its frozen settings slice. Its
+  `UserAppConsentView` records consent, defers the accept-button interaction
+  with the requested response visibility, and invokes the retained callback
+  exactly once only after both steps succeed.
 - `storage/preferences.py` provides `has_consented(user_id)` (defaults
   **False**, because consent must be explicit) and
   `set_consent(user_id, granted)`.

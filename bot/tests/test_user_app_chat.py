@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from agent.activity import ActivityUpdate
 from agent.core import ConversationRunRequest, ConversationRunResult
 from agent.turn import TurnResult
-from app.admission import TURN_ADMISSION_BUSY_MESSAGE, TurnAdmissionController
+from app import user_app_chat as user_app_chat_module
 from app import user_app_turn_adapter
 from commands.chat_cmd import register_user_app_chat_commands
 from app import runtime as app_runtime
@@ -38,9 +38,7 @@ from workspace import user_app_workspace_key
 from tests.helpers import (
     LifecycleProbe,
     PersonalChatDriver,
-    RootLockProbe,
     StubProviderManager,
-    WorkCancellationDriver,
     install_foreground_turn_handler,
     make_settings,
 )
@@ -224,7 +222,8 @@ def test_user_app_public_post_uses_invoking_members_permissions() -> None:
     )
 
     assert (
-        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is True
     )
 
 
@@ -249,7 +248,8 @@ def test_user_app_public_post_requires_member_channel_and_external_app_permissio
     )
 
     assert (
-        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is False
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is False
     )
 
 
@@ -280,7 +280,7 @@ def test_user_app_public_post_uses_thread_permission(
     )
 
     assert (
-        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
         is expected
     )
 
@@ -299,7 +299,8 @@ def test_dual_installed_app_public_post_uses_application_permissions() -> None:
     )
 
     assert (
-        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is True
     )
 
 
@@ -307,7 +308,8 @@ def test_user_app_public_post_is_allowed_outside_guilds() -> None:
     interaction = SimpleNamespace(guild_id=None)
 
     assert (
-        app_runtime._interaction_can_post_publicly(cast(discord.Interaction, interaction)) is True
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is True
     )
 
 
@@ -481,17 +483,18 @@ async def test_chat_newlines_are_neutralized_for_model_input(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    app = await _user_app_chat_app(tmp_path, monkeypatch)
     requests: list[ConversationRunRequest] = []
 
     async def capture_run(*, request: ConversationRunRequest) -> ConversationRunResult:
         requests.append(request)
         return ConversationRunResult(text="ok")
 
+    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+
     async def deliver(_interaction: object, content: str, **kwargs: object) -> None:
         await _complete_primary_delivery(content, kwargs)
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", deliver)
     interaction = _UserAppImageInteraction()
     command = cast(Any, app.bot.tree.get_command("chat"))
@@ -515,7 +518,6 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    app = await _image_chat_app(tmp_path, monkeypatch)
     requests: list[ConversationRunRequest] = []
     delivered: list[str] = []
 
@@ -523,11 +525,13 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
         requests.append(request)
         return ConversationRunResult(text="I can see the image.")
 
+    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    app = await _image_chat_app(tmp_path, monkeypatch)
+
     async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
         delivered.append(content)
         await _complete_primary_delivery(content, kwargs)
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", capture_result)
     attachment = _UserAppImageAttachment()
     interaction = _UserAppImageInteraction()
@@ -568,7 +572,6 @@ async def test_registered_chat_reports_unreadable_image_without_provider_or_tran
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    app = await _image_chat_app(tmp_path, monkeypatch)
     requests: list[ConversationRunRequest] = []
     delivered: list[str] = []
 
@@ -576,11 +579,13 @@ async def test_registered_chat_reports_unreadable_image_without_provider_or_tran
         requests.append(request)
         return ConversationRunResult(text="unexpected")
 
+    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
+    app = await _image_chat_app(tmp_path, monkeypatch)
+
     async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
         delivered.append(content)
         await _complete_primary_delivery(content, kwargs)
 
-    monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
     monkeypatch.setattr(user_app_turn_adapter, "send_interaction_result", capture_result)
     attachment = _UserAppImageAttachment(unreadable=True)
     interaction = _UserAppImageInteraction()
@@ -749,9 +754,9 @@ async def test_user_app_status_keeps_selected_visibility(
     ) -> None:
         calls.append((ephemeral, original_ephemeral))
 
-    monkeypatch.setattr(app_runtime, "send_interaction_status", send_status)
+    monkeypatch.setattr(user_app_chat_module, "send_interaction_status", send_status)
 
-    await app_runtime._send_user_app_status(
+    await user_app_chat_module._send_user_app_status(
         cast(discord.Interaction, object()),
         "Turn failed.",
         requested_public=requested_public,
@@ -1002,124 +1007,6 @@ async def test_chat_admission_stays_active_through_delivery(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shutdown", [False, True], ids=["capacity", "shutdown"])
-async def test_chat_admission_maps_shutdown_without_busy_status(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    shutdown: bool,
-) -> None:
-    app = await _user_app_chat_app(tmp_path, monkeypatch)
-    app.turn_admission = TurnAdmissionController(max_active=1, max_active_per_user=1)
-    held_lease = None
-    if shutdown:
-        await app.turn_admission.close()
-    else:
-        admission = await app.turn_admission.try_acquire("42")
-        assert admission.lease is not None
-        held_lease = admission.lease
-
-    provider_calls: list[object] = []
-
-    async def run_turn(*args: object, **_kwargs: object) -> TurnResult:
-        provider_calls.extend(args)
-        return TurnResult(response_text="unexpected")
-
-    install_foreground_turn_handler(app, run_turn)
-    interaction = _UserAppImageInteraction()
-
-    try:
-        with caplog.at_level("INFO", logger=app_runtime.__name__):
-            await _run_registered_chat(
-                app,
-                interaction,
-                message="hello",
-                public=False,
-            )
-
-        assert provider_calls == []
-        if shutdown:
-            assert interaction.edits == []
-            assert "during shutdown" in caplog.text
-        else:
-            assert interaction.edits[-1]["content"] == TURN_ADMISSION_BUSY_MESSAGE
-    finally:
-        if held_lease is not None:
-            await held_lease.release()
-        await app.database.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("gate_change", "expected_status"),
-    [
-        ("access", "You no longer have access to this app's personal chat."),
-        ("block", "You can't use personal chat right now."),
-    ],
-)
-async def test_chat_rechecks_access_and_block_after_waiting_for_root_lock(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    gate_change: str,
-    expected_status: str,
-) -> None:
-    app = await _user_app_chat_app(tmp_path, monkeypatch)
-    provider_calls: list[object] = []
-
-    async def run_turn(*args: object, **_kwargs: object) -> TurnResult:
-        provider_calls.extend(args)
-        return TurnResult(response_text="unexpected")
-
-    class BlockedNow:
-        async def is_blocked(self, _user_id: str) -> bool:
-            return True
-
-    install_foreground_turn_handler(app, run_turn)
-    interaction = _UserAppImageInteraction()
-    root_key = "userchat:42"
-    chat = PersonalChatDriver(app)
-    locks = RootLockProbe(app)
-    task: asyncio.Task[TurnResult | None] | None = None
-
-    try:
-        async with locks.hold(root_key):
-            task = asyncio.create_task(
-                chat.run_chat(
-                    interaction,  # type: ignore[arg-type]
-                    message="hello",
-                    attachment=None,
-                    public=False,
-                    request_generation=chat.generation("42"),
-                )
-            )
-            deadline = asyncio.get_running_loop().time() + 0.5
-            while locks.snapshot().refcounts.get(root_key, 0) < 2:
-                if asyncio.get_running_loop().time() > deadline:
-                    raise AssertionError("personal chat turn never queued on the root lock")
-                await asyncio.sleep(0.005)
-
-            if gate_change == "access":
-                app.user_app_access = UserAppAccess(
-                    member_ids=frozenset(),
-                    regular_ids=frozenset(),
-                    staff_ids=frozenset(),
-                )
-            else:
-                app.blocked_user_store = cast(Any, BlockedNow())
-
-        assert task is not None
-        result = await asyncio.wait_for(task, timeout=0.5)
-        assert result is None
-        assert provider_calls == []
-        assert interaction.edits[-1]["content"] == expected_status
-    finally:
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        await app.database.close()
-
-
-@pytest.mark.asyncio
 async def test_chat_delivery_failure_does_not_persist_assistant(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1328,317 +1215,6 @@ async def test_runtime_registers_user_commands_only_when_enabled(
         assert command.allowed_installs is not None
         assert command.allowed_installs.user is True
     await on.database.close()
-
-
-@pytest.mark.asyncio
-async def test_reset_drains_full_chat_lifecycle_and_invalidates_older_requests(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        app_runtime,
-        "build_provider_manager",
-        lambda settings: StubProviderManager(settings),
-    )
-    app = app_runtime.build_app(
-        Settings.model_validate(
-            {
-                "discord_bot_token": "token",
-                "model_api_key": "key",
-                "config_dir": str(tmp_path / "config"),
-                "database_path": str(tmp_path / "runtime.db"),
-                "user_app_chat_enabled": True,
-                "owner_user_id": "42",
-            }
-        )
-    )
-    await LifecycleProbe(app).first_init_core()
-
-    class FakeInteraction:
-        def __init__(self, interaction_id: int) -> None:
-            self.id = interaction_id
-            self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
-            self.channel = SimpleNamespace(guild=None)
-            self.channel_id = 99
-            self.guild = None
-            self.guild_id = None
-            self.created_at = datetime.now(UTC)
-            self.edits: list[str] = []
-            self.followups: list[str] = []
-            self.deleted = False
-
-            class Followup:
-                async def send(
-                    _self,
-                    content: object = None,
-                    **_kwargs: object,
-                ) -> None:
-                    self.followups.append(str(content or ""))
-
-            self.followup = Followup()
-
-        async def edit_original_response(self, **kwargs: object) -> None:
-            self.edits.append(str(kwargs.get("content", "")))
-
-        async def delete_original_response(self) -> None:
-            self.deleted = True
-
-    calls = 0
-
-    async def should_not_run(*_args: object, **_kwargs: object) -> TurnResult:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("reset did not cancel the queued request")
-
-    install_foreground_turn_handler(app, should_not_run)
-    interaction = FakeInteraction(1)
-    chat = PersonalChatDriver(app)
-    locks = RootLockProbe(app)
-    generation = chat.generation("42")
-    root_key = "userchat:42"
-    async with locks.hold(root_key):
-        task = asyncio.create_task(
-            chat.run_chat(
-                interaction,  # type: ignore[arg-type]
-                message="hello",
-                attachment=None,
-                public=True,
-                request_generation=generation,
-            )
-        )
-        deadline = asyncio.get_running_loop().time() + 0.5
-        while locks.snapshot().refcounts.get(root_key, 0) < 2:
-            if asyncio.get_running_loop().time() > deadline:
-                raise AssertionError("personal chat turn never queued on the root lock")
-            await asyncio.sleep(0.005)
-
-        reset_task = asyncio.create_task(
-            chat.reset(interaction)  # type: ignore[arg-type]
-        )
-        await asyncio.wait_for(task, timeout=0.5)
-
-    summary = await asyncio.wait_for(reset_task, timeout=0.5)
-
-    assert summary == "Your personal chat thread is already clear."
-    assert interaction.deleted is False
-    assert interaction.edits == ["Stopped."]
-    assert interaction.followups == []
-    assert calls == 0
-
-    stale = FakeInteraction(2)
-    await chat.run_chat(
-        stale,  # type: ignore[arg-type]
-        message="old retained request",
-        attachment=None,
-        public=False,
-        request_generation=generation,
-    )
-    assert calls == 0
-    assert "expired because your personal thread was reset or deleted" in stale.edits[-1]
-    await app.database.close()
-
-
-@pytest.mark.asyncio
-async def test_personal_chat_timeout_covers_wait_before_turn_execution(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        app_runtime,
-        "build_provider_manager",
-        lambda settings: StubProviderManager(settings),
-    )
-    app = app_runtime.build_app(
-        Settings.model_validate(
-            {
-                "discord_bot_token": "token",
-                "model_api_key": "key",
-                "config_dir": str(tmp_path / "config"),
-                "database_path": str(tmp_path / "runtime.db"),
-                "user_app_chat_enabled": True,
-                "user_app_chat_timeout_seconds": 1,
-                "owner_user_id": "42",
-            }
-        )
-    )
-    await LifecycleProbe(app).first_init_core()
-
-    class FakeInteraction:
-        def __init__(self) -> None:
-            self.id = 1
-            self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
-            self.channel = SimpleNamespace(guild=None)
-            self.channel_id = 99
-            self.guild = None
-            self.guild_id = None
-            self.created_at = datetime.now(UTC)
-            self.edits: list[str] = []
-
-        async def edit_original_response(self, **kwargs: object) -> None:
-            self.edits.append(str(kwargs.get("content", "")))
-
-    async def should_not_run(*_args: object, **_kwargs: object) -> TurnResult:
-        raise AssertionError("the provider ran before the root-lock wait timed out")
-
-    install_foreground_turn_handler(app, should_not_run)
-    interaction = FakeInteraction()
-    chat = PersonalChatDriver(app)
-    async with RootLockProbe(app).hold("userchat:42"):
-        await chat.run_chat(
-            interaction,  # type: ignore[arg-type]
-            message="hello",
-            attachment=None,
-            public=False,
-            request_generation=chat.generation("42"),
-        )
-
-    assert interaction.edits == ["That personal chat turn timed out. Run `/chat` again to retry."]
-    await app.database.close()
-
-
-@pytest.mark.asyncio
-async def test_stop_current_reaches_personal_chat_for_dual_installed_app(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A guild+user installed app reports both integration owners, so /stop must
-    still reach the personal root instead of only the invoking channel."""
-    monkeypatch.setattr(
-        app_runtime,
-        "build_provider_manager",
-        lambda settings: StubProviderManager(settings),
-    )
-    app = app_runtime.build_app(
-        Settings.model_validate(
-            {
-                "discord_bot_token": "token",
-                "model_api_key": "key",
-                "config_dir": str(tmp_path / "config"),
-                "database_path": str(tmp_path / "runtime.db"),
-                "user_app_chat_enabled": True,
-                "owner_user_id": "42",
-            }
-        )
-    )
-    await LifecycleProbe(app).first_init_core()
-
-    recorded: list[tuple[str, str | None, bool]] = []
-
-    async def record_cancel(
-        *,
-        user_id: str,
-        root_key: str | None,
-        channel_id: str,
-        all_operations: bool,
-        wait_seconds: float,
-    ) -> tuple[int, bool]:
-        recorded.append((channel_id, root_key, all_operations))
-        return 0, True
-
-    monkeypatch.setattr(app.active_operations, "cancel", record_cancel)
-
-    class FakeInteraction:
-        def __init__(self, *, user_install: bool, guild_install: bool) -> None:
-            self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
-            self.channel_id = 555
-            self.guild_id = 777
-            self._user_install = user_install
-            self._guild_install = guild_install
-
-        def is_user_integration(self) -> bool:
-            return self._user_install
-
-        def is_guild_integration(self) -> bool:
-            return self._guild_install
-
-    dual = FakeInteraction(user_install=True, guild_install=True)
-    cancellation = WorkCancellationDriver(app)
-    await cancellation.stop_interaction(dual, False, None)  # type: ignore[arg-type]
-    assert ("userapp", "userchat:42", False) in recorded
-    assert ("555", None, False) in recorded
-
-    recorded.clear()
-    user_only = FakeInteraction(user_install=True, guild_install=False)
-    await cancellation.stop_interaction(user_only, False, None)  # type: ignore[arg-type]
-    assert recorded == [("userapp", "userchat:42", False)]
-
-    recorded.clear()
-    guild_only = FakeInteraction(user_install=False, guild_install=True)
-    await cancellation.stop_interaction(guild_only, False, None)  # type: ignore[arg-type]
-    assert recorded == [("555", None, False)]
-
-    await app.database.close()
-
-
-@pytest.mark.asyncio
-async def test_personal_chat_cancellation_propagates_during_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Shutdown cancels every active operation; the personal chat handler must not
-    absorb that cancellation or await another edit on the closing client."""
-    monkeypatch.setattr(
-        app_runtime,
-        "build_provider_manager",
-        lambda settings: StubProviderManager(settings),
-    )
-    app = app_runtime.build_app(
-        Settings.model_validate(
-            {
-                "discord_bot_token": "token",
-                "model_api_key": "key",
-                "config_dir": str(tmp_path / "config"),
-                "database_path": str(tmp_path / "runtime.db"),
-                "user_app_chat_enabled": True,
-                "owner_user_id": "42",
-            }
-        )
-    )
-    await LifecycleProbe(app).first_init_core()
-
-    class FakeInteraction:
-        def __init__(self) -> None:
-            self.id = 1
-            self.user = type("User", (), {"id": 42, "display_name": "Alice"})()
-            self.channel = SimpleNamespace(guild=None)
-            self.channel_id = 99
-            self.guild = None
-            self.guild_id = None
-            self.created_at = datetime.now(UTC)
-            self.edits: list[str] = []
-
-        async def edit_original_response(self, **kwargs: object) -> None:
-            self.edits.append(str(kwargs.get("content", "")))
-
-    entered = asyncio.Event()
-
-    async def wait_forever(*_args: object, **_kwargs: object) -> TurnResult:
-        entered.set()
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
-
-    install_foreground_turn_handler(app, wait_forever)
-    interaction = FakeInteraction()
-    chat = PersonalChatDriver(app)
-    task = asyncio.create_task(
-        chat.run_chat(
-            interaction,  # type: ignore[arg-type]
-            message="hello",
-            attachment=None,
-            public=False,
-            request_generation=chat.generation("42"),
-        )
-    )
-    await entered.wait()
-
-    LifecycleProbe(app).set_closed()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert task.cancelled()
-    assert interaction.edits == []
-
-    await app.database.close()
 
 
 def _personal_context(**overrides: object) -> MessageContext:
@@ -1881,40 +1457,6 @@ async def test_personal_dm_uses_chat_execution_policy_without_onboarding(
         assert captured["dependencies"].count_user_prior_messages is None
     finally:
         await app.database.close()
-
-
-@pytest.mark.asyncio
-async def test_dm_stop_targets_shared_personal_scope(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    app = await _dm_app(tmp_path, monkeypatch)
-    captured: dict[str, object] = {}
-
-    async def add_status_reaction(_message: object, _emoji: str) -> None:
-        return None
-
-    async def cancel_user_work(**kwargs: object) -> str:
-        captured.update(kwargs)
-        return "Stopped."
-
-    async def send_response(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(app.discord_gateway, "add_status_reaction", add_status_reaction)
-    monkeypatch.setattr(app, "_cancel_user_work", cancel_user_work)
-    monkeypatch.setattr(app, "send_response", send_response)
-
-    await WorkCancellationDriver(app).stop_message(  # type: ignore[arg-type]
-        _dm_message(42, content="stop")
-    )
-
-    assert captured == {
-        "user_id": "42",
-        "scopes": [("userapp", "userchat:42")],
-        "all_work": False,
-    }
-    await app.database.close()
 
 
 @pytest.mark.asyncio

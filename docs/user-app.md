@@ -17,9 +17,9 @@ Discord user installs are command-only. Installing the app on a user account doe
 
 Want to continue the conversation without running `/chat` each time? Turn on `USER_APP_DM_ENABLED`. An approved user can then message the bot directly and pick up exactly where `/chat` left off. The setting is off by default and requires `USER_APP_CHAT_ENABLED`.
 
-Both entry points share one transcript, workspace, reset, privacy deletion, and conversation lock. A conversation started with `/chat` in a server therefore continues naturally in DM, and switching back to `/chat` keeps the same context.
+Both entry points share one transcript, workspace, reset, privacy deletion, conversation lock, and `chat` prompt template. A conversation started with `/chat` in a server therefore continues naturally in DM, and switching back to `/chat` keeps the same context. Neither personal entry point applies the guild new-user onboarding threshold or its prior-message counter. Both neutralize line breaks in user input before building the model's labeled speaker line, so embedded `Name: content` text cannot forge another turn.
 
-Only users on the `USER_APP_*` access lists can use personal DMs. Messages from everyone else are ignored without a reply. Access is checked again before a queued turn starts, so removing a user from the list also stops queued messages from running.
+Only users on the `USER_APP_*` access lists can use personal DMs. Messages from everyone else are ignored without a reply. Access is checked again after acquiring the conversation lock, so removing a user from the list also stops queued messages from running. `/chat` likewise rechecks access and the user block after waiting for that lock; its initial block check remains before consent or any other response.
 
 Two differences from `/chat` follow from being a real message rather than a slash interaction. There is no invocation gate, because a DM has nothing else to be addressed to, and no `visibility:` option, because a DM is already private. There is also no interaction token, so `USER_APP_CHAT_TIMEOUT_SECONDS` doesn't bound a DM turn and replies are delivered as ordinary chunked messages.
 

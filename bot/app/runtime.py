@@ -2362,29 +2362,45 @@ class KimiApplication:
         on_accept: Callable[[discord.Interaction], Awaitable[None]],
         public_response: bool,
     ) -> bool:
-        if (
-            not self.settings.privacy_consent_enabled
-            or self.preference_store is None
-            or await self.preference_store.has_consented(str(interaction.user.id))
-        ):
+        if not self.settings.privacy_consent_enabled:
             return False
+        user_id = str(interaction.user.id)
+        try:
+            preference_store = self.preference_store
+            if preference_store is None:
+                raise RuntimeError("privacy consent store is unavailable")
+            if await preference_store.has_consented(user_id):
+                return False
 
-        view = UserAppConsentView(
-            author_id=interaction.user.id,
-            store=self.preference_store,
-            on_accept=on_accept,
-            timeout=self.settings.privacy_consent_timeout,
-            public_response=public_response,
-        )
-        await interaction.response.send_message(
-            embed=build_consent_embed(
-                title=self.settings.privacy_consent_title,
-                text=self.settings.privacy_consent_text,
-            ),
-            view=view,
-            ephemeral=True,
-        )
-        return True
+            view = UserAppConsentView(
+                author_id=interaction.user.id,
+                store=preference_store,
+                on_accept=on_accept,
+                timeout=self.settings.privacy_consent_timeout,
+                public_response=public_response,
+            )
+            await interaction.response.send_message(
+                embed=build_consent_embed(
+                    title=self.settings.privacy_consent_title,
+                    text=self.settings.privacy_consent_text,
+                ),
+                view=view,
+                ephemeral=True,
+            )
+            return True
+        except Exception:
+            log.exception("User-app privacy consent gate failed for user %s", user_id)
+            with suppress(discord.HTTPException):
+                message = "I couldn't verify your privacy consent. Please try again."
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        message,
+                        ephemeral=True,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+            return True
 
     async def _handle_user_app_chat_interaction(
         self,
@@ -2559,6 +2575,14 @@ class KimiApplication:
 
         admission = await self.turn_admission.try_acquire(user_id)
         if admission.lease is None:
+            if admission.rejection is AdmissionRejection.SHUTTING_DOWN:
+                log.info("Ignoring personal chat turn from user %s during shutdown", user_id)
+                return None
+            log.info(
+                "Rejecting personal chat turn from user %s at admission boundary: %s",
+                user_id,
+                admission.rejection,
+            )
             await _send_user_app_status(
                 interaction,
                 TURN_ADMISSION_BUSY_MESSAGE,
@@ -2586,6 +2610,22 @@ class KimiApplication:
         try:
             async with admission.lease:
                 async with self._root_lock(root_key):
+                    current_trust_tier = self.user_app_access.resolve(user_id)
+                    if current_trust_tier is None:
+                        await _send_user_app_status(
+                            interaction,
+                            "You no longer have access to this app's personal chat.",
+                            requested_public=public,
+                        )
+                        return None
+                    if await self._user_is_blocked(user_id):
+                        await _send_user_app_status(
+                            interaction,
+                            "You can't use personal chat right now.",
+                            requested_public=public,
+                        )
+                        return None
+                    trust_tier = current_trust_tier
                     conversation_id = await conversation_store.get_or_create(
                         root_key,
                         "Personal chat",
@@ -2623,7 +2663,7 @@ class KimiApplication:
                         )
 
                     turn_input = TurnPreparationInput(
-                        raw_content=message,
+                        raw_content=clean_message_text(message),
                         source_message=source_message,
                         bot_user=self.bot.user,
                         guild_id=None,
@@ -3109,7 +3149,7 @@ class KimiApplication:
         # A DM from an allowlisted user is personal chat arriving as a real
         # message instead of a slash interaction. It scopes exactly like /chat:
         # one guild-less root, the shared "userapp" scope channel, the personal
-        # workspace, and the personal prompt template.
+        # workspace, personal prompt template, and no first-guild-turn onboarding.
         personal_dm_tier = self._dm_personal_chat_tier(message)
         personal_dm = personal_dm_tier is not None
 
@@ -3277,7 +3317,9 @@ class KimiApplication:
             strip_mention_func=self._strip_message_invocation,
             persist_prepared_user_message=persist_prepared_user_message,
             count_user_prior_messages=(
-                count_user_prior_messages if self.conversation_store is not None else None
+                count_user_prior_messages
+                if not personal_dm and self.conversation_store is not None
+                else None
             ),
             activity_reporter=activity_reporter,
             extra_blocked_tools=self.threads._thread_state_blocked_tools(message),
@@ -3311,7 +3353,9 @@ class KimiApplication:
         turn_config = build_turn_preparation_config(
             self.settings,
             recent_image_lookback=self.settings.recent_image_lookback,
-            new_user_onboarding_turns=self.settings.new_user_onboarding_turns,
+            new_user_onboarding_turns=(
+                0 if personal_dm else self.settings.new_user_onboarding_turns
+            ),
         )
 
         async def run_locked() -> None:
@@ -3325,6 +3369,7 @@ class KimiApplication:
                     max_tokens=self.settings.react_max_tokens,
                     temperature=self.settings.react_temperature,
                     bot_name=self.settings.bot_name,
+                    command_template="chat" if personal_dm else None,
                     timeout_seconds=self.settings.react_turn_timeout_seconds,
                     thread_handoff_suggest_after_tool_calls=(
                         self.settings.thread_handoff_suggest_after_tool_calls

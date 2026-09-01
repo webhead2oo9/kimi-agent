@@ -11,8 +11,10 @@ import pytest
 
 from app import runtime as app_runtime
 from app import lifecycle as app_lifecycle
+from app.response_delivery import DiscordResponseSender
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
+from discord_adapter.gateway import DiscordGateway
 from storage.db import Database
 from storage.model_selection import ModelSelectionStore
 from tests.helpers import LifecycleProbe, StubProviderManager
@@ -32,31 +34,19 @@ def _settings(**kwargs: object) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
 
 
-class _DeliveryApp:
-    """The slice of KimiApplication that send_response touches.
-
-    send_response routes through the real workspace guard so the lock
-    condition under test is the production one, not a copy.
-    """
-
-    _deliver_with_workspace_guard = app_runtime.KimiApplication._deliver_with_workspace_guard
-
-    def __init__(self, gateway: object, locks: UserLocks) -> None:
-        self.discord_gateway = gateway
-        self.tools = SimpleNamespace(workspace_locks=locks)
-
-
 @pytest.mark.asyncio
 async def test_text_response_does_not_wait_for_workspace_writer() -> None:
     locks = UserLocks()
     gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
-    app = cast(app_runtime.KimiApplication, _DeliveryApp(gateway, locks))
+    sender = DiscordResponseSender(
+        gateway=cast(DiscordGateway, gateway),
+        workspace_locks=locks,
+    )
     workspace_key = WorkspaceKey("u1__g1")
 
     async with locks.writer(workspace_key):
         await asyncio.wait_for(
-            app_runtime.KimiApplication.send_response(
-                app,
+            sender.send(
                 cast(discord.abc.Messageable, SimpleNamespace()),
                 "hello while coding",
                 workspace_key=workspace_key,
@@ -71,13 +61,15 @@ async def test_text_response_does_not_wait_for_workspace_writer() -> None:
 async def test_file_response_waits_for_workspace_writer() -> None:
     locks = UserLocks()
     gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
-    app = cast(app_runtime.KimiApplication, _DeliveryApp(gateway, locks))
+    sender = DiscordResponseSender(
+        gateway=cast(DiscordGateway, gateway),
+        workspace_locks=locks,
+    )
     workspace_key = WorkspaceKey("u1__g1")
 
     async with locks.writer(workspace_key):
         delivery = asyncio.create_task(
-            app_runtime.KimiApplication.send_response(
-                app,
+            sender.send(
                 cast(discord.abc.Messageable, SimpleNamespace()),
                 "attached result",
                 output_files=["artifact.txt"],

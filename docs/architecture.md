@@ -10,7 +10,7 @@ People talk to Kimi in a few different ways. Under the hood they all use the sam
 
 This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
-The gateway entry point keeps the Discord gates and root lock, then `handle_message` sends the turn through the shared foreground runner and its guild-message adapter.
+The gateway entry point delegates to `DiscordMessageController`, which owns the Discord gates and root lock, then sends the turn through the shared foreground runner and its guild-message adapter.
 
 ### Personal chat (optional)
 
@@ -61,7 +61,7 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
 | `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
 
-`app/` is a large package. The important files are `runtime.py` (`build_app` and Discord ingress), `lifecycle.py` (repository ownership, READY initialization, background resources, and shutdown), `command_sync.py` (READY-cohort command publication), `guild_activation.py` (live guild activation and refresh), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery through a frozen collaborator bundle), `user_app_chat.py` (personal-chat policy and execution), `user_app_consent.py` (shared interaction consent), `user_app_turn_adapter.py` (deferred `/chat` delivery), `work_cancellation.py` (foreground/coding teardown), `coding_tasks.py` (durable worker scheduling), `coding_delivery.py` (durable Discord projection and control), `root_locks.py` (refcounted conversation serialization), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
+`app/` is a large package. The important files are `runtime.py` (`build_app` and thin Discord ingress), `lifecycle.py` (repository ownership, READY initialization, background resources, and shutdown), `message_runtime.py` (message admission, routing, and turn composition), `response_delivery.py` (workspace-guarded Discord response delivery), `command_sync.py` (READY-cohort command publication), `guild_activation.py` (live guild activation and refresh), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery through a frozen collaborator bundle), `user_app_chat.py` (personal-chat policy and execution), `user_app_consent.py` (shared interaction consent), `user_app_turn_adapter.py` (deferred `/chat` delivery), `work_cancellation.py` (foreground/coding teardown), `coding_tasks.py` (durable worker scheduling), `coding_delivery.py` (durable Discord projection and control), `root_locks.py` (refcounted conversation serialization), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
 ## Design choices that matter
 

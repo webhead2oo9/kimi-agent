@@ -9,8 +9,8 @@ A managed thread has a **mode**: auto-responding (the default, where every messa
 
 - `tools/threads.py`: the four thread tools, the plain-data `ThreadRequest`, and the pure `match_thread_target` (no `discord` import), registered in `app/tools.py` behind the config gate. The instruction-only `start-thread` skill teaches the model when to use them.
 - `app/threads.py`: `ThreadHandoffManager`, the durable thread→root mapping plus the two in-memory id sets it owns (every managed thread, and the subset currently auto-responding); created and loaded in `on_ready`.
-- `app/thread_handoff_boundary.py`: `ThreadHandoffBoundary`, which owns `create_handoff_thread` (creation plus enrollment at the send boundary) and its cross-channel branch `_open_cross_channel_thread`, `_thread_target_candidates` / `resolve_thread_target` (the cross-channel gate and the seam the tool is given), `_thread_state_blocked_tools` (the per-turn tool mask), and the `_can_open_thread` permission check.
-- `app/runtime.py`: owns `responds_without_mention` (the gate's predicate) and constructs the foreground adapter.
+- `app/thread_handoff_boundary.py`: `ThreadHandoffBoundary`, which owns `create_handoff_thread` (creation plus enrollment at the send boundary) and its cross-channel branch `_open_cross_channel_thread`, `_thread_target_candidates` / `resolve_thread_target` (the cross-channel gate and the seam the tool is given), `thread_state_blocked_tools` (the per-turn tool mask), and the `_can_open_thread` permission check.
+- `app/message_runtime.py`: `DiscordMessageController` owns `responds_without_mention` (the gate's predicate) and constructs the foreground adapter.
 - `app/guild_turn_adapter.py`: calls the boundary through `GuildTurnCollaborators.threads` and reports the channel each reply actually landed in so `app/foreground_turn.py` persists it under that destination.
 - `config/fragments/guild_config.py:load_guild_thread_targets`: the guild's cross-channel allowlist.
 - `app/conversation_routing.py`: the managed-thread branch in `resolve_conversation_for_message`.

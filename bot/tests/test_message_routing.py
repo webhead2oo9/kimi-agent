@@ -1,4 +1,4 @@
-"""Exercises app/runtime.py's handle_message: routing an incoming Discord
+"""Exercises DiscordMessageController.handle_message: routing an incoming Discord
 message to the right conversation, thread parent, and memory recall before
 a turn is ever run. This is the dispatch layer, not the conversation loop
 itself; see test_core_smoke.py for that.
@@ -18,10 +18,11 @@ import pytest_asyncio
 
 from agent.context import ContextManager
 from agent.core import ConversationRunRequest, ConversationRunResult
+from app import message_runtime
 from app import runtime as app_runtime
 from app import thread_handoff_boundary as thread_boundary
 from app.admission import TURN_ADMISSION_BUSY_MESSAGE, TurnAdmissionController
-from app.conversation_routing import ResolvedConversation
+from app.conversation_routing import ResolvedConversation, resolve_conversation_for_message
 from config.fragments.tool_policy import THREAD_STATE_TOOLS
 from app.threads import ThreadHandoffManager
 from agent.turn import TurnResult, handle_turn
@@ -38,6 +39,7 @@ from storage.conversations import (
 )
 from storage.db import Database
 from tests.helpers import (
+    make_settings,
     replace_app_database,
     LifecycleProbe,
     NobodyBlocked,
@@ -67,9 +69,9 @@ def _conversation_call_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _run_conversation_mock() -> AsyncMock:
-    """The AsyncMock _build_test_app patched over app_runtime.run_conversation."""
+    """The AsyncMock _build_test_app patched over message_runtime.run_conversation."""
 
-    mock = app_runtime.run_conversation
+    mock = message_runtime.run_conversation
     assert isinstance(mock, AsyncMock)
     return mock
 
@@ -134,7 +136,7 @@ async def _transcript_discord_ids(database: Database, *, role: str | None = None
         return {str(row["discord_message_id"]) for row in await cursor.fetchall()}
 
 
-def _build_test_app(monkeypatch):
+def _build_test_app(monkeypatch, **settings_overrides: Any):
     monkeypatch.setattr(
         app_runtime,
         "build_provider_manager",
@@ -143,12 +145,12 @@ def _build_test_app(monkeypatch):
     # Keep tests hermetic and explicitly activate the synthetic guild. Guilds
     # with no saved setup fail closed.
     app = app_runtime.build_app(
-        Settings(
-            _env_file=None,
+        make_settings(
             hindsight_url="",
             model_api_key="test-key",
             allowed_guild_ids="999",
             moderation_enabled=False,
+            **settings_overrides,
         )
     )
     LifecycleProbe(app).set_gateway_ready()
@@ -185,7 +187,7 @@ async def test_new_message_root_records_owner_before_transcript_persistence(
         message_id=222,
     )
 
-    resolved = await app_runtime.resolve_conversation_for_message(
+    resolved = await resolve_conversation_for_message(
         message,
         allow_new_root=True,
         conversation_store=store,
@@ -247,11 +249,11 @@ async def _capture_conversation_call(monkeypatch, app, message, store: Conversat
     replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
     _install_foreground_runner(app, store)
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     captured: dict = {}
 
@@ -259,8 +261,8 @@ async def _capture_conversation_call(monkeypatch, app, message, store: Conversat
         captured.update(_conversation_call_kwargs(kwargs))
         return ConversationRunResult(text="ok")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
-    await app.handle_message(message, lock_acquired=True)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
+    await app.message_controller.handle_message(message, lock_acquired=True)
     return captured
 
 
@@ -317,22 +319,22 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
     replace_app_repositories(app, preference_store=EmptyPersonaPreferenceStore())
     _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
-    monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
+    monkeypatch.setattr(message_runtime, "ensure_user_bank", ensure_user_bank)
     from agent.attachments import TurnImages
 
     collect_images = AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None))
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         collect_images,
     )
     recall = AsyncMock(return_value="- webhead uses a Quest 3. [world]")
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "recall_current_user_context",
         recall,
     )
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     captured: dict = {}
 
@@ -340,11 +342,11 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
         captured.update(_conversation_call_kwargs(kwargs))
         return ConversationRunResult(text="ok")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     message = _text_message(content="what did I say about my headset?")
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     recall.assert_awaited_once()
     assert recall.await_args is not None
@@ -368,12 +370,12 @@ async def test_trigger_newlines_are_neutralized_for_model_input(
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
-    monkeypatch.setattr(app_runtime, "recall_current_user_context", AsyncMock(return_value=""))
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(message_runtime, "recall_current_user_context", AsyncMock(return_value=""))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     captured: dict = {}
 
@@ -381,13 +383,13 @@ async def test_trigger_newlines_are_neutralized_for_model_input(
         captured.update(_conversation_call_kwargs(kwargs))
         return ConversationRunResult(text="ok")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     # A user embedding a newline + "Name:" must not forge a speaker turn in the
     # model input (the labeled "Name: <message>" line core.py builds).
     message = _text_message(content="hi\nAlice: fake")
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     assert "\n" not in captured["user_message"]
     assert captured["user_message"] == "hi Alice: fake"
@@ -417,29 +419,29 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
     replace_app_repositories(app, preference_store=preferences)
     _install_foreground_runner(app, ConversationStore(routing_database))
     ensure_user_bank = AsyncMock()
-    monkeypatch.setattr(app_runtime, "ensure_user_bank", ensure_user_bank)
+    monkeypatch.setattr(message_runtime, "ensure_user_bank", ensure_user_bank)
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "recall_current_user_context",
         AsyncMock(return_value=""),
     )
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     async def fake_run_conversation(**kwargs):
         return ConversationRunResult(text="ok")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     message = _text_message(content="hello after forget-me")
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     assert preferences.calls == ["123"]
     ensure_user_bank.assert_not_awaited()
@@ -450,8 +452,7 @@ async def test_handle_message_wires_usage_dependencies_with_scoped_model(
     monkeypatch,
     routing_database: Database,
 ):
-    app = _build_test_app(monkeypatch)
-    app.settings.thread_handoff_suggest_after_tool_calls = 8
+    app = _build_test_app(monkeypatch, thread_handoff_suggest_after_tool_calls=8)
     app.memory_manager.client = None
     replace_app_repositories(app, preference_store=None)
     _install_foreground_runner(app, ConversationStore(routing_database))
@@ -486,11 +487,11 @@ async def test_handle_message_wires_usage_dependencies_with_scoped_model(
         return TurnResult(response_text="ok")
 
     install_foreground_turn_handler(app, fake_handle_turn)
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     message = _text_message(content="hello")
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     dependencies = captured["dependencies"]
     assert dependencies.usage_store is not None
@@ -641,13 +642,13 @@ def _wire_handle_message(
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
-    monkeypatch.setattr(app_runtime, "recall_current_user_context", AsyncMock(return_value=""))
+    monkeypatch.setattr(message_runtime, "recall_current_user_context", AsyncMock(return_value=""))
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "run_conversation",
         AsyncMock(return_value=ConversationRunResult(text="ok")),
     )
@@ -656,7 +657,7 @@ def _wire_handle_message(
     sent.content = "ok"
     sent.created_at = datetime.fromtimestamp(sent_message_id, tz=UTC)
     sent.channel.id = 100
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[sent]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[sent]))
 
 
 @pytest.mark.asyncio
@@ -684,7 +685,7 @@ async def test_private_chat_public_reply_continues_only_for_its_owner(
         message_id=902,
         reference_message_id=901,
     )
-    outsider_resolution = await app_runtime.resolve_conversation_for_message(
+    outsider_resolution = await resolve_conversation_for_message(
         outsider,
         allow_new_root=True,
         conversation_store=store,
@@ -698,7 +699,7 @@ async def test_private_chat_public_reply_continues_only_for_its_owner(
         message_id=903,
         reference_message_id=901,
     )
-    owner_resolution = await app_runtime.resolve_conversation_for_message(
+    owner_resolution = await resolve_conversation_for_message(
         owner,
         allow_new_root=True,
         conversation_store=store,
@@ -736,7 +737,7 @@ async def test_retention_race_recreates_private_reply_root_as_owner_only(
         message_id=903,
     )
 
-    await app.handle_message(
+    await app.message_controller.handle_message(
         trigger,
         lock_acquired=True,
         resolved_conversation=ResolvedConversation(
@@ -773,7 +774,7 @@ async def test_shared_ownerless_root_is_not_claimed_by_member_who_continues_it(
         message_id=904,
     )
 
-    await app.handle_message(
+    await app.message_controller.handle_message(
         trigger,
         lock_acquired=True,
         resolved_conversation=ResolvedConversation(
@@ -804,7 +805,7 @@ async def test_handle_message_persists_only_trigger_before_model(
         content="<@999> hi", author_id=123, author_name="Alice", message_id=222, channel=channel
     )
 
-    await app.handle_message(trigger, lock_acquired=True)
+    await app.message_controller.handle_message(trigger, lock_acquired=True)
 
     records = {r.discord_message_id: r for _cid, recs in store.saved for r in recs}
     assert "111" not in records
@@ -831,7 +832,7 @@ async def test_handle_message_persists_trigger_image_parts(monkeypatch, routing_
     from agent.attachments import TurnImages
 
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[image_part], edit_target=None)),
     )
@@ -843,7 +844,7 @@ async def test_handle_message_persists_trigger_image_parts(monkeypatch, routing_
         message_id=222,
     )
 
-    await app.handle_message(trigger, lock_acquired=True)
+    await app.message_controller.handle_message(trigger, lock_acquired=True)
 
     records = {r.discord_message_id: r for _cid, recs in store.saved for r in recs}
     assert records["222"].content_parts == [
@@ -873,7 +874,7 @@ async def test_handle_message_routes_building_message_and_pings_on_answer(
             )
         ]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     async def fake_run_conversation(**kwargs):
         await _conversation_call_kwargs(kwargs)["activity_reporter"].commit_step(
@@ -881,7 +882,7 @@ async def test_handle_message_routes_building_message_and_pings_on_answer(
         )
         return ConversationRunResult(text="final answer")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     message = _text_message(content="do the thing")
     message.created_at = datetime(2026, 6, 5, tzinfo=UTC)
@@ -893,7 +894,7 @@ async def test_handle_message_routes_building_message_and_pings_on_answer(
         )
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     assert await store.get_conversation_by_discord_message("777", channel_id="100") is not None
     assert await store.get_conversation_by_discord_message("888", channel_id="100") is not None
@@ -924,14 +925,14 @@ async def test_handle_message_same_channel_mentions_create_distinct_roots(
         sent.channel.id = 100
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     for message_id, author_id, author_name, content in [
         (101, 123, "UserA", "<@999> how do I do A?"),
         (201, 456, "UserB", "<@999> thoughts on LLMs?"),
         (301, 789, "UserC", "<@999> what is this song?"),
     ]:
-        await app.handle_message(
+        await app.message_controller.handle_message(
             _trigger_message(
                 content=content,
                 author_id=author_id,
@@ -998,7 +999,7 @@ async def test_handle_message_seeds_turn_from_persisted_db_transcript(
         reference_message_id=1001,
     )
 
-    await app.handle_message(trigger, lock_acquired=True)
+    await app.message_controller.handle_message(trigger, lock_acquired=True)
 
     context = _last_run_conversation_kwargs()["context"]
     history_text = [
@@ -1029,9 +1030,9 @@ async def test_reply_to_bot_response_continues_referenced_root_only(
         sent.channel.id = 100
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
-    await app.handle_message(
+    await app.message_controller.handle_message(
         _trigger_message(
             content="<@999> how do I do A?",
             author_id=123,
@@ -1040,7 +1041,7 @@ async def test_reply_to_bot_response_continues_referenced_root_only(
         ),
         lock_acquired=True,
     )
-    await app.handle_message(
+    await app.message_controller.handle_message(
         _trigger_message(
             content="<@999> thoughts on LLMs?",
             author_id=456,
@@ -1049,7 +1050,7 @@ async def test_reply_to_bot_response_continues_referenced_root_only(
         ),
         lock_acquired=True,
     )
-    await app.handle_message(
+    await app.message_controller.handle_message(
         _trigger_message(
             content="can I add detail here?",
             author_id=789,
@@ -1083,7 +1084,7 @@ async def test_history_failure_falls_back_to_trigger_only(monkeypatch, routing_d
         content="<@999> hi", author_id=123, author_name="Alice", message_id=222, channel=channel
     )
 
-    await app.handle_message(trigger, lock_acquired=True)
+    await app.message_controller.handle_message(trigger, lock_acquired=True)
 
     _run_conversation_mock().assert_awaited_once()  # turn still ran
     pre_send = store.saved[0][1]  # backfill + trigger persist
@@ -1118,7 +1119,7 @@ async def test_on_message_mapped_reply_with_mention_continues_existing_root(
         context_channel_id="100",
     )
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
@@ -1129,7 +1130,7 @@ async def test_on_message_mapped_reply_with_mention_continues_existing_root(
     async def fake_handle(message, *, lock_acquired=False, resolved_conversation=None, **kwargs):
         captured["resolved"] = resolved_conversation
 
-    monkeypatch.setattr(app, "handle_message", fake_handle)
+    monkeypatch.setattr(app.message_controller, "handle_message", fake_handle)
 
     message = _trigger_message(
         content="<@999> following up",
@@ -1178,7 +1179,7 @@ async def test_on_message_text_invocation_reply_continues_existing_root(
     async def fake_handle(message, *, lock_acquired=False, resolved_conversation=None, **kwargs):
         captured["resolved"] = resolved_conversation
 
-    monkeypatch.setattr(app, "handle_message", fake_handle)
+    monkeypatch.setattr(app.message_controller, "handle_message", fake_handle)
 
     message = _trigger_message(
         content="hey kimi do xyz",
@@ -1224,13 +1225,13 @@ async def test_on_message_mapped_reply_without_mention_is_ignored(
         context_channel_id="100",
     )
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             False
         ),
     )
-    monkeypatch.setattr(app, "handle_message", AsyncMock())
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
 
     message = _trigger_message(
         content="following up",
@@ -1242,7 +1243,7 @@ async def test_on_message_mapped_reply_without_mention_is_ignored(
 
     await app.on_message(message)
 
-    app.handle_message.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1282,13 +1283,13 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
         ),
     )
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
         ),
     )
-    monkeypatch.setattr(app, "handle_message", AsyncMock())
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
 
     message = _trigger_message(content="<@999> hello", author_id=456, author_name="Bob")
     message.reply = AsyncMock()
@@ -1296,7 +1297,7 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
     await app.on_message(message)
 
     message.reply.assert_awaited()  # the consent prompt was posted
-    app.handle_message.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
     assert await _conversation_keys(routing_database) == set()
 
 
@@ -1313,13 +1314,13 @@ async def test_on_message_no_turn_result_adds_no_success_reaction(
     replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
         ),
     )
-    monkeypatch.setattr(app, "handle_message", AsyncMock(return_value=None))
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock(return_value=None))
 
     message = _trigger_message(content="<@999>", author_id=456, author_name="Bob")
 
@@ -1341,7 +1342,7 @@ async def test_on_message_unmapped_reply_without_mention_is_ignored(
     replace_app_repositories(app, conversation_store=store)
     replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
-    monkeypatch.setattr(app, "handle_message", AsyncMock())
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
 
     message = _trigger_message(
         content="following up",
@@ -1353,7 +1354,7 @@ async def test_on_message_unmapped_reply_without_mention_is_ignored(
 
     await app.on_message(message)
 
-    app.handle_message.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
 
 
 async def _drive_on_message_root_concurrency(
@@ -1384,7 +1385,7 @@ async def _drive_on_message_root_concurrency(
             context_channel_id="100",
         )
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             message in messages
@@ -1402,7 +1403,7 @@ async def _drive_on_message_root_concurrency(
             await release.wait()
         events.append(f"end:{message.id}")
 
-    monkeypatch.setattr(app, "handle_message", fake_handle)
+    monkeypatch.setattr(app.message_controller, "handle_message", fake_handle)
 
     def second_is_queued_on_a_root_lock() -> bool:
         return any(count >= 2 for count in RootLockProbe(app).snapshot().refcounts.values())
@@ -1501,9 +1502,9 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
             max_active_per_user=1,
         ),
     )
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "_should_respond", lambda *args, **kwargs: True)
 
     alice_started = asyncio.Event()
     release_alice = asyncio.Event()
@@ -1515,9 +1516,9 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
             alice_started.set()
             await release_alice.wait()
 
-    monkeypatch.setattr(app, "_on_message_for_user", fake_on_message_for_user)
+    monkeypatch.setattr(app.message_controller, "_on_message_for_user", fake_on_message_for_user)
     send_response = AsyncMock(return_value=[])
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     first = _trigger_message(
         content="<@999> first root",
@@ -1577,19 +1578,19 @@ async def test_blocked_user_is_ignored_before_status_and_turn(
 
     replace_lifecycle_resources(app, privacy_barrier=cast(Any, FailIfLeased()))
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
         ),
     )
-    monkeypatch.setattr(app, "handle_message", AsyncMock())
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
 
     message = _trigger_message(content="<@999> hi", author_id=123, author_name="Alice")
 
     await app.on_message(message)
 
-    app.handle_message.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
     message.add_reaction.assert_not_awaited()
     message.remove_reaction.assert_not_awaited()
 
@@ -1611,13 +1612,13 @@ async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_databa
 
     verdicts = iter([True, False])
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             next(verdicts)
         ),
     )
-    monkeypatch.setattr(app, "handle_message", AsyncMock())
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
     remove_reaction = AsyncMock()
     monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", remove_reaction)
 
@@ -1625,7 +1626,7 @@ async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_databa
 
     await app.on_message(message)
 
-    app.handle_message.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
     # The ⏳ ack went out before the lock, so it has to be cleaned up.
     message.add_reaction.assert_awaited_once_with("⏳")
     remove_reaction.assert_awaited_once()
@@ -1642,9 +1643,9 @@ async def test_cancellation_during_processing_reaction_add_still_removes_it(
     )
     replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "_should_respond", lambda *args, **kwargs: True)
 
     reaction_accepted = asyncio.Event()
 
@@ -1680,11 +1681,11 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
     )
     replace_app_repositories(app, conversation_store=None)
     app.settings.allowed_channel_ids = ""
-    monkeypatch.setattr(app_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app_runtime, "can_send_reply", lambda *args, **kwargs: True)
-    monkeypatch.setattr(app, "_should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "can_send_reply", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "_should_respond", lambda *args, **kwargs: True)
     monkeypatch.setattr(
-        app,
+        app.message_controller,
         "handle_message",
         AsyncMock(return_value=TurnResult(response_text="done")),
     )
@@ -1740,10 +1741,9 @@ async def test_processing_reaction_cleanup_is_bounded(
             raise
 
     monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", stuck_remove)
-    monkeypatch.setattr(app_runtime, "_STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS", 0.01)
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
-    await remove_processing_reaction(app, message)
+    await remove_processing_reaction(app, message, timeout=0.01)
     await cleanup_started.wait()
     await cleanup_cancelled.wait()
 
@@ -1789,13 +1789,13 @@ async def test_owner_only_managed_thread_rejects_outsider_routing(
         channel=thread,
     )
 
-    owner_resolution = await app_runtime.resolve_conversation_for_message(
+    owner_resolution = await resolve_conversation_for_message(
         owner,
         allow_new_root=True,
         conversation_store=store,
         thread_handoff=manager,
     )
-    outsider_resolution = await app_runtime.resolve_conversation_for_message(
+    outsider_resolution = await resolve_conversation_for_message(
         outsider,
         allow_new_root=True,
         conversation_store=store,
@@ -1831,7 +1831,7 @@ async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_d
         )
         return ConversationRunResult(text="moved!")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     send_calls: dict = {}
 
@@ -1845,14 +1845,14 @@ async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_d
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     message = _trigger_message(
         content="<@999> help me", author_id=123, author_name="Alice", message_id=1000
     )
     message.create_thread = AsyncMock(return_value=thread)
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     message.create_thread.assert_awaited_once_with(name="Quest help")
     message.add_reaction.assert_awaited_once_with(thread_boundary.THREAD_HANDOFF_REACTION)
@@ -1884,14 +1884,14 @@ async def test_thread_request_retries_creation_once(monkeypatch, routing_databas
         )
         return ConversationRunResult(text="moved!")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     sleep_delays: list[float] = []
 
     async def fake_sleep(delay: float) -> None:
         sleep_delays.append(delay)
 
-    monkeypatch.setattr(app_runtime.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(thread_boundary.asyncio, "sleep", fake_sleep)
 
     send_calls: dict = {}
 
@@ -1905,7 +1905,7 @@ async def test_thread_request_retries_creation_once(monkeypatch, routing_databas
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     message = _trigger_message(
         content="<@999> help me", author_id=123, author_name="Alice", message_id=1000
@@ -1914,7 +1914,7 @@ async def test_thread_request_retries_creation_once(monkeypatch, routing_databas
         side_effect=[discord.HTTPException(MagicMock(), "boom"), thread]
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     assert message.create_thread.await_count == 2
     assert sleep_delays == [thread_boundary.THREAD_HANDOFF_CREATE_RETRY_DELAY_SECONDS]
@@ -1939,14 +1939,14 @@ async def test_thread_request_falls_back_to_channel_when_creation_fails(
         )
         return ConversationRunResult(text="moved!")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     sleep_delays: list[float] = []
 
     async def fake_sleep(delay: float) -> None:
         sleep_delays.append(delay)
 
-    monkeypatch.setattr(app_runtime.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(thread_boundary.asyncio, "sleep", fake_sleep)
 
     send_calls: dict = {}
 
@@ -1960,14 +1960,14 @@ async def test_thread_request_falls_back_to_channel_when_creation_fails(
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     message = _trigger_message(
         content="<@999> help me", author_id=123, author_name="Alice", message_id=1000
     )
     message.create_thread = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "boom"))
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     assert message.create_thread.await_count == 2
     assert sleep_delays == [thread_boundary.THREAD_HANDOFF_CREATE_RETRY_DELAY_SECONDS]
@@ -1992,12 +1992,12 @@ async def test_thread_request_does_not_retry_when_creation_is_forbidden(
         )
         return ConversationRunResult(text="moved!")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     async def fake_sleep(delay: float) -> None:
         raise AssertionError("Forbidden thread creation should not be retried")
 
-    monkeypatch.setattr(app_runtime.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(thread_boundary.asyncio, "sleep", fake_sleep)
 
     send_calls: dict = {}
 
@@ -2011,7 +2011,7 @@ async def test_thread_request_does_not_retry_when_creation_is_forbidden(
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     response = SimpleNamespace(status=403, reason="Forbidden")
     message = _trigger_message(
@@ -2021,7 +2021,7 @@ async def test_thread_request_does_not_retry_when_creation_is_forbidden(
         side_effect=discord.Forbidden(response, "missing permissions")
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     message.create_thread.assert_awaited_once_with(name="Quest help")
     assert send_calls["channel"] is message.channel
@@ -2077,7 +2077,7 @@ async def _cross_channel_turn(
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     message = _trigger_message(
         content="<@999> take this to #bot-spam",
@@ -2086,7 +2086,7 @@ async def _cross_channel_turn(
         message_id=1000,
     )
     message.reply = AsyncMock()
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
     return message, thread, created
 
 
@@ -2128,6 +2128,8 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
     events: list[tuple[Any, ...]] = []
     prepared_target: tuple[str | None, str | None] = (None, None)
 
+    real_coding = app.lifecycle.resources.coding_tasks
+
     class CodingTasks:
         async def prepare_handoff(
             self,
@@ -2163,7 +2165,7 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
             *,
             message=None,
         ) -> None:
-            await app.lifecycle.resources.coding_tasks.delete_status_message(
+            await real_coding.delete_status_message(
                 channel,
                 task,
                 marker,
@@ -2171,10 +2173,10 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
             )
 
         def task_marker(self, task_id: str) -> str:
-            return app.lifecycle.resources.coding_tasks.task_marker(task_id)
+            return real_coding.task_marker(task_id)
 
     coding_tasks = CodingTasks()
-    monkeypatch.setattr(type(app), "coding_tasks", property(lambda _app: coding_tasks))
+    replace_lifecycle_resources(app, coding_tasks=coding_tasks)
     fake_thread_cls = type("_FakeThread", (), {})
     monkeypatch.setattr(discord, "Thread", fake_thread_cls)
     thread = fake_thread_cls()
@@ -2222,7 +2224,7 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
     message = _trigger_message(
         content="<@999> move and delegate this",
         author_id=123,
@@ -2231,7 +2233,7 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
     )
     message.reply = AsyncMock()
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     if fail_thread_ack:
         assert events == [
@@ -2300,7 +2302,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
         return thread
 
     monkeypatch.setattr(app.threads, "create_handoff_thread", create_thread)
-    monkeypatch.setattr(app, "send_response", AsyncMock(return_value=[]))
+    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
 
     message = _trigger_message(
         content="<@999> take this to #bot-spam",
@@ -2310,7 +2312,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
     )
     message.reply = AsyncMock()
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     # Nothing landed in it, so the anchor over in the target channel should not
     # be left advertising a thread that has no answer in it, and nobody is
@@ -2392,11 +2394,11 @@ async def test_managed_thread_message_continues_mapped_root(
         channel=thread_channel,
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     context = _last_run_conversation_kwargs()["context"]
     assert context.key == root_key
-    sent_channel = app.send_response.await_args.args[0]
+    sent_channel = app.response_sender.send.await_args.args[0]
     assert sent_channel is thread_channel
 
 
@@ -2431,14 +2433,14 @@ async def test_paused_thread_still_continues_its_mapped_root(
         channel=thread_channel,
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     context = _last_run_conversation_kwargs()["context"]
     assert context.key == root_key
     assert manager.is_managed(321)
     assert not manager.is_auto_responding(321)
     # The gate consults the narrower set, so nothing is answered unprompted.
-    assert app.responds_without_mention(321) is False
+    assert app.message_controller.responds_without_mention(321) is False
 
 
 def test_thread_creation_gate_uses_the_shared_blocked_union(monkeypatch):
@@ -2453,7 +2455,7 @@ def test_thread_creation_gate_uses_the_shared_blocked_union(monkeypatch):
     monkeypatch.setattr(thread_boundary, "load_blocked_tools", fake_load)
     message = _trigger_message(content="<@999> hi", author_id=1, author_name="A", message_id=1)
 
-    assert app.threads._thread_handoff_creation_allowed(message) is False
+    assert app.threads.thread_handoff_creation_allowed(message) is False
     assert calls == [("999", "100")]
 
 
@@ -2470,7 +2472,7 @@ async def test_thread_state_tools_are_masked_outside_a_managed_thread(
     channel_message = _trigger_message(
         content="<@999> hi", author_id=1, author_name="A", message_id=1
     )
-    assert app.threads._thread_state_blocked_tools(channel_message) == THREAD_STATE_TOOLS
+    assert app.threads.thread_state_blocked_tools(channel_message) == THREAD_STATE_TOOLS
 
     conversation_id = await store.get_or_create("thread-state-tools", "general")
     await manager.enroll(321, conversation_id, creator_user_id="123")
@@ -2481,12 +2483,12 @@ async def test_thread_state_tools_are_masked_outside_a_managed_thread(
         message_id=2,
         channel=fake_thread_cls(321, []),
     )
-    assert app.threads._thread_state_blocked_tools(in_thread) == frozenset(
+    assert app.threads.thread_state_blocked_tools(in_thread) == frozenset(
         {"move_to_thread", "resume_thread_replies"}
     )
 
     await manager.pause(321)
-    assert app.threads._thread_state_blocked_tools(in_thread) == frozenset(
+    assert app.threads.thread_state_blocked_tools(in_thread) == frozenset(
         {"move_to_thread", "pause_thread_replies"}
     )
 
@@ -2507,7 +2509,7 @@ async def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(
         message_id=1,
         channel=fake_forum_cls(400, []),
     )
-    assert "move_to_thread" in app.threads._thread_state_blocked_tools(forum_message)
+    assert "move_to_thread" in app.threads.thread_state_blocked_tools(forum_message)
 
     class _FakeAnnouncement(_Channel):
         def is_news(self):
@@ -2521,7 +2523,7 @@ async def test_move_to_thread_is_masked_on_forum_and_announcement_surfaces(
         message_id=2,
         channel=_FakeAnnouncement(500, []),
     )
-    assert "move_to_thread" in app.threads._thread_state_blocked_tools(announcement_message)
+    assert "move_to_thread" in app.threads.thread_state_blocked_tools(announcement_message)
 
 
 @pytest.mark.asyncio
@@ -2548,7 +2550,7 @@ async def test_leave_thread_locks_and_archives_managed_thread(
         ].pending_thread_close_request = ThreadCloseRequest(thread_id=321)
         return ConversationRunResult(text="closing!")
 
-    monkeypatch.setattr(app_runtime, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)
 
     async def send_response(channel, content, reference=None, **kwargs):
         sent = MagicMock()
@@ -2558,7 +2560,7 @@ async def test_leave_thread_locks_and_archives_managed_thread(
         sent.channel = channel
         return [sent]
 
-    monkeypatch.setattr(app, "send_response", send_response)
+    monkeypatch.setattr(app.response_sender, "send", send_response)
 
     message = _trigger_message(
         content="please close this",
@@ -2568,7 +2570,7 @@ async def test_leave_thread_locks_and_archives_managed_thread(
         channel=thread_channel,
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     thread_channel.edit.assert_awaited_once_with(
         locked=True,
@@ -2606,7 +2608,7 @@ async def test_stale_thread_participation_falls_back_to_fresh_thread_root(
         channel=thread_channel,
     )
 
-    await app.handle_message(message, lock_acquired=True)
+    await app.message_controller.handle_message(message, lock_acquired=True)
 
     context = _last_run_conversation_kwargs()["context"]
     assert context.key == "guild:999:channel:321:thread:321:root:2000"
@@ -2628,14 +2630,14 @@ async def test_on_message_delivery_failure_adds_failure_reaction(
     replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
         ),
     )
     monkeypatch.setattr(
-        app,
+        app.message_controller,
         "handle_message",
         AsyncMock(return_value=TurnResult(response_text="hi", delivery_failed=True)),
     )
@@ -2660,14 +2662,14 @@ async def test_on_message_attachment_error_adds_failure_reaction(
     replace_app_repositories(app, blocked_user_store=NobodyBlocked())
     app.settings.allowed_channel_ids = ""
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
             True
         ),
     )
     monkeypatch.setattr(
-        app,
+        app.message_controller,
         "handle_message",
         AsyncMock(
             return_value=TurnResult(

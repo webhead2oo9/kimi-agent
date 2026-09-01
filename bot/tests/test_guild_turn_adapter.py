@@ -12,11 +12,11 @@ from agent.turn import TurnPreparationInput, TurnResult
 from app import guild_turn_adapter
 from app import runtime as app_runtime
 from app.guild_turn_adapter import (
-    CallbackDiscordResponseSender,
     GuildMessageTurnAdapter,
     GuildTurnCollaborators,
     GuildTurnDeliveryConfig,
 )
+from app.response_delivery import DiscordResponseSender
 from tests.helpers import StubProviderManager, make_settings
 from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
@@ -378,7 +378,7 @@ async def test_build_app_populates_guild_turn_collaborators_after_init(
 
     try:
         await app.lifecycle.initialize()
-        collaborators = app.guild_turn_collaborators()
+        collaborators = app.message_controller.guild_turn_collaborators()
 
         assert collaborators.config == GuildTurnDeliveryConfig(
             thread_auto_handoff_enabled=app.settings.thread_auto_handoff_enabled,
@@ -390,7 +390,7 @@ async def test_build_app_populates_guild_turn_collaborators_after_init(
         assert collaborators.thread_handoff is app.thread_handoff
         assert collaborators.thread_handoff is not None
         assert collaborators.coding is app.lifecycle.resources.coding_tasks
-        assert isinstance(collaborators.responses, CallbackDiscordResponseSender)
+        assert isinstance(collaborators.responses, DiscordResponseSender)
         assert callable(collaborators.bot_user)
         assert callable(collaborators.strip_invocation)
     finally:

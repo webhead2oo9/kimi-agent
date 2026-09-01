@@ -20,6 +20,8 @@ from typing import Any, cast
 import discord
 import pytest
 
+from app import message_runtime
+
 import app.runtime as app_runtime
 from commands.learn_cmd import learn_menu_name
 from config.settings import Settings
@@ -148,7 +150,7 @@ async def _blocked_app(
         async def never_runs(**_kwargs: object) -> None:
             raise AssertionError("a blocked user reached the provider")
 
-        monkeypatch.setattr(app_runtime, "run_conversation", never_runs)
+        monkeypatch.setattr(message_runtime, "run_conversation", never_runs)
     except BaseException:
         await app.close()
         raise
@@ -161,7 +163,7 @@ class _ReachedPastGate(Exception):
 
 async def _via_guild_message(app: Any, monkeypatch: pytest.MonkeyPatch) -> str | None:
     monkeypatch.setattr(
-        app_runtime,
+        message_runtime,
         "should_respond",
         lambda message, **_kwargs: True,
     )
@@ -177,7 +179,7 @@ async def _via_guild_message(app: Any, monkeypatch: pytest.MonkeyPatch) -> str |
         raise _ReachedPastGate
 
     # The stop check is the first thing after the block gate in on_message.
-    monkeypatch.setattr(app_runtime, "is_stop_message", reached)
+    monkeypatch.setattr(app.work_cancellation, "is_stop_message", reached)
     message = _guild_message()
     await app.on_message(message)
     assert message.reactions == []

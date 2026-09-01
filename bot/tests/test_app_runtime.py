@@ -41,17 +41,25 @@ def _settings(**kwargs: object) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
 
 
+class _DeliveryApp:
+    """The slice of KimiApplication that send_response touches.
+
+    send_response routes through the real workspace guard so the lock
+    condition under test is the production one, not a copy.
+    """
+
+    _deliver_with_workspace_guard = app_runtime.KimiApplication._deliver_with_workspace_guard
+
+    def __init__(self, gateway: object, locks: UserLocks) -> None:
+        self.discord_gateway = gateway
+        self.tools = SimpleNamespace(workspace_locks=locks)
+
+
 @pytest.mark.asyncio
 async def test_text_response_does_not_wait_for_workspace_writer() -> None:
     locks = UserLocks()
     gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
-    app = cast(
-        app_runtime.KimiApplication,
-        SimpleNamespace(
-            discord_gateway=gateway,
-            tools=SimpleNamespace(workspace_locks=locks),
-        ),
-    )
+    app = cast(app_runtime.KimiApplication, _DeliveryApp(gateway, locks))
     workspace_key = WorkspaceKey("u1__g1")
 
     async with locks.writer(workspace_key):
@@ -72,13 +80,7 @@ async def test_text_response_does_not_wait_for_workspace_writer() -> None:
 async def test_file_response_waits_for_workspace_writer() -> None:
     locks = UserLocks()
     gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
-    app = cast(
-        app_runtime.KimiApplication,
-        SimpleNamespace(
-            discord_gateway=gateway,
-            tools=SimpleNamespace(workspace_locks=locks),
-        ),
-    )
+    app = cast(app_runtime.KimiApplication, _DeliveryApp(gateway, locks))
     workspace_key = WorkspaceKey("u1__g1")
 
     async with locks.writer(workspace_key):

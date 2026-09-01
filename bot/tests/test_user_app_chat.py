@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -366,10 +367,13 @@ class _UserAppInteractionResponse:
 
 
 class _UserAppImageInteraction:
-    def __init__(self) -> None:
-        self.id = 7
+    def __init__(self, interaction_id: int = 7, *, file_size_limit: int | None = None) -> None:
+        self.id = interaction_id
         self.user = SimpleNamespace(id=42, display_name="Alice")
-        self.channel = SimpleNamespace(guild=None)
+        guild = (
+            SimpleNamespace(filesize_limit=file_size_limit) if file_size_limit is not None else None
+        )
+        self.channel = SimpleNamespace(guild=guild)
         self.channel_id = 99
         self.guild = None
         self.guild_id = None
@@ -381,30 +385,60 @@ class _UserAppImageInteraction:
         self.edits.append(kwargs)
 
 
-async def _image_chat_app(
+async def _user_app_chat_app(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    **setting_overrides: object,
 ) -> Any:
     monkeypatch.setattr(
         app_runtime,
         "build_provider_manager",
         lambda settings: StubProviderManager(settings),
     )
-    app = app_runtime.build_app(
-        Settings.model_validate(
-            {
-                "discord_bot_token": "token",
-                "model_api_key": "key",
-                "config_dir": str(tmp_path / "config"),
-                "database_path": str(tmp_path / "runtime.db"),
-                "workspace_dir": str(tmp_path / "workspaces"),
-                "attachment_store_dir": str(tmp_path / "attachments"),
-                "user_app_chat_enabled": True,
-                "owner_user_id": "42",
-            }
-        )
-    )
+    settings_values: dict[str, object] = {
+        "discord_bot_token": "token",
+        "model_api_key": "key",
+        "config_dir": str(tmp_path / "config"),
+        "database_path": str(tmp_path / "runtime.db"),
+        "workspace_dir": str(tmp_path / "workspaces"),
+        "attachment_store_dir": str(tmp_path / "attachments"),
+        "user_app_chat_enabled": True,
+        "owner_user_id": "42",
+    }
+    settings_values.update(setting_overrides)
+    app = app_runtime.build_app(make_settings(**settings_values))
     await app._first_init_core()
+    return app
+
+
+async def _complete_primary_delivery(content: str, kwargs: dict[str, object]) -> None:
+    callback = cast(
+        Callable[[str], Awaitable[None]],
+        kwargs["on_primary_delivered"],
+    )
+    await callback(content)
+
+
+async def _personal_chat_messages(app: Any) -> list[tuple[str, str]]:
+    async with app.database.conn.execute(
+        """
+        SELECT messages.role, messages.content
+        FROM messages
+        JOIN conversations ON conversations.id = messages.conversation_id
+        WHERE conversations.key = ?
+        ORDER BY messages.id
+        """,
+        ("userchat:42",),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [(str(row["role"]), str(row["content"])) for row in rows]
+
+
+async def _image_chat_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
     provider_manager = cast(StubProviderManager, app.provider_manager)
     provider_manager.main.capabilities = {
         ProviderCapability.TEXT,
@@ -427,8 +461,9 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
         requests.append(request)
         return ConversationRunResult(text="I can see the image.")
 
-    async def capture_result(_interaction: object, content: str, **_kwargs: object) -> None:
+    async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
         delivered.append(content)
+        await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
     monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
@@ -479,8 +514,9 @@ async def test_registered_chat_reports_unreadable_image_without_provider_or_tran
         requests.append(request)
         return ConversationRunResult(text="unexpected")
 
-    async def capture_result(_interaction: object, content: str, **_kwargs: object) -> None:
+    async def capture_result(_interaction: object, content: str, **kwargs: object) -> None:
         delivered.append(content)
+        await _complete_primary_delivery(content, kwargs)
 
     monkeypatch.setattr(app_runtime, "run_conversation", capture_run)
     monkeypatch.setattr(app_runtime, "send_interaction_result", capture_result)
@@ -771,6 +807,276 @@ async def test_public_personal_chat_finishes_activity_before_every_outcome(
         ]
         assert delivered == ([(False, False)] if sends_result else [])
     finally:
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_same_root_chat_delivery_finishes_before_next_turn_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+    events: list[str] = []
+    first_body_started = asyncio.Event()
+    release_first_body = asyncio.Event()
+    first_delivery_started = asyncio.Event()
+    release_first_delivery = asyncio.Event()
+    turn_count = 0
+
+    async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
+        nonlocal turn_count
+        turn_count += 1
+        turn_number = turn_count
+        events.append(f"turn:{turn_number}:start")
+        if turn_number == 1:
+            first_body_started.set()
+            await release_first_body.wait()
+        events.append(f"turn:{turn_number}:end")
+        return TurnResult(response_text=f"reply-{turn_number}")
+
+    async def deliver(_interaction: object, content: str, **kwargs: object) -> None:
+        events.append(f"deliver:{content}:start")
+        if content == "reply-1":
+            first_delivery_started.set()
+            await release_first_delivery.wait()
+        await _complete_primary_delivery(content, kwargs)
+        events.append(f"deliver:{content}:end")
+
+    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    first = asyncio.create_task(
+        app._execute_user_app_chat(
+            _UserAppImageInteraction(7),  # type: ignore[arg-type]
+            message="first",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
+    )
+    await asyncio.wait_for(first_body_started.wait(), timeout=0.5)
+    second = asyncio.create_task(
+        app._execute_user_app_chat(
+            _UserAppImageInteraction(8),  # type: ignore[arg-type]
+            message="second",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
+    )
+
+    try:
+        release_first_body.set()
+        await asyncio.wait_for(first_delivery_started.wait(), timeout=0.5)
+        await asyncio.sleep(0)
+        assert events == [
+            "turn:1:start",
+            "turn:1:end",
+            "deliver:reply-1:start",
+        ]
+
+        release_first_delivery.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=0.5)
+        assert events == [
+            "turn:1:start",
+            "turn:1:end",
+            "deliver:reply-1:start",
+            "deliver:reply-1:end",
+            "turn:2:start",
+            "turn:2:end",
+            "deliver:reply-2:start",
+            "deliver:reply-2:end",
+        ]
+    finally:
+        release_first_body.set()
+        release_first_delivery.set()
+        for task in (first, second):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_admission_stays_active_through_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
+        return TurnResult(response_text="reply")
+
+    async def deliver(_interaction: object, content: str, **kwargs: object) -> None:
+        delivery_started.set()
+        await release_delivery.wait()
+        await _complete_primary_delivery(content, kwargs)
+
+    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    task = asyncio.create_task(
+        app._execute_user_app_chat(
+            _UserAppImageInteraction(),  # type: ignore[arg-type]
+            message="hello",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
+    )
+
+    try:
+        await asyncio.wait_for(delivery_started.wait(), timeout=0.5)
+        snapshot = await app.turn_admission.snapshot()
+        assert snapshot.active_total == 1
+        assert snapshot.active_by_user == {"42": 1}
+
+        release_delivery.set()
+        await asyncio.wait_for(task, timeout=0.5)
+        assert (await app.turn_admission.snapshot()).active_total == 0
+    finally:
+        release_delivery.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_delivery_failure_does_not_persist_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+
+    async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
+        return TurnResult(response_text="undelivered reply")
+
+    async def fail_delivery(*_args: object, **_kwargs: object) -> None:
+        response = SimpleNamespace(status=500, reason="Server Error")
+        raise discord.HTTPException(response, "delivery failed")  # type: ignore[arg-type]
+
+    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", fail_delivery)
+    interaction = _UserAppImageInteraction()
+
+    try:
+        result = await app._execute_user_app_chat(
+            interaction,  # type: ignore[arg-type]
+            message="hello",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
+
+        assert result is not None
+        assert result.delivery_failed is True
+        assert not any(role == "assistant" for role, _content in await _personal_chat_messages(app))
+        assert interaction.edits[-1]["content"] == (
+            "I finished the turn but couldn't deliver the response here. Try again privately."
+        )
+    finally:
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_file_only_chat_persists_delivered_attachment_notice(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+    output = tmp_path / "artifact.txt"
+    output.write_text("too large", encoding="utf-8")
+    workspace_key = user_app_workspace_key("42")
+
+    async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
+        return TurnResult(
+            response_text="",
+            output_files=(str(output),),
+            allowed_file_roots=(tmp_path,),
+            workspace_key=workspace_key,
+        )
+
+    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    interaction = _UserAppImageInteraction(file_size_limit=1)
+
+    try:
+        result = await app._execute_user_app_chat(
+            interaction,  # type: ignore[arg-type]
+            message="make a file",
+            attachment=None,
+            public=False,
+            request_generation=app._user_app_chat_generation("42"),
+        )
+
+        assert result is not None
+        assert result.delivery_failed is False
+        delivered_content = str(interaction.edits[-1]["content"])
+        assert delivered_content.startswith("Delivery notice:")
+        assert await _personal_chat_messages(app) == [("assistant", delivered_content)]
+    finally:
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output_files", "waits_for_writer"),
+    [((), False), (("artifact.txt",), True)],
+    ids=["text-only", "file"],
+)
+async def test_chat_file_delivery_uses_workspace_activity_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    output_files: tuple[str, ...],
+    waits_for_writer: bool,
+) -> None:
+    app = await _user_app_chat_app(tmp_path, monkeypatch)
+    workspace_key = user_app_workspace_key("42")
+    turn_finished = asyncio.Event()
+    delivery_started = asyncio.Event()
+
+    async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
+        turn_finished.set()
+        return TurnResult(
+            response_text="reply",
+            output_files=output_files,
+            workspace_key=workspace_key,
+        )
+
+    async def deliver(_interaction: object, content: str, **kwargs: object) -> None:
+        delivery_started.set()
+        await _complete_primary_delivery(content, kwargs)
+
+    monkeypatch.setattr(app_runtime, "handle_turn", run_turn)
+    monkeypatch.setattr(app_runtime, "send_interaction_result", deliver)
+    task: asyncio.Task[TurnResult | None] | None = None
+
+    try:
+        async with app.tools.workspace_locks.writer(workspace_key):
+            task = asyncio.create_task(
+                app._execute_user_app_chat(
+                    _UserAppImageInteraction(),  # type: ignore[arg-type]
+                    message="hello",
+                    attachment=None,
+                    public=False,
+                    request_generation=app._user_app_chat_generation("42"),
+                )
+            )
+            await asyncio.wait_for(turn_finished.wait(), timeout=0.5)
+            if waits_for_writer:
+                await asyncio.sleep(0)
+                assert delivery_started.is_set() is False
+                assert task.done() is False
+            else:
+                await asyncio.wait_for(delivery_started.wait(), timeout=0.5)
+
+        assert task is not None
+        await asyncio.wait_for(task, timeout=0.5)
+        assert delivery_started.is_set() is True
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await app.database.close()
 
 

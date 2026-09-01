@@ -56,7 +56,7 @@ Settings and command registration are read at startup. Restart after enabling, d
 
 ## Conversation, tools, and workspace scope
 
-Each Discord user has exactly one owner-only transcript, keyed internally as `userchat:<user_id>`. It follows them across servers, channels, group DMs, and DMs; it's never keyed by channel. Concurrent turns serialize on that root.
+Each Discord user has exactly one owner-only transcript, keyed internally as `userchat:<user_id>`. It follows them across servers, channels, group DMs, and DMs; it's never keyed by channel. Concurrent turns serialize on that root. For `/chat`, the root lock and turn-admission lease remain held through Discord delivery and assistant-transcript persistence, so replies for one personal root cannot land out of order and delivery still counts as active load. The prepared user message is stored before the model runs; the assistant row is stored only after Discord accepts the primary result, using the content actually prepared for delivery. A complete delivery failure therefore leaves no assistant row.
 
 The assistant uses the ordinary agent and tool registry rather than a second chat implementation. Trust and owner-only tool gates still apply. Deployment-wide tool blocks and tool configuration still apply, while the guild/channel pins, blocks, model overrides, and instructions of the invocation location don't leak into the personal thread. Thread-handoff actions are unavailable because personal chat is guild-less; `_PERSONAL_CHAT_BLOCKED_TOOLS` masks them on both entry paths.
 
@@ -65,7 +65,7 @@ Personal chat is guild-less for every trust, policy, and data-scope decision, in
 The scopes are intentionally split:
 
 - Transcript, prompt/model routing, usage, and recalled long-term memory are personal/global rather than tied to the current guild.
-- Workspace files live at `<user_id>__userapp`, shared by that user's `/chat` turns and isolated from their guild workspaces.
+- Workspace files live at `<user_id>__userapp`, shared by that user's `/chat` turns and isolated from their guild workspaces. A `/chat` result with generated files waits for the workspace activity lock through Discord's attachment consumption; text-only delivery does not take that lock.
 - Tools read a logical scope that is guild-less here, so anything keyed by guild resolves to "no guild" rather than to the invocation location. The actual invoking member, guild, and channel travel separately for genuinely location-bound work (a member permission check, a jump URL) and confer no authority of their own.
 - Auto-retained facts from this personal transcript are global to that user.
 

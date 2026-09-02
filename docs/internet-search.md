@@ -2,7 +2,7 @@
 
 `internet_search` is the member-tier core tool for searching the live web and for reading pages the model already has URLs for. It registers when `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY` is set; with no key configured, the model never sees it. TinyFish is the one provider that is free at any wallet balance, so a deployment with no search budget can still offer the tool by setting `TINYFISH_API_KEY` alone.
 
-The model sees one tool and never learns which provider answered it. Provider names, credentials, and cost stay out of a successful result, so which vendors a deployment pays for does not leak into the conversation. A partial failure is invisible for the same reason: when one provider is down and the other answers, the model gets results rather than an incident report.
+The model sees one tool and never learns which provider answered. Provider names, credentials, and cost stay out of a successful result, so which vendors you pay for does not leak into the conversation. A partial failure is invisible for the same reason: when one provider is down and another answers, the model gets results rather than an incident report.
 
 ## Request modes
 
@@ -29,7 +29,7 @@ Ranking the free provider first doesn't on its own make a deployment cheaper. Un
 
 Two provider-specific gaps are worth knowing. TinyFish search has no result-count parameter, so it contributes at most one page of results however high `num_results` goes; a blend with Exa makes up the difference. It also has no safesearch parameter, so `INTERNET_SEARCH_SAFESEARCH` constrains Brave only, and a TinyFish-first deployment isn't applying it to the provider it reaches first.
 
-Each turn gets ten provider operations by default. A two-provider blend spends two of them, so five blended searches use up a turn; Exa-only, Brave-only, and failover calls spend one per provider actually called. Once the allowance is gone the tool returns an error for the rest of the turn, and the next user prompt starts a fresh one. The bounded transport retry inside a provider call doesn't spend a second operation: the limit is there to cap how much searching one turn can do, not to charge a provider for a flaky connection.
+Each turn gets ten provider calls by default (`INTERNET_SEARCH_MAX_BACKEND_CALLS_PER_TURN`). A two-provider blend spends two of them, so five blended searches use up a turn; Exa-only, Brave-only, and failover calls spend one per provider actually called. Once the allowance is gone the tool returns an error for the rest of the turn, and the next user message starts a fresh one. A retry after a transport error inside one provider call does not spend a second one: the limit caps how much searching a turn can do, not how flaky a connection is.
 
 ## Cost and privacy
 
@@ -37,7 +37,7 @@ Every provider response is priced on its own and written to `paid_usage_ledger`.
 
 A ledger row records provider, tool, dollars, turn, user, channel, and guild. Queries and results are never written to it, so the ledger can be read for spending without exposing what anyone searched for.
 
-Bear in mind that the local numbers can undercount. If a request fails before its cost is reported, or the ledger write itself fails, only the provider's own dashboard has the full picture.
+The local numbers can undercount. If a request fails before its cost is reported, or the ledger write itself fails, only the provider's own dashboard has the full picture.
 
 TinyFish is free and reports no cost, so TinyFish calls write no ledger rows and the bot exposes no TinyFish cost settings. If TinyFish starts metering these endpoints, cost reporting and configuration must be added before `/usage` can attribute that spend.
 

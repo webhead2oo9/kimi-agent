@@ -1,15 +1,14 @@
 # Image generation
 
-Kimi exposes `generate_image` as a REGULAR-tier **core** tool for OpenAI image
-generation and editing. It is an explicit model tool, not a regex over the
-user's wording: the normal Discord turn never infers provider image-output
-capabilities from verbs such as "draw" or "render".
+`generate_image` is a REGULAR-tier **core** tool for generating and editing
+images through OpenAI. The model calls it deliberately, like any other tool;
+nothing in the bot watches the user's wording for verbs such as "draw" or
+"render" and turns them into an image request.
 
-The tool is provider-neutral at its boundary. OpenAI is the only shipped image
-backend; adding a future backend means implementing the `ImageBackend`
-protocol under `bot/image_gen/` and adding one factory entry. The active chat
-provider is irrelevant: a Claude, GLM, Kimi, or Codex chat turn can all call the
-same OpenAI-backed image tool.
+The image backend is independent of the chat provider. A Claude, GLM, Kimi, or
+Codex chat turn can all call the same OpenAI-backed image tool. OpenAI is the
+only backend shipped today; adding another means implementing the
+`ImageBackend` protocol under `bot/image_gen/` and adding one factory entry.
 
 ## Availability and trust
 
@@ -20,13 +19,13 @@ Registration requires all of the following:
 - usable credentials for the selected auth mode; and
 - a REGULAR or STAFF caller at dispatch.
 
-Missing credentials fail closed: the bot logs the unavailable capability and
-leaves the tool unregistered. Dispatch independently rechecks the trust tier
-and masks the tool as `Unknown tool` for members who cannot use it.
+If the credentials are missing, the bot logs that image generation is
+unavailable and does not register the tool. The trust tier is checked again
+when the tool is called, and a member below REGULAR is told `Unknown tool`, so
+they cannot learn the tool exists.
 
-The tool is core rather than searchable, so an eligible model sees it on the
-first turn and can satisfy a direct "draw me..." request without first loading
-a catalog entry.
+The tool is core rather than searchable, so the model sees it from the first
+turn and can answer "draw me..." straight away, without a `browse_tools` step.
 
 ## Authentication
 
@@ -38,23 +37,22 @@ a catalog entry.
 | `oauth` | Require the Codex OAuth token file. |
 | `api_key` | Require `IMAGE_GEN_API_KEY`, an OpenAI platform key dedicated to this tool. |
 
-OAuth reuses the process-wide `CodexAuthManager` from
-`providers/factory.py:get_codex_auth_manager`. Image requests and Codex chat
-therefore share one token snapshot and refresh lock rather than racing two
-manager instances. Configure the token with the same helper used by the Codex
-provider:
+OAuth reuses the same `CodexAuthManager` as the Codex chat provider
+(`providers/factory.py:get_codex_auth_manager`), so image requests and Codex
+chat share one token and one refresh lock instead of racing each other. Log in
+with the same helper the Codex provider uses:
 
 ```bash
 cd bot
 .venv/bin/python scripts/codex_auth.py --token-file secrets/codex-auth.json
 ```
 
-OAuth requests target `https://chatgpt.com/backend-api/codex`, sending the
-bearer token, `ChatGPT-Account-Id`, and the code-owned
-`originator: codex_cli_rs` header. A 401 forces one guarded token refresh and
-one retry. A stale image-only token never aborts bot startup; its first image
-call returns a concise re-authentication error. API-key requests target
-`https://api.openai.com/v1` and send only the platform bearer key.
+OAuth requests go to `https://chatgpt.com/backend-api/codex` with the bearer
+token, the `ChatGPT-Account-Id` header, and a fixed `originator: codex_cli_rs`
+header. A 401 triggers one token refresh and one retry. A stale token never
+stops the bot from starting; the first image call simply returns a short
+"please log in again" error. API-key requests go to
+`https://api.openai.com/v1` with only the platform key.
 
 Both modes use JSON for `images/generations`. OAuth edits use the Codex
 backend's JSON data-URL contract. Public API-key edits use multipart form data
@@ -78,13 +76,12 @@ This keeps every model-supplied path behind
 `WorkspaceManager.resolve_user_file_path`, which rejects absolute paths,
 traversal, and symlink chains.
 
-Successful output is a PNG saved under a collision-resistant
-`generated_images/image-<uuid>.png` path in the caller's scoped workspace.
-It counts against normal workspace quota, is automatically queued for the
-final Discord reply with its accessibility description, and remains available
-for a later edit through `reference_paths`. The tool returns only metadata and
-the reusable relative path to the model; image bytes never enter the
-conversation transcript.
+A successful call saves a PNG as `generated_images/image-<uuid>.png` in the
+caller's workspace. It counts against the normal workspace quota, is queued
+for the final Discord reply with its accessibility description, and stays
+available for a later edit through `reference_paths`. The model gets back only
+metadata and the relative path; image bytes never enter the conversation
+transcript.
 
 ## Operator controls
 
@@ -124,9 +121,10 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
 - Logical calls: default two per outer turn, configurable 1–8. Failed
   provider calls count once; invalid local references fail before the billable
   counter increments.
-- Global concurrency: one by default, configurable 1–8. Each request can
-  transiently hold several copies of a bounded ~14 MiB JSON/base64 response;
-  raising concurrency to eight can therefore consume a few hundred MiB.
+- Global concurrency: one by default, configurable 1–8. While a response is
+  being decoded, a request can briefly hold several copies of a roughly 14 MiB
+  JSON/base64 body, so running eight at once can use a few hundred MiB of
+  memory.
 - References: at most five; each is bounded to 10 MiB and the aggregate to
   25 MiB. Reads stop after the cap rather than loading an arbitrarily large
   workspace file.
@@ -136,23 +134,24 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
   pass the same full-decode PNG validation as provider-native image assets
   (`utils/image_types.py:decoded_image_media_type`) before it is written. A
   bare PNG signature, a CRC-corrupt chunk, or a truncated file is rejected.
-- Workspace reads, writes, and the complete provider call hold the same
-  per-workspace activity lease as the file tools, preventing mutation races and
-  sweeper/privacy deletion. A slow call can therefore delay maintenance for up
-  to `IMAGE_GEN_TIMEOUT_SECONDS` (maximum 900 seconds).
+- Reading references, calling the provider, and writing the output all hold
+  the same per-workspace lock as the file tools, so nothing can change or
+  delete the workspace mid-call. A slow call can therefore hold off the sweeper
+  or a privacy deletion for up to `IMAGE_GEN_TIMEOUT_SECONDS` (at most 900
+  seconds).
 - A `usage_limit_reached` 429 becomes a concise tool error with the provider's
   reset timestamp when present. Tokens, response headers, and tracebacks are
   never returned to Discord.
 
-The ordinary moderation service screens the user's input text and the final
-reply plus queued attachment description. Like other generic queued workspace
-files, it does **not** inspect the generated PNG bytes. REGULAR-tier access and
-OpenAI's provider-side policy are the controls for image content.
+Moderation, when enabled, screens the user's text, the final reply, and the
+attachment description. It does **not** look at the generated PNG itself, the
+same as for any other workspace file the bot attaches. The controls on image
+content are the REGULAR-tier gate and OpenAI's own policy.
 
 ## Provider-native image output
 
+Some chat providers can return images directly in a response.
 `ProviderCapability.IMAGE_OUTPUT`, `GeneratedAsset`, and the Codex/OpenRouter
-response parsers are part of the provider contract. Direct `ProviderRequest`
-callers may explicitly request native image output, and provider-emitted assets
-use the generated-asset moderation and delivery rail. Normal Discord turns use
-`generate_image` as their explicit image-creation surface.
+response parsers support that as part of the provider contract, for code that
+builds a `ProviderRequest` itself. Normal Discord turns never ask for it; they
+create images only through `generate_image`.

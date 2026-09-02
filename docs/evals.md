@@ -1,9 +1,9 @@
 # Evals
 
-There are two offline runners that share one harness. `evals/harness.py` drives the production `run_conversation` with the real registry, the real compactor, and a stub Discord gateway. They answer different questions:
+There are two offline eval runners, and they share one harness. `evals/harness.py` drives the production `run_conversation` loop with the real tool registry, the real compactor, and a stub in place of Discord. The two runners answer different questions:
 
-- **Model qualification** (`evals.run`) pits a candidate model against an operator-selected baseline and has a blind judge score both. This is the original go/no-go flow.
-- **Harness eval** (`evals.harness_run`) runs one operator-selected model repeatedly and scores it with deterministic mechanical rules. This is the regression loop you reach for after changing the harness itself: prompts, tool descriptions, error text.
+- **Model qualification** (`evals.run`) runs a candidate model and a baseline you choose on the same scenarios, then has a blind judge model score both. Use it to decide whether a new model is good enough to switch to.
+- **Harness eval** (`evals.harness_run`) runs one model repeatedly and scores it with fixed mechanical rules. Use it to catch regressions after changing the bot itself: prompts, tool descriptions, error text.
 
 Live eval routing belongs in the ignored `evals/models.yaml`; the public `evals/models.example.yaml` contains placeholders only. Copy the example, then fill in the baseline, candidates, judge, endpoints, and environment-variable names for your deployment. Eval API keys resolve from the shell environment first, then from the ignored repo `.env` (`evals/models.py:resolve_api_key`). Run the commands below from `bot/` after creating the standard developer environment in [development.md](development.md).
 
@@ -87,18 +87,18 @@ The in-memory coding-control stub is keyed by the same caller id, so task number
 
 `<git-sha>` is HEAD's short sha. When tracked *source* differs from it, the identity is suffixed **`-dirty-<diff-hash>`**, where `<diff-hash>` is the first 12 hexadecimal characters of SHA-256 over a configuration-independent binary diff from HEAD. Equal labels therefore mean equal tracked source bytes in the working tree.
 
-Failure is cautious, not clean:
+When git identity cannot be established, the label says so rather than guessing:
 
 - No git at all gives **`nogit`**.
 - A `rev-parse` that succeeds followed by a diff that doesn't (10s timeout or a permissions error) gives **`-unknown`**.
 
-The `-unknown` marker exists because answering it with a bare sha would stamp a possibly-edited tree with a commit it may never have executed.
+The `-unknown` marker exists because a bare sha would claim that a possibly edited tree ran exactly that commit's code.
 
 Also excluded from the diff is everything under the run's tape directory (`harness_run.run_data_paths`). The default tape tree is gitignored, so it never reaches the check at all; the pathspec is there for a run that points `--cassettes` at a tracked path. A `replay` run records misses and promotes baseline entries into that tree as part of doing its job, so without the exclusion it would change its own diff hash and two runs of identical code would report different trees.
 
 ### Other flags worth knowing
 
-- `--repeat` defaults to 3. `--repeat 1` logs a warning. One sample per scenario is not a measurement: we watched a scenario swing 100 → 35 between identical reps purely from tool choice, which is why the default is 3.
+- `--repeat` defaults to 3, and `--repeat 1` logs a warning. One sample per scenario is not a measurement: we have watched a scenario swing from 100 to 35 between identical repetitions purely because the model picked a different tool, which is why the default is 3.
 - `--model` resolves a candidate name (or the baseline label) from the ignored `evals/models.yaml`. The tracked example has nothing to do with production.
 - `--max-tokens` is the per-provider-call output cap and defaults to 65,536, matching the production ReAct budget. It's written into `summary.json` and the report header so two arms can't silently run under different output budgets. This is separate from the number of ReAct calls a scenario may make.
 - A model spec may declare `max_output_tokens` when a hosted deployment enforces a lower ceiling. The harness clamps to that ceiling, logs it, and records both the requested and effective values rather than sending a run of requests the provider will reject.
@@ -271,7 +271,7 @@ Under the delta table the report also splits the failures, because a score delta
 
 - **`Failed in both runs`**: pass rate 0.0 in both arms. It's labelled *harness-suspect* only when the two arms are **different models**; two runs of one model are just one model's result, and the line says so instead. The suspect line is further marked **LOW CONFIDENCE** when either run used `--repeat 1` or the two runs replayed the same cassette *recording* for a listed scenario, since a correlated observation is not two observations. "Same recording" means the same `cassette_model_key` with both sides served out of a tape file (`model` **or** `promoted`, in any combination; the same key is the same file), or baseline-derived provenance (`shared` **or** `promoted`) on both sides. Separate tape files aren't evidence of separate recordings once `save()` has promoted the same baseline entries into each arm's own tape.
 
-  A run dir predating the `cassette_tapes` key is caveated too, by run id. Absent provenance counts as unknown, and it's the case where correlation is *guaranteed*, since every run before that key replayed the one shared flat-tree tape. This is a caution guard, so failing to fire is the damaging direction.
+  A run directory from before the `cassette_tapes` key existed is flagged too, by run id. Missing provenance counts as unknown, and it is the case where correlation is *guaranteed*, because every run before that key replayed the one shared flat-tree tape. This guard exists to make you cautious, so it errs towards firing.
 
 - **`Flipped`**: pass rate exactly `1.0` in one run and exactly `0.0` in the other. This is the model-differentiating set. A partial rate (e.g. `1.0` → `0.33`) lands in neither split, so check the delta table for those.
 

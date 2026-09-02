@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 from pydantic import SecretStr
 
-from app.tools import _register_video
+from app.tools import CAPABILITY_PROBES, _register_video
 from config.settings import Settings
 from tools.config_spec import default_config
 from tools.registry import MessageContext, ToolRegistry
@@ -19,10 +19,16 @@ from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from video_understanding.client import (
     VideoEvidence,
+    VideoInteractionError,
     VideoInteractionResult,
     VideoUsage,
 )
-from video_understanding.service import VideoAnalysis, VideoResultCancelled, VideoSessionError
+from video_understanding.service import (
+    VideoAnalysis,
+    VideoInteractionCancelled,
+    VideoResultCancelled,
+    VideoSessionError,
+)
 from workspace import WorkspaceManager
 
 
@@ -118,6 +124,49 @@ class MissingUsageCancelledVideoService(FakeVideoService):
         raise VideoResultCancelled(result=_missing_usage_result())
 
 
+def test_video_capability_probe_lists_every_registration_gate() -> None:
+    probe = next(item for item in CAPABILITY_PROBES if item[0] == "video understanding")
+
+    assert probe == (
+        "video understanding",
+        ("video",),
+        "VIDEO_UNDERSTANDING_ENABLED + roles.video + GEMINI_API_KEY",
+    )
+
+
+@dataclass
+class PinnedFollowupFailureVideoService(FakeVideoService):
+    failure: str = "session"
+
+    async def ask(self, **kwargs: Any) -> VideoAnalysis:
+        result = VideoInteractionResult(
+            interaction_id="remote-followup",
+            model="old-upstream",
+            answer="answer",
+            evidence=(),
+            limitations=(),
+            usage=VideoUsage(input_tokens=50, cached_tokens=40, output_tokens=10),
+        )
+        if self.failure == "cancelled":
+            raise VideoResultCancelled(result=result, catalog_model="old-catalog")
+        if self.failure in {"interaction", "interaction_cancelled"}:
+            error = VideoInteractionError(
+                "malformed follow-up",
+                interaction_id=result.interaction_id,
+                model=result.model,
+                usage=result.usage,
+                catalog_model="old-catalog",
+            )
+            if self.failure == "interaction_cancelled":
+                raise VideoInteractionCancelled(error=error)
+            raise error
+        raise VideoSessionError(
+            "follow-up persistence failed",
+            result=result,
+            catalog_model="old-catalog",
+        )
+
+
 def _missing_usage_result() -> VideoInteractionResult:
     return VideoInteractionResult(
         interaction_id="remote",
@@ -138,6 +187,8 @@ def _analysis(
     youtube_url: str = "https://www.youtube.com/watch?v=abcdefghijk",
     usage: VideoUsage | None = None,
     usage_present: bool = True,
+    catalog_model: str = "gemini-video-flash",
+    model: str = "gemini-3.7-flash",
 ) -> VideoAnalysis:
     return VideoAnalysis(
         session=session,
@@ -155,7 +206,8 @@ def _analysis(
             ),
         ),
         limitations=("Fast cuts may be missed.",),
-        model="gemini-3.7-flash",
+        catalog_model=catalog_model,
+        model=model,
         usage=(usage or VideoUsage(input_tokens=100, cached_tokens=80, output_tokens=20)),
         usage_present=usage_present,
     )
@@ -174,7 +226,6 @@ def _context(**overrides: Any) -> MessageContext:
         "usage_sink": [],
         "tool_configs": {
             TOOL_NAME: {
-                "model": "gemini-3.7-flash",
                 "thinking_level": "low",
                 "max_output_tokens": 4096,
                 "max_calls_per_turn": 2,
@@ -196,6 +247,9 @@ def _registry_with_workspace(
     service: FakeVideoService,
     manager: WorkspaceManager,
     locks: UserLocks,
+    *,
+    catalog_model: str = "gemini-video-flash",
+    model: str = "gemini-3.7-flash",
 ) -> ToolRegistry:
     registry = ToolRegistry()
     assert init_video_tool(
@@ -203,13 +257,26 @@ def _registry_with_workspace(
         cast(Any, service),
         workspace_manager=manager,
         workspace_locks=locks,
+        catalog_model=catalog_model,
+        model=model,
     )
     return registry
 
 
-def _registry(service: FakeVideoService) -> ToolRegistry:
+def _registry(
+    service: FakeVideoService,
+    *,
+    catalog_model: str = "gemini-video-flash",
+    model: str = "gemini-3.7-flash",
+) -> ToolRegistry:
     manager, locks = _workspace_deps()
-    return _registry_with_workspace(service, manager, locks)
+    return _registry_with_workspace(
+        service,
+        manager,
+        locks,
+        catalog_model=catalog_model,
+        model=model,
+    )
 
 
 def test_video_tool_is_searchable_member_surface_with_typed_config() -> None:
@@ -220,7 +287,6 @@ def test_video_tool_is_searchable_member_surface_with_typed_config() -> None:
     assert entry.min_tier is TrustTier.MEMBER
     assert entry.untrusted is True
     assert default_config(registry.config_specs()[TOOL_NAME]) == {
-        "model": "gemini-3.7-flash",
         "thinking_level": "low",
         "max_output_tokens": 8192,
         "max_calls_per_turn": 4,
@@ -286,9 +352,9 @@ async def test_start_returns_untrusted_timestamped_result_and_records_usage() ->
     assert ctx.video_calls_this_turn == 1
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.cached_read_tokens == 80
-    assert ctx.usage_sink[0].pricing_model == "gemini-3.7-flash"
-    assert ctx.usage_sink[0].est_cost_usd is not None
-    assert ctx.usage_sink[0].est_cost_usd > 0
+    assert ctx.usage_sink[0].pricing_model == "gemini-video-flash"
+    assert ctx.usage_sink[0].model == "gemini-3.7-flash"
+    assert ctx.usage_sink[0].est_cost_usd is None
 
 
 @pytest.mark.asyncio
@@ -300,6 +366,33 @@ async def test_zero_video_usage_is_unpriced_only_when_provider_usage_is_missing(
     usage_present: bool,
     expected_cost: float | None,
 ) -> None:
+    from config.model_config import parse_model_config_text
+    from usage.pricing import price_usage_call
+
+    model_config = parse_model_config_text("""
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  gemini-video-flash:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [video_input]
+    pricing: { input: 0.75, output: 3.75, cached_read: 0.075 }
+roles:
+  chat: primary
+  compaction: primary
+  video: gemini-video-flash
+""")
     ctx = _context()
 
     await _registry(ZeroUsageVideoService(usage_present=usage_present)).dispatch(
@@ -315,7 +408,9 @@ async def test_zero_video_usage_is_unpriced_only_when_provider_usage_is_missing(
     assert ctx.usage_sink is not None
     [call] = ctx.usage_sink
     assert call.usage_present is usage_present
-    assert call.est_cost_usd == expected_cost
+    assert call.est_cost_usd is None
+    priced = price_usage_call(call, model_config)
+    assert priced.est_cost_usd == expected_cost
 
 
 @pytest.mark.asyncio
@@ -443,7 +538,37 @@ async def test_each_stateful_interaction_records_its_full_reported_usage() -> No
     assert ctx.usage_sink is not None
     assert [call.usage.input_tokens for call in ctx.usage_sink] == [100, 100, 100]
     assert sum(call.usage.cached_read_tokens for call in ctx.usage_sink) == 240
-    assert all(call.est_cost_usd is not None for call in ctx.usage_sink)
+    assert all(call.est_cost_usd is None for call in ctx.usage_sink)
+
+    from config.model_config import parse_model_config_text
+    from usage.pricing import price_usage_call
+
+    model_config = parse_model_config_text("""
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  gemini-video-flash:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [video_input]
+    pricing: { input: 0.75, output: 3.75, cached_read: 0.075 }
+roles:
+  chat: primary
+  compaction: primary
+  video: gemini-video-flash
+""")
+    priced = [price_usage_call(c, model_config) for c in ctx.usage_sink]
+    assert all(c.est_cost_usd is not None for c in priced)
 
 
 @pytest.mark.asyncio
@@ -509,6 +634,69 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_is_canc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    ["session", "interaction", "cancelled", "interaction_cancelled"],
+)
+async def test_failed_follow_up_prices_against_pinned_session_catalog(failure: str) -> None:
+    from config.model_config import parse_model_config_text
+    from usage.pricing import price_usage_call
+
+    ctx = _context()
+    operation = _registry(
+        PinnedFollowupFailureVideoService(failure=failure),
+        catalog_model="new-catalog",
+        model="new-upstream",
+    ).dispatch(
+        TOOL_NAME,
+        {"action": "ask", "session": "video_old", "question": "Follow up"},
+        ctx,
+    )
+    if failure in {"cancelled", "interaction_cancelled"}:
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+    else:
+        await operation
+
+    assert ctx.usage_sink is not None
+    [call] = ctx.usage_sink
+    assert call.model == "old-upstream"
+    assert call.pricing_model == "old-catalog"
+
+    model_config = parse_model_config_text("""
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  old-catalog:
+    provider: gemini-video
+    model: old-upstream
+    capabilities: [video_input]
+    pricing: { input: 1.0, cached_read: 0.5, output: 2.0 }
+  new-catalog:
+    provider: gemini-video
+    model: new-upstream
+    capabilities: [video_input]
+    pricing: { input: 100.0, cached_read: 100.0, output: 100.0 }
+roles:
+  chat: primary
+  compaction: primary
+  video: new-catalog
+""")
+    priced = price_usage_call(call, model_config)
+    assert priced.est_cost_usd == pytest.approx(0.00009)
+
+
+@pytest.mark.asyncio
 async def test_missing_usage_stays_unpriced_when_session_persistence_fails() -> None:
     ctx = _context()
 
@@ -550,8 +738,35 @@ async def test_missing_usage_stays_unpriced_when_session_persistence_is_cancelle
 
 
 @pytest.mark.asyncio
-async def test_registration_requires_flag_and_secret() -> None:
+async def test_registration_requires_flag_secret_and_role() -> None:
+    from config.model_config import parse_model_config_text
+
+    model_config = parse_model_config_text("""
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  gemini-video-flash:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [video_input]
+roles:
+  chat: primary
+  compaction: primary
+  video: gemini-video-flash
+""")
     manager, locks = _workspace_deps()
+
+    # 1. Disabled via VIDEO_UNDERSTANDING_ENABLED=False
     disabled = ToolRegistry()
     disabled_service = _register_video(
         Settings(  # type: ignore[call-arg]
@@ -563,10 +778,13 @@ async def test_registration_requires_flag_and_secret() -> None:
         lambda: None,
         workspace_manager=manager,
         workspace_locks=locks,
+        model_config=model_config,
     )
     assert not disabled.is_registered(TOOL_NAME)
+    assert disabled_service.available is True  # Cleanup remains available!
     await disabled_service.close()
 
+    # 2. Missing GEMINI_API_KEY
     missing = ToolRegistry()
     missing_service = _register_video(
         Settings(  # type: ignore[call-arg]
@@ -578,10 +796,45 @@ async def test_registration_requires_flag_and_secret() -> None:
         lambda: None,
         workspace_manager=manager,
         workspace_locks=locks,
+        model_config=model_config,
     )
     assert not missing.is_registered(TOOL_NAME)
+    assert missing_service.available is False
     await missing_service.close()
 
+    # 3. Missing roles.video in model_config
+    no_role_config = parse_model_config_text("""
+providers:
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+roles:
+  chat: primary
+  compaction: primary
+""")
+    no_role_reg = ToolRegistry()
+    no_role_service = _register_video(
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            video_understanding_enabled=True,
+            gemini_api_key=SecretStr("secret"),
+        ),
+        no_role_reg,
+        lambda: None,
+        workspace_manager=manager,
+        workspace_locks=locks,
+        model_config=no_role_config,
+    )
+    assert not no_role_reg.is_registered(TOOL_NAME)
+    await no_role_service.close()
+
+    # 4. Fully configured (flag=True, secret set, roles.video configured)
     enabled = ToolRegistry()
     enabled_service = _register_video(
         Settings(  # type: ignore[call-arg]
@@ -593,6 +846,7 @@ async def test_registration_requires_flag_and_secret() -> None:
         lambda: None,
         workspace_manager=manager,
         workspace_locks=locks,
+        model_config=model_config,
     )
     assert enabled.is_registered(TOOL_NAME)
     await enabled_service.close()

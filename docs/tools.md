@@ -105,7 +105,7 @@ untrusted model-oriented text. Its AppID stays in `.env`; see
 
 | Tool | Visibility | Tier | Purpose and availability |
 |---|---|---|---|
-| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video, exact current-message Discord attachment, or safe workspace video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true and `GEMINI_API_KEY` is set. |
+| `video` | Searchable | Member | Start or continue a stateful Gemini specialist session over one public YouTube video, exact current-message Discord attachment, or safe workspace video. Registered only when `VIDEO_UNDERSTANDING_ENABLED` is true, `GEMINI_API_KEY` is set, and `roles.video` resolves to a valid specialist model. |
 
 `start` accepts exactly one canonical public YouTube URL, exact attachment
 filename, or workspace-relative path plus a specific question. Uploaded files

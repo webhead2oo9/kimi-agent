@@ -8,12 +8,15 @@ import pytest
 
 from video_understanding.client import (
     UploadedVideoFile,
+    VideoInteractionCallCancelled,
     VideoInteractionError,
     VideoInteractionResult,
     VideoUsage,
 )
 from video_understanding.service import (
     UploadedVideoSource,
+    VideoInteractionCancelled,
+    VideoResultCancelled,
     VideoSessionConfig,
     VideoSessionError,
     VideoUnderstandingService,
@@ -27,6 +30,7 @@ class Session:
     youtube_video_id: str
     latest_interaction_id: str
     model: str = "gemini-3.7-flash"
+    catalog_model: str = ""
     interaction_count: int = 1
     expires_at: float = 99999999999
     source_kind: str = "youtube"
@@ -66,6 +70,8 @@ class FakeStore:
                 youtube_video_id=kwargs["youtube_video_id"],
                 latest_interaction_id=kwargs["interaction_id"],
                 source_locator=kwargs["youtube_url"],
+                model=kwargs["model"],
+                catalog_model=kwargs["catalog_model"],
             )
         )
 
@@ -86,6 +92,8 @@ class FakeStore:
                 source_display_name=kwargs["source_display_name"],
                 source_locator=kwargs["source_locator"],
                 source_byte_size=kwargs["source_byte_size"],
+                model=kwargs["model"],
+                catalog_model=kwargs["catalog_model"],
             )
         )
 
@@ -160,6 +168,7 @@ class FakeClient:
     deletes: list[str] = field(default_factory=list)
     fail_delete: bool = False
     start_error: VideoInteractionError | None = None
+    ask_error: VideoInteractionError | None = None
     upload_error: VideoInteractionError | None = None
     file_deletes: list[str] = field(default_factory=list)
 
@@ -188,6 +197,8 @@ class FakeClient:
 
     async def ask(self, **kwargs: Any) -> VideoInteractionResult:
         self.asks.append(kwargs)
+        if self.ask_error is not None:
+            raise self.ask_error
         return _result("remote-ask")
 
     async def delete(self, interaction_id: str) -> None:
@@ -213,13 +224,18 @@ def _result(interaction_id: str) -> VideoInteractionResult:
     )
 
 
-def _config() -> VideoSessionConfig:
+def _config(
+    *,
+    model: str = "gemini-3.7-flash",
+    catalog_model: str = "",
+) -> VideoSessionConfig:
     return VideoSessionConfig(
-        model="gemini-3.7-flash",
+        model=model,
         thinking_level="low",
         max_output_tokens=4096,
         max_session_interactions=5,
         session_ttl_minutes=60,
+        catalog_model=catalog_model,
     )
 
 
@@ -254,6 +270,575 @@ async def test_start_then_follow_up_uses_previous_interaction() -> None:
     assert client.asks[0]["previous_interaction_id"] == "remote-start"
     assert followed.session == started.session
     assert store.advances[0]["interaction_id"] == "remote-ask"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_youtube_interaction_persists_returned_result() -> None:
+    interaction_ready = asyncio.Event()
+    release_interaction = asyncio.Event()
+
+    class FinishAfterCancellationClient(FakeClient):
+        async def start(self, **kwargs: Any) -> VideoInteractionResult:
+            self.starts.append(kwargs)
+            interaction_ready.set()
+            try:
+                await release_interaction.wait()
+            except asyncio.CancelledError as cancellation:
+                await release_interaction.wait()
+                raise VideoInteractionCallCancelled(
+                    result=_result("remote-start")
+                ) from cancellation
+            return _result("remote-start")
+
+    store = FakeStore()
+    client = FinishAfterCancellationClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            question="Summarize it",
+            config=_config(catalog_model="video-catalog"),
+        )
+    )
+    await interaction_ready.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_interaction.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.result.interaction_id == "remote-start"
+    assert cancellation.value.catalog_model == "video-catalog"
+    assert [item.latest_interaction_id for item in store.sessions] == ["remote-start"]
+    assert client.deletes == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_uploaded_interaction_persists_returned_result() -> None:
+    interaction_ready = asyncio.Event()
+    release_interaction = asyncio.Event()
+
+    class FinishAfterCancellationClient(FakeClient):
+        async def start_from_file(self, **kwargs: Any) -> VideoInteractionResult:
+            self.starts.append(kwargs)
+            interaction_ready.set()
+            try:
+                await release_interaction.wait()
+            except asyncio.CancelledError as cancellation:
+                await release_interaction.wait()
+                raise VideoInteractionCallCancelled(
+                    result=_result("remote-file-start")
+                ) from cancellation
+            return _result("remote-file-start")
+
+    async def source() -> Any:
+        yield b"video"
+
+    store = FakeStore()
+    client = FinishAfterCancellationClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start_uploaded(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            source=UploadedVideoSource(
+                kind="attachment",
+                display_name="clip.mp4",
+                locator="clip.mp4",
+                mime_type="video/mp4",
+                byte_size=5,
+                bytes=source(),
+            ),
+            question="What happens?",
+            config=_config(catalog_model="video-catalog"),
+        )
+    )
+    await interaction_ready.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_interaction.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.result.interaction_id == "remote-file-start"
+    assert cancellation.value.catalog_model == "video-catalog"
+    assert [item.latest_interaction_id for item in store.sessions] == ["remote-file-start"]
+    assert len(store.reserved_files) == 1
+    assert client.deletes == []
+    assert client.file_deletes == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_follow_up_persists_returned_result() -> None:
+    interaction_ready = asyncio.Event()
+    release_interaction = asyncio.Event()
+
+    class FinishAfterCancellationClient(FakeClient):
+        async def ask(self, **kwargs: Any) -> VideoInteractionResult:
+            self.asks.append(kwargs)
+            interaction_ready.set()
+            try:
+                await release_interaction.wait()
+            except asyncio.CancelledError as cancellation:
+                await release_interaction.wait()
+                raise VideoInteractionCallCancelled(result=_result("remote-ask")) from cancellation
+            return _result("remote-ask")
+
+    store = FakeStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    client = FinishAfterCancellationClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+    )
+    await interaction_ready.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_interaction.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.result.interaction_id == "remote-ask"
+    assert cancellation.value.catalog_model == "old-catalog"
+    assert store.sessions[0].latest_interaction_id == "remote-ask"
+    assert store.sessions[0].interaction_count == 2
+    assert client.deletes == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_malformed_follow_up_preserves_error_usage() -> None:
+    interaction_ready = asyncio.Event()
+    release_interaction = asyncio.Event()
+
+    class ErrorAfterCancellationClient(FakeClient):
+        async def ask(self, **kwargs: Any) -> VideoInteractionResult:
+            self.asks.append(kwargs)
+            interaction_ready.set()
+            error = VideoInteractionError(
+                "malformed",
+                interaction_id="remote-malformed",
+                model="old-upstream",
+                usage=VideoUsage(input_tokens=10),
+            )
+            try:
+                await release_interaction.wait()
+            except asyncio.CancelledError as cancellation:
+                await release_interaction.wait()
+                raise VideoInteractionCallCancelled(error=error) from cancellation
+            raise error
+
+    store = FakeStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    client = ErrorAfterCancellationClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+    )
+    await interaction_ready.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_interaction.set()
+    with pytest.raises(VideoInteractionCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.error.usage == VideoUsage(input_tokens=10)
+    assert cancellation.value.error.catalog_model == "old-catalog"
+    assert client.deletes == ["remote-malformed"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_youtube_session_commit_keeps_provider_state() -> None:
+    write_applied = asyncio.Event()
+    release_write = asyncio.Event()
+
+    class CommitThenWaitStore(FakeStore):
+        async def create_session(self, **kwargs: Any) -> None:
+            await super().create_session(**kwargs)
+            write_applied.set()
+            await release_write.wait()
+
+    store = CommitThenWaitStore()
+    client = FakeClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            question="Summarize it",
+            config=_config(catalog_model="video-catalog"),
+        )
+    )
+    await write_applied.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_write.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.catalog_model == "video-catalog"
+    assert [item.latest_interaction_id for item in store.sessions] == ["remote-start"]
+    assert client.deletes == []
+    assert store.pending == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_uploaded_session_commit_keeps_provider_state() -> None:
+    write_applied = asyncio.Event()
+    release_write = asyncio.Event()
+
+    class CommitThenWaitStore(FakeStore):
+        async def create_uploaded_session(self, **kwargs: Any) -> None:
+            await super().create_uploaded_session(**kwargs)
+            write_applied.set()
+            await release_write.wait()
+
+    async def source() -> Any:
+        yield b"video"
+
+    store = CommitThenWaitStore()
+    client = FakeClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.start_uploaded(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            source=UploadedVideoSource(
+                kind="attachment",
+                display_name="clip.mp4",
+                locator="clip.mp4",
+                mime_type="video/mp4",
+                byte_size=5,
+                bytes=source(),
+            ),
+            question="What happens?",
+            config=_config(catalog_model="video-catalog"),
+        )
+    )
+    await write_applied.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_write.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.catalog_model == "video-catalog"
+    assert [item.latest_interaction_id for item in store.sessions] == ["remote-file-start"]
+    assert len(store.reserved_files) == 1
+    assert client.deletes == []
+    assert client.file_deletes == []
+    assert store.pending == []
+    assert store.pending_files == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_follow_up_commit_keeps_provider_state() -> None:
+    write_applied = asyncio.Event()
+    release_write = asyncio.Event()
+
+    class CommitThenWaitStore(FakeStore):
+        async def advance_session(self, **kwargs: Any) -> bool:
+            advanced = await super().advance_session(**kwargs)
+            write_applied.set()
+            await release_write.wait()
+            return advanced
+
+    store = CommitThenWaitStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    client = FakeClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+    )
+    await write_applied.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_write.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.catalog_model == "old-catalog"
+    assert store.sessions[0].latest_interaction_id == "remote-ask"
+    assert store.sessions[0].interaction_count == 2
+    assert client.deletes == []
+    assert store.pending == []
+
+
+@pytest.mark.asyncio
+async def test_follow_up_pins_stored_model_and_catalog_after_role_change() -> None:
+    store = FakeStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    client = FakeClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+
+    analysis = await service.ask(
+        conversation_id=1,
+        actor_user_id="user",
+        guild_id="guild",
+        session="video_old",
+        question="Follow up",
+        config=_config(model="new-upstream", catalog_model="new-catalog"),
+    )
+
+    assert client.asks[0]["model"] == "old-upstream"
+    assert analysis.catalog_model == "old-catalog"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_follow_up_save_failures_keep_stored_catalog_model(concurrent: bool) -> None:
+    class FailingStore(FakeStore):
+        async def advance_session(self, **kwargs: Any) -> bool:
+            if concurrent:
+                return False
+            raise RuntimeError("database unavailable")
+
+    store = FailingStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    service = VideoUnderstandingService(client=FakeClient(), get_store=lambda: store)
+
+    with pytest.raises(VideoSessionError) as error:
+        await service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+
+    assert error.value.result is not None
+    assert error.value.catalog_model == "old-catalog"
+
+
+@pytest.mark.asyncio
+async def test_malformed_follow_up_keeps_stored_catalog_model() -> None:
+    class CleanupFailureStore(FakeStore):
+        async def complete_deletion(self, interaction_id: str) -> None:
+            raise RuntimeError("cleanup database unavailable")
+
+    malformed = VideoInteractionError(
+        "malformed",
+        interaction_id="remote-malformed",
+        model="old-upstream",
+        usage=VideoUsage(input_tokens=10),
+    )
+    store = CleanupFailureStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    service = VideoUnderstandingService(
+        client=FakeClient(ask_error=malformed),
+        get_store=lambda: store,
+    )
+
+    with pytest.raises(VideoInteractionError) as error:
+        await service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+
+    assert error.value.catalog_model == "old-catalog"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_malformed_follow_up_cleanup_keeps_usage_attribution() -> None:
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class BlockingCleanupStore(FakeStore):
+        async def enqueue_deletion(self, **kwargs: Any) -> None:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            await super().enqueue_deletion(**kwargs)
+
+    malformed = VideoInteractionError(
+        "malformed",
+        interaction_id="remote-malformed",
+        model="old-upstream",
+        usage=VideoUsage(input_tokens=10),
+    )
+    store = BlockingCleanupStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    service = VideoUnderstandingService(
+        client=FakeClient(ask_error=malformed),
+        get_store=lambda: store,
+    )
+    task = asyncio.create_task(
+        service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+    )
+    await cleanup_started.wait()
+
+    task.cancel()
+    release_cleanup.set()
+    with pytest.raises(VideoInteractionCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.error.usage == VideoUsage(input_tokens=10)
+    assert cancellation.value.error.catalog_model == "old-catalog"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_failed_follow_up_save_cleans_provider_result() -> None:
+    saving = asyncio.Event()
+    release_save = asyncio.Event()
+
+    class BlockingStore(FakeStore):
+        async def advance_session(self, **kwargs: Any) -> bool:
+            saving.set()
+            await release_save.wait()
+            raise RuntimeError("database unavailable")
+
+    store = BlockingStore(
+        sessions=[
+            Session(
+                "video_old",
+                "https://youtu.be/abcdefghijk",
+                "abcdefghijk",
+                "remote-old",
+                model="old-upstream",
+                catalog_model="old-catalog",
+            )
+        ]
+    )
+    client = FakeClient()
+    service = VideoUnderstandingService(client=client, get_store=lambda: store)
+    task = asyncio.create_task(
+        service.ask(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            session="video_old",
+            question="Follow up",
+            config=_config(model="new-upstream", catalog_model="new-catalog"),
+        )
+    )
+    await saving.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_save.set()
+    with pytest.raises(VideoResultCancelled) as error:
+        await task
+
+    assert error.value.catalog_model == "old-catalog"
+    assert store.sessions[0].latest_interaction_id == "remote-old"
+    assert client.deletes == ["remote-ask"]
 
 
 @pytest.mark.asyncio
@@ -331,11 +916,13 @@ async def test_uploaded_video_failure_releases_reserved_provider_file() -> None:
 @pytest.mark.asyncio
 async def test_uploaded_session_persistence_cancellation_cleans_remote_resources() -> None:
     persisting = asyncio.Event()
+    release_persistence = asyncio.Event()
 
     class BlockingStore(FakeStore):
         async def create_uploaded_session(self, **kwargs: Any) -> None:
             persisting.set()
-            await asyncio.Future()
+            await release_persistence.wait()
+            raise RuntimeError("database unavailable")
 
     async def source() -> Any:
         yield b"video"
@@ -363,6 +950,8 @@ async def test_uploaded_session_persistence_cancellation_cleans_remote_resources
     await persisting.wait()
 
     task.cancel()
+    await asyncio.sleep(0)
+    release_persistence.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
@@ -375,11 +964,13 @@ async def test_uploaded_session_persistence_cancellation_cleans_remote_resources
 @pytest.mark.asyncio
 async def test_cancellation_after_upload_releases_only_unclaimed_provider_file() -> None:
     analyzing = asyncio.Event()
+    release_analysis = asyncio.Event()
 
     class BlockingClient(FakeClient):
         async def start_from_file(self, **kwargs: Any) -> VideoInteractionResult:
             analyzing.set()
-            return await asyncio.Future()
+            await release_analysis.wait()
+            raise VideoInteractionError("provider call did not complete")
 
     async def source() -> Any:
         yield b"video"
@@ -407,6 +998,8 @@ async def test_cancellation_after_upload_releases_only_unclaimed_provider_file()
     await analyzing.wait()
 
     task.cancel()
+    await asyncio.sleep(0)
+    release_analysis.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
@@ -421,6 +1014,7 @@ async def test_cancellation_after_upload_releases_only_unclaimed_provider_file()
 @pytest.mark.asyncio
 async def test_cancelled_upload_does_not_delete_file_when_reservation_is_already_claimed() -> None:
     analyzing = asyncio.Event()
+    release_analysis = asyncio.Event()
 
     class ClaimedStore(FakeStore):
         async def release_provider_file(self, file_name: str, actor_user_id: str) -> bool:
@@ -429,7 +1023,8 @@ async def test_cancelled_upload_does_not_delete_file_when_reservation_is_already
     class BlockingClient(FakeClient):
         async def start_from_file(self, **kwargs: Any) -> VideoInteractionResult:
             analyzing.set()
-            return await asyncio.Future()
+            await release_analysis.wait()
+            raise VideoInteractionError("provider call did not complete")
 
     async def source() -> Any:
         yield b"video"
@@ -457,6 +1052,8 @@ async def test_cancelled_upload_does_not_delete_file_when_reservation_is_already
     await analyzing.wait()
 
     task.cancel()
+    await asyncio.sleep(0)
+    release_analysis.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 

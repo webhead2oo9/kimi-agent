@@ -54,7 +54,7 @@ guild installations, and permissions stay intact.
 - **Discord context and search.** Fetch recent channel context on demand and,
   when configured, search selected Discord channels without persisting the
   retrieved messages.
-- **Video understanding (optional).** Ask a stateful Gemini 3.7 Flash specialist
+- **Video understanding (optional).** Ask a catalog-selected, stateful Gemini specialist
   about a public YouTube video or a streamed Discord/workspace clip up to 500 MiB,
   then continue with rooted follow-ups and timestamped evidence. See
   [docs/video-understanding.md](../docs/video-understanding.md).

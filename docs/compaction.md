@@ -22,7 +22,7 @@ If the provider did not report usage figures, the whole request is estimated the
 
 ## The summarizer role
 
-The summary is written by whichever model `roles.compaction` names in `config/models.yaml`. You can add `compaction_fallbacks` exactly as for any other role. The profile can use any key named in `api_key_env`, including the dedicated `COMPACTION_API_KEY`, or run without a key.
+The summary is written by whichever model `roles.compaction` names in `config/models.yaml`. You can add `compaction_fallbacks` as for the other general LLM roles. Every referenced model must use a general provider; lifecycle-owned specialized profiles such as `gemini_interactions` cannot serve compaction. Authentication follows each profile: it can use a compatible supported key named in `api_key_env`, including the dedicated `COMPACTION_API_KEY`, or run without a key.
 
 The prompt asks for a thorough, structured handoff: facts and who said them, file paths, commands run and what they returned, approaches ruled out, and what is left to do. The target length scales with how much material is being replaced (about 1 word per 25 tokens summarized, kept between 300 and 4,000 words). The note itself is capped by `COMPACTION_MAX_TOKENS` (32,768 by default).
 

@@ -53,7 +53,7 @@ Add a model entry's local name to `selectable_chat_models` if it should appear
 in the owner-only `/models` menu.
 
 The `zai` failure adapter reads structured API error codes and translates them
-into the same model/account circuits used by every provider. A valid HTTP
+into the same model/account circuits used by every general provider. A valid HTTP
 `Retry-After` value sets the cooldown. Without one, identified five-hour and
 seven-day limits use those windows. Other recognized errors use the profile's
 quota or outage cooldown according to the code-specific mapping. Reset timestamps

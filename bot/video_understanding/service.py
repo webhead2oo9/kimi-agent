@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 import logging
 import secrets
 import time
 from typing import Protocol
 
+from utils.asyncio import await_uncancellable
 from video_understanding.client import (
     UploadedVideoFile,
     VideoByteSource,
     VideoEvidence,
+    VideoInteractionCallCancelled,
     VideoInteractionError,
     VideoInteractionResult,
     VideoUploadRequest,
@@ -74,17 +76,53 @@ class VideoSessionError(RuntimeError):
         message: str,
         *,
         result: VideoInteractionResult | None = None,
+        catalog_model: str = "",
     ) -> None:
         super().__init__(message)
         self.result = result
+        self.catalog_model = catalog_model
 
 
 class VideoResultCancelled(asyncio.CancelledError):
     """Cancellation raised after a provider returned a billable result."""
 
-    def __init__(self, *, result: VideoInteractionResult) -> None:
+    def __init__(
+        self,
+        *,
+        result: VideoInteractionResult,
+        catalog_model: str = "",
+    ) -> None:
         super().__init__()
         self.result = result
+        self.catalog_model = catalog_model
+
+
+class VideoInteractionCancelled(asyncio.CancelledError):
+    """Cancellation raised while cleaning up a billable malformed result."""
+
+    def __init__(self, *, error: VideoInteractionError) -> None:
+        super().__init__()
+        self.error = error
+
+
+async def _finish_persistence[T](
+    operation: Awaitable[T],
+) -> tuple[T, asyncio.CancelledError | None]:
+    """Finish a session write and preserve whether its caller was cancelled.
+
+    A SQLite commit can complete before its awaiter resumes. Running the write
+    in a shielded task lets callers distinguish a successful commit followed by
+    cancellation from a cancelled or failed write whose provider result must be
+    orphan-cleaned.
+    """
+    task = asyncio.ensure_future(operation)
+    try:
+        result = await await_uncancellable(task)
+    except asyncio.CancelledError as cancellation:
+        if task.done() and not task.cancelled() and task.exception() is None:
+            return task.result(), cancellation
+        raise
+    return result, None
 
 
 class VideoSessionRecord(Protocol):
@@ -108,6 +146,9 @@ class VideoSessionRecord(Protocol):
 
     @property
     def youtube_video_id(self) -> str: ...
+
+    @property
+    def catalog_model(self) -> str: ...
 
     @property
     def model(self) -> str: ...
@@ -149,6 +190,7 @@ class VideoSessionRepository(Protocol):
         youtube_url: str,
         youtube_video_id: str,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         now: float,
         expires_at: float,
@@ -178,6 +220,7 @@ class VideoSessionRepository(Protocol):
         source_locator: str,
         source_byte_size: int,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         file_name: str,
         now: float,
@@ -264,6 +307,7 @@ class VideoSessionConfig:
     max_output_tokens: int
     max_session_interactions: int
     session_ttl_minutes: int
+    catalog_model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +332,7 @@ class VideoAnalysis:
     limitations: tuple[str, ...]
     model: str
     usage: VideoUsage
+    catalog_model: str = ""
     usage_present: bool = True
 
 
@@ -320,42 +365,66 @@ class VideoUnderstandingService:
     ) -> VideoAnalysis:
         client = self._require_client()
         store = self._require_store()
-        try:
-            result = await client.start(
+        catalog_model = config.catalog_model or config.model
+        result, interaction_cancellation = await self._run_interaction_call(
+            client.start(
                 url=youtube_url,
                 question=question,
                 model=config.model,
                 thinking_level=config.thinking_level,
                 max_output_tokens=config.max_output_tokens,
-            )
-        except VideoInteractionError as exc:
-            if exc.interaction_id:
-                await self._queue_orphan(store, actor_user_id, exc.interaction_id)
-            raise
+            ),
+            store,
+            actor_user_id,
+            catalog_model=catalog_model,
+        )
         now = time.time()
         handle = f"video_{secrets.token_urlsafe(12)}"
         try:
-            await store.create_session(
-                handle=handle,
-                conversation_id=conversation_id,
-                actor_user_id=actor_user_id,
-                guild_id=guild_id,
-                youtube_url=youtube_url,
-                youtube_video_id=youtube_video_id,
-                model=config.model,
-                interaction_id=result.interaction_id,
-                now=now,
-                expires_at=now + config.session_ttl_minutes * 60,
+            _, persistence_cancellation = await _finish_persistence(
+                store.create_session(
+                    handle=handle,
+                    conversation_id=conversation_id,
+                    actor_user_id=actor_user_id,
+                    guild_id=guild_id,
+                    youtube_url=youtube_url,
+                    youtube_video_id=youtube_video_id,
+                    catalog_model=catalog_model,
+                    model=config.model,
+                    interaction_id=result.interaction_id,
+                    now=now,
+                    expires_at=now + config.session_ttl_minutes * 60,
+                )
             )
         except asyncio.CancelledError as exc:
             await self._cleanup_cancelled_result(store, actor_user_id, result.interaction_id)
-            raise VideoResultCancelled(result=result) from exc
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from (interaction_cancellation or exc)
         except Exception as exc:
-            await self._queue_orphan(store, actor_user_id, result.interaction_id)
+            await self._cleanup_billable_result(
+                store,
+                actor_user_id,
+                result,
+                catalog_model=catalog_model,
+            )
+            if interaction_cancellation is not None:
+                raise VideoResultCancelled(
+                    result=result,
+                    catalog_model=catalog_model,
+                ) from exc
             raise VideoSessionError(
                 "The video was analyzed, but its follow-up session could not be saved.",
                 result=result,
+                catalog_model=catalog_model,
             ) from exc
+        cancellation = interaction_cancellation or persistence_cancellation
+        if cancellation is not None:
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from cancellation
         return _analysis(
             handle=handle,
             source_kind="youtube",
@@ -363,6 +432,7 @@ class VideoUnderstandingService:
             source_locator=youtube_url,
             youtube_url=youtube_url,
             result=result,
+            catalog_model=catalog_model,
         )
 
     async def start_uploaded(
@@ -377,6 +447,7 @@ class VideoUnderstandingService:
     ) -> VideoAnalysis:
         client = self._require_client()
         store = self._require_store()
+        catalog_model = config.catalog_model or config.model
         file_id = f"kv-{secrets.token_hex(16)}"
         file_name = f"files/{file_id}"
         reserved_at = time.time()
@@ -400,14 +471,6 @@ class VideoUnderstandingService:
                     source=source.bytes,
                 )
             )
-            result = await client.start_from_file(
-                file_uri=uploaded.uri,
-                mime_type=uploaded.mime_type,
-                question=question,
-                model=config.model,
-                thinking_level=config.thinking_level,
-                max_output_tokens=config.max_output_tokens,
-            )
         except asyncio.CancelledError:
             # The upload reservation is the ownership proof for this newly
             # created provider file. Releasing it conditionally queues remote
@@ -420,31 +483,53 @@ class VideoUnderstandingService:
             )
             raise
         except VideoInteractionError as exc:
-            if exc.interaction_id:
-                await self._queue_orphan(store, actor_user_id, exc.interaction_id)
-            await self._release_file_or_log(store, actor_user_id, file_name)
+            exc.catalog_model = catalog_model
+            await self._cleanup_interaction_error(
+                store,
+                actor_user_id,
+                exc,
+                file_name=file_name,
+            )
             raise
         except Exception:
-            await self._release_file_or_log(store, actor_user_id, file_name)
+            await await_uncancellable(self._release_file_or_log(store, actor_user_id, file_name))
             raise
+
+        result, interaction_cancellation = await self._run_interaction_call(
+            client.start_from_file(
+                file_uri=uploaded.uri,
+                mime_type=uploaded.mime_type,
+                question=question,
+                model=config.model,
+                thinking_level=config.thinking_level,
+                max_output_tokens=config.max_output_tokens,
+            ),
+            store,
+            actor_user_id,
+            catalog_model=catalog_model,
+            file_name=file_name,
+        )
 
         now = time.time()
         handle = f"video_{secrets.token_urlsafe(12)}"
         try:
-            await store.create_uploaded_session(
-                handle=handle,
-                conversation_id=conversation_id,
-                actor_user_id=actor_user_id,
-                guild_id=guild_id,
-                source_kind=source.kind,
-                source_display_name=source.display_name,
-                source_locator=source.locator,
-                source_byte_size=source.byte_size,
-                model=config.model,
-                interaction_id=result.interaction_id,
-                file_name=file_name,
-                now=now,
-                expires_at=now + config.session_ttl_minutes * 60,
+            _, persistence_cancellation = await _finish_persistence(
+                store.create_uploaded_session(
+                    handle=handle,
+                    conversation_id=conversation_id,
+                    actor_user_id=actor_user_id,
+                    guild_id=guild_id,
+                    source_kind=source.kind,
+                    source_display_name=source.display_name,
+                    source_locator=source.locator,
+                    source_byte_size=source.byte_size,
+                    catalog_model=catalog_model,
+                    model=config.model,
+                    interaction_id=result.interaction_id,
+                    file_name=file_name,
+                    now=now,
+                    expires_at=now + config.session_ttl_minutes * 60,
+                )
             )
         except asyncio.CancelledError as exc:
             await self._cleanup_cancelled_result(
@@ -453,14 +538,34 @@ class VideoUnderstandingService:
                 result.interaction_id,
                 file_name=file_name,
             )
-            raise VideoResultCancelled(result=result) from exc
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from (interaction_cancellation or exc)
         except Exception as exc:
-            await self._queue_orphan(store, actor_user_id, result.interaction_id)
-            await self._release_file_or_log(store, actor_user_id, file_name)
+            await self._cleanup_billable_result(
+                store,
+                actor_user_id,
+                result,
+                catalog_model=catalog_model,
+                file_name=file_name,
+            )
+            if interaction_cancellation is not None:
+                raise VideoResultCancelled(
+                    result=result,
+                    catalog_model=catalog_model,
+                ) from exc
             raise VideoSessionError(
                 "The video was analyzed, but its follow-up session could not be saved.",
                 result=result,
+                catalog_model=catalog_model,
             ) from exc
+        cancellation = interaction_cancellation or persistence_cancellation
+        if cancellation is not None:
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from cancellation
         return _analysis(
             handle=handle,
             source_kind=source.kind,
@@ -468,6 +573,7 @@ class VideoUnderstandingService:
             source_locator=source.locator,
             youtube_url="",
             result=result,
+            catalog_model=catalog_model,
         )
 
     async def ask(
@@ -499,49 +605,84 @@ class VideoUnderstandingService:
                 "Several video sessions are active. Pass the session returned by the relevant start call."
             )
         current = matches[0]
+        catalog_model = getattr(current, "catalog_model", "") or current.model
         if current.interaction_count >= config.max_session_interactions:
             raise VideoSessionError(
                 "This video session reached its follow-up limit. Start a new session to continue."
             )
 
-        try:
-            result = await client.ask(
+        result, interaction_cancellation = await self._run_interaction_call(
+            client.ask(
                 previous_interaction_id=current.latest_interaction_id,
                 question=question,
                 model=current.model,
                 thinking_level=config.thinking_level,
                 max_output_tokens=config.max_output_tokens,
-            )
-        except VideoInteractionError as exc:
-            if exc.interaction_id:
-                await self._queue_orphan(store, actor_user_id, exc.interaction_id)
-            raise
+            ),
+            store,
+            actor_user_id,
+            catalog_model=catalog_model,
+        )
         now = time.time()
         try:
-            advanced = await store.advance_session(
-                handle=current.handle,
-                actor_user_id=actor_user_id,
-                expected_interaction_id=current.latest_interaction_id,
-                interaction_id=result.interaction_id,
-                now=now,
-                expires_at=now + config.session_ttl_minutes * 60,
-                max_interactions=config.max_session_interactions,
+            advanced, persistence_cancellation = await _finish_persistence(
+                store.advance_session(
+                    handle=current.handle,
+                    actor_user_id=actor_user_id,
+                    expected_interaction_id=current.latest_interaction_id,
+                    interaction_id=result.interaction_id,
+                    now=now,
+                    expires_at=now + config.session_ttl_minutes * 60,
+                    max_interactions=config.max_session_interactions,
+                )
             )
         except asyncio.CancelledError as exc:
             await self._cleanup_cancelled_result(store, actor_user_id, result.interaction_id)
-            raise VideoResultCancelled(result=result) from exc
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from (interaction_cancellation or exc)
         except Exception as exc:
-            await self._queue_orphan(store, actor_user_id, result.interaction_id)
+            await self._cleanup_billable_result(
+                store,
+                actor_user_id,
+                result,
+                catalog_model=catalog_model,
+            )
+            if interaction_cancellation is not None:
+                raise VideoResultCancelled(
+                    result=result,
+                    catalog_model=catalog_model,
+                ) from exc
             raise VideoSessionError(
                 "The follow-up was analyzed, but its session state could not be saved.",
                 result=result,
+                catalog_model=catalog_model,
             ) from exc
         if not advanced:
-            await self._queue_orphan(store, actor_user_id, result.interaction_id)
+            await self._cleanup_billable_result(
+                store,
+                actor_user_id,
+                result,
+                catalog_model=catalog_model,
+            )
+            cancellation = interaction_cancellation or persistence_cancellation
+            if cancellation is not None:
+                raise VideoResultCancelled(
+                    result=result,
+                    catalog_model=catalog_model,
+                ) from cancellation
             raise VideoSessionError(
                 "That video session changed concurrently. Retry the follow-up against its latest state.",
                 result=result,
+                catalog_model=catalog_model,
             )
+        cancellation = interaction_cancellation or persistence_cancellation
+        if cancellation is not None:
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from cancellation
         return _analysis(
             handle=current.handle,
             source_kind=current.source_kind,
@@ -549,6 +690,7 @@ class VideoUnderstandingService:
             source_locator=current.source_locator,
             youtube_url=current.youtube_url,
             result=result,
+            catalog_model=catalog_model,
         )
 
     async def delete_user_data(self, user_id: str) -> tuple[int, bool]:
@@ -670,6 +812,101 @@ class VideoUnderstandingService:
                 await store.complete_file_deletion(deletion.file_name)
         return complete and not backlog
 
+    async def _run_interaction_call(
+        self,
+        operation: Awaitable[VideoInteractionResult],
+        store: VideoSessionRepository,
+        actor_user_id: str,
+        *,
+        catalog_model: str,
+        file_name: str | None = None,
+    ) -> tuple[VideoInteractionResult, asyncio.CancelledError | None]:
+        try:
+            return await operation, None
+        except VideoInteractionCallCancelled as cancellation:
+            if cancellation.error is None:
+                assert cancellation.result is not None
+                return cancellation.result, cancellation
+            cancellation.error.catalog_model = catalog_model
+            await self._cleanup_interaction_error(
+                store,
+                actor_user_id,
+                cancellation.error,
+                file_name=file_name,
+            )
+            raise VideoInteractionCancelled(error=cancellation.error) from cancellation
+        except VideoInteractionError as error:
+            error.catalog_model = catalog_model
+            await self._cleanup_interaction_error(
+                store,
+                actor_user_id,
+                error,
+                file_name=file_name,
+            )
+            raise
+        except asyncio.CancelledError:
+            if file_name is not None:
+                await self._cleanup_cancelled_result(
+                    store,
+                    actor_user_id,
+                    "",
+                    file_name=file_name,
+                )
+            raise
+        except Exception:
+            if file_name is not None:
+                await await_uncancellable(
+                    self._release_file_or_log(store, actor_user_id, file_name)
+                )
+            raise
+
+    async def _cleanup_interaction_error(
+        self,
+        store: VideoSessionRepository,
+        actor_user_id: str,
+        error: VideoInteractionError,
+        *,
+        file_name: str | None = None,
+    ) -> None:
+        async def cleanup() -> None:
+            if error.interaction_id:
+                await self._queue_orphan(store, actor_user_id, error.interaction_id)
+            if file_name is not None:
+                await self._release_file_or_log(store, actor_user_id, file_name)
+
+        try:
+            await await_uncancellable(cleanup())
+        except asyncio.CancelledError as cancellation:
+            raise VideoInteractionCancelled(error=error) from cancellation
+        except Exception:
+            # Cleanup is secondary to returning provider usage and attribution.
+            log.exception("Could not finish Gemini video error cleanup")
+
+    async def _cleanup_billable_result(
+        self,
+        store: VideoSessionRepository,
+        actor_user_id: str,
+        result: VideoInteractionResult,
+        *,
+        catalog_model: str,
+        file_name: str | None = None,
+    ) -> None:
+        async def cleanup() -> None:
+            await self._queue_orphan(store, actor_user_id, result.interaction_id)
+            if file_name is not None:
+                await self._release_file_or_log(store, actor_user_id, file_name)
+
+        try:
+            await await_uncancellable(cleanup())
+        except asyncio.CancelledError as cancellation:
+            raise VideoResultCancelled(
+                result=result,
+                catalog_model=catalog_model,
+            ) from cancellation
+        except Exception:
+            # Cleanup is secondary to returning provider usage and attribution.
+            log.exception("Could not finish billable Gemini video cleanup")
+
     async def _queue_orphan(
         self,
         store: VideoSessionRepository,
@@ -691,9 +928,15 @@ class VideoUnderstandingService:
             return
         try:
             await client.delete(interaction_id)
-        except VideoInteractionError as exc:
+        except Exception as exc:
             if queued:
-                await store.fail_deletion(interaction_id, str(exc), now=time.time())
+                try:
+                    await store.fail_deletion(interaction_id, str(exc), now=time.time())
+                except Exception:
+                    log.exception(
+                        "Could not mark orphaned Gemini video interaction %s for retry",
+                        interaction_id,
+                    )
             log.warning(
                 "Could not delete orphaned Gemini video interaction %s",
                 interaction_id,
@@ -701,7 +944,13 @@ class VideoUnderstandingService:
             )
         else:
             if queued:
-                await store.complete_deletion(interaction_id)
+                try:
+                    await store.complete_deletion(interaction_id)
+                except Exception:
+                    log.exception(
+                        "Could not complete orphaned Gemini video interaction %s cleanup",
+                        interaction_id,
+                    )
 
     async def _release_file_or_log(
         self,
@@ -714,7 +963,10 @@ class VideoUnderstandingService:
         except Exception:
             log.exception("Could not release orphaned Gemini video file %s", file_name)
             return
-        await self._drain_file_deletions(user_id=actor_user_id, limit=1)
+        try:
+            await self._drain_file_deletions(user_id=actor_user_id, limit=1)
+        except Exception:
+            log.exception("Could not drain orphaned Gemini video file %s", file_name)
 
     async def _cleanup_cancelled_result(
         self,
@@ -752,6 +1004,7 @@ def _analysis(
     source_locator: str,
     youtube_url: str,
     result: VideoInteractionResult,
+    catalog_model: str = "",
 ) -> VideoAnalysis:
     return VideoAnalysis(
         session=handle,
@@ -764,5 +1017,6 @@ def _analysis(
         limitations=result.limitations,
         model=result.model,
         usage=result.usage,
+        catalog_model=catalog_model or result.model,
         usage_present=result.usage_present,
     )

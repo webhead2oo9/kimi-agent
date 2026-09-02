@@ -381,3 +381,102 @@ async def test_conversation_retention_cascade_queues_remote_deletion(tmp_path) -
         assert [item.interaction_id for item in pending] == ["remote-1"]
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_video_session_persists_catalog_model(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        conversation_id = await _conversation(db)
+        store = VideoSessionStore(db)
+        await store.create_session(
+            handle="video_pinned",
+            conversation_id=conversation_id,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            catalog_model="gemini-video-flash",
+            model="gemini-3.7-flash",
+            interaction_id="remote-1",
+            now=10,
+            expires_at=100,
+        )
+
+        found = await store.find_sessions(
+            conversation_id=conversation_id,
+            actor_user_id="user",
+            guild_id="guild",
+            now=20,
+            handle="video_pinned",
+        )
+        assert len(found) == 1
+        assert found[0].catalog_model == "gemini-video-flash"
+        assert found[0].model == "gemini-3.7-flash"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_v5_to_v6_migration_backfills_catalog_model(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "v5.db"
+    monkeypatch.setattr("storage.db.SCHEMA_VERSION", 5)
+
+    db = Database(db_path)
+    await db.connect()
+    conversation_id = await _conversation(db)
+    async with db.write_transaction() as conn:
+        # The current bootstrap SQL describes v6 even when migrations are
+        # capped for this fixture, so remove the new column to construct an
+        # actual v5 table before exercising the upgrade.
+        await conn.execute("ALTER TABLE video_sessions DROP COLUMN catalog_model")
+        async with conn.execute("PRAGMA table_info(video_sessions)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        assert "catalog_model" not in columns
+        await conn.execute(
+            """
+            INSERT INTO video_sessions (
+                handle, conversation_id, actor_user_id, guild_id,
+                source_kind, source_display_name, source_locator, source_byte_size,
+                youtube_url, youtube_video_id, model, latest_interaction_id,
+                interaction_count, created_at, last_active_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                "video_legacy",
+                conversation_id,
+                "user",
+                "guild",
+                "youtube",
+                "YouTube video",
+                "https://www.youtube.com/watch?v=abcdefghijk",
+                None,
+                "https://www.youtube.com/watch?v=abcdefghijk",
+                "abcdefghijk",
+                "gemini-3.7-flash",
+                "remote-v5",
+                10.0,
+                10.0,
+                100.0,
+            ),
+        )
+    await db.close()
+
+    monkeypatch.setattr("storage.db.SCHEMA_VERSION", 6)
+    db_upgraded = Database(db_path)
+    await db_upgraded.connect()
+    try:
+        store = VideoSessionStore(db_upgraded)
+        found = await store.find_sessions(
+            conversation_id=conversation_id,
+            actor_user_id="user",
+            guild_id="guild",
+            now=20.0,
+            handle="video_legacy",
+        )
+        assert len(found) == 1
+        assert found[0].model == "gemini-3.7-flash"
+        assert found[0].catalog_model == "gemini-3.7-flash"
+    finally:
+        await db_upgraded.close()

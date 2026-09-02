@@ -198,7 +198,7 @@ class Settings(BaseSettings):
     x_search_enabled: bool = False
     x_search_auth_mode: str = "auto"
     x_search_model: str = "grok-4.6"
-    x_search_timeout_seconds: float = 180.0
+    x_search_timeout_seconds: float = 300.0
     x_search_max_calls_per_turn: int = Field(default=10, ge=1, le=50)
 
     # Wolfram|Alpha computational knowledge (optional searchable tool). The

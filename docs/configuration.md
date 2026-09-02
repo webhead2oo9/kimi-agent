@@ -664,7 +664,7 @@ mode has a usable credential. In `auto`, OAuth is always first and
 | `X_SEARCH_ENABLED` | bool | `false` | Requests registration of the searchable X-search tool. |
 | `X_SEARCH_AUTH_MODE` | choice | `auto` | `oauth`, `api_key`, or OAuth-first `auto`; only `auto` may cross sources. |
 | `X_SEARCH_MODEL` | str | `grok-4.6` | xAI model used for the separate hosted-search Responses call. |
-| `X_SEARCH_TIMEOUT_SECONDS` | float | `180` | Whole timeout for one upstream attempt. Must be positive. |
+| `X_SEARCH_TIMEOUT_SECONDS` | float | `300` | Whole timeout for one upstream attempt. Must be positive. |
 | `X_SEARCH_MAX_CALLS_PER_TURN` | int | `10` | Maximum upstream attempts per user turn, including retries and fallback; range 1–50. |
 
 See [X search](x-search.md) for filters, evidence/degradation behavior, OAuth

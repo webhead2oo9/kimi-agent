@@ -377,8 +377,8 @@ the ports are a contract and an audit surface, not a sandbox.
   autocomplete never together and only on string or integer options, an
   autocomplete option only alongside a handler, integer-only bounds, buttons
   with a label of at most 80 characters or an emoji, and 1 to 25 unique select
-  options within
-  `min_values`/`max_values` — so a malformed spec raises `ModuleContractError`
+  options, with `min_values` never above the option count — so a malformed spec
+  raises `ModuleContractError`
   at registration instead of rejecting a whole scope's bulk synchronization.
   A modal's `custom_id` has a smaller budget than a button's
   (`MODAL_CUSTOM_ID_MAX_LENGTH`), because core reserves a fixed-width suffix so

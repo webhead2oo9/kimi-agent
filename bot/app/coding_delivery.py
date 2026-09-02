@@ -791,14 +791,23 @@ class CodingTaskController:
 
         model_config = self._provider_manager.model_config
         coding_model = model_config.roles.coding if model_config is not None else None
+        # A missing role or sandbox leaves the coding surface unregistered instead
+        # of taking the whole bot down: a sandbox probe that stops passing after a
+        # host upgrade must not turn into a Discord outage (docs/coding-agent.md).
         if coding_model is None:
-            raise RuntimeError("Coding tasks enabled but config/models.yaml assigns no coding role")
+            self._state = CodingTaskControllerState.DISABLED
+            log.warning("Coding tasks requested but config/models.yaml assigns no coding role")
+            return
         sandbox_config = self._tools.code_sandbox_config
         if sandbox_config is None:
-            raise RuntimeError("Coding tasks enabled but the code sandbox is unavailable")
+            self._state = CodingTaskControllerState.DISABLED
+            log.warning("Coding tasks requested but the code sandbox is unavailable")
+            return
         code_exec_guards = self._tools.code_exec_guards
         if code_exec_guards is None:
-            raise RuntimeError("Coding tasks enabled but code execution guards are unavailable")
+            self._state = CodingTaskControllerState.DISABLED
+            log.warning("Coding tasks requested but code execution guards are unavailable")
+            return
 
         jobs = CodingJobManager(
             store=self._store,

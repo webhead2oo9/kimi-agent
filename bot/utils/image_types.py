@@ -27,7 +27,11 @@ IMAGE_MEDIA_TYPE_SUFFIXES = {
 }
 
 _MAX_VALIDATED_IMAGE_PIXELS = 4096 * 4096
-_MAX_VALIDATED_IMAGE_FRAMES = 32
+# Every frame costs at least this much of the pixel budget, so a tiny-frame
+# animation cannot force an unbounded walk while ordinary animated GIFs and
+# WebPs (hundreds of frames) still validate.
+_MIN_FRAME_PIXEL_CHARGE = 64 * 64
+_MAX_VALIDATED_IMAGE_FRAMES = _MAX_VALIDATED_IMAGE_PIXELS // _MIN_FRAME_PIXEL_CHARGE
 _PILLOW_FORMAT_MEDIA_TYPES = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
@@ -66,8 +70,7 @@ def decoded_image_media_type(payload: bytes) -> str | None:
                     if frame_index == _MAX_VALIDATED_IMAGE_FRAMES:
                         return None
                     width, height = image.size
-                    frame_pixels = width * height
-                    decoded_pixels += frame_pixels
+                    decoded_pixels += max(width * height, _MIN_FRAME_PIXEL_CHARGE)
                     if (
                         not _reasonable_dimensions(width, height)
                         or decoded_pixels > _MAX_VALIDATED_IMAGE_PIXELS

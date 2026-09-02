@@ -306,8 +306,10 @@ class ApplicationLifecycle:
                     return
 
                 await command_sync.sync_for_ready(gateway_generation)
-                if gateway_generation != command_sync.current_generation:
-                    return
+                # A gateway drop during the sync retires this cohort's command
+                # work, but the sweepers are gateway-independent and idempotent.
+                # A RESUME never re-enters READY, so returning here would leave
+                # them unstarted for the life of the process.
 
                 async with self._ready_init_lock:
                     if self._closed:

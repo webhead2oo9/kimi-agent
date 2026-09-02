@@ -2156,3 +2156,58 @@ async def test_autocomplete_option_without_a_handler_is_refused() -> None:
 def test_invalid_button_specs_are_refused_when_a_view_is_built() -> None:
     with pytest.raises(ModuleContractError, match="label or emoji"):
         build_view((ButtonSpec(key="go", label=""),), "mod")
+
+
+@pytest.mark.asyncio
+async def test_runtime_drain_lets_a_syncing_handler_finish_inside_the_interaction_window() -> None:
+    """A handler that replaces guild commands is tracked as both an in-flight
+    interaction and a sync operation. Drain must give it the interaction
+    window rather than cancelling it after the shorter sync grace."""
+
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    await runtime.sync_ready()
+    sync_started = asyncio.Event()
+    finished: list[str] = []
+
+    async def brief_sync(*, guild: Any = None) -> list[Any]:
+        assert guild is not None
+        sync_started.set()
+        await asyncio.sleep(0.05)
+        return []
+
+    bot.tree.sync = brief_sync  # type: ignore[method-assign]
+
+    async def replacement_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def command_handler(_interaction: ModuleInteraction) -> None:
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(
+                    CommandSpec(name="installed", description="installed"),
+                    replacement_handler,
+                ),
+            ),
+        )
+        finished.append("replied")
+
+    router.add_command(CommandSpec(name="trigger", description="trigger"), command_handler)
+    running = asyncio.create_task(bot.tree.commands["trigger"].callback(_Interaction()))
+    await sync_started.wait()
+
+    await asyncio.wait_for(
+        runtime.drain(
+            interaction_timeout=1.0,
+            cancel_timeout=0.01,
+            sync_cancel_timeout=0.01,
+        ),
+        timeout=2.0,
+    )
+
+    assert running.done() is True
+    assert finished == ["replied"]

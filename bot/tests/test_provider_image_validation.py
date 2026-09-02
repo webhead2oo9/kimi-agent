@@ -167,3 +167,32 @@ async def test_image_gen_service_accepts_a_decodable_png() -> None:
     result = await ImageGenService(_Backend(VALID_PNG_BYTES)).generate(_request())
 
     assert result.image_bytes == VALID_PNG_BYTES
+
+
+@pytest.mark.parametrize(
+    ("pillow_format", "media_type"),
+    [("GIF", "image/gif"), ("WEBP", "image/webp")],
+)
+def test_ordinary_animated_images_survive_frame_budgeting(
+    pillow_format: str, media_type: str
+) -> None:
+    """The frame bound is a per-frame pixel charge, not a flat cap. A 40-frame
+    animation is ordinary provider output and must not be dropped as
+    undecodable."""
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    frames = [Image.new("RGB", (64, 48), (index, 0, 0)) for index in range(40)]
+    buffer = BytesIO()
+    frames[0].save(
+        buffer,
+        format=pillow_format,
+        save_all=True,
+        append_images=frames[1:],
+        duration=50,
+        loop=0,
+    )
+
+    assert image_types.decoded_image_media_type(buffer.getvalue()) == media_type

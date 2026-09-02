@@ -450,7 +450,7 @@ class CodingDelivery:
             trigger = await fallback.fetch_message(int(task.trigger_discord_message_id))
         except ValueError, discord.HTTPException:
             return fallback
-        existing_thread = await self._threads._adopt_managed_handoff_thread(trigger)
+        existing_thread = await self._threads.adopt_managed_handoff_thread(trigger)
         if existing_thread is not None:
             await self._save_delivery_thread(task, existing_thread.id)
             return existing_thread

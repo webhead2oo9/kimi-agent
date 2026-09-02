@@ -300,13 +300,11 @@ class CodingDelivery:
                         prepared_text,
                         attachment_plan,
                     )
-                    if not sent or bool(getattr(sent, "delivery_failed", False)):
+                    if not sent or sent.delivery_failed:
                         if sent:
                             await self._delete_messages(list(sent))
-                        if bool(getattr(sent, "delivery_permanent", False)):
-                            error = str(
-                                getattr(sent, "delivery_error", "Discord permission failure")
-                            )
+                        if sent.delivery_permanent:
+                            error = sent.delivery_error or "Discord permission failure"
                             await self._mark_permanent_failure(task, error)
                         return
                     await self._commit_final_delivery(

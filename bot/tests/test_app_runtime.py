@@ -18,6 +18,7 @@ from config.model_config import parse_model_config_text
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
+from discord_adapter.io import SentMessages
 from storage.db import Database
 from storage.model_selection import ModelSelectionStore
 from tests.helpers import LifecycleProbe, StubProviderManager
@@ -67,7 +68,7 @@ class _CodingProviderManager(StubProviderManager):
 @pytest.mark.asyncio
 async def test_text_response_does_not_wait_for_workspace_writer() -> None:
     locks = UserLocks()
-    gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
+    gateway = SimpleNamespace(send_response=AsyncMock(return_value=SentMessages()))
     sender = DiscordResponseSender(
         gateway=cast(DiscordGateway, gateway),
         workspace_locks=locks,
@@ -90,7 +91,7 @@ async def test_text_response_does_not_wait_for_workspace_writer() -> None:
 @pytest.mark.asyncio
 async def test_file_response_waits_for_workspace_writer() -> None:
     locks = UserLocks()
-    gateway = SimpleNamespace(send_response=AsyncMock(return_value=[]))
+    gateway = SimpleNamespace(send_response=AsyncMock(return_value=SentMessages()))
     sender = DiscordResponseSender(
         gateway=cast(DiscordGateway, gateway),
         workspace_locks=locks,

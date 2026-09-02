@@ -24,7 +24,7 @@ from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBo
 from app.threads import ThreadHandoffManager
 from config.fragments.channel_pins import load_channel_auto_thread
 from discord_adapter.gateway import DiscordGateway
-from discord_adapter.io import DiscordActivityReporter
+from discord_adapter.io import DiscordActivityReporter, SentMessages
 from tools.embeds import embed_transcript_summary
 
 log = logging.getLogger(__name__)
@@ -202,7 +202,7 @@ class GuildMessageTurnAdapter:
             )
 
             initial_handoff_delivery_failed = bool(
-                not sent_messages or getattr(sent_messages, "delivery_failed", False)
+                not sent_messages or sent_messages.delivery_failed
             )
             if (
                 coding_handoff_task_id is not None
@@ -307,7 +307,7 @@ class GuildMessageTurnAdapter:
                         delivery_result.thread_close_request.thread_id,
                         conversation_id,
                     )
-            partial_delivery_failed = bool(getattr(sent_messages, "delivery_failed", False))
+            partial_delivery_failed = sent_messages.delivery_failed
             delivery_failed = bool(
                 expected_delivery
                 and (not sent_messages or partial_delivery_failed)
@@ -335,7 +335,7 @@ class GuildMessageTurnAdapter:
         result: TurnResult,
         *,
         reference: discord.Message | None,
-    ) -> list[discord.Message]:
+    ) -> SentMessages:
         return await self.collaborators.responses.send(
             channel,
             result.response_text,

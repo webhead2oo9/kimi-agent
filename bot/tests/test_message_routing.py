@@ -30,6 +30,7 @@ from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from config.model_config import ModelConfig
 from config.settings import Settings
+from discord_adapter.io import SentMessages
 from providers.types import ContentPart
 from storage.conversations import (
     CHANNEL_SHARED,
@@ -66,6 +67,18 @@ def _conversation_call_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
         return dict(kwargs)
     assert isinstance(request, ConversationRunRequest)
     return request.__dict__
+
+
+def _sent_messages(*messages: object) -> SentMessages:
+    return SentMessages(cast(tuple[discord.Message, ...], messages))
+
+
+def _stub_response_sender(monkeypatch: pytest.MonkeyPatch, app: Any, *messages: object) -> None:
+    monkeypatch.setattr(
+        app.response_sender,
+        "send",
+        AsyncMock(return_value=_sent_messages(*messages)),
+    )
 
 
 def _run_conversation_mock() -> AsyncMock:
@@ -253,7 +266,7 @@ async def _capture_conversation_call(monkeypatch, app, message, store: Conversat
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     captured: dict = {}
 
@@ -336,7 +349,7 @@ async def test_handle_message_passes_recalled_memories_to_conversation(
         "recall_current_user_context",
         recall,
     )
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     captured: dict = {}
 
@@ -380,7 +393,7 @@ async def test_handle_message_resolves_bot_identity_after_runner_construction(
         "collect_turn_images",
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
     monkeypatch.setattr(
         message_runtime,
         "run_conversation",
@@ -410,7 +423,7 @@ async def test_trigger_newlines_are_neutralized_for_model_input(
         AsyncMock(return_value=TurnImages(vision_parts=[], edit_target=None)),
     )
     monkeypatch.setattr(message_runtime, "recall_current_user_context", AsyncMock(return_value=""))
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     captured: dict = {}
 
@@ -467,7 +480,7 @@ async def test_handle_message_does_not_recreate_memory_bank_when_memory_disabled
         "recall_current_user_context",
         AsyncMock(return_value=""),
     )
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     async def fake_run_conversation(**kwargs):
         return ConversationRunResult(text="ok")
@@ -522,7 +535,7 @@ async def test_handle_message_wires_usage_dependencies_with_scoped_model(
         return TurnResult(response_text="ok")
 
     install_foreground_turn_handler(app, fake_handle_turn)
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     message = _text_message(content="hello")
 
@@ -692,7 +705,7 @@ def _wire_handle_message(
     sent.content = "ok"
     sent.created_at = datetime.fromtimestamp(sent_message_id, tz=UTC)
     sent.channel.id = 100
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[sent]))
+    _stub_response_sender(monkeypatch, app, sent)
 
 
 @pytest.mark.asyncio
@@ -901,13 +914,13 @@ async def test_handle_message_routes_building_message_and_pings_on_answer(
     async def send_response(*args, **kwargs):
         assert await store.get_conversation_by_discord_message("777", channel_id="100") is not None
         sent_calls.append(kwargs)
-        return [
+        return _sent_messages(
             SimpleNamespace(
                 id=888,
                 content="final answer",
                 created_at=datetime.fromtimestamp(888, tz=UTC),
             )
-        ]
+        )
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -958,7 +971,7 @@ async def test_handle_message_same_channel_mentions_create_distinct_roots(
         sent.content = "ok"
         sent.created_at = datetime.fromtimestamp(sent_id, tz=UTC)
         sent.channel.id = 100
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -1063,7 +1076,7 @@ async def test_reply_to_bot_response_continues_referenced_root_only(
         sent.content = "ok"
         sent.created_at = datetime.fromtimestamp(sent_id, tz=UTC)
         sent.channel.id = 100
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -1552,7 +1565,7 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
             await release_alice.wait()
 
     monkeypatch.setattr(app.message_controller, "_on_message_for_user", fake_on_message_for_user)
-    send_response = AsyncMock(return_value=[])
+    send_response = AsyncMock(return_value=_sent_messages())
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
     first = _trigger_message(
@@ -1878,7 +1891,7 @@ async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_d
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -1938,7 +1951,7 @@ async def test_thread_request_retries_creation_once(monkeypatch, routing_databas
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -1993,7 +2006,7 @@ async def test_thread_request_falls_back_to_channel_when_creation_fails(
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -2044,7 +2057,7 @@ async def test_thread_request_does_not_retry_when_creation_is_forbidden(
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -2110,7 +2123,7 @@ async def _cross_channel_turn(
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 
@@ -2257,7 +2270,7 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
     message = _trigger_message(
@@ -2337,7 +2350,7 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
         return thread
 
     monkeypatch.setattr(app.threads, "create_handoff_thread", create_thread)
-    monkeypatch.setattr(app.response_sender, "send", AsyncMock(return_value=[]))
+    _stub_response_sender(monkeypatch, app)
 
     message = _trigger_message(
         content="<@999> take this to #bot-spam",
@@ -2593,7 +2606,7 @@ async def test_leave_thread_locks_and_archives_managed_thread(
         sent.content = content
         sent.created_at = datetime.fromtimestamp(888, tz=UTC)
         sent.channel = channel
-        return [sent]
+        return _sent_messages(sent)
 
     monkeypatch.setattr(app.response_sender, "send", send_response)
 

@@ -1341,14 +1341,18 @@ class InteractionRuntime:
         self._closed = True
         self._live = False
         await self._cancel_sync_retries()
+        # A handler that calls replace_guild_commands is both an in-flight
+        # interaction and a sync operation. Drain first so it keeps the full
+        # interaction window; cancelling sync work up front would cut it off
+        # after the shorter sync grace and leave the interaction unanswered.
+        await self.dispatcher.drain(
+            timeout=interaction_timeout,
+            cancel_timeout=cancel_timeout,
+        )
         await _cancel_tasks_bounded(
             set(self._sync_operations),
             timeout=sync_cancel_timeout,
             what="guild command synchronization",
-        )
-        await self.dispatcher.drain(
-            timeout=interaction_timeout,
-            cancel_timeout=cancel_timeout,
         )
 
     def guild_command_owner(self, top_name: str) -> str | None:

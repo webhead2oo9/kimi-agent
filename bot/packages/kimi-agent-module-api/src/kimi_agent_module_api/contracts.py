@@ -1352,6 +1352,10 @@ def validate_select_spec(select: SelectSpec) -> None:
             raise ModuleContractError(f"select {name} must be between {low} and 25")
     if select.min_values > select.max_values:
         raise ModuleContractError("select min_values cannot exceed max_values")
+    # max_values may exceed the option count (Discord clamps it), but a
+    # minimum above the count can never be satisfied, so the select is dead.
+    if select.min_values > len(select.options):
+        raise ModuleContractError("select min_values cannot exceed the number of options")
 
 
 def validate_modal_spec(modal: ModalSpec) -> None:

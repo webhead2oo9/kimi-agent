@@ -1520,3 +1520,42 @@ async def test_disconnect_does_not_cancel_a_newer_ready_while_pause_yields(
     assert global_completed is True
     assert runtime.guild_sync_calls == 1
     assert app.gateway_ready is True
+
+
+@pytest.mark.asyncio
+async def test_on_ready_starts_sweepers_when_the_gateway_moves_during_command_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disconnect during the initial command sync retires that READY cohort's
+    command work, but Discord then RESUMEs rather than sending a new READY.
+    The gateway-independent sweepers must still start on this pass."""
+
+    app = _build_test_app(monkeypatch)
+    LifecycleProbe(app).set_db_initialized()
+    replace_lifecycle_resources(
+        app, memory_manager=cast(MemoryManager, FakeMemoryManager(client=None))
+    )
+    LifecycleProbe(app).set_workspace_sweeper_started()
+    LifecycleProbe(app).set_video_session_sweeper_started(False)
+    LifecycleProbe(app).set_guild_activation_refresh_task(cast(asyncio.Task, object()))
+    background_coroutines: list[str] = []
+
+    def fake_background_task(coro: Any) -> object:
+        background_coroutines.append(coro.cr_code.co_name)
+        coro.close()
+        return object()
+
+    async def dropping_sync(*, guild: object | None = None) -> list[object]:
+        assert guild is None
+        await app.on_disconnect()
+        await app.on_resumed()
+        return []
+
+    monkeypatch.setattr(app.settings, "tool_event_log_enabled", False)
+    monkeypatch.setattr(app.bot.tree, "sync", dropping_sync)
+    monkeypatch.setattr(asyncio, "create_task", fake_background_task)
+
+    await app.on_ready()
+
+    assert "video_session_sweeper" in background_coroutines
+    assert LifecycleProbe(app).snapshot().video_session_sweeper_started is True

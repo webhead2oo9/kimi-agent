@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -181,13 +182,19 @@ async def test_disabled_controller_has_an_explicit_valid_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enabled_controller_fails_loudly_when_coding_role_is_unavailable() -> None:
+async def test_enabled_controller_degrades_when_coding_role_is_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing coding role unregisters the surface; it must not abort startup."""
+
     controller = make_controller(coding_tasks_enabled=True)
 
-    with pytest.raises(RuntimeError, match="assigns no coding role"):
+    with caplog.at_level(logging.WARNING, logger="app.coding_delivery"):
         await controller.start()
 
-    assert controller.state is CodingTaskControllerState.NOT_STARTED
+    assert controller.state is CodingTaskControllerState.DISABLED
+    assert controller.running is False
+    assert "assigns no coding role" in caplog.text
 
 
 def test_coding_delivery_text_uses_readable_short_task_reference() -> None:

@@ -160,6 +160,37 @@ def test_lookup_member_requires_user_id_or_query() -> None:
     assert gateway.calls == []
 
 
+def test_lookup_member_normalizes_string_arguments() -> None:
+    gateway = _Gateway(MemberLookup(match="none"))
+    registry = ToolRegistry()
+    init_member_lookup_tool(registry, gateway)
+
+    asyncio.run(
+        registry.dispatch(
+            "lookup_member",
+            {"user_id": " 42 ", "query": " Web "},
+            _ctx({"lookup_member"}),
+        )
+    )
+
+    assert gateway.calls == [{"user_id": "42", "query": "Web"}]
+
+
+def test_lookup_member_rejects_non_string_arguments() -> None:
+    for arguments, error in (
+        ({"user_id": 42}, "user_id must be a string"),
+        ({"query": ["web"]}, "query must be a string"),
+    ):
+        gateway = _Gateway(MemberLookup(match="none"))
+        registry = ToolRegistry()
+        init_member_lookup_tool(registry, gateway)
+
+        raw = asyncio.run(registry.dispatch("lookup_member", arguments, _ctx({"lookup_member"})))
+
+        assert json.loads(raw) == {"error": error}
+        assert gateway.calls == []
+
+
 def test_lookup_member_gateway_error_returns_safe_error() -> None:
     gateway = _Gateway(error=DiscordGatewayError("Member lookup is only available in a server."))
     registry = ToolRegistry()

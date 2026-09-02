@@ -961,7 +961,7 @@ class CodingTaskStore:
         async with self._db.write_transaction() as conn:
             async with conn.execute(
                 """
-                SELECT id FROM coding_tasks
+                SELECT id, cancel_requested FROM coding_tasks
                 WHERE status IN (
                     'recovering','running','waiting_for_job','waiting_for_input','cancelling'
                 )
@@ -971,11 +971,7 @@ class CodingTaskStore:
             for row in rows:
                 task_id = str(row[0])
                 recovered.append(task_id)
-                async with conn.execute(
-                    "SELECT cancel_requested FROM coding_tasks WHERE id = ?", (task_id,)
-                ) as row_cursor:
-                    flag_row = await row_cursor.fetchone()
-                cancelled_on_recovery = bool(flag_row and flag_row[0])
+                cancelled_on_recovery = bool(row[1])
                 await conn.execute(
                     """
                     UPDATE coding_tasks

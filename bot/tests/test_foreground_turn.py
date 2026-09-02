@@ -18,7 +18,6 @@ from app.foreground_turn import (
     ForegroundTurnAdapter,
     ForegroundTurnInvocation,
     ForegroundTurnRunner,
-    TurnConversationSpec,
     TurnDeliveryReceipt,
     TurnSurfaceOutcome,
 )
@@ -217,15 +216,6 @@ def _invocation(
     workspace_key: WorkspaceKey | None = None,
 ) -> ForegroundTurnInvocation:
     return ForegroundTurnInvocation(
-        conversation=TurnConversationSpec(
-            key="root-1",
-            channel_name="general",
-            guild_id="guild-1",
-            channel_id="channel-1",
-            thread_id=None,
-            root_discord_message_id="user-message-1",
-            existing_conversation_id=existing_conversation_id,
-        ),
         source=_source(workspace_key=workspace_key),
         prepared_user_discord_message_id="user-message-1",
         prepared_user_source_created_at=10.0,
@@ -233,6 +223,7 @@ def _invocation(
         collect_reply_context=_collect_reply_context,
         strip_mention=_strip_mention,
         stop_event=asyncio.Event(),
+        existing_conversation_id=existing_conversation_id,
         timeout_seconds=30.0,
     )
 

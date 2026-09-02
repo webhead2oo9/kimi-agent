@@ -38,7 +38,6 @@ from app.foreground_turn import (
     ForegroundTurnInvocation,
     ForegroundTurnRunner,
     HandleTurn,
-    TurnConversationSpec,
 )
 from app.guild_turn_adapter import (
     GuildMessageTurnAdapter,
@@ -467,17 +466,6 @@ class DiscordMessageController:
         )
         turn_stop_event = asyncio.Event()
         invocation = ForegroundTurnInvocation(
-            conversation=TurnConversationSpec(
-                key=conversation_key,
-                channel_name=context_channel_name,
-                guild_id=guild_id,
-                channel_id=context_channel_id,
-                thread_id=context_thread_id,
-                root_discord_message_id=str(message.id),
-                owner_user_id=resolved_conversation.owner_user_id,
-                access_scope=resolved_conversation.access_scope,
-                existing_conversation_id=resolved_conversation.db_conversation_id,
-            ),
             source=turn_input,
             prepared_user_discord_message_id=str(message.id),
             prepared_user_source_created_at=message_source_timestamp(message),
@@ -485,6 +473,7 @@ class DiscordMessageController:
             collect_reply_context=collect_reply_context,
             strip_mention=self.strip_message_invocation,
             stop_event=turn_stop_event,
+            existing_conversation_id=resolved_conversation.db_conversation_id,
             hooks=_turn_entry_hooks(),
             collect_turn_attachments=collect_turn_attachments,
             command_template="chat" if personal_dm else None,
@@ -505,14 +494,12 @@ class DiscordMessageController:
             personal_chat=personal_dm,
         )
 
-        active_registration = self._bindings.active_operations().register(
+        async with self._bindings.active_operations().register(
             user_id=user_id,
             root_key=conversation_key,
             channel_id=context_channel_id,
             stop_event=turn_stop_event,
-        )
-        await active_registration.__aenter__()
-        try:
+        ):
             if lock_acquired:
                 return await self._bindings.turn_runner().run(invocation, adapter=adapter)
             async with self._root_locks.hold(
@@ -522,8 +509,6 @@ class DiscordMessageController:
                 )
             ):
                 return await self._bindings.turn_runner().run(invocation, adapter=adapter)
-        finally:
-            await active_registration.__aexit__(None, None, None)
 
     def guild_turn_collaborators(self) -> GuildTurnCollaborators:
         """Compose the post-initialization capabilities used for guild delivery."""

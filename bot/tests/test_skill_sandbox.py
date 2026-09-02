@@ -23,6 +23,7 @@ from skills.sandbox import (
     detect_sandbox_runtime,
     validate_sandbox_runtime,
 )
+from tests.sandbox_gate import sandbox_skip_allowed
 
 
 def _command_fixture(tmp_path: Path, *, allow_network: bool = False) -> list[str]:
@@ -319,7 +320,7 @@ def _live_linux_sandbox_unavailable() -> bool:
 
 
 _requires_linux_sandbox = pytest.mark.skipif(
-    _live_linux_sandbox_unavailable(),
+    sandbox_skip_allowed(_live_linux_sandbox_unavailable()),
     reason="requires a working production Linux Bubblewrap sandbox",
 )
 

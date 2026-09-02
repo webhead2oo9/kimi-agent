@@ -35,10 +35,13 @@ from storage.usage import UsageMarker
 from tools.code_exec import init_code_exec_tool
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
+from tests.sandbox_gate import sandbox_skip_allowed
 from trust.tiers import TrustTier
 
 _REAL = sandbox_available(SandboxConfig())
-_requires_sandbox = pytest.mark.skipif(not _REAL, reason="bwrap/prlimit not available")
+_requires_sandbox = pytest.mark.skipif(
+    sandbox_skip_allowed(not _REAL), reason="bwrap/prlimit not available"
+)
 
 
 def _can_symlink() -> bool:

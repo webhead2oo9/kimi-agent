@@ -233,17 +233,13 @@ class CodingDelivery:
             legacy_marker = f"coding-result:{task.id}"
             legacy_final = await self._find_delivery(channel, legacy_marker)
             if legacy_final is not None:
-                await self.persist_final_messages(
+                await self._commit_final_delivery(
                     task,
                     [legacy_final],
-                    channel_id=str(channel.id),
-                )
-                await self._store.mark_delivered(task.id, str(legacy_final.id))
-                await self.delete_status_message(
-                    channel,
-                    task,
-                    status_marker,
-                    message=status_message,
+                    delivery_channel_id=str(channel.id),
+                    status_channel=channel,
+                    status_marker=status_marker,
+                    status_message=status_message,
                 )
                 return
             delivery_channel = await self.result_channel(task, channel, final_text)
@@ -290,20 +286,13 @@ class CodingDelivery:
                         legacy_marker=legacy_marker,
                     )
                     if recovered_final:
-                        await self.persist_final_messages(
+                        await self._commit_final_delivery(
                             task,
                             recovered_final,
-                            channel_id=str(delivery_channel.id),
-                        )
-                        await self._store.mark_delivered(
-                            task.id,
-                            str(recovered_final[0].id),
-                        )
-                        await self.delete_status_message(
-                            channel,
-                            task,
-                            status_marker,
-                            message=status_message,
+                            delivery_channel_id=str(delivery_channel.id),
+                            status_channel=channel,
+                            status_marker=status_marker,
+                            status_message=status_message,
                         )
                         return
                     sent = await self._discord_gateway.send_prepared_response(
@@ -320,17 +309,39 @@ class CodingDelivery:
                             )
                             await self._mark_permanent_failure(task, error)
                         return
-                    first = sent[0]
-                    await self.persist_final_messages(
-                        task, list(sent), channel_id=str(delivery_channel.id)
-                    )
-                    await self._store.mark_delivered(task.id, str(first.id))
-                    await self.delete_status_message(
-                        channel,
+                    await self._commit_final_delivery(
                         task,
-                        status_marker,
-                        message=status_message,
+                        list(sent),
+                        delivery_channel_id=str(delivery_channel.id),
+                        status_channel=channel,
+                        status_marker=status_marker,
+                        status_message=status_message,
                     )
+
+    async def _commit_final_delivery(
+        self,
+        task: CodingTask,
+        messages: list[discord.Message],
+        *,
+        delivery_channel_id: str,
+        status_channel: discord.TextChannel | discord.Thread,
+        status_marker: str,
+        status_message: discord.Message | None,
+    ) -> None:
+        """Persist a final result before disabling retry and removing its status."""
+
+        await self.persist_final_messages(
+            task,
+            messages,
+            channel_id=delivery_channel_id,
+        )
+        await self._store.mark_delivered(task.id, str(messages[0].id))
+        await self.delete_status_message(
+            status_channel,
+            task,
+            status_marker,
+            message=status_message,
+        )
 
     async def prepare_attachment_delivery(
         self,

@@ -17,13 +17,13 @@ from app.conversation_routing import ResolvedConversation
 from app.foreground_turn import (
     ForegroundTurnInvocation,
     ForegroundTurnRunner,
-    TurnConversationSpec,
 )
 from app.root_locks import RootLockPool
 from app.turn_entry import _PERSONAL_CHAT_BLOCKED_TOOLS, TurnEntryHooks
 from app.user_app_consent import UserAppConsentPrompter
 from app.user_app_turn_adapter import UserAppInteractionTurnAdapter
 from discord_adapter.interaction_io import send_interaction_status
+from discord_adapter.io import is_user_only_integration
 from storage.conversations import OWNER_ONLY, ConversationStore
 from tools.registry import USER_APP_SCOPE_CHANNEL_ID
 from trust.tiers import TrustTier
@@ -74,35 +74,11 @@ class _UserAppMessageSource:
     reference: Any | None = None
 
 
-def is_user_integration(interaction: discord.Interaction) -> bool:
-    is_user = getattr(interaction, "is_user_integration", None)
-    if not callable(is_user):
-        return False
-    try:
-        return bool(is_user())
-    except Exception:
-        return False
-
-
-def is_guild_integration(interaction: discord.Interaction) -> bool:
-    is_guild = getattr(interaction, "is_guild_integration", None)
-    if not callable(is_guild):
-        return False
-    try:
-        return bool(is_guild())
-    except Exception:
-        return False
-
-
-def is_user_only_interaction(interaction: discord.Interaction) -> bool:
-    return is_user_integration(interaction) and not is_guild_integration(interaction)
-
-
 def interaction_can_post_publicly(interaction: discord.Interaction) -> bool:
     if interaction.guild_id is None:
         return True
 
-    user_only = is_user_only_interaction(interaction)
+    user_only = is_user_only_integration(interaction)
     permission_source = "permissions" if user_only else "app_permissions"
     permissions = getattr(interaction, permission_source, None)
     if permissions is None:
@@ -375,16 +351,6 @@ class UserAppChatController:
                                             workspace_key=user_app_workspace_key(user_id),
                                         )
                                         invocation = ForegroundTurnInvocation(
-                                            conversation=TurnConversationSpec(
-                                                key=root_key,
-                                                channel_name="Personal chat",
-                                                guild_id=None,
-                                                channel_id=USER_APP_SCOPE_CHANNEL_ID,
-                                                thread_id=None,
-                                                root_discord_message_id=str(interaction.id),
-                                                owner_user_id=user_id,
-                                                access_scope=OWNER_ONLY,
-                                            ),
                                             source=turn_input,
                                             prepared_user_discord_message_id=(
                                                 f"userapp:{interaction.id}"

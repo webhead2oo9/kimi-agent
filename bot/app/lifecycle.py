@@ -195,6 +195,24 @@ def settings_secret_values(settings: Settings) -> tuple[str, ...]:
     )
 
 
+async def _cancel_background_task(
+    task: asyncio.Task[Any] | None,
+    *,
+    error_message: str,
+) -> None:
+    """Cancel and join one owned background task."""
+
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        log.exception(error_message)
+
+
 class ApplicationLifecycle:
     def __init__(self, resources: LifecycleResources) -> None:
         self._resources = resources
@@ -369,52 +387,36 @@ class ApplicationLifecycle:
             self._module_event_publisher = None
         await resources.turn_admission.close()
         await resources.guild_activation.close()
-        if self._auto_retain_task is not None:
-            self._auto_retain_task.cancel()
-            try:
-                await self._auto_retain_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping auto-retain sweeper")
-            self._auto_retain_task = None
-        if self._workspace_sweeper_task is not None:
-            self._workspace_sweeper_task.cancel()
-            try:
-                await self._workspace_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping workspace sweeper")
-            self._workspace_sweeper_task = None
-        if self._attachment_sweeper_task is not None:
-            self._attachment_sweeper_task.cancel()
-            try:
-                await self._attachment_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping attachment orphan sweeper")
-            self._attachment_sweeper_task = None
-        if self._video_session_sweeper_task is not None:
-            self._video_session_sweeper_task.cancel()
-            try:
-                await self._video_session_sweeper_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping video session sweeper")
-            self._video_session_sweeper_task = None
+        await _cancel_background_task(
+            self._auto_retain_task,
+            error_message="Error stopping auto-retain sweeper",
+        )
+        self._auto_retain_task = None
+        await _cancel_background_task(
+            self._workspace_sweeper_task,
+            error_message="Error stopping workspace sweeper",
+        )
+        self._workspace_sweeper_task = None
+        await _cancel_background_task(
+            self._attachment_sweeper_task,
+            error_message="Error stopping attachment orphan sweeper",
+        )
+        self._attachment_sweeper_task = None
+        video_task = self._video_session_sweeper_task
+        await _cancel_background_task(
+            video_task,
+            error_message="Error stopping video session sweeper",
+        )
+        self._video_session_sweeper_task = None
+        if video_task is not None:
             self._video_session_sweeper_started = False
-        if self._transcript_retention_task is not None:
-            self._transcript_retention_task.cancel()
-            try:
-                await self._transcript_retention_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("Error stopping transcript retention sweeper")
-            self._transcript_retention_task = None
+        transcript_task = self._transcript_retention_task
+        await _cancel_background_task(
+            transcript_task,
+            error_message="Error stopping transcript retention sweeper",
+        )
+        self._transcript_retention_task = None
+        if transcript_task is not None:
             self._transcript_retention_sweeper_started = False
             self._active_transcript_retention_days = 0
             self._active_transcript_retention_sweep_interval_seconds = None

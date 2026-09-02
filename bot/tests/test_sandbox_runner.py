@@ -34,6 +34,7 @@ from sandbox.runner import (
     run_workspace_file_in_sandbox,
     sandbox_available,
 )
+from tests.sandbox_gate import sandbox_skip_allowed, sandbox_unavailable
 
 
 def _net_config(**overrides) -> SandboxConfig:
@@ -48,7 +49,8 @@ def _net_config(**overrides) -> SandboxConfig:
 
 _REAL = sandbox_available(SandboxConfig())
 _requires_sandbox = pytest.mark.skipif(
-    not _REAL, reason="bwrap/prlimit/python not available on this host"
+    sandbox_skip_allowed(not _REAL),
+    reason="bwrap/prlimit/python not available on this host",
 )
 
 # Dummy fd number for the pure command-construction tests (never executed).
@@ -59,7 +61,7 @@ def _requires_libseccomp() -> None:
     try:
         seccomp.seccomp_bpf_bytes()
     except seccomp.SeccompUnavailableError:
-        pytest.skip("libseccomp not available on this host")
+        sandbox_unavailable("libseccomp not available on this host")
 
 
 @pytest.fixture(autouse=True)

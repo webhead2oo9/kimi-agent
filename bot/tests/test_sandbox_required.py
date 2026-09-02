@@ -4,9 +4,9 @@ The live-jail tests in test_sandbox_runner.py, test_code_exec_tool.py, and
 test_skill_sandbox.py skip when the Linux boundary cannot start, which is
 right on a developer laptop and self-concealing on the one CI job whose
 purpose is to prove the boundary. That job sets KIMI_REQUIRE_SANDBOX_TESTS=1.
-The enforcement lives in conftest.py, which turns any skip in those modules
-into a failure under that flag; this test is the fast, readable first failure
-that names the prerequisite instead of leaving 23 converted skips to explain.
+Their shared gate suppresses prerequisite skips under that flag, and this test
+is the fast, readable first failure that names the missing prerequisite. Other
+host-shape skips remain ordinary skips in both environments.
 """
 
 from __future__ import annotations
@@ -16,22 +16,22 @@ from pathlib import Path
 
 import pytest
 
-import ast
-
 from app.tools import build_sandbox_config
 from config.operator_settings import apply_operator_settings
 from config.settings import Settings
 from sandbox.runner import sandbox_available
 from skills.registration import build_script_sandbox_limits
 from skills.sandbox import validate_sandbox_runtime
-from tests import conftest as tests_conftest
-
-REQUIRE_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
+from tests.sandbox_gate import (
+    REQUIRE_SANDBOX_ENV,
+    sandbox_skip_allowed,
+    sandbox_unavailable,
+)
 
 
 @pytest.mark.uses_live_settings_env
 def test_live_sandbox_is_available_where_required() -> None:
-    if os.environ.get(REQUIRE_ENV) != "1":
+    if os.environ.get(REQUIRE_SANDBOX_ENV) != "1":
         pytest.skip("KIMI_REQUIRE_SANDBOX_TESTS=1 is not set; the live sandbox is optional here")
 
     settings = Settings()  # type: ignore[call-arg]
@@ -39,7 +39,7 @@ def test_live_sandbox_is_available_where_required() -> None:
     # overlay is applied from the configured instance directory.
     apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
     assert sandbox_available(build_sandbox_config(settings)), (
-        f"{REQUIRE_ENV}=1 but the configured code-execution profile cannot start here; "
+        f"{REQUIRE_SANDBOX_ENV}=1 but the configured code-execution profile cannot start here; "
         "run `python -m scripts.sandbox_probe` to see which prerequisite failed"
     )
     # Raises SandboxUnavailableError naming the failing step, which is the
@@ -47,70 +47,24 @@ def test_live_sandbox_is_available_where_required() -> None:
     validate_sandbox_runtime(build_script_sandbox_limits(settings))
 
 
-def _skip_reason_literals(tree: ast.AST) -> tuple[set[str], int]:
-    """Every literal a skip can carry, plus a count of dynamic reasons.
+def test_unavailable_sandbox_skip_depends_on_required_ci_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(REQUIRE_SANDBOX_ENV, raising=False)
+    assert sandbox_skip_allowed(True) is True
+    assert sandbox_skip_allowed(False) is False
 
-    A dynamically built reason cannot be classified, so its count must be
-    zero: an f-string gate reason would silently evade the CI conversion.
-    """
-
-    reasons: set[str] = set()
-    dynamic = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name == "skipif":
-            for keyword in node.keywords:
-                if keyword.arg != "reason":
-                    continue
-                if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
-                    reasons.add(keyword.value.value)
-                else:
-                    dynamic += 1
-        elif name == "skip" and node.args:
-            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                reasons.add(node.args[0].value)
-            else:
-                dynamic += 1
-    return reasons, dynamic
+    monkeypatch.setenv(REQUIRE_SANDBOX_ENV, "1")
+    assert sandbox_skip_allowed(True) is False
 
 
-def test_every_skip_reason_is_classified_and_every_gate_reason_is_real() -> None:
-    """Bidirectional pin for the conftest skip-to-failure hook.
+def test_runtime_sandbox_gate_skips_locally_and_fails_in_required_ci(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(REQUIRE_SANDBOX_ENV, raising=False)
+    with pytest.raises(pytest.skip.Exception, match="libseccomp unavailable"):
+        sandbox_unavailable("libseccomp unavailable")
 
-    Forward: every skip literal in the sandbox modules must be classified as a
-    sandbox gate (converted under the flag) or a host-shape condition (left as
-    a skip), so a new unclassified skip cannot silently hollow the CI job out.
-    Backward: every gate reason must actually appear as a skip literal, so a
-    reworded gate turns red instead of quietly never converting again.
-    """
-
-    tests_dir = Path(__file__).resolve().parent
-    found: set[str] = set()
-    for stem in tests_conftest._SANDBOX_MODULES:
-        path = tests_dir / f"{stem}.py"
-        assert path.is_file(), f"conftest._SANDBOX_MODULES names a missing file: {stem}"
-        reasons, dynamic = _skip_reason_literals(ast.parse(path.read_text(encoding="utf-8")))
-        assert dynamic == 0, f"{stem}.py builds a skip reason dynamically; use a literal"
-        found |= reasons
-
-    classified = set(tests_conftest._SANDBOX_SKIP_REASONS) | set(
-        tests_conftest._HOST_SHAPE_SKIP_REASONS
-    )
-    unclassified = {
-        reason for reason in found if not any(reason.startswith(known) for known in classified)
-    }
-    assert not unclassified, (
-        "skip reasons in the sandbox modules are neither a sandbox gate nor a "
-        f"declared host-shape condition: {sorted(unclassified)}"
-    )
-    for gate in tests_conftest._SANDBOX_SKIP_REASONS:
-        assert any(reason.startswith(gate) for reason in found), (
-            f"conftest._SANDBOX_SKIP_REASONS entry no longer appears as a skip: {gate!r}"
-        )
-    for shape in tests_conftest._HOST_SHAPE_SKIP_REASONS:
-        assert any(reason.startswith(shape) for reason in found), (
-            f"conftest._HOST_SHAPE_SKIP_REASONS entry no longer appears as a skip: {shape!r}"
-        )
+    monkeypatch.setenv(REQUIRE_SANDBOX_ENV, "1")
+    with pytest.raises(pytest.fail.Exception, match="KIMI_REQUIRE_SANDBOX_TESTS=1"):
+        sandbox_unavailable("libseccomp unavailable")

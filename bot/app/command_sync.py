@@ -56,7 +56,6 @@ class DiscordCommandSync:
         self._global_sync_task: asyncio.Task[None] | None = None
         self._global_sync_generation: int | None = None
         self._retired_global_sync_tasks: set[asyncio.Task[None]] = set()
-        self._ready_event_tasks: set[asyncio.Task[Any]] = set()
         self._ready_event_generations: dict[asyncio.Task[Any], int] = {}
 
     @property
@@ -69,7 +68,7 @@ class DiscordCommandSync:
             global_sync_task=self._global_sync_task,
             global_sync_generation=self._global_sync_generation,
             retired_global_sync_tasks=tuple(self._retired_global_sync_tasks),
-            ready_event_tasks=tuple(self._ready_event_tasks),
+            ready_event_tasks=tuple(self._ready_event_generations),
             ready_event_generations=MappingProxyType(dict(self._ready_event_generations)),
         )
 
@@ -80,13 +79,11 @@ class DiscordCommandSync:
         ready_task = asyncio.current_task()
         gateway_generation = self._gateway_generation
         if ready_task is not None:
-            self._ready_event_tasks.add(ready_task)
             self._ready_event_generations[ready_task] = gateway_generation
         try:
             yield gateway_generation
         finally:
             if ready_task is not None:
-                self._ready_event_tasks.discard(ready_task)
                 self._ready_event_generations.pop(ready_task, None)
             self._release_completed_command_sync()
 
@@ -162,7 +159,7 @@ class DiscordCommandSync:
     ) -> None:
         """Bound shutdown on READY initialization and reconnect maintenance."""
 
-        tasks = {task for task in self._ready_event_tasks if task is not exclude}
+        tasks = {task for task in self._ready_event_generations if task is not exclude}
         for task in tasks:
             task.cancel()
         if not tasks:
@@ -257,11 +254,11 @@ class DiscordCommandSync:
         generation = self._global_sync_generation
         active_generation_tasks = (
             any(
-                self._ready_event_generations.get(ready_task, generation) == generation
-                for ready_task in self._ready_event_tasks
+                ready_generation == generation
+                for ready_generation in self._ready_event_generations.values()
             )
             if generation is not None
-            else bool(self._ready_event_tasks)
+            else bool(self._ready_event_generations)
         )
         if task is not None and task.done() and not active_generation_tasks:
             self._global_sync_task = None

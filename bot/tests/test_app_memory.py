@@ -6,6 +6,7 @@ import pytest
 
 from app import memory as memory_runtime
 from config.settings import Settings
+from memory.client import MemoryClient
 from storage.conversations import ConversationStore
 from storage.preferences import PreferenceStore
 from tools.registry import ToolRegistry
@@ -14,6 +15,10 @@ from tools.registry import ToolRegistry
 def _settings(**kwargs: object) -> Settings:
     values: dict[str, object] = {"hindsight_url": "http://hindsight.local", **kwargs}
     return Settings.model_validate(values)
+
+
+def _client(value: object) -> MemoryClient:
+    return cast(MemoryClient, value)
 
 
 class FakeMemoryClient:
@@ -35,7 +40,7 @@ async def test_memory_manager_registers_tools_after_successful_bank_setup(
 ) -> None:
     registry = ToolRegistry()
     client = FakeMemoryClient()
-    manager = memory_runtime.MemoryManager(_settings(), registry, client=client)
+    manager = memory_runtime.MemoryManager(_settings(), registry, client=_client(client))
 
     async def fake_ensure_global_banks(memory_client: object) -> bool:
         assert memory_client is client
@@ -72,7 +77,7 @@ async def test_memory_manager_unregisters_tools_after_later_bank_setup_failure(
 ) -> None:
     registry = ToolRegistry()
     client = FakeMemoryClient()
-    manager = memory_runtime.MemoryManager(_settings(), registry, client=client)
+    manager = memory_runtime.MemoryManager(_settings(), registry, client=_client(client))
     outcomes = [True, False]
 
     async def fake_ensure_global_banks(memory_client: object) -> bool:
@@ -107,7 +112,7 @@ async def test_memory_manager_rebinds_write_tools_on_repeated_ready(
 ) -> None:
     registry = ToolRegistry()
     client = FakeMemoryClient()
-    manager = memory_runtime.MemoryManager(_settings(), registry, client=client)
+    manager = memory_runtime.MemoryManager(_settings(), registry, client=_client(client))
     community_calls = 0
     user_calls = 0
     write_calls: list[tuple[object, object]] = []
@@ -194,7 +199,7 @@ async def test_memory_manager_rebinds_write_tools_on_repeated_ready(
 async def test_memory_manager_close_calls_client_close_once() -> None:
     registry = ToolRegistry()
     client = FakeMemoryClient()
-    manager = memory_runtime.MemoryManager(_settings(), registry, client=client)
+    manager = memory_runtime.MemoryManager(_settings(), registry, client=_client(client))
     manager.ready = True
     manager.tools_registered = True
 
@@ -227,7 +232,7 @@ async def test_memory_manager_close_awaits_sync_close_hook() -> None:
             self.close_count += 1
 
     client = SyncClient()
-    manager = memory_runtime.MemoryManager(_settings(), ToolRegistry(), client=client)
+    manager = memory_runtime.MemoryManager(_settings(), ToolRegistry(), client=_client(client))
 
     await manager.close()
 

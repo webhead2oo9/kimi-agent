@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.attachments import AttachmentStore
 from workspace import ENV_DIR_NAMES, WorkspaceManager
@@ -15,6 +15,7 @@ from app.plugins import PluginLoadState, build_plugin_context, load_plugins_with
 from app.providers import ProviderManager
 from config.plugin_settings import PluginSettingsRegistry
 from config.settings import Settings
+from discord_adapter.gateway import DiscordGateway
 from image_gen.factory import ImageBackendConfig, build_image_backend
 from image_gen.service import ImageGenService
 from providers.factory import get_codex_auth_manager, get_xai_auth_manager
@@ -38,13 +39,19 @@ from tools.code_exec import CodeExecRuntimeGuards, init_code_exec_tool
 from tools.discord_text_search import (
     DiscordSearchApiClient,
     DiscordTextSearchConfig,
+    DiscordTextSearchScopeResolver,
     init_discord_text_search_tool,
 )
 from tools.embeds import init_embed_tool
 from tools.image_gen import init_image_gen_tool
 from tools.internet_search import InternetSearchConfig, init_internet_search_tool
 from tools.member import init_member_lookup_tool
-from tools.persona import LLMPersonaCompiler, PersonaToolConfig, init_persona_tools
+from tools.persona import (
+    LLMPersonaCompiler,
+    PersonaPreferenceStore,
+    PersonaToolConfig,
+    init_persona_tools,
+)
 from tools.personal_skills import init_personal_skill_tools
 from tools.plan import init_plan_tool
 from tools.registry import ToolRegistry
@@ -66,10 +73,14 @@ from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from trust.tiers import trust_tier_from_value
 from video_understanding.client import GeminiVideoClient
 from video_understanding.service import VideoUnderstandingService
+from video_understanding.service import VideoSessionRepository
 from web_browser.service import BrowserService, BrowserServiceConfig
 from web_browser.visual_service import VisualService
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.threads import ThreadHandoffManager
 
 
 def _validate_executable_skill_sandbox(skills_store: Path, limits: ScriptSandboxLimits) -> bool:
@@ -107,14 +118,14 @@ class RuntimeTools:
 
 def build_runtime_tools(
     settings: Settings,
-    gateway: Any,
+    gateway: DiscordGateway,
     provider_manager: ProviderManager,
     memory_manager: MemoryManager,
     *,
-    get_preference_store: Callable[[], Any | None] | None = None,
+    get_preference_store: Callable[[], PersonaPreferenceStore | None] | None = None,
     get_blocked_user_store: Callable[[], BlockedUserStoreProtocol | None] | None = None,
-    get_video_session_store: Callable[[], Any | None] | None = None,
-    get_thread_handoff: Callable[[], Any | None] | None = None,
+    get_video_session_store: Callable[[], VideoSessionRepository | None] | None = None,
+    get_thread_handoff: Callable[[], ThreadHandoffManager | None] | None = None,
     resolve_thread_target: ThreadTargetResolver | None = None,
     can_manage_thread: ThreadLifecyclePermissionChecker | None = None,
     registry: ToolRegistry | None = None,
@@ -372,7 +383,7 @@ def _log_capability_summary(registry: ToolRegistry) -> None:
 def _register_discord_text_search(
     settings: Settings,
     registry: ToolRegistry,
-    scope_resolver: Any,
+    scope_resolver: DiscordTextSearchScopeResolver,
 ) -> None:
     if not settings.discord_text_search_enabled:
         log.info("Discord text search disabled; DISCORD_TEXT_SEARCH_ENABLED is false")
@@ -575,7 +586,7 @@ def _register_image_gen(
 def _register_video(
     settings: Settings,
     registry: ToolRegistry,
-    get_store: Callable[[], Any | None],
+    get_store: Callable[[], VideoSessionRepository | None],
     *,
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
@@ -845,7 +856,7 @@ def _register_persona_tools(
     settings: Settings,
     registry: ToolRegistry,
     provider_manager: ProviderManager,
-    get_preference_store: Callable[[], Any | None],
+    get_preference_store: Callable[[], PersonaPreferenceStore | None],
 ) -> None:
     model_config = provider_manager.model_config
     model = model_config.roles.persona if model_config is not None else None

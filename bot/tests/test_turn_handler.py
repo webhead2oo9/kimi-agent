@@ -22,6 +22,7 @@ from agent.turn import (
     TurnResult,
     handle_turn,
 )
+from memory.client import MemoryClient
 from moderation.types import Direction, ModerationDecision
 from providers.image_caption import is_image_caption
 from providers.types import ContentPart, ProviderCapability, ProviderResponse
@@ -433,7 +434,7 @@ async def test_handle_turn_recalls_memory_after_input_moderation(
     preference_store = RecordingPreferenceStore(enabled=True)
     ensure_user_bank = RecordingEnsureUserBank()
     recall = RecordingRecall(result="- Alice prefers short replies.")
-    memory_client = object()
+    memory_client = cast(MemoryClient, object())
     dependencies = turn_module.replace(
         _dependencies(),
         moderation_service=service,
@@ -482,7 +483,7 @@ async def test_handle_turn_does_not_recall_memory_for_moderated_input(
     dependencies = turn_module.replace(
         _dependencies(),
         moderation_service=service,
-        memory_client=object(),
+        memory_client=cast(MemoryClient, object()),
         preference_store=preference_store,
         ensure_user_bank=ensure_user_bank,
         recall_current_user_context=recall,

@@ -88,27 +88,54 @@ class VideoResultCancelled(asyncio.CancelledError):
 
 
 class VideoSessionRecord(Protocol):
-    handle: str
-    source_kind: str
-    source_display_name: str
-    source_locator: str
-    source_byte_size: int | None
-    youtube_url: str
-    youtube_video_id: str
-    model: str
-    latest_interaction_id: str
-    interaction_count: int
-    expires_at: float
+    @property
+    def handle(self) -> str: ...
+
+    @property
+    def source_kind(self) -> str: ...
+
+    @property
+    def source_display_name(self) -> str: ...
+
+    @property
+    def source_locator(self) -> str: ...
+
+    @property
+    def source_byte_size(self) -> int | None: ...
+
+    @property
+    def youtube_url(self) -> str: ...
+
+    @property
+    def youtube_video_id(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def latest_interaction_id(self) -> str: ...
+
+    @property
+    def interaction_count(self) -> int: ...
+
+    @property
+    def expires_at(self) -> float: ...
 
 
 class VideoDeletionRecord(Protocol):
-    interaction_id: str
-    retry_at: float
+    @property
+    def interaction_id(self) -> str: ...
+
+    @property
+    def retry_at(self) -> float: ...
 
 
 class VideoFileDeletionRecord(Protocol):
-    file_name: str
-    retry_at: float
+    @property
+    def file_name(self) -> str: ...
+
+    @property
+    def retry_at(self) -> float: ...
 
 
 class VideoSessionRepository(Protocol):

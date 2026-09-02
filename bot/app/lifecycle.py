@@ -87,6 +87,7 @@ from utils.asyncio import await_uncancellable
 from utils.privacy_barrier import UserPrivacyBarrier
 
 if TYPE_CHECKING:
+    from app.threads import ThreadHandoffManager
     from moderation.service import ModerationService
 
 log = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ class ApplicationLifecycle:
         self._module_event_publisher: ModuleEventPublisher | None = None
         self._module_interaction_runtime: InteractionRuntime | None = None
         self._proposal_service: ConfigProposalService | None = None
-        self._thread_handoff: Any | None = None
+        self._thread_handoff: ThreadHandoffManager | None = None
 
     @property
     def resources(self) -> LifecycleResources:
@@ -267,7 +268,7 @@ class ApplicationLifecycle:
         return self._module_interaction_runtime
 
     @property
-    def thread_handoff(self) -> Any | None:
+    def thread_handoff(self) -> ThreadHandoffManager | None:
         return self._thread_handoff
 
     @property

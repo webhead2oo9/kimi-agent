@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import discord
 
@@ -9,6 +9,7 @@ from storage.conversations import (
     CHANNEL_SHARED,
     OWNER_ONLY,
     ConversationAccessScope,
+    ConversationStore,
 )
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ async def resolve_conversation_for_message(
     message: discord.Message,
     *,
     allow_new_root: bool,
-    conversation_store: Any | None,
+    conversation_store: ConversationStore | None,
     thread_handoff: ThreadHandoffManager | None,
 ) -> ResolvedConversation | None:
     context_channel_id = str(message.channel.id)

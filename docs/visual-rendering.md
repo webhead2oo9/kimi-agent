@@ -1,10 +1,10 @@
 # Visual rendering
 
-Kimi exposes two searchable member-tier tools, `render_chart` and
-`render_diagram`, for creating a Discord-ready PNG in one model tool call. They
-render structured chart data and constrained Mermaid diagrams respectively. The
-model never supplies Python,
-JavaScript, HTML, CSS, browser navigation, filesystem paths, or arbitrary
+Kimi has two searchable member-tier tools, `render_chart` and `render_diagram`,
+that turn one tool call into a Discord-ready PNG. `render_chart` takes
+structured bar, line, or scatter data; `render_diagram` takes a constrained
+Mermaid diagram. In both cases the model supplies only data. It never supplies
+Python, JavaScript, HTML, CSS, browser navigation, filesystem paths, or
 Matplotlib/Mermaid configuration.
 
 Visual rendering ships with the [persistent browser](browser.md) capability.
@@ -95,11 +95,11 @@ scatter controls when relevant, filename, title, alt text, dimensions, byte
 size, and attachment status. It never exposes a host path, browser profile,
 HTML, SVG, or generated script.
 
-The split avoids conditional JSON Schema branches, which are not portable
-across every supported model API. `render_chart` never exposes Mermaid source,
-and `render_diagram` never exposes chart fields. Inside `render_chart`, providers
-that materialize both series representations may send an empty inactive array;
-the validator ignores only that neutral placeholder.
+They are two tools rather than one because conditional JSON Schema branches
+are not supported by every model API. `render_chart` never exposes Mermaid
+source, and `render_diagram` never exposes chart fields. Inside `render_chart`,
+some providers send both `values` and `points` with one of them empty; the
+validator ignores only that empty placeholder.
 
 ## Supported visuals and limits
 
@@ -138,10 +138,11 @@ unsupported diagram families. The renderer uses Mermaid `securityLevel:
 from the live document, and rasterizes only the validated result. Raw SVG is
 never attached.
 
-One user turn can attempt at most four renders. Rendering is globally serialized
-because a fresh Chromium process is the expensive resource. The accepted PNG
-size uses `BROWSER_MAX_SCREENSHOT_BYTES`; the shared reply limit uses
-`WORKSPACE_TOOL_MAX_ATTACHMENTS`.
+One user turn can attempt at most four renders. Renders run one at a time
+across the whole bot, because each one starts a fresh Chromium process. The
+largest accepted PNG is `BROWSER_MAX_SCREENSHOT_BYTES`, and rendered images
+count against the reply's `WORKSPACE_TOOL_MAX_ATTACHMENTS` limit like any other
+attachment.
 
 ## Execution and security boundary
 
@@ -185,7 +186,7 @@ sudo sh ./deploy/betterwright/install.sh
 ```
 
 The installer consumes the committed npm lock with `npm ci`, installs exactly
-BetterWright 1.10.0 and Mermaid 11.17.2 into a staging tree, runs the explicit
+BetterWright 1.10.2 and Mermaid 11.17.2 into a staging tree, runs the explicit
 BetterChromium setup, verifies versions, files, imports, shared libraries, and
 permissions, then atomically renames the completed root-owned tree into place.
 A failed install leaves the installed runtime in place. npm and network access

@@ -2,7 +2,7 @@
 
 This guide walks you through setting up Kimi on an Ubuntu server from start to finish.
 
-**Quick heads-up before you begin:**
+**Before you begin:**
 - This was tested on Ubuntu Server 26.04.1 LTS (64-bit) with Python 3.14.
 - You'll run everything as a regular sudo-enabled user. Never run as root.
 - The current dependency lock only works reliably on `amd64`/`x86_64`. ARM64 hosts will hit snags right now.
@@ -189,7 +189,7 @@ If you want `uv` later, install it with its official standalone installer
 
 ## 6. Prepare User Services and Sandbox Tools
 
-Some features (browser, code execution) run in isolated services, so we need your user manager to stay active even after you log out.
+Some features (browser, code execution) run as transient systemd user services, so your user's systemd manager has to stay running even after you log out.
 
 Enable lingering:
 
@@ -200,7 +200,7 @@ sudo systemctl start "user@$(id -u).service"
 
 ### Ubuntu 26.04.1: Disable Apport
 
-Ubuntu's crash reporter can interfere with the sandbox. Check if it's active:
+Ubuntu's crash reporter (Apport) pipes crash dumps to a collector, which defeats the sandbox's core-dump limit, so Kimi refuses to run code while it is active. Check:
 
 ```sh
 sysctl kernel.core_pattern
@@ -723,4 +723,4 @@ Never dump the full environment or print credential files while debugging.
 
 
 
-That's the whole process! Take it one section at a time, and you'll have a solid, maintainable Kimi deployment. The journal and troubleshooting table are your best friends when something doesn't go exactly as planned. Enjoy your bot!
+That is the whole process. Take it one section at a time. When something does not go to plan, the journal and the troubleshooting table above are the first places to look.

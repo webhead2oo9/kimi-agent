@@ -8,13 +8,13 @@ questions about one video. A session may start from:
   filename; or
 - a safe workspace-relative video path.
 
-The chat model loads the MEMBER tool through `browse_tools`. Activation follows
-the rooted conversation like other searchable tools, while each session remains
-scoped to its initiating user and guild.
+The chat model loads the MEMBER tool through `browse_tools`. Once loaded it
+stays available for the rest of that conversation like any searchable tool,
+while each video session remains tied to the user and guild that started it.
 
-YouTube content is referenced directly. Uploaded files use Google's resumable
-Files API and are streamed in bounded chunks; the bot never buffers a complete
-500 MiB attachment in memory.
+YouTube videos are passed to Google by URL. Uploaded files go through Google's
+resumable Files API in bounded chunks; the bot never holds a whole 500 MiB
+attachment in memory.
 
 ## Availability
 
@@ -25,9 +25,9 @@ VIDEO_UNDERSTANDING_ENABLED=true
 GEMINI_API_KEY=...
 ```
 
-The one feature flag enables all three source types. If it is false, the tool is
-absent regardless of the key. If it is true but the key is blank, startup
-continues, logs a clear warning, and leaves the tool absent.
+The one flag enables all three source types. If it is false, the tool is absent
+no matter what. If it is true but the key is blank, the bot still starts, logs a
+clear warning, and leaves the tool absent.
 
 `GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from a
 tool call, tool fragment, model catalog, prompt, or Discord command. The client
@@ -195,12 +195,12 @@ through December 31, 2026, $0.75/M ordinary input, $0.075/M cached input, and
 $3.75/M output; from January 1, 2027, $1.50/M, $0.15/M, and $7.50/M. The vendor
 dashboard remains authoritative.
 
-Interactive concurrency defaults to four and is controlled by
-`VIDEO_UNDERSTANDING_MAX_CONCURRENCY` (1–32); a slot wait fails busy after 30
-seconds. Uploads are serialized and bounded to 30 minutes end-to-end; the processing
-poll has its own 15-minute ceiling within that total budget. Provider deletion uses a separate bounded
-pool and 30-second request deadline. Create/upload operations are never blindly
-replayed when their remote outcome is ambiguous.
+Up to `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` questions (default 4, range 1–32)
+can be in flight at once; a call that waits more than 30 seconds for a slot
+fails with a busy error. Uploads run one at a time and are bounded to 30 minutes
+end to end, with the processing poll capped at 15 minutes inside that. Provider
+deletion uses its own small pool with a 30-second per-request deadline. A
+create or upload whose outcome is unknown is never blindly retried.
 
 ## Retention, privacy, and deletion
 

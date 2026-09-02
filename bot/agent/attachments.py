@@ -266,6 +266,16 @@ class AttachmentStore:
         )
 
 
+@dataclass(slots=True)
+class _ImageScan:
+    """What ``_images_from_message`` actually tried, beyond what it returned."""
+
+    # True once a candidate passed the free metadata checks and was read. A
+    # candidate skipped on declared size never counts: the bot could not have
+    # used it, so the turn proceeds text-only instead of refusing the message.
+    attempted: bool = False
+
+
 async def _images_from_message(
     message: DiscordMessageLike | Any,
     *,
@@ -273,6 +283,7 @@ async def _images_from_message(
     conversation_key: str,
     detail: str,
     budget: _CollectionBudget,
+    scan: _ImageScan | None = None,
 ) -> list[CollectedImage]:
     """Collect images without exceeding candidate, result, or byte budgets."""
     out: list[CollectedImage] = []
@@ -290,6 +301,8 @@ async def _images_from_message(
                 # candidate without spending the bounded read allowance.
                 continue
             budget.remaining_candidates -= 1
+            if scan is not None:
+                scan.attempted = True
             available_before_read = budget.remaining_bytes
             # Discord supplies authoritative attachment lengths. Reserve that
             # network/staging cost before reading so a read or disk failure cannot
@@ -584,6 +597,7 @@ async def collect_turn_images(
     reply: list[CollectedImage] = []
     newest: list[CollectedImage] = []
     has_current_image_candidate = message_has_image_attachment(message)
+    current_scan = _ImageScan()
     turn_byte_budget = _ByteBudget(max(0, store.max_total_bytes))
     try:
         current = await _images_from_message(
@@ -595,6 +609,7 @@ async def collect_turn_images(
                 max_results=max_total_images,
                 byte_budget=turn_byte_budget,
             ),
+            scan=current_scan,
         )
         reply = await _reply_source_images(
             message,
@@ -633,7 +648,7 @@ async def collect_turn_images(
                 # Any staged current image was cleaned in this exception path,
                 # so a trigger image is unavailable even if collection reached it
                 # before a later reply/history phase failed.
-                current_image_unavailable=has_current_image_candidate,
+                current_image_unavailable=current_scan.attempted,
             )
         raise
 
@@ -670,7 +685,7 @@ async def collect_turn_images(
         cleanup_paths=cleanup_paths,
         vision_hashes=frozenset(vision_hashes),
         reply_images=tuple(reply),
-        current_image_unavailable=has_current_image_candidate and not current,
+        current_image_unavailable=current_scan.attempted and not current,
     )
 
 
@@ -951,9 +966,13 @@ def collect_turn_attachments(message: Any) -> list[AttachmentRef]:
     """
     refs: list[AttachmentRef] = []
     for attachment in getattr(message, "attachments", []) or []:
-        # Same classifier as the vision path (including the filename fallback for a
-        # missing content_type), so an image is never surfaced on both paths.
-        if _attachment_image_media_type(attachment) is not None:
+        # An explicitly image-typed attachment belongs to the vision path alone.
+        # A generic or missing content_type with an image filename is only a
+        # vision *candidate*: its bytes may fail the sniff, and then this ref is
+        # the sole way the file stays reachable (import_attachment).
+        declared = getattr(attachment, "content_type", None)
+        normalized = str(declared).partition(";")[0].strip().lower() if declared else ""
+        if supported_image_media_type(normalized) is not None:
             continue
         refs.append(
             AttachmentRef(

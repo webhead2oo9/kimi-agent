@@ -1517,10 +1517,13 @@ def test_collect_turn_attachments_skips_image_filename_without_content_type() ->
         ]
     )
     refs = collect_turn_attachments(msg)
-    assert [r.filename for r in refs] == ["notes.bin"]
+    assert [r.filename for r in refs] == ["photo.png", "notes.bin"]
 
 
-def test_collect_turn_attachments_skips_image_filename_with_generic_content_type() -> None:
+def test_collect_turn_attachments_keeps_image_filename_with_generic_content_type() -> None:
+    """A generic-typed file with an image name is only a vision candidate. If
+    its bytes are not an image, this ref is the only way it stays reachable."""
+
     msg = _att_message(
         [
             _AttSrc(
@@ -1532,7 +1535,7 @@ def test_collect_turn_attachments_skips_image_filename_with_generic_content_type
         ]
     )
     refs = collect_turn_attachments(msg)
-    assert [r.filename for r in refs] == ["notes.bin"]
+    assert [r.filename for r in refs] == ["photo.png", "notes.bin"]
 
 
 @pytest.mark.asyncio
@@ -1712,3 +1715,37 @@ async def test_turn_has_image_input_ignores_cross_channel_reference() -> None:
     channel = _FakeChannel(channel_id=10)
     msg = _FakeMessage(attachments=[], reference=ref, channel=channel)
     assert await turn_has_image_input(msg, bot_user=SimpleNamespace(id=999)) is False
+
+
+@pytest.mark.asyncio
+async def test_collect_turn_images_skips_oversized_declared_image_without_refusing_the_turn(
+    tmp_path: Path,
+) -> None:
+    """An image above the attachment cap is never read, so it must not flag the
+    turn as unable to read the image; the user's text still gets answered."""
+
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=16)
+    message = SimpleNamespace(
+        id=56,
+        attachments=[
+            FakeAttachment(
+                filename="huge.png",
+                content_type="image/png",
+                payload=b"x" * 64,
+            )
+        ],
+    )
+
+    result = await collect_turn_images(
+        message,
+        store=store,
+        conversation_key="guild:chan",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
+
+    assert result.vision_parts == []
+    assert result.current_image_unavailable is False

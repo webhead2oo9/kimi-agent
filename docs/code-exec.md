@@ -79,7 +79,7 @@ The sandbox still shares the host kernel and runs as the bot's Unix user. A succ
 
 ### Core dumps
 
-A zero core-dump limit is not enough when `kernel.core_pattern` starts with `|`. In that setup Linux sends crash memory to a host collector anyway. Kimi refuses to register or run code while that pipe is present.
+A zero core-dump limit is not enough when `kernel.core_pattern` starts with `|`. In that setup Linux sends crash memory to a host collector anyway. The startup test checks for that pipe and leaves `run_code` unregistered while it is present.
 
 Use a plain file pattern instead. Ubuntu's Apport commonly installs the piped handler and may restore it after a reboot. Disable the collector and set a plain pattern persistently under `/etc/sysctl.d/`. A one-time `sysctl` change may not survive. The same check protects both code execution and the persistent browser.
 
@@ -218,27 +218,35 @@ An incomplete netns configuration fails settings validation. A complete setup wh
 
 Before exposing the tool:
 
-1. On the host, as the bot user, run `.venv/bin/python -m scripts.sandbox_probe`
-   with the same `ENV_FILE` the service uses. The unit's second
-   `EnvironmentFile` (`runtime.env` under the config home) and the operator
-   `settings.md` overlay are applied the way startup applies them. The probe
-   builds the profile startup builds from your `CODE_EXEC_*` and
-   `WORKSPACE_DIR` settings, runs the prerequisite checks in startup's order,
-   and names the first one that fails; exit status 0 means a jailed process
-   actually started with that profile (including the network legs of `netns`
-   or `host`). Then run the live-jail tests with
-   `KIMI_REQUIRE_SANDBOX_TESTS=1`, under which a sandbox-gate skip in those
-   files is a failure:
-   `KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py`.
+1. On the host, as the bot user, run the probe with the same `ENV_FILE` the
+   service uses:
+
+   ```bash
+   .venv/bin/python -m scripts.sandbox_probe
+   ```
+
+   It reads `runtime.env` under the config home and the operator `settings.md`
+   overlay the same way startup does, builds the sandbox profile from your
+   `CODE_EXEC_*` and `WORKSPACE_DIR` settings, and runs the prerequisite checks
+   in startup's order. It names the first check that fails. Exit status 0 means
+   a jailed process really started with that profile, including the network
+   legs of `netns` or `host`.
+2. Run the live-jail tests. `KIMI_REQUIRE_SANDBOX_TESTS=1` turns a skipped
+   sandbox test into a failure, so a broken sandbox cannot pass quietly:
+
+   ```bash
+   KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py
+   ```
+
    CI runs the same job on a provisioned `ubuntu-24.04` runner
    (`.github/workflows/ci.yml`, job `sandbox`).
-2. Confirm `run_code` appears in the startup capability summary at the tier you selected.
-3. Run an offline profile and confirm network connections fail.
-4. If using `host`, verify the public egress IP and audit every private route available to the server.
-5. If using `netns`, verify the tunnel's egress IP, confirm the known-open private target is unreachable, and confirm stopping the tunnel makes startup fail without falling back to `host`.
-6. Confirm code cannot see the checkout, `.env`, database, home directory, or another user's workspace.
-7. Confirm CPU, memory, task, timeout, output, tmpfs, and workspace limits kill hostile runs and leave no transient systemd unit behind.
-8. Fill the workspace filesystem or project quota with a multi-file test and confirm the OS refuses more allocation without affecting the database, checkout, logs, or root filesystem.
+3. Confirm `run_code` appears in the startup capability summary at the tier you selected.
+4. Run an offline profile and confirm network connections fail.
+5. If using `host`, verify the public egress IP and audit every private route available to the server.
+6. If using `netns`, verify the tunnel's egress IP, confirm the known-open private target is unreachable, and confirm stopping the tunnel makes startup fail without falling back to `host`.
+7. Confirm code cannot see the checkout, `.env`, database, home directory, or another user's workspace.
+8. Confirm CPU, memory, task, timeout, output, tmpfs, and workspace limits kill hostile runs and leave no transient systemd unit behind.
+9. Fill the workspace filesystem or project quota with a multi-file test and confirm the OS refuses more allocation without affecting the database, checkout, logs, or root filesystem.
 
 If registration fails, the usual causes are:
 

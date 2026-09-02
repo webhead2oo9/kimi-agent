@@ -1,6 +1,6 @@
 # Application modules
 
-Application modules are separately installed Python packages. Core does not ship a catalog of them, download them at runtime, or test repositories that happen to contain them. An operator chooses which distributions to install and which installed entry points to activate.
+Application modules are separately installed Python packages that add a whole feature to the bot: commands, event listeners, their own database tables, background jobs, and optionally LLM tools. Core does not ship a catalog of them, download them at runtime, or test repositories that happen to contain them. You choose which packages to install and which installed entry points to switch on.
 
 Use a module when an extension needs lifecycle hooks, migrations, durable data, events, background jobs, Discord interactions, or host services. If it only registers LLM tools for one deployment, an [operator plugin](plugins.md) is the smaller interface.
 
@@ -31,13 +31,6 @@ KIMI_MODULES=reference_kudos
 The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Copy its package structure to begin a module of your own.
 
 For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
-
-For a focused module that lives in its own repository, see
-[`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging).
-It is a working Discord audit log built entirely on the public module API. The
-repository shows how to listen for Discord events, keep module-owned data,
-offer per-server settings and a staff command, schedule cleanup, report health,
-and package and test the module independently from Kimi.
 
 ## Start a module with an LLM
 
@@ -153,7 +146,7 @@ Install it using whatever source your deployment controls (a local path, wheel, 
 KIMI_MODULES=my_module
 ```
 
-Installing a distribution alone never activates it. Core doesn't scan a folder and never auto-installs a configured name. Once a name is active it's part of the deployment contract, so startup fails if it's missing, has an incompatible API, has an inactive dependency, has invalid settings, or fails to start. Dependencies start first and modules close in reverse order.
+Installing a package never activates it on its own; only a name in `KIMI_MODULES` does that, and core never installs a name it finds there. Once a name is listed it is part of the deployment: startup fails if the module is missing, has an incompatible API, depends on a module that is not listed, has invalid settings, or fails to start. Modules start after their dependencies and close in reverse order.
 
 After installation, activation, and any deployment or per-guild configuration, restart the Kimi process. Check startup logs for the module's composed, migrated, and started messages plus a successful slash-command sync. Then run `/modules status` and smoke-test the module's user-facing command or event path. Reinstall deployment-owned modules whenever the core environment is recreated. If you use the optional uv path, a later `uv sync` can remove pip, Kimi's editable root metadata, and packages not owned by the core lock. Repeat the `ensurepip` and editable core install commands in setup step 5 before reinstalling the modules. Pip normally retains them.
 

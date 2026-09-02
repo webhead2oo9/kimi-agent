@@ -19,8 +19,8 @@ needs real setup has its own page:
 
 ## How a request finds its backend
 
-There are three layers, and it's worth holding them apart in your head because
-they fail in different ways.
+There are three layers. Keep them apart in your head, because they fail in
+different ways.
 
 **Roles** are the jobs the bot needs done: chatting, compacting a long
 conversation, compiling a persona, or running an optional durable coding task.
@@ -156,9 +156,8 @@ because booting onto backends the operator did not choose is worse than not
 booting at all. The bot would come up looking healthy while talking to the
 wrong vendor on someone else's key.
 
-A pleasant side effect of the file being untracked is that swapping a model
-locally to try another LLM never shows up as a dirty working tree waiting to be
-committed.
+Because the file is untracked, swapping a model locally to try another LLM
+never shows up as a dirty working tree waiting to be committed.
 
 ### The shape of the file
 

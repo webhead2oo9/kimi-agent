@@ -194,9 +194,18 @@ code-execution sandbox are both enabled and available:
 
 The worker itself sees a narrower surface: the workspace subset, the research
 tools `fetch_url`, `internet_search`, and `browser` when the foreground has
-registered them, plus `coding_plan`, `coding_progress`, `coding_request_input`,
-and the managed job start/status/cancel controls. See
-[Durable coding agent](coding-agent.md).
+registered them, plus these worker-private controls:
+
+| Tool | Purpose |
+|---|---|
+| `coding_plan` | Set and update the durable task checklist. |
+| `coding_progress` | Publish a meaningful progress milestone. |
+| `coding_request_input` | Pause the task with one specific question for the user. |
+| `coding_job_start` | Start one managed sandbox job from a workspace file. |
+| `coding_job_status` | Wait for or inspect a managed job's state and bounded output. |
+| `coding_job_cancel` | Stop a managed job and confirm teardown. |
+
+See [Durable coding agent](coding-agent.md).
 
 ## Persistent browser
 

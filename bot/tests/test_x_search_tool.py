@@ -122,6 +122,7 @@ def test_x_search_is_member_searchable_with_full_filter_schema() -> None:
 
     assert entry.searchable is True
     assert entry.min_tier is TrustTier.MEMBER
+    assert entry.untrusted is True
     assert set(entry.parameters["properties"]) == {
         "query",
         "allowed_x_handles",

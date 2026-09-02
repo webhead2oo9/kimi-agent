@@ -124,6 +124,7 @@ User-installed personal chat (`/chat`) resolves tier from the `USER_APP_*` ID al
 - `pinned_tools:` frontmatter pre-activates searchable tools (guild fragment as base, channel fragment unions on), read fresh each turn and never persisted. Pinning never widens privileges.
 - `blocked_tools:` frontmatter is the denylist at three scopes: `config/tools.md` (deployment-wide, validated at `build_app`, last-known-good on bad reload), guild, and channel. `app/turn_entry.py` unions them and stashes the result on `ctx.blocked_tools`. The only way to *subtract* a global tool from a guild or channel; the denylist beats a pin.
 - `config_spec` (`tools/config_spec.py:ToolConfigField`) declares typed per-tool operator config, read from `<CONFIG_DIR>/tools/<tool_name>.md` fresh each turn by `config/fragments/tool_config.py` and resolved through `tools/config_spec.py:resolve_config`. Handlers read the resolved mapping from `ctx.tool_configs`; some also keep defensive defaults for direct or test invocation. Credential, endpoint, and path names are rejected as config fields.
+- `untrusted=True` marks tools that retrieve or derive content outside the bot's trust boundary. `dispatch()` applies the canonical `context_is_untrusted` result envelope after every successful handler path; handlers must not implement their own trust note. Standard `{"error": ...}` results remain plain failures.
 
 See [`docs/tools.md`](docs/tools.md) and [`docs/configuration.md`](docs/configuration.md).
 

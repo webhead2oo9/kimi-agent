@@ -16,6 +16,7 @@ from tools.downloads import (
 from tools.workspace import (
     WorkspaceToolConfig,
 )
+from tools.registry import UNTRUSTED_CONTEXT_NOTE
 
 from tests.workspace_tool_helpers import (
     WS,
@@ -65,7 +66,11 @@ async def test_fetch_url_downloads_to_workspace_without_attaching(
             "Not attached. Before saying the file is attached or available to download, call "
             "queue_file with its path and confirm it returns queued: true."
         ),
+        "context_is_untrusted": True,
+        "note": UNTRUSTED_CONTEXT_NOTE,
     }
+    entry = next(item for item in reg.get_all_tools() if item.name == "fetch_url")
+    assert entry.untrusted is True
     assert saved.read_bytes() == b"downloaded"
     assert ctx.output_files == []
     assert ctx.allowed_file_roots == []

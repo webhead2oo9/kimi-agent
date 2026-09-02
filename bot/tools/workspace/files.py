@@ -909,6 +909,7 @@ def register_file_tools(
         },
         handler=partial(_read_file, deps),
         min_tier=TrustTier.MEMBER,
+        untrusted=True,
     )
     registry.register(
         name="write_file",

@@ -558,6 +558,8 @@ def test_app_registers_browser_only_after_successful_probe(
 
     names = {schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER, set(), "42")}
     assert "browser" in names
+    browser = next(entry for entry in registry.get_all_tools() if entry.name == "browser")
+    assert browser.untrusted is True
     assert not registry.is_registered("render_chart")
     assert not registry.is_registered("render_diagram")
 

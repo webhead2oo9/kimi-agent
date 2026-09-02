@@ -343,6 +343,14 @@ exact dynamic catalog is deployment state. `browse_tools` shows its searchable
 portion for the current caller; startup logs report plugin, module, and skill
 loading, and `/modules manifest` lists each configured module's tools.
 
+Any tool that returns content retrieved from Discord, the internet, a browser,
+memory, user-provided files, or another external source must register with
+`untrusted=True`. The registry then adds the canonical
+`context_is_untrusted`/`note` envelope to every successful dispatch path and
+overrides colliding trust keys from upstream data. Handlers return their normal
+JSON and should not copy or customize that envelope; standard `{"error": ...}`
+results remain plain failures.
+
 ## Operator reference
 
 - [Configuration](configuration.md) covers registration gates, `blocked_tools`,

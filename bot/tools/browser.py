@@ -19,7 +19,7 @@ from providers.types import ContentPart
 from tools._common import tool_error
 from tools.config_spec import KIND_INT, ToolConfigField
 from tools.output_queue import AttachmentLimitError, enqueue_output_file
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import MessageContext, ToolRegistry, format_untrusted_tool_result
 from tools.workspace.common import UserLocks, workspace_activity
 from trust.tiers import TrustTier
 from utils.asyncio import await_uncancellable
@@ -308,7 +308,12 @@ def _sanitize(value: Any, *, home: Path, replacements: dict[str, str]) -> Any:
 
 
 def _bounded_json(value: dict[str, Any], max_chars: int) -> str:
-    encoded = json.dumps(value, ensure_ascii=False)
+    def encode(payload: dict[str, Any]) -> str:
+        return format_untrusted_tool_result(json.dumps(payload, ensure_ascii=False))
+
+    # Include the registry-owned trust envelope in every size calculation.
+    # dispatch applies the same formatter idempotently after the handler returns.
+    encoded = encode(value)
     if len(encoded) <= max_chars:
         return encoded
     fallback = {
@@ -318,12 +323,12 @@ def _bounded_json(value: dict[str, Any], max_chars: int) -> str:
         "screenshots": value.get("screenshots", []),
         "truncated": True,
     }
-    encoded = json.dumps(fallback, ensure_ascii=False)
+    encoded = encode(fallback)
     if len(encoded) <= max_chars:
         return encoded
-    return json.dumps(
-        {"ok": False, "error": "Browser output exceeded its limit.", "truncated": True}
-    )
+    # Valid operator config has a 128-character minimum, enough for this
+    # smallest useful result plus the canonical trust envelope.
+    return encode({"truncated": True})
 
 
 def init_browser_tool(
@@ -438,4 +443,5 @@ def init_browser_tool(
         handler=browser,
         min_tier=TrustTier.MEMBER,
         config_spec=_CONFIG_SPEC,
+        untrusted=True,
     )

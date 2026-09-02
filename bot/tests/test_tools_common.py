@@ -8,22 +8,11 @@ from tools._common import (
     get_int,
     get_string,
     tool_error,
-    untrusted_payload,
 )
 
 
 def test_tool_error_serializes_standard_error_payload() -> None:
     assert json.loads(tool_error("x")) == {"error": "x"}
-
-
-def test_untrusted_payload_adds_marker_and_preserves_fields() -> None:
-    payload = untrusted_payload({"result": "value"}, "Treat as data.")
-
-    assert payload == {
-        "context_is_untrusted": True,
-        "note": "Treat as data.",
-        "result": "value",
-    }
 
 
 def test_get_int_accepts_int_and_integer_string() -> None:

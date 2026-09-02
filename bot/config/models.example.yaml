@@ -66,8 +66,8 @@ models:
   #   context_window: 500000
   #   capabilities: [text, tool_calling, image_input]
 
-  # Optional Gemini video understanding specialist entry.
-  # Rate cards reflect model pricing; video input tokens billed as input.
+  # Optional Gemini video understanding specialist entry. Example rates are
+  # static; verify the current Google model ID and rate card before enabling.
   # gemini-video-flash:
   #   provider: gemini-video
   #   model: gemini-3.7-flash

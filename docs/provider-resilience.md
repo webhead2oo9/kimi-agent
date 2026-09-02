@@ -1,10 +1,13 @@
 # Provider resilience
 
-When a model provider fails, Kimi does two things: it moves on to the next
-model in the role's fallback chain for the rest of the turn, and it remembers
-that the failing backend is unhealthy so later turns skip it for a while. Both
-mechanisms work the same for every provider type; optional adapters only
-translate a provider's structured error codes into the shared vocabulary.
+When a general model provider fails, Kimi does two things: it moves on to the
+next model in the role's fallback chain for the rest of the turn, and it
+remembers that the failing backend is unhealthy so later turns skip it for a
+while. Both mechanisms work across the general provider types constructed by
+the provider manager; optional adapters only translate structured error codes
+into the shared vocabulary. Lifecycle-owned specialized profiles such as
+`gemini_interactions` do not participate in these fallback chains or circuits;
+their retry and recovery rules are documented with the feature that owns them.
 
 ## Fallback within a turn
 

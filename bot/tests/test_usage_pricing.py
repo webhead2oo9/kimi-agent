@@ -118,4 +118,3 @@ def test_video_specialist_pricing_resolves_via_pricing_model() -> None:
     assert priced.est_cost_usd == pytest.approx(0.75 + 0.375 + 0.0375)
     assert priced.model == "gemini-3.7-flash"
     assert priced.pricing_model == "gemini-video-flash"
-

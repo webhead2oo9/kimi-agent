@@ -386,15 +386,28 @@ class ProviderProfile(BaseModel):
     @model_validator(mode="after")
     def _gemini_interactions_profile_contract(self) -> ProviderProfile:
         if self.type != "gemini_interactions":
+            if self.api_key_env == "GEMINI_API_KEY":
+                raise ValueError(
+                    "GEMINI_API_KEY is only supported for provider type 'gemini_interactions'"
+                )
             return self
-        if self.keyless:
+        explicitly_set = self.model_fields_set
+        if "keyless" in explicitly_set:
             raise ValueError("gemini_interactions profiles do not support keyless mode")
-        if self.base_url.strip():
+        if "base_url" in explicitly_set:
             raise ValueError("gemini_interactions profiles use the fixed Google API endpoint")
-        if self.models_endpoint.strip():
-            raise ValueError("gemini_interactions profiles do not support models_endpoint discovery")
-        if self.auth_mode:
+        if "models_endpoint" in explicitly_set:
+            raise ValueError(
+                "gemini_interactions profiles do not support models_endpoint discovery"
+            )
+        if "auth_mode" in explicitly_set:
             raise ValueError("gemini_interactions profiles do not support auth_mode")
+        unsupported_fields = sorted(explicitly_set - {"type", "api_key_env"})
+        if unsupported_fields:
+            fields = ", ".join(unsupported_fields)
+            raise ValueError(
+                f"gemini_interactions profiles do not support profile fields: {fields}"
+            )
         if not self.api_key_env:
             raise ValueError("gemini_interactions profiles must set api_key_env")
         if self.api_key_env != "GEMINI_API_KEY":
@@ -466,9 +479,10 @@ class ModelEntry(BaseModel):
 class RoleAssignments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Each role's `<role>_fallbacks` is an ordered list of alternate model names
-    # tried, in order, only when the primary raises a transient availability error
-    # (connection drop, timeout, 429, 5xx). See docs/providers.md "Failover".
+    # Each general role's `<role>_fallbacks` is an ordered list of alternate
+    # model names tried, in order, only when the primary raises a transient
+    # availability error (connection drop, timeout, 429, 5xx). Stateful video
+    # deliberately has no fallback field. See docs/providers.md "Failover".
     chat: str
     chat_fallbacks: list[str] = Field(default_factory=list)
     # Optional: route image turns to a dedicated vision model when ``chat``

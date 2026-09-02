@@ -420,17 +420,20 @@ async def test_video_session_persists_catalog_model(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_v5_to_v6_migration_backfills_catalog_model(tmp_path, monkeypatch) -> None:
-    import sqlite3
-    from storage.db import SCHEMA_VERSION
-
     db_path = tmp_path / "v5.db"
     monkeypatch.setattr("storage.db.SCHEMA_VERSION", 5)
 
     db = Database(db_path)
     await db.connect()
     conversation_id = await _conversation(db)
-    # At v5, video_sessions has no catalog_model column.
     async with db.write_transaction() as conn:
+        # The current bootstrap SQL describes v6 even when migrations are
+        # capped for this fixture, so remove the new column to construct an
+        # actual v5 table before exercising the upgrade.
+        await conn.execute("ALTER TABLE video_sessions DROP COLUMN catalog_model")
+        async with conn.execute("PRAGMA table_info(video_sessions)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        assert "catalog_model" not in columns
         await conn.execute(
             """
             INSERT INTO video_sessions (
@@ -460,7 +463,6 @@ async def test_v5_to_v6_migration_backfills_catalog_model(tmp_path, monkeypatch)
         )
     await db.close()
 
-    # Now upgrade to v6
     monkeypatch.setattr("storage.db.SCHEMA_VERSION", 6)
     db_upgraded = Database(db_path)
     await db_upgraded.connect()
@@ -475,7 +477,6 @@ async def test_v5_to_v6_migration_backfills_catalog_model(tmp_path, monkeypatch)
         )
         assert len(found) == 1
         assert found[0].model == "gemini-3.7-flash"
-        # catalog_model was backfilled from model
         assert found[0].catalog_model == "gemini-3.7-flash"
     finally:
         await db_upgraded.close()

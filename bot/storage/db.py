@@ -801,9 +801,7 @@ async def _migrate_v5_to_v6(conn: aiosqlite.Connection) -> None:
         await conn.execute(
             "ALTER TABLE video_sessions ADD COLUMN catalog_model TEXT NOT NULL DEFAULT ''"
         )
-    await conn.execute(
-        "UPDATE video_sessions SET catalog_model = model WHERE catalog_model = ''"
-    )
+    await conn.execute("UPDATE video_sessions SET catalog_model = model WHERE catalog_model = ''")
 
 
 _MIGRATIONS: dict[int, Migration] = {

@@ -36,7 +36,7 @@ Plain chat works out of the box. There's lots of options to look through and set
 
 | | |
 |---|---|
-| **Any provider** | Chat, compaction, and an optional background coding model each get their own route in `config/models.yaml`, with fallbacks. The agent core never learns which vendor it's talking to. |
+| **Provider routing** | Chat, compaction, and an optional background coding model each route through general providers in `config/models.yaml`, with fallbacks. Lifecycle-owned specialists such as video use stricter role-specific profiles. |
 | **Trust tiers** | `MEMBER < REGULAR < STAFF`, taken from Discord roles. Who can use which tool is enforced in code at dispatch time, not by asking the model nicely. |
 | **Memory** | Per-user long-term memory via [Hindsight](https://github.com/vectorize-io/hindsight): recall, reflection, opt-out, and staff-taught community knowledge. |
 | **Workspaces** | Each user gets a sandboxed folder: read, write, edit, unzip, pull text out of documents, fetch URLs. Sizes, quotas, and TTLs are capped by the app. |

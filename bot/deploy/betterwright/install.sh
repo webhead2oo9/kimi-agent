@@ -2,7 +2,7 @@
 # Atomically install the reviewed browser and visual-rendering runtime.
 set -eu
 
-VERSION=1.10.0
+VERSION=1.10.2
 MERMAID_VERSION=11.17.2
 EXPECTED_RUNTIME_DIR=/opt/kimi/betterwright
 RUNTIME_INPUT=${1:-$EXPECTED_RUNTIME_DIR}

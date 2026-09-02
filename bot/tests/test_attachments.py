@@ -137,6 +137,33 @@ def test_collect_turn_images_uses_filename_when_content_type_is_generic(
     assert list(tmp_path.rglob("cat.png"))
 
 
+def test_collect_turn_images_tracks_validated_current_attachment_identity(
+    tmp_path: Path,
+) -> None:
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
+    attachment = FakeAttachment(
+        filename="cat.png",
+        content_type="application/octet-stream",
+        payload=_PNG_HEADER,
+    )
+    message = SimpleNamespace(id=55, attachments=[attachment])
+
+    result = asyncio.run(
+        collect_turn_images(
+            message,
+            store=store,
+            conversation_key="guild:chan",
+            detail="auto",
+            images_supported=True,
+            history_hashes=set(),
+            lookback=1,
+            max_images=1,
+        )
+    )
+
+    assert result.current_attachment_source_ids == frozenset({id(attachment)})
+
+
 def test_collect_turn_images_sniffs_actual_media_type(tmp_path: Path) -> None:
     store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
     message = SimpleNamespace(
@@ -1506,10 +1533,9 @@ def test_collect_turn_attachments_skips_images() -> None:
     assert refs[0].content_type == "application/zip"
 
 
-def test_collect_turn_attachments_skips_image_filename_without_content_type() -> None:
-    # The vision path collects photo.png via the filename fallback, so the
-    # importable-file path must skip it too. Otherwise the same image is
-    # surfaced twice (vision part AND import_attachment context).
+def test_collect_turn_attachments_keeps_unvalidated_image_filename_candidate() -> None:
+    # This synchronous collector cannot sniff the bytes. Turn preparation
+    # removes photo.png after the vision collector validates it successfully.
     msg = _att_message(
         [
             _AttSrc(filename="photo.png", content_type=None, payload=b"x"),

@@ -32,6 +32,7 @@ from agent.attachments import (
     cleanup_attachment_paths,
     image_byte_hashes,
     image_part_hash,
+    is_image_attachment_candidate,
     message_has_image_attachment,
 )
 from agent.context import ConversationContext
@@ -657,6 +658,15 @@ async def prepare_turn(
     _raise_if_turn_deadline_expired(deadline)
     content = dependencies.strip_mention(source.raw_content, bot_user=source.bot_user)
     turn_attachments = dependencies.collect_turn_attachments(source.source_message)
+    if config.max_turn_images <= 0:
+        # A generic/missing MIME type can leave an image-named upload on the
+        # provisional attachment path. Remove those candidates too so zero is
+        # the documented hard image-input kill switch, not just a vision limit.
+        turn_attachments = [
+            attachment
+            for attachment in turn_attachments
+            if not is_image_attachment_candidate(attachment)
+        ]
     if (
         not content
         and not (config.max_turn_images > 0 and message_has_image_attachment(source.source_message))
@@ -758,6 +768,16 @@ async def prepare_turn(
         )
         if turn_images.current_image_unavailable:
             raise _CurrentImageUnavailableError
+        if turn_images.current_attachment_source_ids:
+            # Generic/missing MIME metadata leaves image-suffixed files on the
+            # provisional import surface. Once byte validation admits one as a
+            # current vision image, expose that upload only through vision.
+            turn_attachments = [
+                attachment
+                for attachment in turn_attachments
+                if attachment.source is None
+                or id(attachment.source) not in turn_images.current_attachment_source_ids
+            ]
         reply_image_budget = max(0, config.max_turn_images - len(turn_images.vision_parts))
         reply_context = await _await_with_deadline(
             _collect_reply_context(

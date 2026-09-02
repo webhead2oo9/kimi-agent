@@ -33,8 +33,8 @@ The rest is reference material.
   [OpenAI and OpenRouter](providers-openai.md).
 - [Provider resilience](provider-resilience.md): sticky fallback, persistent
   circuit breakers, cooldown policy, and owner recovery controls.
-- [Internet search](internet-search.md): Exa/Brave search and page reading,
-  blending, limits, cost, and privacy.
+- [Internet search](internet-search.md): TinyFish, Exa, and Brave search and
+  page reading, blending, limits, cost, and privacy.
 - [X search](x-search.md): optional xAI-hosted X search through OAuth or API key.
 - [Wolfram|Alpha](wolfram-alpha.md): optional computational queries, limits,
   credentials, and cost tracking.

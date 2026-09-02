@@ -1,9 +1,9 @@
 # X search
 
-`x_search` is an optional, member-tier searchable tool backed by xAI's hosted
-Responses API `x_search` capability. It is independent of the active chat
+`x_search` is an optional, member-tier searchable tool that searches X (formerly
+Twitter) through xAI's hosted Responses API. It is independent of the chat
 provider: Claude, Kimi, OpenAI, Grok, or any other model with function-tool
-support invokes the same local tool.
+support calls the same local tool.
 
 The tool defaults off. Enabling it does not select Grok as the chat model, and
 signing into xAI does not enable the tool.
@@ -37,10 +37,10 @@ Authentication modes have exact boundaries:
   retried without switching credentials. If that fallback call itself fails,
   the degraded OAuth answer is still returned rather than discarded.
 
-If the flag is true but the selected mode has no usable credential, startup
-continues with the tool unregistered. Because the tool is searchable, a model
-discovers and loads it through `browse_tools`; its schema is not added to every
-ordinary prompt.
+If the flag is on but the selected mode has no usable credential, the bot
+starts anyway with the tool unregistered. Because the tool is searchable, the
+model finds and loads it through `browse_tools`; its schema is not added to
+every ordinary prompt.
 
 ## Request and output
 
@@ -61,15 +61,16 @@ A response is degraded only when it contains neither citations nor a positive
 degraded OAuth result is retried once with `GROK_API_KEY` when the key and call
 budget are available. Both completed model calls are recorded in usage.
 
-The default ten-call budget counts actual upstream HTTP attempts, including
-retries and credential fallback, rather than only logical tool invocations.
-This bounds both paid exposure and repeated subscription use.
+The default budget of ten calls per turn counts actual HTTP requests to xAI,
+including retries and the API-key fallback, not just tool invocations. That
+bounds both paid spend and repeated use of a subscription.
 
 ## OAuth limitation
 
-xAI's public X-search documentation primarily describes API-key access. An
-OAuth bearer may successfully authorize `/v1/responses` while the account tier
-does not execute the hosted X index, producing generic uncited prose instead.
-Kimi therefore treats authentication success and verified live search as
-separate facts. Operators should validate a real account by confirming both a
-positive `x_search_calls` value and citations before relying on OAuth X search.
+xAI's public X-search documentation mostly describes API-key access. An OAuth
+token can authorize `/v1/responses` successfully while the account tier does
+not actually run the hosted X search, in which case the model answers with
+generic, uncited prose. Kimi therefore treats "authenticated" and "live search
+actually ran" as separate facts. Before relying on OAuth X search, test a real
+account and confirm you get both a positive `x_search_calls` value and
+citations.

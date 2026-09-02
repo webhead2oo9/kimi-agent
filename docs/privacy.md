@@ -1,8 +1,8 @@
 # Privacy
 
-This is the technical account of what the bot stores, where that data can
-leave to, how long it is kept, who can see it, and which controls users have.
-The plain-language version written for community members lives in
+This is the technical account of what the bot stores, where that data can go,
+how long it is kept, who can see it, and which controls users have. The
+plain-language version written for community members is
 [privacy-policy.md](privacy-policy.md); when behavior changes, keep the two in
 sync.
 
@@ -12,8 +12,9 @@ must document their own data handling and publish a separate privacy notice.
 Two facts frame everything below:
 
 - **The bot ignores DMs unless personal chat explicitly opts in.** By default,
-  `KimiApplication.on_message` (`app/runtime.py`) rejects `discord.DMChannel`
-  before any reaction, transcript write, consent prompt, or provider call. When
+  the message controller (`app/message_runtime.py`, reached from
+  `KimiApplication.on_message` in `app/runtime.py`) rejects a DM before any
+  reaction, transcript write, consent prompt, or provider call. When
   `USER_APP_DM_ENABLED` is on, an approved user's DM enters the same personal
   conversation as `/chat`, with the same retention and deletion behavior. DMs
   from everyone else are still dropped at the initial gate without a reply,
@@ -33,8 +34,8 @@ Two facts frame everything below:
 
 ### SQLite (`data/bot.db`)
 
-This is the primary store: async SQLite in WAL mode, with the schema owned by
-`storage/db.py`. These are the tables that hold user-attributable data:
+This is the primary store: SQLite in WAL mode, with the schema owned by
+`storage/db.py`. These are the tables that hold data attributable to a user:
 
 | Table | User data held |
 |---|---|
@@ -451,10 +452,10 @@ click gets an ephemeral rejection.
 
 ### Where it sits
 
-`KimiApplication.on_message` (`app/runtime.py`, delegating to
-`DiscordMessageController._on_message_for_user` in `app/message_runtime.py`) consults the gate immediately after it
-has decided the bot would respond and **before** it acquires the response lock,
-persists the triggering message, or calls the provider:
+`KimiApplication.on_message` (`app/runtime.py`) hands the message to
+`DiscordMessageController` in `app/message_runtime.py`, which consults the gate
+immediately after deciding the bot would respond and **before** it takes the
+response lock, saves the triggering message, or calls the provider:
 
 ```
 eligibility + personal-DM gate

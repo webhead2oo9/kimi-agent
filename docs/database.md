@@ -16,19 +16,21 @@ The current schema version is v5. If you upgrade to a newer release, the bot run
   - [People](#people)
   - [Memory and privacy](#memory-and-privacy)
   - [Operations](#operations)
+  - [Modules and proposals](#modules-and-proposals)
 - [Model, paid-tool, and bounded-tool usage](#model-paid-tool-and-bounded-tool-usage)
 - [Transcript retention](#transcript-retention)
 - [On-demand per-user deletion](#on-demand-per-user-deletion)
 
 ## Quick reference: what's stored
 
-If you only have a minute, here's the shape of the database:
+If you only have a minute, this is the shape of the database:
 
 - One row per conversation in `conversations`. Guild chats and personal `/chat` share the table with different key formats.
 - The transcript itself in `messages`, deduped by Discord message id.
 - Per-user stuff in `user_preferences` (memory opt-out, privacy consent, persona override) and `blocked_users` (self-blocks and staff blocks).
 - Memory and privacy: watermarks, deletion requests, video session bookkeeping, provider deletion outboxes.
 - Operations: durable coding tasks, usage ledgers, the owner's chat-model selection, provider circuit cooldowns, cached image descriptions, and the schema version.
+- Module state: the scheduler lease and jobs, module command scopes, config proposals, and module schema versions.
 
 The sections below cover encryption, backups, schema upgrades, retention, and `/privacy` deletion in more depth.
 
@@ -73,10 +75,6 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 - `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry upgrades supported lower versions.
 - Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
-- **`module_scheduler_runner`** is the module scheduler's singleton lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second process against the same file pauses instead of running jobs.
-- **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt and last error). Core owns it. Modules reach it through `ctx.scheduler`.
-- **`module_command_guilds`** stores only guild IDs where modules have published guild-scoped commands. Core uses the set to remove stale Discord commands after a module is disabled or removed.
-- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and exact pre-change baseline needed for conflict detection and rollback. The runtime never reads `control_proposals` or `control_proposal_events`; v5 preserves those legacy tables when present but never creates them.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
 - Stores under `storage/` can assume `Database.connect()` has already brought the database to the current supported schema.
 
@@ -145,8 +143,15 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`model_selection`** is a singleton holding the owner-selected global chat model, so a `/models` switch survives a restart. NULL means the normal `config/models.yaml` role and scope routing applies.
 - **`provider_circuits`** stores active model- or account-scoped provider cooldowns, including the normalized reason, optional status/provider code, and retry time. Persisting them prevents a restart from immediately retrying a provider that is still unhealthy. Successful recovery or an owner reset removes the affected rows.
 - **`image_distillations`** caches visual descriptions for text-only chat models. The key covers the image set, the vision model, and the prompt version. The cache is scoped to a single conversation so descriptions never cross a privacy or guild boundary, and deleting the parent conversation removes them by cascade. It's just a cache; the durable copy lives on the message row it describes.
-- **`module_command_guilds`** is the cleanup set for module-owned guild commands. A row contains only a Discord guild ID and is removed after a successful synchronization leaves that guild with no module commands.
 - **`schema_version`** records the version the database has reached.
+
+### Modules and proposals
+
+- **`module_scheduler_runner`** is the module scheduler's single lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second bot process pointed at the same file pauses its scheduler instead of running jobs twice.
+- **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt count, and last error). Core owns the table; modules reach it through `ctx.scheduler`.
+- **`module_command_guilds`** holds only the guild IDs where modules have published guild-scoped commands. After a module is disabled or removed, core uses this set to delete its stale Discord commands, and a row is removed once a sync leaves that guild with no module commands.
+- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back. Older databases may still contain `control_proposals` and `control_proposal_events`; v5 leaves them in place but never reads or creates them.
+- **`module_schema_versions`** records the latest applied schema version for each module that has run migrations.
 
 ## Model, paid-tool, and bounded-tool usage
 

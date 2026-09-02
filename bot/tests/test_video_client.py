@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 import json
-from typing import Any
+from typing import Any, Literal, cast
 
+import aiohttp
 import pytest
 
 from video_understanding import client as video_client
@@ -11,6 +14,11 @@ from video_understanding.client import (
     VideoInteractionError,
     VideoUploadRequest,
     _parse_interaction,
+)
+from video_understanding.service import (
+    VideoResultCancelled,
+    VideoSessionConfig,
+    VideoUnderstandingService,
 )
 
 
@@ -80,6 +88,35 @@ class _Response:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _BlockingResponse(_Response):
+    def __init__(
+        self,
+        status: int,
+        payload: object,
+        *,
+        entered: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        super().__init__(status, payload)
+        self._entered = entered
+        self._release = release
+
+    async def __aenter__(self) -> _Response:
+        self._entered.set()
+        await self._release.wait()
+        return self
+
+
+class _SignallingSemaphore(asyncio.Semaphore):
+    def __init__(self, value: int) -> None:
+        super().__init__(value)
+        self.acquire_started = asyncio.Event()
+
+    async def acquire(self) -> Literal[True]:
+        self.acquire_started.set()
+        return await super().acquire()
 
 
 class _Session:
@@ -283,7 +320,7 @@ async def test_interaction_json_response_is_depth_bounded(
 async def test_oversized_video_error_body_is_not_fully_buffered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    responses = [_Response(503, raw_body=b"x" * 128) for _ in range(3)]
+    responses = [_Response(503, raw_body=b"x" * 128)]
     session = _Session(list(responses))
     client = GeminiVideoClient("secret")
     monkeypatch.setattr(video_client, "_MAX_ERROR_RESPONSE_BYTES", 16)
@@ -538,7 +575,13 @@ async def test_upload_polls_until_active_and_rejects_overlong_video(
 async def test_uploaded_file_interaction_and_delete_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _Session([_Response(200, _response("one")), _Response(404)])
+    session = _Session(
+        [
+            _Response(200, _response("one")),
+            _Response(200, _response("two")),
+            _Response(404),
+        ]
+    )
     client = GeminiVideoClient("secret")
 
     async def get_session() -> Any:
@@ -553,14 +596,28 @@ async def test_uploaded_file_interaction_and_delete_payloads(
         thinking_level="low",
         max_output_tokens=512,
     )
+    follow_up = await client.ask(
+        previous_interaction_id=result.interaction_id,
+        question="Follow up",
+        model="gemini-3.7-flash",
+        thinking_level="low",
+        max_output_tokens=512,
+    )
     await client.delete_file("files/kv-test")
 
     assert result.interaction_id == "one"
+    assert follow_up.interaction_id == "two"
     assert session.posts[0]["json"]["input"][0] == {
         "type": "video",
         "uri": "https://generativelanguage.googleapis.com/v1beta/files/kv-test",
         "mime_type": "video/mp4",
     }
+    assert session.posts[1]["json"]["previous_interaction_id"] == "one"
+    assert (
+        session.posts[1]["json"]["system_instruction"]
+        == session.posts[0]["json"]["system_instruction"]
+    )
+    assert "youtube" not in session.posts[1]["json"]["system_instruction"].lower()
     assert session.deletes[0].endswith("/kv-test")
     await client.close()
 
@@ -650,7 +707,7 @@ def test_parse_interaction_rejects_noncompleted_or_unstructured_response() -> No
 async def test_create_retries_on_transient_http_error_and_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    resp_429 = _Response(429, headers={"Retry-After": "1"})
+    resp_429 = _Response(429, headers={"Retry-After": "0"})
     resp_200 = _Response(200, payload=_response("success"))
     session = _Session([resp_429, resp_200])
     client = GeminiVideoClient("secret")
@@ -696,20 +753,101 @@ async def test_create_fails_immediately_on_400_without_retrying(
 
 
 @pytest.mark.asyncio
-async def test_create_retries_on_transport_error_and_succeeds(
+async def test_create_does_not_replay_an_ambiguous_transport_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import aiohttp
-
     resp_error = _Response(500, enter_error=aiohttp.ClientError("network failure"))
-    resp_200 = _Response(200, payload=_response("recovered"))
-    session = _Session([resp_error, resp_200])
+    session = _Session([resp_error])
     client = GeminiVideoClient("secret")
 
     async def get_session() -> Any:
         return session
 
     monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="temporarily unavailable"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="custom-video-model",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+    assert len(session.posts) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+async def test_create_does_not_replay_an_ambiguous_server_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    session = _Session([_Response(status)])
+    client = GeminiVideoClient("secret")
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="temporarily unavailable"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="custom-video-model",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+    assert len(session.posts) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_retry_backoff_releases_analysis_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backoff_started = asyncio.Event()
+    retry_session = _Session([_Response(429)])
+    active_session = retry_session
+    client = GeminiVideoClient("secret", max_concurrency=1)
+
+    async def get_session() -> Any:
+        return active_session
+
+    async def blocking_sleep(delay: float) -> None:
+        backoff_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    monkeypatch.setattr(video_client.asyncio, "sleep", blocking_sleep)
+    service = VideoUnderstandingService(
+        client=client,
+        get_store=lambda: cast(Any, object()),
+    )
+    task = asyncio.create_task(
+        service.start(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            question="Question",
+            config=VideoSessionConfig(
+                model="custom-video-model",
+                thinking_level="low",
+                max_output_tokens=1024,
+                max_session_interactions=5,
+                session_ttl_minutes=60,
+            ),
+        )
+    )
+    await backoff_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(retry_session.posts) == 1
+
+    active_session = _Session([_Response(200, payload=_response("next-call"))])
     result = await client.start(
         url="https://www.youtube.com/watch?v=abcdefghijk",
         question="Question",
@@ -717,19 +855,142 @@ async def test_create_retries_on_transport_error_and_succeeds(
         thinking_level="low",
         max_output_tokens=1024,
     )
-    assert result.interaction_id == "recovered"
-    assert len(session.posts) == 2
+    assert result.interaction_id == "next-call"
     await client.close()
 
 
 @pytest.mark.asyncio
-async def test_start_upload_retries_on_503_and_succeeds(
+async def test_service_cancellation_while_queued_does_not_dispatch_or_leak_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued_session = _Session([_Response(200, payload=_response("unexpected"))])
+    active_session = queued_session
+    client = GeminiVideoClient("secret", max_concurrency=1)
+    semaphore = _SignallingSemaphore(0)
+    client._analysis_semaphore = semaphore
+
+    async def get_session() -> Any:
+        return active_session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    service = VideoUnderstandingService(
+        client=client,
+        get_store=lambda: cast(Any, object()),
+    )
+    task = asyncio.create_task(
+        service.start(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            question="Question",
+            config=VideoSessionConfig(
+                model="custom-video-model",
+                thinking_level="low",
+                max_output_tokens=1024,
+                max_session_interactions=5,
+                session_ttl_minutes=60,
+            ),
+        )
+    )
+    await semaphore.acquire_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert queued_session.posts == []
+
+    semaphore.release()
+    active_session = _Session([_Response(200, payload=_response("next-call"))])
+    result = await client.start(
+        url="https://www.youtube.com/watch?v=abcdefghijk",
+        question="Question",
+        model="custom-video-model",
+        thinking_level="low",
+        max_output_tokens=1024,
+    )
+    assert result.interaction_id == "next-call"
+    assert semaphore.locked() is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_service_persists_success_returned_after_dispatched_call_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_entered = asyncio.Event()
+    release_response = asyncio.Event()
+    session = _Session(
+        [
+            _BlockingResponse(
+                200,
+                _response("late-success"),
+                entered=request_entered,
+                release=release_response,
+            )
+        ]
+    )
+    client = GeminiVideoClient("secret", max_concurrency=1)
+
+    async def get_session() -> Any:
+        return session
+
+    class RecordingStore:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+
+        async def create_session(self, **kwargs: Any) -> None:
+            self.created.append(kwargs)
+
+    store = RecordingStore()
+    monkeypatch.setattr(client, "_get_session", get_session)
+    service = VideoUnderstandingService(
+        client=client,
+        get_store=lambda: cast(Any, store),
+    )
+    task = asyncio.create_task(
+        service.start(
+            conversation_id=1,
+            actor_user_id="user",
+            guild_id="guild",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            youtube_video_id="abcdefghijk",
+            question="Question",
+            config=VideoSessionConfig(
+                model="custom-video-model",
+                thinking_level="low",
+                max_output_tokens=1024,
+                max_session_interactions=5,
+                session_ttl_minutes=60,
+                catalog_model="video-catalog",
+            ),
+        )
+    )
+    await request_entered.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_response.set()
+    with pytest.raises(VideoResultCancelled) as cancellation:
+        await task
+
+    assert cancellation.value.result.interaction_id == "late-success"
+    assert cancellation.value.catalog_model == "video-catalog"
+    assert [item["interaction_id"] for item in store.created] == ["late-success"]
+    assert len(session.posts) == 1
+    assert client._analysis_semaphore.locked() is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_start_upload_retries_on_explicit_rate_limit_and_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     upload_url = "https://generativelanguage.googleapis.com/upload/v1beta/files/session"
-    resp_503 = _Response(503)
+    resp_429 = _Response(429, headers={"Retry-After": "0"})
     resp_200 = _Response(200, headers={"X-Goog-Upload-URL": upload_url})
-    session = _Session([resp_503, resp_200])
+    session = _Session([resp_429, resp_200])
     client = GeminiVideoClient("secret")
 
     url = await client._start_upload(
@@ -741,6 +1002,25 @@ async def test_start_upload_retries_on_503_and_succeeds(
     )
     assert url == upload_url
     assert len(session.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_start_upload_does_not_replay_ambiguous_server_or_transport_failures() -> None:
+    client = GeminiVideoClient("secret")
+    for response in (
+        _Response(503),
+        _Response(500, enter_error=aiohttp.ClientError("network failure")),
+    ):
+        session = _Session([response])
+        with pytest.raises(VideoInteractionError, match="temporarily unavailable"):
+            await client._start_upload(
+                session,  # type: ignore[arg-type]
+                file_id="test-file",
+                display_name="test.mp4",
+                mime_type="video/mp4",
+                declared_size=100,
+            )
+        assert len(session.posts) == 1
 
 
 @pytest.mark.asyncio
@@ -761,3 +1041,17 @@ async def test_start_upload_fails_immediately_on_400(
         )
     assert len(session.posts) == 1
 
+
+def test_retry_after_supports_rfc_dates_zero_and_local_wait_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+
+    assert video_client._parse_retry_after("0", now=now) == 0
+    assert video_client._parse_retry_after("Wed, 02 Sep 2026 12:00:20 GMT", now=now) == 20
+    assert video_client._parse_retry_after("Wed, 02 Sep 2026 11:59:00 GMT", now=now) == 0
+    assert video_client._parse_retry_after("not-a-delay", now=now) is None
+    assert video_client._retry_delay("31", 1) is None
+
+    monkeypatch.setattr(video_client.random, "uniform", lambda low, high: (low + high) / 2)
+    assert video_client._retry_delay(None, 8) == 4

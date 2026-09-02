@@ -6,7 +6,7 @@ User persona overrides let REGULAR and STAFF members ask the bot to answer them 
 
 The tools register only when `config/models.yaml` assigns a `persona` role. That role names the model that compiles persona requests, so leaving it out is how you turn the feature off for a deployment.
 
-Any provider can serve the role. Authentication follows its provider profile: API-key providers use `api_key_env`, Codex uses its token store, and a keyless gateway needs no local key. The profile's `timeout_seconds` bounds the compiler call, exactly as it does for `roles.chat` or `roles.compaction`. See [providers.md](providers.md) for how profiles and roles fit together.
+Any general LLM provider can serve the role; lifecycle-owned specialized profiles such as `gemini_interactions` cannot. Authentication follows its provider profile: API-key providers use `api_key_env`, Codex uses its token store, and a keyless gateway needs no local key. The profile's `timeout_seconds` bounds the compiler call, exactly as it does for `roles.chat` or `roles.compaction`. See [providers.md](providers.md) for how profiles and roles fit together.
 
 `USER_PERSONA_REQUEST_MAX_CHARS` (default 8,000) caps the raw request before it is sent to the compiler. `USER_PERSONA_MAX_CHARS` (default 2,000) caps the compiled result, and `USER_PERSONA_COMPILER_MAX_TOKENS` (default 32,000) is the compiler call's output-token limit.
 

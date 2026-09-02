@@ -209,9 +209,9 @@ class Settings(BaseSettings):
     wolfram_alpha_max_output_chars: int = Field(default=6_800, ge=500, le=20_000)
     wolfram_alpha_call_cost_usd: float | None = None
 
-    # Stateful public-YouTube understanding (optional searchable tool). The
-    # Gemini key is dedicated to this tool and never participates in chat model
-    # routing. Registration requires both the flag and a non-empty key.
+    # Stateful video understanding (optional searchable tool). The Gemini key
+    # is dedicated to this tool and never participates in chat model routing.
+    # Registration also requires the flag and a roles.video catalog assignment.
     video_understanding_enabled: bool = False
     gemini_api_key: SecretStr = SecretStr("")
     video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)

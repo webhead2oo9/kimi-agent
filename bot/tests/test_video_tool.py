@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 from pydantic import SecretStr
 
-from app.tools import _register_video
+from app.tools import CAPABILITY_PROBES, _register_video
 from config.settings import Settings
 from tools.config_spec import default_config
 from tools.registry import MessageContext, ToolRegistry
@@ -19,10 +19,16 @@ from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from video_understanding.client import (
     VideoEvidence,
+    VideoInteractionError,
     VideoInteractionResult,
     VideoUsage,
 )
-from video_understanding.service import VideoAnalysis, VideoResultCancelled, VideoSessionError
+from video_understanding.service import (
+    VideoAnalysis,
+    VideoInteractionCancelled,
+    VideoResultCancelled,
+    VideoSessionError,
+)
 from workspace import WorkspaceManager
 
 
@@ -116,6 +122,49 @@ class MissingUsageErrorVideoService(FakeVideoService):
 class MissingUsageCancelledVideoService(FakeVideoService):
     async def start(self, **kwargs: Any) -> VideoAnalysis:
         raise VideoResultCancelled(result=_missing_usage_result())
+
+
+def test_video_capability_probe_lists_every_registration_gate() -> None:
+    probe = next(item for item in CAPABILITY_PROBES if item[0] == "video understanding")
+
+    assert probe == (
+        "video understanding",
+        ("video",),
+        "VIDEO_UNDERSTANDING_ENABLED + roles.video + GEMINI_API_KEY",
+    )
+
+
+@dataclass
+class PinnedFollowupFailureVideoService(FakeVideoService):
+    failure: str = "session"
+
+    async def ask(self, **kwargs: Any) -> VideoAnalysis:
+        result = VideoInteractionResult(
+            interaction_id="remote-followup",
+            model="old-upstream",
+            answer="answer",
+            evidence=(),
+            limitations=(),
+            usage=VideoUsage(input_tokens=50, cached_tokens=40, output_tokens=10),
+        )
+        if self.failure == "cancelled":
+            raise VideoResultCancelled(result=result, catalog_model="old-catalog")
+        if self.failure in {"interaction", "interaction_cancelled"}:
+            error = VideoInteractionError(
+                "malformed follow-up",
+                interaction_id=result.interaction_id,
+                model=result.model,
+                usage=result.usage,
+                catalog_model="old-catalog",
+            )
+            if self.failure == "interaction_cancelled":
+                raise VideoInteractionCancelled(error=error)
+            raise error
+        raise VideoSessionError(
+            "follow-up persistence failed",
+            result=result,
+            catalog_model="old-catalog",
+        )
 
 
 def _missing_usage_result() -> VideoInteractionResult:
@@ -582,6 +631,69 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_is_canc
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.input_tokens == 50
     assert ctx.usage_sink[0].usage.cached_read_tokens == 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    ["session", "interaction", "cancelled", "interaction_cancelled"],
+)
+async def test_failed_follow_up_prices_against_pinned_session_catalog(failure: str) -> None:
+    from config.model_config import parse_model_config_text
+    from usage.pricing import price_usage_call
+
+    ctx = _context()
+    operation = _registry(
+        PinnedFollowupFailureVideoService(failure=failure),
+        catalog_model="new-catalog",
+        model="new-upstream",
+    ).dispatch(
+        TOOL_NAME,
+        {"action": "ask", "session": "video_old", "question": "Follow up"},
+        ctx,
+    )
+    if failure in {"cancelled", "interaction_cancelled"}:
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+    else:
+        await operation
+
+    assert ctx.usage_sink is not None
+    [call] = ctx.usage_sink
+    assert call.model == "old-upstream"
+    assert call.pricing_model == "old-catalog"
+
+    model_config = parse_model_config_text("""
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  old-catalog:
+    provider: gemini-video
+    model: old-upstream
+    capabilities: [video_input]
+    pricing: { input: 1.0, cached_read: 0.5, output: 2.0 }
+  new-catalog:
+    provider: gemini-video
+    model: new-upstream
+    capabilities: [video_input]
+    pricing: { input: 100.0, cached_read: 100.0, output: 100.0 }
+roles:
+  chat: primary
+  compaction: primary
+  video: new-catalog
+""")
+    priced = price_usage_call(call, model_config)
+    assert priced.est_cost_usd == pytest.approx(0.00009)
 
 
 @pytest.mark.asyncio

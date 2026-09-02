@@ -349,7 +349,7 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "video understanding",
         ("video",),
-        "VIDEO_UNDERSTANDING_ENABLED + GEMINI_API_KEY",
+        "VIDEO_UNDERSTANDING_ENABLED + roles.video + GEMINI_API_KEY",
     ),
     ("code execution", ("run_code",), "CODE_EXEC_ENABLED + Linux sandbox support"),
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
@@ -610,7 +610,7 @@ def _register_video(
         log.info("Video understanding disabled; VIDEO_UNDERSTANDING_ENABLED is false")
         return service
     if model_config is None or model_config.roles.video is None:
-        log.info("Video understanding role not configured in models.yaml; tool not registered")
+        log.warning("Video understanding role not configured in models.yaml; tool not registered")
         return service
     catalog_model = model_config.roles.video
     model_entry = model_config.models.get(catalog_model)

@@ -22,11 +22,12 @@ from workspace import ENV_DIR_NAMES, WorkspaceKey, WorkspaceManager
 from usage.normalization import LLMUsageCall, UsageBreakdown
 from video_understanding.client import VideoInteractionError
 from video_understanding.service import (
-    VideoAnalysis,
     UploadedVideoSource,
+    VideoAnalysis,
+    VideoInteractionCancelled,
+    VideoResultCancelled,
     VideoSessionConfig,
     VideoSessionError,
-    VideoResultCancelled,
     VideoUnderstandingService,
 )
 
@@ -259,6 +260,22 @@ def init_video_tool(
                     question=question,
                     config=config,
                 )
+        except VideoInteractionCancelled as exc:
+            try:
+                if exc.error.usage is not None:
+                    await _finish_after_cancellation(
+                        _record_result_usage(
+                            ctx,
+                            exc.error.model or config.model,
+                            exc.error.usage,
+                            pricing_model=(
+                                exc.error.catalog_model or config.catalog_model or config.model
+                            ),
+                            usage_present=exc.error.usage_present,
+                        )
+                    )
+            finally:
+                raise
         except VideoResultCancelled as exc:
             try:
                 await _finish_after_cancellation(
@@ -266,7 +283,7 @@ def init_video_tool(
                         ctx,
                         exc.result.model,
                         exc.result.usage,
-                        pricing_model=config.catalog_model,
+                        pricing_model=(exc.catalog_model or config.catalog_model or config.model),
                         usage_present=exc.result.usage_present,
                     )
                 )
@@ -278,7 +295,7 @@ def init_video_tool(
                     ctx,
                     exc.result.model,
                     exc.result.usage,
-                    pricing_model=config.catalog_model,
+                    pricing_model=(exc.catalog_model or config.catalog_model or config.model),
                     usage_present=exc.result.usage_present,
                 )
             return tool_error(str(exc))
@@ -288,7 +305,7 @@ def init_video_tool(
                     ctx,
                     exc.model or config.model,
                     exc.usage,
-                    pricing_model=config.catalog_model,
+                    pricing_model=(exc.catalog_model or config.catalog_model or config.model),
                     usage_present=exc.usage_present,
                 )
             return tool_error(str(exc))
@@ -536,7 +553,7 @@ async def _record_result_usage(
         est_cost_usd=None,
     )
     if ctx.record_usage_call is not None:
-        await ctx.record_usage_call(call)
+        await await_uncancellable(ctx.record_usage_call(call))
     elif ctx.usage_sink is not None:
         ctx.usage_sink.append(call)
 

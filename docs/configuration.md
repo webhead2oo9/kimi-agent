@@ -153,18 +153,22 @@ requires a restart.
 ### Common patterns
 - **Model roles.** `roles.chat` and `roles.compaction` in
   `config/models.yaml` choose the defaults; `roles.chat_images` and
-  `roles.persona` are optional. `roles.coding` and its optional
+  `roles.persona` are optional. `roles.video` selects the optional specialized
+  Gemini Interactions model. `roles.coding` and its optional
   `coding_fallbacks` independently route the durable coding worker and never
   inherit from `roles.chat`. `selectable_chat_models` supplies the candidates
   for the owner-only `/models` menu, and profiles with `models_endpoint` filter
   those candidates against the live `/v1/models` response at startup. Selection
   is live and global, but catalog edits still need a restart.
-- **Provider resilience.** Provider profiles may set `failure_adapter` (default
-  `generic`) and positive `circuit_breaker.outage_cooldown_seconds` (default
-  300), `quota_cooldown_seconds` (default 1800), and
+- **General-provider resilience.** General provider profiles may set
+  `failure_adapter` (default `generic`) and positive
+  `circuit_breaker.outage_cooldown_seconds` (default 300),
+  `quota_cooldown_seconds` (default 1800), and
   `rate_limit_cooldown_seconds` (default 60) values. Recognized rate-limit and
   availability responses use an exact `Retry-After` when their failure policy
-  supports it; other classifications use their configured mapping. See
+  supports it; other classifications use their configured mapping.
+  Lifecycle-owned specialist profiles reject these fields and keep retry and
+  recovery policy with their feature. See
   [Provider resilience](provider-resilience.md).
 - **Feature gating.** Several tools register only when the thing they depend on
   is configured (a key present, a file valid, and so on). When the dependency is
@@ -226,7 +230,6 @@ The tool-owned behavior that exists today:
 | `generate_image` | `max_calls_per_turn` | `2` | 1–8 | `config/tools/generate_image.md` |
 | `generate_image` | `max_reference_images` | `5` | 1–5 | `config/tools/generate_image.md` |
 | `generate_image` | `max_attachments` | `5` | 1–10 | `config/tools/generate_image.md` |
-| `video` | `model` | `gemini-3.7-flash` | closed choice | `config/tools/video.md` |
 | `video` | `thinking_level` | `low` | `low`, `medium`, `high` | `config/tools/video.md` |
 | `video` | `max_output_tokens` | `8192` | 1,024–32,768 | `config/tools/video.md` |
 | `video` | `max_calls_per_turn` | `4` | 1–8 | `config/tools/video.md` |
@@ -372,8 +375,10 @@ losing a pin can't widen access.
 ## Model routing and LLM execution
 
 `config/models.yaml` selects provider profiles, model IDs, role assignments, and
-chat overrides. `providers/factory.py` is the source of truth for which
-provider `type` values are supported.
+chat overrides. `config/model_config.py:SUPPORTED_PROVIDER_PROFILE_TYPES` is the
+source of truth for accepted profile types. Most are general LLM transports
+constructed by `providers/factory.py`; `gemini_interactions` is a specialized
+video-only transport constructed by the video tool lifecycle.
 
 The YAML owns the provider `type`, `base_url`, the OpenAI service and timeout
 fields, the OpenRouter routing and attribution fields, model IDs,
@@ -384,8 +389,8 @@ and the YAML refers to them by name through `api_key_env`.
 when the file is parsed at startup. The accepted names, each backed by a
 `Settings` field, are `MODEL_API_KEY`, `OPENCODE_GO_API_KEY`,
 `RUNINFRA_GATEWAY_KEY`, `ANTHROPIC_API_KEY`, `GROK_API_KEY`,
-`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`, and
-`COMPACTION_API_KEY`.
+`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`,
+`COMPACTION_API_KEY`, and `GEMINI_API_KEY`.
 
 To support another key name, add its `Settings` field and an entry in
 `config/model_config.py:_API_KEY_SETTINGS_FIELDS`; the allowlist derives from
@@ -430,6 +435,7 @@ out into its own column while including it in the estimated cost for the window.
 | `ZAI_API_KEY` | secret | (none) | Z.AI key for GLM Coding Plan profiles using the dedicated `https://api.z.ai/api/coding/paas/v4` Chat Completions endpoint; see [providers-zai.md](providers-zai.md). |
 | `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional key for profiles assigned to `roles.compaction`. |
+| `GEMINI_API_KEY` | secret | `""` | Dedicated key required by a `gemini_interactions` profile assigned to `roles.video`. |
 | `REACT_MAX_ITERATIONS` | int | `200` | Max tool-use iterations per turn before the loop stops. |
 | `NEW_USER_ONBOARDING_TURNS` | int | `5` | Inject the `<onboarding>` system-prompt note while a user has fewer than this many stored messages with the bot (model is told they're new and may `block_user`, or use a server-provided reporting tool, on clear abuse). `0` disables. Mention-path turns only. |
 | `REACT_MAX_TOKENS` | int | `65536` | Max output tokens per model call. |
@@ -704,22 +710,27 @@ provider-output boundary.
 
 ## Video understanding (gated)
 
-The searchable member-tier `video` tool registers only when the feature flag
-and its dedicated Gemini secret are both present. One flag enables public
-YouTube plus streamed Discord/workspace video sources; uploaded files retain
-code-owned 500 MiB/one-hour ceilings. The key is independent of
-`config/models.yaml`; chat routing never supplies or inherits it.
+The searchable member-tier `video` tool registers only when all three inputs are
+present: the feature flag, a nonblank dedicated Gemini secret, and a
+`roles.video` assignment in `config/models.yaml`. That role must point to a
+`video_input` model on a `gemini_interactions` profile. It owns the upstream
+model ID and token pricing; the role is independent of chat routing and does not
+support fallbacks. One flag enables public YouTube plus streamed
+Discord/workspace video sources; uploaded files retain code-owned 500 MiB and
+one-hour ceilings.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `VIDEO_UNDERSTANDING_ENABLED` | bool | `false` | Requests registration of the stateful YouTube/uploaded-video tool. With a missing key, startup continues and leaves the tool absent. |
-| `GEMINI_API_KEY` | secret | `""` | Dedicated Google Gemini API key. Environment-only and never written to a tool fragment. |
+| `VIDEO_UNDERSTANDING_ENABLED` | bool | `false` | Requests registration of the stateful YouTube/uploaded-video tool. A missing role or key leaves the tool absent with a warning. |
+| `GEMINI_API_KEY` | secret | `""` | Google Gemini API key named by the required `gemini_interactions` profile. Environment-only and never written to a tool fragment. |
 | `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` | int | `4` | Process-wide interactive Gemini request cap, 1–32. Slot waits fail busy after 30 seconds; provider deletion uses a separate bounded pool. |
 
-The fixed client connects only to Google's Gemini API. Safe live behavior is
-owned by `config/tools/video.md` and listed in the per-tool table above. The
-shipped defaults use `gemini-3.7-flash`, low thinking, four calls per outer
-turn, twenty total interactions per session, and a 24-hour idle lifetime.
+The fixed client connects only to Google's Gemini API. Copy the commented
+provider/model/role example from `config/models.example.yaml`, verify the model
+ID and current vendor rate card, and assign it to `roles.video`. Safe live
+behavior remains owned by `config/tools/video.md`: low thinking, four calls per
+outer turn, twenty total interactions per session, and a 24-hour idle lifetime
+by default.
 
 See [Video understanding](video-understanding.md) for source streaming, formats,
 hard file/duration limits, root/user/guild scope, SQLite-backed crash recovery,

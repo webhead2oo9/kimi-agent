@@ -41,6 +41,7 @@ models:
     model: gemini-3.7-flash
     context_window: 1048576
     capabilities: [video_input]
+    # Example only; verify current rates with Google before deployment.
     pricing:
       input: 0.75
       output: 3.75
@@ -50,14 +51,27 @@ roles:
   video: gemini-video-flash
 ```
 
-The `VIDEO_UNDERSTANDING_ENABLED` flag enables all three source types. If it is false, the tool is absent
-no matter what. If it is true but `roles.video` is unassigned or the key is blank, the bot still starts,
-logs a clear warning or info message, and leaves the tool absent.
+> **Upgrading an existing video deployment:** add the provider, model, and
+> `roles.video` entries above; remove the legacy `model:` field from
+> `config/tools/video.md`; then restart. Schema v6 backfills existing sessions
+> from their stored upstream model, so their continuations keep using that
+> model. Central pricing can fall back to a catalog entry with the same upstream
+> ID when its rate card is unambiguous; keep that entry and rate card until the
+> migrated sessions expire.
+
+The `VIDEO_UNDERSTANDING_ENABLED` flag enables all three source types. If it is
+false, the tool is absent no matter what. If it is true but `roles.video` is
+unassigned or the key is blank, the bot still starts, logs a clear warning, and
+leaves the tool absent. The rates above are a configuration example, not a live
+price feed; verify model availability and pricing against Google's current
+documentation.
 
 `GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from a
 tool call, tool fragment, model catalog, prompt, or Discord command. The client
-connects only to fixed Google Gemini hosts. Cleanup remains available while video
-analysis is disabled, so registered provider resources remain deletable.
+connects only to fixed Google Gemini hosts. With the key still configured,
+cleanup remains available while video analysis is disabled, so registered
+provider resources remain deletable. Without the key, deletion records stay
+queued until credentials are restored.
 
 The video specialist model and its token rate card are configured authoritatively in
 `config/models.yaml` under `roles.video`. Fallbacks are unsupported because interaction
@@ -85,10 +99,12 @@ One tool owns two actions.
 
 For YouTube, the handler accepts only exact HTTPS YouTube hosts and one valid
 video id, canonicalizes watch/short/live/embed/`youtu.be` forms, and sends the
-video before the question. Private, unavailable, playlist-only, credentialed,
-fragmented, explicit-port, and non-YouTube URLs fail before a provider call.
-Arbitrary MP4/web URLs are not a source; import them through the existing guarded
-workspace path first.
+video before the question. Playlist-only, credentialed, fragmented,
+explicit-port, non-YouTube, and invalid-id URLs fail locally. Privacy and
+availability cannot be determined from URL structure: Google accepts only
+public YouTube videos and rejects private, unlisted, or unavailable videos at
+the provider call. Arbitrary MP4/web URLs are not a source; import them through
+the existing guarded workspace path first.
 
 For a Discord attachment, the exact filename must identify one current-message
 attachment. The captured source must be an HTTPS Discord CDN attachment URL on
@@ -135,7 +151,11 @@ The handle may be omitted only when exactly one unexpired session belongs to
 the current user in the current rooted conversation. More than one match fails
 closed. The same system instruction, response schema, thinking level, and output
 cap are repeated because continuation preserves conversation history, not those
-interaction-scoped controls. A session keeps the model it started with.
+interaction-scoped controls. A session pins both the catalog model name used for
+pricing and the resolved upstream model ID used for every continuation. Changing
+`roles.video` affects only new sessions. Keep an old catalog entry and its rate
+card unchanged until its sessions have expired; removing it leaves those calls
+unpriced, while reusing its name for different rates would misattribute them.
 
 ## Scope and crash consistency
 
@@ -153,9 +173,20 @@ unattached reservation that startup and periodic cleanup expire after a
 conservative grace period. The periodic interval is
 `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` (one hour by default).
 
-Sessions survive turns and restarts in SQLite. Source rows retain only
-safe metadata: source kind, display filename/relative locator, byte size, model,
-scope, timestamps, and opaque provider ids. They never store video bytes,
+Once Google has returned a billable result, its local session write finishes
+before caller cancellation propagates. A committed write keeps its Interaction
+and any claimed File; a failed write or lost compare-and-swap queues only the
+unreferenced provider state for deletion. Usage attribution is preserved in
+either case. Waiting for a concurrency slot and sleeping before a retry remain
+immediately cancellable. If cancellation arrives after an Interaction-create
+POST starts, the client finishes only that in-flight attempt so it can retain a
+returned resource ID or usage record; it never dispatches a later retry for the
+cancelled call.
+
+Sessions survive turns and restarts in SQLite. Source rows retain only safe
+metadata: source kind, display filename/relative locator, byte size, catalog and
+upstream model identifiers, scope, timestamps, and opaque provider ids. They
+never store video bytes,
 Discord CDN URLs, Gemini File capability URIs, questions, or answers.
 
 ## Output and trust
@@ -174,8 +205,9 @@ The complete result carries `context_is_untrusted: true`. The fixed specialist
 instruction treats video, audio, dialogue, captions, descriptions, and on-screen
 text as evidence, never instructions. Fast cuts, brief overlays, OCR, and details
 between sampled frames may be missed. Timestamps are useful grounding, not
-editing-grade frame accuracy. Interactions does not expose the clipping/custom-
-FPS controls available in `generateContent`.
+editing-grade frame accuracy. Google Interactions supports processing-mode,
+clipping, and custom-FPS inputs, but this bot does not expose or send those
+controls; it uses Google's default video-processing behavior.
 
 ## Limits and live tool configuration
 
@@ -214,18 +246,24 @@ Google defines each continuation's input usage as the complete context processed
 for that call, including preceding turns, so the bot records full response usage
 rather than deltas. Cache hits are automatic but not guaranteed.
 
-Pricing is resolved authoritatively from the rate card configured in
-`config/models.yaml` for the model assigned to `roles.video`. The vendor
+Pricing is resolved from the `config/models.yaml` rate card named by each
+session's pinned catalog model. For a new session that is the model currently
+assigned to `roles.video`; later role changes do not rewrite it. The vendor
 dashboard remains authoritative.
 
 Up to `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` questions (default 4, range 1–32)
 can be in flight at once; a call that waits more than 30 seconds for a slot
 fails with a busy error. Uploads run one at a time and are bounded to 30 minutes
-end to end, with the processing poll capped at 15 minutes inside that. Provider
-requests automatically retry transient HTTP status codes (408, 425, 429, 500, 502,
-503, 504) and transport errors, honoring vendor `Retry-After` headers. Provider
-deletion uses its own small pool with a 30-second per-request deadline. A
-create or upload whose outcome is unknown is never blindly retried.
+end to end, with the processing poll capped at 15 minutes inside that. A stored
+Interaction create or upload initialization makes at most two retries, and only
+for explicit 408, 425, or 429 responses. Numeric and HTTP-date `Retry-After`
+values are honored when they fit the 30-second per-retry wait ceiling; a
+longer provider minimum fails the call instead of retrying early. Without a valid
+header, bounded exponential backoff uses full jitter. Transport failures and
+ambiguous 5xx responses are not replayed because they can follow a state-changing
+request whose resource ID was lost. Resumable chunk failures are different: the
+client queries Google's committed byte offset before deciding whether to continue.
+Provider deletion uses its own small pool with a 30-second per-request deadline.
 
 ## Retention, privacy, and deletion
 
@@ -250,17 +288,19 @@ its products, while unpaid-service data may be.
 ## Operator checklist
 
 1. Use a dedicated billing-enabled Gemini project and key.
-2. Enable video understanding and restart.
-3. Confirm startup reports `video understanding`.
-4. Test a public YouTube URL, a small Discord MP4, a workspace video, one
+2. Configure and verify a `gemini_interactions` provider, `video_input` model
+   and current rate card, then assign it to `roles.video`.
+3. Enable video understanding and restart.
+4. Confirm startup reports `video understanding`.
+5. Test a public YouTube URL, a small Discord MP4, a workspace video, one
    follow-up, and `/privacy` cleanup before broad use.
-5. Monitor video duration, provider storage/quota, latency, token usage, and
+6. Monitor video duration, provider storage/quota, latency, token usage, and
    cache ratios rather than assuming follow-ups are cheap.
 
 Current Google references:
 
-- [Video understanding](https://ai.google.dev/gemini-api/docs/interactions/video-understanding)
-- [Files API](https://ai.google.dev/gemini-api/docs/interactions/files)
+- [Video understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
+- [Files API](https://ai.google.dev/gemini-api/docs/files)
 - [File input methods](https://ai.google.dev/gemini-api/docs/file-input-methods)
 - [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 - [Interaction token accounting](https://ai.google.dev/gemini-api/docs/interactions/tokens)

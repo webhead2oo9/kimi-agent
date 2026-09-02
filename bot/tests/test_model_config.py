@@ -2161,12 +2161,39 @@ roles:
     assert config.roles.video == "video-model"
     assert config.models["video-model"].model == "gemini-3.7-flash"
 
+    for unsupported_field in (
+        "prompt_caching: false",
+        "provider_routing: {}",
+        "app_name: video-client",
+        "app_url: https://example.test",
+        'service_tier: ""',
+        "timeout_seconds: 30",
+        "max_output_tokens: 2048",
+        "request_id_header: X-Request-ID",
+        'reasoning_effort: ""',
+        "failure_adapter: generic",
+        "circuit_breaker: {}",
+    ):
+        with pytest.raises(ValueError, match="do not support profile fields"):
+            load_model_config(
+                _write_config(
+                    tmp_path / "models.yaml",
+                    valid_text.replace(
+                        "api_key_env: GEMINI_API_KEY",
+                        f"api_key_env: GEMINI_API_KEY\n    {unsupported_field}",
+                    ),
+                )
+            )
+
     # Reject keyless
     with pytest.raises(ValueError, match="keyless"):
         load_model_config(
             _write_config(
                 tmp_path / "models.yaml",
-                valid_text.replace("api_key_env: GEMINI_API_KEY", "keyless: true"),
+                valid_text.replace(
+                    "api_key_env: GEMINI_API_KEY",
+                    "api_key_env: GEMINI_API_KEY\n    keyless: false",
+                ),
             )
         )
 
@@ -2175,9 +2202,24 @@ roles:
         load_model_config(
             _write_config(
                 tmp_path / "models.yaml",
-                valid_text.replace("api_key_env: GEMINI_API_KEY", "api_key_env: GEMINI_API_KEY\n    base_url: https://proxy.test"),
+                valid_text.replace(
+                    "api_key_env: GEMINI_API_KEY",
+                    'api_key_env: GEMINI_API_KEY\n    base_url: ""',
+                ),
             )
         )
+
+    for unsupported_field in ('models_endpoint: ""', 'auth_mode: ""'):
+        with pytest.raises(ValueError, match=unsupported_field.partition(":")[0]):
+            load_model_config(
+                _write_config(
+                    tmp_path / "models.yaml",
+                    valid_text.replace(
+                        "api_key_env: GEMINI_API_KEY",
+                        f"api_key_env: GEMINI_API_KEY\n    {unsupported_field}",
+                    ),
+                )
+            )
 
     # Reject wrong api_key_env
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
@@ -2185,6 +2227,18 @@ roles:
             _write_config(
                 tmp_path / "models.yaml",
                 valid_text.replace("api_key_env: GEMINI_API_KEY", "api_key_env: MODEL_API_KEY"),
+            )
+        )
+
+    # Reject the dedicated Gemini key on a general provider profile.
+    with pytest.raises(ValueError, match="only supported for provider type"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text.replace(
+                    "base_url: https://example.test/v1\n    keyless: true",
+                    "base_url: https://example.test/v1\n    api_key_env: GEMINI_API_KEY",
+                ),
             )
         )
 
@@ -2221,6 +2275,10 @@ models:
     provider: gemini-video
     model: gemini-3.7-flash
     capabilities: [video_input]
+  video-wrong-provider:
+    provider: main
+    model: other-video-model
+    capabilities: [video_input]
 roles:
   chat: primary
   compaction: primary
@@ -2231,11 +2289,15 @@ roles:
         load_model_config(_write_config(tmp_path / "models.yaml", base_text))
 
     # Video role using non-gemini_interactions provider
-    wrong_provider_text = base_text.replace("video: video-missing-cap", "video: primary")
-    with pytest.raises(ValueError, match="video_input"):
+    wrong_provider_text = base_text.replace(
+        "video: video-missing-cap", "video: video-wrong-provider"
+    )
+    with pytest.raises(ValueError, match="expected one of: gemini_interactions"):
         load_model_config(_write_config(tmp_path / "models.yaml", wrong_provider_text))
 
     # Chat role using gemini_interactions provider
-    chat_using_video = base_text.replace("chat: primary", "chat: video-good").replace("video: video-missing-cap", "video: video-good")
+    chat_using_video = base_text.replace("chat: primary", "chat: video-good").replace(
+        "video: video-missing-cap", "video: video-good"
+    )
     with pytest.raises(ValueError, match="specialized provider type"):
         load_model_config(_write_config(tmp_path / "models.yaml", chat_using_video))

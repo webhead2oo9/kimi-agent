@@ -8,7 +8,7 @@ People talk to Kimi in a few different ways. Under the hood they all use the sam
 
 ### Community chat
 
-This is ordinary Discord chat in a server. If someone mentions the bot, ping-replies to it, says `hey/hi <bot name>`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
+This is ordinary Discord chat in a server. If someone mentions the bot, replies to it with the reply ping on, starts a message with `hey <bot name>`, `hi <bot name>`, or `<bot name> help`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
 The gateway entry point delegates to `DiscordMessageController`, which owns the Discord gates and root lock, then sends the turn through the shared foreground runner and its guild-message adapter.
 
@@ -36,8 +36,9 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `discord_adapter/` | Talks to Discord: sending, receiving, permissions, cleanup jobs |
 | `providers/` | How Kimi talks to model APIs, including failover |
 | `image_gen/` | Image generation/editing backend |
-| `search/` | Internet search (Exa, Brave, and the shared chain) |
+| `search/` | Internet search backends (TinyFish, Exa, Brave) and the chain that blends them |
 | `video_understanding/` | Gemini video sessions |
+| `xai/` | xAI login and credentials, plus the Responses transport used by Grok models and X search |
 | `config/` | Settings, `models.yaml`, operator overlay |
 | `config/fragments/` | Markdown you can edit without restarting: pins, denylists, prompts, per-tool settings |
 | `tools/` | Tool registry and the built-in tools |
@@ -59,9 +60,9 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 | `packages/` | The standalone module API package |
 | `tests/` | Tests, including the import-boundary checks |
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
-| `scripts/` | Operator helpers: Codex login, preflight, service install, diagnostics |
+| `scripts/` | Operator helpers: Codex and xAI login, preflight, service install, diagnostics, sandbox probe |
 
-`app/` is a large package. The important files are `runtime.py` (`build_app` and thin Discord ingress), `lifecycle.py` (repository ownership, READY initialization, background resources, and shutdown), `message_runtime.py` (message admission, routing, and turn composition), `response_delivery.py` (workspace-guarded Discord response delivery), `command_sync.py` (READY-cohort command publication), `guild_activation.py` (live guild activation and refresh), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery through a frozen collaborator bundle), `user_app_chat.py` (personal-chat policy and execution), `user_app_consent.py` (shared interaction consent), `user_app_turn_adapter.py` (deferred `/chat` delivery), `work_cancellation.py` (foreground/coding teardown), `coding_tasks.py` (durable worker scheduling), `coding_delivery.py` (durable Discord projection and control), `root_locks.py` (refcounted conversation serialization), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
+`app/` is a large package. The important files are `runtime.py` (`build_app` and thin Discord ingress), `lifecycle.py` (repository ownership, READY initialization, background resources, and shutdown), `message_runtime.py` (message gates, routing, and turn composition, with `admission.py` and `conversation_routing.py` behind it), `response_delivery.py` (workspace-guarded Discord response delivery), `command_sync.py` (READY-cohort command publication), `guild_activation.py` (live guild activation and refresh), `foreground_turn.py` (the typed prepare/run/deliver seam), `guild_turn_adapter.py` (gateway-message delivery through a frozen collaborator bundle), `user_app_chat.py` (personal-chat policy and execution), `user_app_consent.py` (shared interaction consent), `user_app_turn_adapter.py` (deferred `/chat` delivery), `work_cancellation.py` (foreground/coding teardown), `coding_tasks.py` (durable worker scheduling), `coding_delivery.py` (durable Discord projection and control), `root_locks.py` (refcounted conversation serialization), `turn_entry.py` (who gets a turn), `tools.py` (what tools get wired), `modules.py`, and `plugins.py`.
 
 ## Design choices that matter
 
@@ -82,6 +83,7 @@ Big repo jobs should not sit in a live Discord reply. `start_coding_task` hands 
 - [Code execution](code-exec.md): the Linux sandbox
 - [Visual rendering](visual-rendering.md): charts and Mermaid
 - [Durable coding agent](coding-agent.md): background coding jobs
-- [Internet search](internet-search.md): Exa/Brave search
+- [Internet search](internet-search.md): TinyFish, Exa, and Brave search
+- [X search](x-search.md): searching X through xAI
 - [Video understanding](video-understanding.md): YouTube and uploaded video
 - [Image generation](image-generation.md): image generation and editing

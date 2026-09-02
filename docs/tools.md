@@ -51,6 +51,27 @@ tries anyway, so its existence never leaks. The registry in
 [`bot/tools/registry.py`](../bot/tools/registry.py) is the enforcement point;
 prompt text is never an access control.
 
+## Per-turn budgets and reply state
+
+Metered tools declare a `ToolBudgetSpec` beside their registry metadata. At the
+start of a turn, `ToolRegistry.resolve_turn_budget` resolves those declarations
+against the current tool configuration and snapshots the caps into one
+`TurnBudget` on `MessageContext`. Handlers consume a named allowance (for
+example, `ctx.consume_budget(BudgetName.IMAGE_GEN_CALLS)`); a refusal leaves the
+used-count ledger unchanged, and an undeclared allowance fails closed. The tool
+still owns its user-facing limit message and the point at which an attempt or success
+consumes allowance. The shared table currently covers memory writes; internet,
+X, Wolfram|Alpha, and video calls; browser calls and screenshots; visual
+renders; image generation; and workspace image viewing.
+
+Files and their descriptions, opaque removal selectors, allowed roots, embeds,
+thread open/close requests, and terminal coding handoffs are final-reply state.
+They travel together in a frozen `TurnOutbox`: tool handlers replace
+`MessageContext.outbox` through `update_outbox`, the conversation and turn
+layers carry that value as one field, and each surface adapter reads it at the
+delivery boundary. `MessageContext.plan` and `pending_view_images` stay outside
+the outbox because they are live ReAct-loop state rather than reply artifacts.
+
 ## Discovery and task flow
 
 | Tool | Visibility | Tier | Purpose |
@@ -163,7 +184,7 @@ rules documented in [Workspace Tools](workspace.md).
 cleanly unless the active provider supports image input. Note that a file
 existing in the workspace is not enough to get it sent: explicit attachment
 requests and files attached automatically by generation and rendering tools
-share the same bounded attachment rail.
+share the same bounded attachment portion of the turn outbox.
 
 ## Code execution
 

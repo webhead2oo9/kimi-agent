@@ -30,6 +30,7 @@ def test_replace_handler_preserves_gates() -> None:
         owner_only=True,
         guild_ids=frozenset({"7"}),
         available=lambda guild: guild == "7",
+        untrusted=True,
     )
 
     registry.replace_handler("t", _b)
@@ -40,6 +41,7 @@ def test_replace_handler_preserves_gates() -> None:
     assert entry.searchable and entry.owner_only
     assert entry.guild_ids == frozenset({"7"})
     assert entry.available is not None and entry.available("7") and not entry.available("8")
+    assert entry.untrusted is True
 
 
 def test_replace_handler_requires_a_registered_tool() -> None:

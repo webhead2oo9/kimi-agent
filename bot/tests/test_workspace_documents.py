@@ -48,12 +48,14 @@ async def test_extract_document_text_saves_pdf_text_for_read_file(
     )
 
     parsed = json.loads(result)
+    entry = next(item for item in reg.get_all_tools() if item.name == "extract_document_text")
     extracted = mgr.user_files_dir(WS) / "papers" / "paper.extracted.txt"
     assert parsed["source_path"] == "papers/paper.pdf"
     assert parsed["path"] == "papers/paper.extracted.txt"
     assert parsed["page_count"] == 2
     assert parsed["pages_extracted"] == 2
     assert parsed["context_is_untrusted"] is True
+    assert entry.untrusted is True
     assert parsed["read_next"] == {
         "tool": "read_file",
         "args": {

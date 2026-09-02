@@ -66,6 +66,7 @@ supported:
 | `anthropic_compat` | Minimal Anthropic Messages over plain HTTP, for compatible gateways | text, image input, tool use, prompt caching |
 | `openrouter` | OpenRouter Chat Completions | text, multimodal input, tool calling, provider routing, image output |
 | `codex` | ChatGPT Codex backend over WebSocket Responses | text, image input, function tools, native image generation |
+| `xai` | Native xAI Responses API with OAuth/API auth | text, image input, function tools, reasoning |
 
 A gateway that speaks more than one of these can appear as more than one
 profile sharing a single credential. Declare the transport each model actually
@@ -75,7 +76,7 @@ which models a gateway exposes on which path is a property of that deployment.
 ### Subscription-backed routes
 
 Subscription routes such as [Z.AI's GLM Coding Plan](providers-zai.md),
-[Codex](providers-codex.md), and the [ccflare Claude
+[xAI OAuth](providers-grok.md), [Codex](providers-codex.md), and the [ccflare Claude
 route](providers-ccflare.md) are different from ordinary metered APIs. Their
 usage counts against a subscription rather than a per-token API balance.
 
@@ -235,8 +236,9 @@ effective while doing nothing.
 | Field | Default | Applies to | Meaning |
 |---|---|---|---|
 | `type` | required | all | Which transport to speak. |
-| `base_url` | `""` | `openai_compat`, `openai_responses`, `anthropic_compat` | Endpoint to call. Required for `keyless` profiles. OpenRouter and Codex use code-owned endpoints; native Anthropic uses its SDK default. |
+| `base_url` | `""` | `openai_compat`, `openai_responses`, `anthropic_compat` | Endpoint to call. Required for `keyless` profiles. OpenRouter, Codex, and xAI use code-owned endpoints; native Anthropic uses its SDK default. |
 | `api_key_env` | `""` | all | Name of the env var holding the key. Must be one of the supported names below. |
+| `auth_mode` | `oauth` | `xai` | `oauth`, `api_key`, or OAuth-first `auto`. Strict modes never cross credential sources. |
 | `keyless` | `false` | gateways | The endpoint injects its own upstream credentials, so no key is read. |
 | `models_endpoint` | `""` | OpenAI-compatible | A `/v1/models` URL used to filter selectable candidates at startup. |
 | `prompt_caching` | `true` | `anthropic_compat` | Send a rolling prompt-cache breakpoint. |
@@ -244,10 +246,10 @@ effective while doing nothing.
 | `app_name` | `BOT_NAME` | OpenAI-compatible | Optional provider-facing identity override. By default the configured bot name becomes the `User-Agent`; OpenRouter also receives it as `X-OpenRouter-Title` and `X-Title`. |
 | `app_url` | `""` | `openrouter` | `HTTP-Referer` attribution header. |
 | `service_tier` | `""` | OpenAI, OpenRouter | OpenAI service tier, or OpenRouter `flex` or `priority`. Sent only on the OpenAI gateway and on OpenRouter; dropped on other compatibility gateways. Empty on OpenRouter leaves the upstream default in place. |
-| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses`, `openrouter` | SDK transport timeout. |
+| `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses`, `openrouter`, `xai` | SDK transport timeout. |
 | `max_output_tokens` | unset | all | Hard output-token ceiling for every model on this gateway. |
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
-| `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat` | Default effort for models routed through this profile. OpenAI-compatible profiles send it as `reasoning_effort`; DeepSeek targets additionally receive `thinking.type=enabled`. |
+| `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat`, `xai` | Default effort for models routed through this profile. Responses providers send `reasoning.effort`; OpenAI-compatible Chat Completions profiles send `reasoning_effort`. |
 
 `max_output_tokens` lives on the profile rather than the model entry on
 purpose. It expresses a limit the *gateway* imposes, so it applies to
@@ -284,7 +286,9 @@ error rather than as an empty key at request time:
 
 `MODEL_API_KEY` is the neutral one for any other OpenAI-compatible profile.
 Codex profiles authenticate from `CODEX_TOKEN_FILE` and leave `api_key_env`
-blank.
+blank. Native xAI profiles follow the stricter `auth_mode` contract documented
+in [xAI Grok](providers-grok.md); OAuth uses `XAI_OAUTH_TOKEN_FILE`, while API
+and `auto` fallback use only `GROK_API_KEY`.
 
 ### Model entry fields
 
@@ -527,6 +531,7 @@ onto whatever its API calls that concept:
 |---|---|
 | `codex` | `reasoning.effort` |
 | `openai_responses` | `reasoning.effort` |
+| `xai` | `reasoning.effort` |
 | `anthropic_compat` | `output_config.effort` |
 | `openai_compat` | `reasoning_effort`; DeepSeek targets also receive `thinking.type=enabled` |
 
@@ -573,7 +578,7 @@ effort rather than the profile baseline, the same floor `codex` uses.
 ### Escalating after a tool call
 
 A model entry may declare `reasoning_after_tools`, supported for `codex`,
-`anthropic_compat`, and `openai_responses` models:
+`anthropic_compat`, `openai_responses`, and `xai` models:
 
 ```yaml
 reasoning_after_tools:
@@ -679,6 +684,7 @@ these messages, they come from `config/model_config.py`:
 | `unknown provider type '<x>'; expected one of: ...` | A `providers:` entry names a type outside `SUPPORTED_PROVIDER_NAMES`. |
 | `unsupported api_key_env '<X>'; expected one of: ...` | The profile names an env var outside `SUPPORTED_API_KEY_ENVS`, including `DEEP_RESEARCH_API_KEY`. |
 | `keyless profiles must not set api_key_env` / `keyless profiles must set base_url` | A `keyless: true` profile contradicts itself, or has no endpoint to call. |
+| `xAI ...` / `auth_mode is only supported ...` | An xAI profile has contradictory auth fields, a custom endpoint, or another provider tried to use xAI-only auth configuration. |
 | `unsupported reasoning_effort '<x>'; expected one of: ...` | An effort outside the accepted ladder, or outside Anthropic's narrower one on an `anthropic_compat` profile. |
 | `reasoning_effort is only supported for provider types: ...` | The field is set on a profile type that cannot carry it. |
 | `models.<name>.provider references unknown provider '<x>'` | A model entry names a profile absent from `providers:`. |

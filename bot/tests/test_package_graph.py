@@ -86,6 +86,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "video_understanding",
         "workspace",
         "web_browser",
+        "xai",
     },
     "bot": {"app", "config"},
     "codex": {"utils"},
@@ -134,8 +135,16 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     # the harness cycle documented above.
     "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
-    "providers": {"codex", "utils"},
-    "scripts": {"app", "codex", "config", "kimi_agent_module_api", "sandbox", "skills"},
+    "providers": {"codex", "utils", "xai"},
+    "scripts": {
+        "app",
+        "codex",
+        "config",
+        "kimi_agent_module_api",
+        "sandbox",
+        "skills",
+        "xai",
+    },
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": {"utils"},
@@ -158,6 +167,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "video_understanding",
         "workspace",
         "web_browser",
+        "xai",
     },
     "trust": {"kimi_agent_module_api"},
     "usage": {"config"},
@@ -165,6 +175,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "video_understanding": {"utils"},
     "web_browser": {"sandbox"},
     "workspace": set(),
+    "xai": {"utils"},
 }
 
 _EXPECTED_NONTRIVIAL_SCCS: frozenset[frozenset[str]] = frozenset(

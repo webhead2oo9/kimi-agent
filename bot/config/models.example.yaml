@@ -27,6 +27,15 @@ providers:
     # catalog that should filter owner-visible /models choices at startup.
     # models_endpoint: https://llm-gateway.example.invalid/v1/models
 
+  # Optional native xAI Responses profile. It remains inert until a model below
+  # references it and routing selects that model. OAuth is strict by default;
+  # use auth_mode: auto plus api_key_env: GROK_API_KEY only when API fallback is
+  # intentional. See docs/providers-grok.md.
+  # grok-subscription:
+  #   type: xai
+  #   auth_mode: oauth
+  #   reasoning_effort: high
+
 models:
   # REQUIRED: replace each context window and capability list with conservative
   # values for the selected model. The template stays text-only so copying it
@@ -42,6 +51,14 @@ models:
     model: provider/compact-model
     context_window: 100000
     capabilities: [text, tool_calling]
+
+  # Current native xAI OAuth example. Verify live model details and account
+  # entitlement against docs/providers-grok.md before enabling it.
+  # grok-chat:
+  #   provider: grok-subscription
+  #   model: grok-4.6
+  #   context_window: 500000
+  #   capabilities: [text, tool_calling, image_input]
 
 roles:
   chat: primary-chat

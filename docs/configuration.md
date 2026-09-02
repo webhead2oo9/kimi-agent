@@ -80,11 +80,11 @@ Environment variable names match the setting names in upper case (for example `r
 
 ### Operator overlay
 
-Once the core `Settings` object exists, `build_app` applies an overlay from `<CONFIG_DIR>/settings.md`. This file can modify any plain `bool`, `int`, `float`, or `str` field except those that define deployment boundaries:
+Once the core `Settings` object exists, `build_app` applies an overlay from `<CONFIG_DIR>/settings.md`. This file can modify only scalar fields explicitly listed in `OPERATOR_EDITABLE_FIELDS`. New settings are environment-only until they are reviewed and opted into that allowlist. Deployment-boundary fields remain environment-only, including:
 
 - No secrets.
-- No paths, binaries, or files (`*_dir`, `*_path`, `*_bin`, `*_file`).
-- No service URLs (`*_url`, `*_base`).
+- No paths, binaries, scripts, or files (`*_dir`, `*_directory`, `*_path`, `*_bin`, `*_script`, `*_file`).
+- No service URLs or endpoints (`*_uri`, `*_url`, `*_base`, `*_endpoint`, `*_host`, `*_port`, `*_ip`).
 - No `database_*` settings.
 - Neither `plugin_modules` nor `kimi_modules`.
 
@@ -131,10 +131,11 @@ A few fields validate eagerly so that a typo fails fast with a clear message rat
 4. If it's a list/set, add a parsing `@property` and document the derived accessor.
 5. If an env var is **not** a `Settings` field, document it under
    "External env keys outside `Settings`" and name the consumer.
-6. A plain scalar field joins `SETTINGS_SPEC` automatically. Add its validation
-   metadata beside it in `config/operator_settings.py`: an `int`/`float` **must**
-   declare a `_MINIMUMS` floor (a test enforces it). Add a `_CHOICES` entry only
-   if the application already enforces the vocabulary.
+6. Leave the field environment-only unless it is safe for the operator overlay.
+   To expose it there, add it to `OPERATOR_EDITABLE_FIELDS` in
+   `config/operator_settings.py`. An exposed `int`/`float` **must** declare a
+   `_MINIMUMS` floor (a test enforces it). Add a `_CHOICES` entry only if the
+   application already enforces the vocabulary.
 
 If the setting belongs to a plugin, do **not** add it to the core catalog. Keep
 it on the plugin's `BaseSettings` model, and add an explicit plugin-settings

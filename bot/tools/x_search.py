@@ -136,6 +136,8 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
         name=TOOL_NAME,
         description=(
             "Search current posts on X with optional date, account, image, and video filters. "
+            "Calls may take several minutes; wait for completion instead of retrying only "
+            "because the search is slow. "
             "Returns a synthesized answer plus citations and explicitly marks responses where "
             "there is no evidence the live X index was searched."
         ),

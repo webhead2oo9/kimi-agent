@@ -11,7 +11,10 @@ import pytest
 
 from app import runtime as app_runtime
 from app import lifecycle as app_lifecycle
+from app import tools as app_tools
+from app.coding_delivery import CodingTaskControllerState
 from app.response_delivery import DiscordResponseSender
+from config.model_config import parse_model_config_text
 from config.fragments.tool_policy import ToolPolicyLoadError
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
@@ -19,6 +22,7 @@ from storage.db import Database
 from storage.model_selection import ModelSelectionStore
 from tests.helpers import LifecycleProbe, StubProviderManager
 from tools.workspace.common import UserLocks
+from tools.coding_tasks import CODING_CONTROL_TOOLS
 from trust.tiers import TrustTier
 from workspace import WorkspaceKey
 
@@ -32,6 +36,32 @@ def _settings(**kwargs: object) -> Settings:
         **kwargs,
     }
     return Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
+
+
+_CODING_MODEL_CONFIG = """
+providers:
+  stub:
+    type: openai_compat
+    base_url: https://stub.invalid/v1
+    api_key_env: MODEL_API_KEY
+models:
+  stub-model:
+    provider: stub
+    model: stub-model
+    context_window: 200000
+    capabilities: [text, tool_calling]
+roles:
+  chat: stub-model
+  compaction: stub-model
+  coding: stub-model
+selectable_chat_models: [stub-model]
+"""
+
+
+class _CodingProviderManager(StubProviderManager):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.model_config = parse_model_config_text(_CODING_MODEL_CONFIG)
 
 
 @pytest.mark.asyncio
@@ -109,6 +139,104 @@ def test_build_app_wires_shared_registry(monkeypatch) -> None:
     assert app.registry is app.tools.registry
     assert app.memory_manager.registry is app.registry
     assert app.moderation_service is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_build_app_gates_coding_task_surface_at_first_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enabled: bool,
+) -> None:
+    monkeypatch.setattr(app_runtime, "build_provider_manager", _CodingProviderManager)
+    monkeypatch.setattr(app_tools, "sandbox_available", lambda config: True)
+    instance = tmp_path / ("enabled" if enabled else "disabled")
+    app = app_runtime.build_app(
+        _settings(
+            config_dir=str(instance / "config"),
+            database_path=str(instance / "bot.db"),
+            workspace_dir=str(instance / "workspaces"),
+            attachment_store_dir=str(instance / "attachments"),
+            skills_dir=str(instance / "skills"),
+            personal_skills_dir=str(instance / "personal-skills"),
+            code_exec_enabled=True,
+            coding_tasks_enabled=enabled,
+        )
+    )
+
+    await LifecycleProbe(app).first_init_core()
+    controller = app.lifecycle.resources.coding_tasks
+
+    assert controller.state is (
+        CodingTaskControllerState.RUNNING if enabled else CodingTaskControllerState.DISABLED
+    )
+    for name in CODING_CONTROL_TOOLS:
+        assert app.registry.is_registered(name) is enabled
+
+    await app.lifecycle.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_build_app_gates_tool_event_writer_at_ready_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enabled: bool,
+) -> None:
+    monkeypatch.setattr(
+        app_runtime,
+        "build_provider_manager",
+        lambda settings: StubProviderManager(settings),
+    )
+    starts: list[dict[str, object]] = []
+
+    def start_event_writer(
+        path: str,
+        max_field_bytes: int,
+        *,
+        content_mode: str,
+        secret_values: tuple[str, ...],
+    ) -> None:
+        starts.append(
+            {
+                "path": path,
+                "max_field_bytes": max_field_bytes,
+                "content_mode": content_mode,
+                "secret_values": secret_values,
+            }
+        )
+
+    monkeypatch.setattr(app_lifecycle, "start_event_writer", start_event_writer)
+    instance = tmp_path / ("enabled" if enabled else "disabled")
+    event_path = instance / "tool-events.jsonl"
+    app = app_runtime.build_app(
+        _settings(
+            config_dir=str(instance / "config"),
+            database_path=str(instance / "bot.db"),
+            tool_event_log_enabled=enabled,
+            tool_event_log_path=str(event_path),
+            tool_event_log_max_field_bytes=4321,
+            tool_event_log_content_mode="metadata",
+        )
+    )
+
+    async def skip_first_initialization() -> None:
+        return None
+
+    monkeypatch.setattr(app.lifecycle, "initialize", skip_first_initialization)
+
+    assert await app.lifecycle.initialize_ready() is True
+    if enabled:
+        assert starts == [
+            {
+                "path": str(event_path),
+                "max_field_bytes": 4321,
+                "content_mode": "metadata",
+                "secret_values": ("discord-token", "main-key"),
+            }
+        ]
+    else:
+        assert starts == []
 
 
 def test_members_intent_is_off_unless_requested(monkeypatch) -> None:

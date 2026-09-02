@@ -5,11 +5,11 @@ from typing import Any
 
 from branding import DEFAULT_BOT_NAME
 from providers.base import LLMProvider
-from providers.errors import ProviderBackendAccessError
+from providers.errors import ProviderAvailabilityError, ProviderBackendAccessError
 from providers.failure_policy import provider_error_body, provider_status_code
 from providers.openai_responses import OpenAIResponsesProvider
 from providers.types import ProviderCapability, ProviderRequest, ProviderResponse
-from xai.auth import XAI_API_BASE_URL, XaiAuthError
+from xai.auth import XAI_API_BASE_URL, XaiAuthError, XaiAuthRevokedError
 from xai.credentials import AUTH_MODE_API_KEY, AUTH_MODE_OAUTH, XaiCredentialResolver
 
 log = logging.getLogger(__name__)
@@ -65,8 +65,14 @@ class XaiProvider(LLMProvider):
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
         try:
             credential = await self._credentials.primary()
-        except XaiAuthError as exc:
+        except XaiAuthRevokedError as exc:
             raise ProviderBackendAccessError(str(exc)) from exc
+        except XaiAuthError as exc:
+            # Only a revoked credential is a real access rejection. A transient
+            # token-endpoint outage must stay retryable: the backend-access class
+            # fails the turn over to the next model, which is a different billing
+            # source, and opens a persisted circuit for the whole cooldown.
+            raise ProviderAvailabilityError(str(exc)) from exc
 
         refreshed = False
         api_fallback_used = credential.source == AUTH_MODE_API_KEY
@@ -89,8 +95,10 @@ class XaiProvider(LLMProvider):
                         refreshed = True
                         try:
                             replacement = await self._credentials.after_unauthorized(credential)
-                        except XaiAuthError as auth_exc:
+                        except XaiAuthRevokedError as auth_exc:
                             raise ProviderBackendAccessError(str(auth_exc)) from auth_exc
+                        except XaiAuthError as auth_exc:
+                            raise ProviderAvailabilityError(str(auth_exc)) from auth_exc
                     elif not api_fallback_used:
                         replacement = self._credentials.api_key_fallback()
                 elif (

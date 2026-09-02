@@ -12,7 +12,7 @@ from tools.registry import MessageContext, ToolRegistry
 from tools.x_search import TOOL_NAME, XSearchConfig, init_x_search_tool
 from trust.tiers import TrustTier
 from xai.credentials import XaiCredential, XaiCredentialResolver
-from xai.responses import XaiResponsesResult
+from xai.responses import XaiResponsesError, XaiResponsesResult
 
 
 class FakeManager:
@@ -27,7 +27,7 @@ class FakeManager:
 
 
 class FakeClient:
-    def __init__(self, results: list[XaiResponsesResult]) -> None:
+    def __init__(self, results: list[XaiResponsesResult | BaseException]) -> None:
         self.results = results
         self.calls: list[dict[str, Any]] = []
 
@@ -48,7 +48,10 @@ class FakeClient:
                 "allow_auth_fallback": allow_auth_fallback,
             }
         )
-        return self.results.pop(0)
+        outcome = self.results.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _resolver(mode: str = "auto") -> XaiCredentialResolver:
@@ -73,7 +76,7 @@ def _context() -> MessageContext:
 
 
 def _registry(
-    results: list[XaiResponsesResult],
+    results: list[XaiResponsesResult | BaseException],
     *,
     mode: str = "auto",
     max_calls: int = 10,
@@ -187,6 +190,28 @@ async def test_auto_uses_api_key_after_degraded_oauth_and_records_both_calls() -
     assert ctx.x_search_calls_this_turn == 2
     assert ctx.usage_sink is not None and len(ctx.usage_sink) == 2
     assert all(call.role == "x_search" for call in ctx.usage_sink)
+
+
+@pytest.mark.asyncio
+async def test_degraded_oauth_answer_survives_a_failed_api_key_fallback() -> None:
+    """The OAuth call already produced a usable answer. A failed attempt to
+    upgrade it must not turn a served result into a generic tool error."""
+    registry, client = _registry(
+        [
+            _result(source="oauth", calls=0, citations=[], answer="degraded answer"),
+            XaiResponsesError("upstream exploded", status=500),
+        ]
+    )
+    ctx = _context()
+
+    raw = await registry.dispatch(TOOL_NAME, {"query": "latest update"}, ctx)
+    parsed = json.loads(raw)
+
+    assert parsed["degraded"] is True
+    assert "degraded answer" in json.dumps(parsed)
+    assert len(client.calls) == 2
+    # Only the successful call is billed; the failed upgrade records no usage.
+    assert ctx.usage_sink is not None and len(ctx.usage_sink) == 1
 
 
 @pytest.mark.asyncio

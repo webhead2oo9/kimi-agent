@@ -4,9 +4,10 @@ from typing import Any
 
 import pytest
 
-from providers.errors import ProviderBackendAccessError
+from providers.errors import ProviderAvailabilityError, ProviderBackendAccessError
 from providers.types import ContentPart, ProviderRequest, ProviderResponse
 from providers.xai import XaiProvider
+from xai.auth import XaiAuthError, XaiAuthRevokedError
 from xai.credentials import XaiCredentialResolver
 
 
@@ -135,3 +136,39 @@ async def test_auto_does_not_switch_credentials_for_transient_failure(
 
     assert caught.value is failure
     assert keys == ["oauth-token"]
+
+
+class FailingManager(FakeManager):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    async def get_access_token(self) -> str:
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_transient_auth_outage_stays_retryable_and_keeps_the_billing_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend-access error fails the turn over to the next model, a different
+    billing source, and opens a persisted circuit. A token endpoint that is
+    briefly unreachable must not do that."""
+    _install_delegate(monkeypatch, [])
+    manager = FailingManager(XaiAuthError("xAI OAuth refresh failed temporarily (server_error)"))
+
+    with pytest.raises(ProviderAvailabilityError) as caught:
+        await _provider("oauth", manager).run_turn(_request())
+
+    assert not isinstance(caught.value, ProviderBackendAccessError)
+
+
+@pytest.mark.asyncio
+async def test_revoked_credential_is_still_a_backend_access_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_delegate(monkeypatch, [])
+    manager = FailingManager(XaiAuthRevokedError("xAI OAuth refresh was rejected"))
+
+    with pytest.raises(ProviderBackendAccessError):
+        await _provider("oauth", manager).run_turn(_request())

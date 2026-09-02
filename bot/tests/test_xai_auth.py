@@ -38,8 +38,8 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, refresh_payload: dict[str, Any] | None = None) -> None:
-        self.refresh_payload = refresh_payload or {
+    def __init__(self, refresh_payload: dict[str, Any] | str | None = None) -> None:
+        self.refresh_payload: dict[str, Any] | str = refresh_payload or {
             "access_token": "new-access",
             "refresh_token": "new-refresh",
             "expires_in": 3600,
@@ -179,3 +179,32 @@ def test_token_write_does_not_change_existing_parent_permissions(tmp_path: Path)
 
     assert stat.S_IMODE(parent.stat().st_mode) == 0o750
     assert stat.S_IMODE((parent / "xai.json").stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_edge_proxy_block_is_not_classified_as_revoked(tmp_path: Path) -> None:
+    """An HTML 403 from a WAF or edge proxy is infrastructure, not a revoked
+    grant. Treating it as revocation silently burns the OAuth credential in auto
+    mode and refuses a valid token at startup in strict mode."""
+    token_file = tmp_path / "xai.json"
+    write_xai_tokens(token_file, _expired_tokens())
+    session = FakeSession("<html><body>Access denied</body></html>")
+    session.refresh_status = 403
+    manager = XaiOAuthManager(token_file, http_session=session)
+
+    with pytest.raises(XaiAuthError) as caught:
+        await manager.get_access_token()
+
+    assert not isinstance(caught.value, XaiAuthRevokedError)
+
+
+@pytest.mark.asyncio
+async def test_structured_403_from_the_oauth_server_is_still_revocation(tmp_path: Path) -> None:
+    token_file = tmp_path / "xai.json"
+    write_xai_tokens(token_file, _expired_tokens())
+    session = FakeSession({"error": "unrecognized_code"})
+    session.refresh_status = 403
+    manager = XaiOAuthManager(token_file, http_session=session)
+
+    with pytest.raises(XaiAuthRevokedError):
+        await manager.get_access_token()

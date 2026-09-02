@@ -340,7 +340,13 @@ class XaiOAuthManager:
                     error_code = _oauth_error_code(text)
                     if error_code in _TRANSIENT_OAUTH_ERRORS:
                         raise XaiAuthError(f"xAI OAuth refresh failed temporarily ({error_code})")
-                    if error_code in _TERMINAL_REFRESH_ERRORS or response.status in {401, 403}:
+                    # RFC 6749 token errors are a JSON object. An HTML 401/403 from
+                    # an edge proxy or WAF is infrastructure, not a revoked grant, so
+                    # it must stay transient rather than burn the OAuth credential.
+                    structured = _is_oauth_error_payload(text)
+                    if error_code in _TERMINAL_REFRESH_ERRORS or (
+                        structured and response.status in {401, 403}
+                    ):
                         raise XaiAuthRevokedError(
                             f"xAI OAuth refresh was rejected ({error_code or response.status}); "
                             "run scripts/xai_auth.py again"
@@ -359,6 +365,16 @@ class XaiOAuthManager:
         timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             return await post(session)
+
+
+def _is_oauth_error_payload(text: str) -> bool:
+    """Whether the body is a JSON object, i.e. it came from the OAuth server."""
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict)
 
 
 def _oauth_error_code(text: str) -> str:

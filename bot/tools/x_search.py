@@ -98,14 +98,20 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
                 and (fallback := config.credential_resolver.api_key_fallback()) is not None
             ):
                 log.info("x_search falling back to GROK_API_KEY after degraded OAuth response")
-                result = await config.client.create(
-                    payload,
-                    credential=fallback,
-                    allow_auth_fallback=False,
-                    consume_call=consume_call,
-                )
-                await _record_usage(ctx, result.payload, model=config.model)
-                parsed = _parse_search(result.payload)
+                try:
+                    result = await config.client.create(
+                        payload,
+                        credential=fallback,
+                        allow_auth_fallback=False,
+                        consume_call=consume_call,
+                    )
+                except (XaiResponsesError, XaiSearchBudgetExceeded) as exc:
+                    # The OAuth answer is already usable. A failed attempt to upgrade
+                    # it must not turn a served result into a generic tool error.
+                    log.warning("x_search fallback after a degraded response failed: %s", exc)
+                else:
+                    await _record_usage(ctx, result.payload, model=config.model)
+                    parsed = _parse_search(result.payload)
 
             return _render_result(parsed, config.max_output_chars)
         except XaiSearchBudgetExceeded:

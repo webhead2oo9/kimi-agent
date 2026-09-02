@@ -34,7 +34,8 @@ Authentication modes have exact boundaries:
 - `auto`: OAuth first. `GROK_API_KEY` may be used after missing/revoked OAuth,
   a recognized auth or entitlement rejection, or an OAuth response with no
   evidence that live X search ran. Transient network/server failures are
-  retried without switching credentials.
+  retried without switching credentials. If that fallback call itself fails,
+  the degraded OAuth answer is still returned rather than discarded.
 
 If the flag is true but the selected mode has no usable credential, startup
 continues with the tool unregistered. Because the tool is searchable, a model

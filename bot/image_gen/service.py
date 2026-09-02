@@ -15,10 +15,10 @@ from image_gen.types import (
     ImageGenRequest,
     ImageResult,
 )
+from utils.image_types import decoded_image_media_type
 
 log = logging.getLogger(__name__)
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # Mirrors discord_adapter.io.DISCORD_DEFAULT_FILE_SIZE_LIMIT_BYTES without an
 # image_gen -> discord_adapter import (forbidden by the package graph).
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -47,12 +47,16 @@ class ImageGenService:
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.generate(request)
-        return replace(result, image_bytes=self._verify(result))
+            # Verify inside the permit, off the event loop: max_concurrency
+            # bounds decoded images in flight, not just backend calls.
+            verified = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified)
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.edit(request)
-        return replace(result, image_bytes=self._verify(result))
+            verified = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified)
 
     def _verify(self, result: ImageResult) -> bytes:
         """Rejects bodies that are not decodable PNG data within the size cap.
@@ -61,12 +65,18 @@ class ImageGenService:
         otherwise be written into the workspace and queued as a Discord
         attachment verbatim.
         """
+        # Reject before allocating the decoded body: a backend contract is not
+        # a size cap, and the string length already bounds the decoded size.
+        if len(result.image_base64) > ((self._max_image_bytes + 2) // 3) * 4 + 4:
+            raise ImageGenError(f"generated image exceeds the {self._max_image_bytes} byte cap")
         try:
             raw = base64.b64decode(result.image_base64, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ImageGenError("image API returned data that is not valid base64") from exc
         if len(raw) > self._max_image_bytes:
             raise ImageGenError(f"generated image exceeds the {self._max_image_bytes} byte cap")
-        if not raw.startswith(PNG_SIGNATURE):
-            raise ImageGenError("image API returned data that is not a PNG image")
+        # Same validator as provider-native assets: a signature is not an image,
+        # and the size cap above bounds what the decoder is asked to touch.
+        if decoded_image_media_type(raw) != "image/png":
+            raise ImageGenError("image API returned data that is not a decodable PNG image")
         return raw

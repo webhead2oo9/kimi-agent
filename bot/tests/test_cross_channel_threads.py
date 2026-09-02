@@ -25,7 +25,7 @@ import pytest
 import app.runtime as app_runtime
 import app.thread_handoff_boundary as thread_boundary
 from config.settings import Settings
-from tests.helpers import StubProviderManager
+from tests.helpers import LifecycleProbe, StubProviderManager
 from tools.registry import MessageContext
 from tools.threads import ThreadRequest
 from trust.tiers import TrustTier
@@ -406,15 +406,15 @@ def test_manage_thread_permission_fails_closed_without_effective_permission(monk
 
 
 def _create(app, message, request) -> Any:
-    return asyncio.run(app.threads._create_handoff_thread(message, request, 7))
+    return asyncio.run(app.threads.create_handoff_thread(message, request, 7))
 
 
 def _enable(app, monkeypatch) -> Any:
     handoff = MagicMock()
     handoff.enroll = AsyncMock()
     handoff.is_managed.return_value = False
-    app.thread_handoff = handoff
-    monkeypatch.setattr(app.threads, "_thread_handoff_creation_allowed", lambda message: True)
+    LifecycleProbe(app).set_thread_handoff(handoff)
+    monkeypatch.setattr(app.threads, "thread_handoff_creation_allowed", lambda message: True)
     monkeypatch.setattr(app.threads, "_thread_auto_respond_default", lambda message: True)
     return handoff
 
@@ -614,7 +614,7 @@ async def test_cancellation_during_enrollment_rolls_back_owned_state(
     handoff.leave = AsyncMock()
 
     creating = asyncio.create_task(
-        app.threads._create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
+        app.threads.create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
     )
     await enrollment_started.wait()
     creating.cancel()
@@ -687,7 +687,7 @@ async def test_cancellation_during_rollback_is_propagated_after_cleanup(
 
     handoff.leave = AsyncMock(side_effect=slow_leave)
     creating = asyncio.create_task(
-        app.threads._create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
+        app.threads.create_handoff_thread(message, ThreadRequest(name="Quest help"), 7)
     )
     await cleanup_started.wait()
 
@@ -721,8 +721,8 @@ async def test_same_channel_concurrent_creation_is_idempotent(monkeypatch):
     request = ThreadRequest(name="Quest help")
 
     first, second = await asyncio.gather(
-        app.threads._create_handoff_thread(message, request, 7),
-        app.threads._create_handoff_thread(message, request, 7),
+        app.threads.create_handoff_thread(message, request, 7),
+        app.threads.create_handoff_thread(message, request, 7),
     )
 
     assert first is thread
@@ -738,7 +738,7 @@ def test_pointer_replies_to_the_asker_with_the_ping_on(monkeypatch):
     message = _message(guild, asker)
     thread = _Thread(5555)
 
-    asyncio.run(app.threads._send_cross_channel_pointer(message, cast(Any, thread)))
+    asyncio.run(app.threads.send_cross_channel_pointer(message, cast(Any, thread)))
 
     _args, kwargs = message.reply.await_args
     assert "<#5555>" in message.reply.await_args.args[0]
@@ -753,14 +753,14 @@ def test_pointer_failure_is_logged_not_raised(monkeypatch):
     message = _message(guild, asker)
     message.reply = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "nope"))
 
-    asyncio.run(app.threads._send_cross_channel_pointer(message, cast(Any, _Thread(5555))))
+    asyncio.run(app.threads.send_cross_channel_pointer(message, cast(Any, _Thread(5555))))
 
 
 def test_discarding_a_thread_deletes_its_anchor(monkeypatch):
     target = _TextChannel(200, "bot-spam")
     app, _guild, _asker = _app(monkeypatch, targets={"200"}, channels=[target])
 
-    asyncio.run(app.threads._discard_cross_channel_thread(cast(Any, _Thread(5555, parent=target))))
+    asyncio.run(app.threads.discard_cross_channel_thread(cast(Any, _Thread(5555, parent=target))))
 
     # A thread shares the id of the message it was created from, and deleting
     # that message takes the empty thread with it.

@@ -13,7 +13,7 @@ from commands.models_cmd import ModelSelect, ModelsView, _status_text, register_
 from providers.circuit_breaker import CircuitTarget
 from providers.failure_policy import CircuitScopeKind, FailureCategory, ProviderFailure
 from config.model_config import parse_model_config_text
-from config.settings import Settings
+from tests.helpers import make_settings
 
 
 def _manager() -> ProviderManager:
@@ -28,7 +28,7 @@ roles: { chat: default, compaction: default }
 selectable_chat_models: [default, alternate]
 """
     )
-    return ProviderManager(settings=Settings(), model_config=config)
+    return ProviderManager(settings=make_settings(), model_config=config)
 
 
 def _interaction(user_id: str) -> SimpleNamespace:

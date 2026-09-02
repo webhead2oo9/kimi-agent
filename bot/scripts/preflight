@@ -56,7 +56,16 @@ if runtime_env.is_file():
 
 from app.providers import ProviderManager, codex_startup_check
 from config.model_config import load_model_config
-from config.settings import settings
+from config.operator_settings import apply_operator_settings
+from config.settings import Settings
+
+settings = Settings()
+
+# Startup layers the operator settings.md over the environment; preflight must
+# vet the same profile or it smoke-tests features the service will not run.
+overlaid = apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
+if overlaid:
+    print("settings.md overlay applied: " + ", ".join(sorted(overlaid)))
 
 models = load_model_config(Path(settings.config_dir) / "models.yaml")
 providers = ProviderManager(settings, model_config=models)
@@ -69,7 +78,7 @@ if settings.browser_enabled:
     print("\nRunning browser runtime smoke test...")
     from deploy.betterwright.smoke_test import main as browser_smoke
 
-    asyncio.run(browser_smoke())
+    asyncio.run(browser_smoke(settings))
 else:
     print("\nSkipping browser runtime smoke test (BROWSER_ENABLED=false).")
 PY

@@ -6,6 +6,8 @@ lifecycle backed by storage/coding_tasks.py.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import contextlib
 import json
 import os
@@ -104,15 +106,34 @@ def _steering_service(
     return service
 
 
+async def _nobody_blocked(_user_id: str) -> bool:
+    return False
+
+
+@asynccontextmanager
+async def _no_user_activity(_user_id: str) -> AsyncIterator[None]:
+    yield
+
+
+async def _no_notifier(_task: object, _context: object = None) -> None:
+    return None
+
+
 def _start_service(
     store: CodingTaskStore,
     tmp_path: Path,
     *,
     max_queued_per_user: int = 10,
     max_queued_per_workspace: int = 10,
+    user_blocked: Any = _nobody_blocked,
+    notifier: Any = _no_notifier,
 ) -> CodingTaskService:
     service = object.__new__(CodingTaskService)
     service._store = store
+    service._wake = asyncio.Event()
+    service._publishers = {}
+    service._workers = {}
+    service._last_published = {}
     service._runtime = cast(
         Any,
         SimpleNamespace(
@@ -120,13 +141,208 @@ def _start_service(
                 coding_task_max_seconds=60,
                 coding_task_max_queued_per_user=max_queued_per_user,
                 coding_task_max_queued_per_workspace=max_queued_per_workspace,
+                coding_status_min_interval_seconds=0.0,
             ),
             workspace_manager=WorkspaceManager(tmp_path / "workspaces"),
             workspace_locks=UserLocks(),
             workspace_config=WorkspaceToolConfig(),
+            user_blocked=user_blocked,
+            notifier=notifier,
+            user_activity=_no_user_activity,
         ),
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_claim_cancels_a_queued_task_whose_user_is_now_blocked(tmp_path) -> None:
+    """A block that lands while a task waits must hold when it would start."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        blocked = await _create(store, root_key="root-blocked")
+        notified: list[str] = []
+
+        async def user_blocked(user_id: str) -> bool:
+            return user_id == blocked.user_id
+
+        async def notifier(task, context) -> None:
+            notified.append(task.status.value)
+
+        service = _start_service(store, tmp_path, user_blocked=user_blocked, notifier=notifier)
+
+        assert await service._claim_next_runnable() is None
+
+        refreshed = await store.get_task(blocked.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        # Neutral text: it is published into the channel the task was started
+        # in, so the block itself stays in the logs.
+        assert refreshed.error_text == "This task was cancelled before it started."
+        assert "blocked" not in refreshed.error_text.lower()
+        # The scheduler loop never awaits Discord; the pending-delivery sweeper
+        # owns the announcement.
+        assert notified == []
+        assert blocked.id in {task.id for task in await store.list_pending_delivery()}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_queue_cancel_arms_the_delivery_sweeper(tmp_path) -> None:
+    """A row cancelled straight from the queue reaches no worker; the durable
+    finished event and final_pending state are what let the sweeper announce
+    it when the immediate notify fails."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-queue-cancel")
+
+        assert await store.request_cancel(task.id, reason="stop") is True
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_cancel_arms_the_delivery_sweeper(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-recover-cancel")
+        claimed = await store.claim_next()
+        assert claimed is not None
+        await store.request_cancel(task.id, reason="stop")
+
+        await store.recover_interrupted()
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_a_hanging_block_check_settles_the_claim(tmp_path) -> None:
+    """The claim is running with no registered worker while the block check
+    awaits; /stop must terminalize it rather than leave a workerless
+    cancelling row until restart."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-hang")
+        gate = asyncio.Event()
+
+        async def hanging_user_blocked(_user_id: str) -> bool:
+            await gate.wait()
+            return False
+
+        service = _start_service(store, tmp_path, user_blocked=hanging_user_blocked)
+        service._runtime.settings.coding_stop_cleanup_wait_seconds = 1.0
+        claim = asyncio.create_task(service._claim_next_runnable())
+        await asyncio.sleep(0.05)
+
+        assert await service.cancel_task(task.id, reason="stop") is True
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+
+        gate.set()
+        assert await claim is None
+        finished = [event for event in await store.events(task.id) if event.kind == "finished"]
+        assert len(finished) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_settles_a_cancel_that_landed_during_the_block_check(tmp_path) -> None:
+    """A /stop between claim and block answer must not leave a workerless
+    cancelling row for restart recovery."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-midcancel")
+
+        async def cancel_mid_check(_user_id: str) -> bool:
+            await store.request_cancel(task.id, reason="stopped mid-check")
+            return False
+
+        service = _start_service(store, tmp_path, user_blocked=cancel_mid_check)
+
+        assert await service._claim_next_runnable() is None
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+        assert task.id in {pending.id for pending in await store.list_pending_delivery()}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_the_first_worker_step_settles_the_row(tmp_path) -> None:
+    """asyncio cancels a task that never started without running its body, so
+    nothing inside the worker can mark the row terminal."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-instant-cancel")
+        claimed = await store.claim_next()
+        assert claimed is not None and claimed.id == task.id
+
+        service = _start_service(store, tmp_path)
+        service._runtime.settings.coding_stop_cleanup_wait_seconds = 2.0
+        never_started = asyncio.create_task(asyncio.sleep(3600))
+        service._workers[task.id] = never_started
+
+        assert await service.cancel_task(task.id, reason="stop") is True
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.CANCELLED
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_releases_the_row_when_the_block_check_fails(tmp_path) -> None:
+    """An unanswered block question must not orphan a running row."""
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, root_key="root-error")
+
+        async def broken_user_blocked(_user_id: str) -> bool:
+            raise RuntimeError("blocked store unavailable")
+
+        service = _start_service(store, tmp_path, user_blocked=broken_user_blocked)
+
+        with pytest.raises(RuntimeError, match="blocked store unavailable"):
+            await service._claim_next_runnable()
+
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.QUEUED
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -240,7 +456,7 @@ async def test_coding_tables_use_current_schema(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
-        assert SCHEMA_VERSION == 4
+        assert SCHEMA_VERSION == 5
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'coding_%'"
         ) as cursor:

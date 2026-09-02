@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import itertools
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 import discord
 from discord import app_commands
@@ -29,12 +31,15 @@ from discord.ext import commands
 from kimi_agent_module_api.contracts import (
     MessageRef,
     CUSTOM_ID_PREFIX,
+    MODAL_CUSTOM_ID_MAX_LENGTH,
+    MODAL_NONCE_CHARS,
     AutocompleteHandler,
     ButtonSpec,
     CommandHandler,
     CommandSpec,
     CommandSyncError,
     GuildCommand,
+    HealthState,
     LayoutGallery,
     LayoutSection,
     LayoutSeparator,
@@ -49,6 +54,8 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     build_custom_id,
     parse_custom_id,
+    validate_command_spec,
+    validate_component_spec,
     validate_modal_spec,
     validate_layout_components,
     validate_outgoing_layout,
@@ -58,6 +65,9 @@ log = logging.getLogger(__name__)
 
 _TIER_ORDER: dict[TrustTierName, int] = {"member": 0, "regular": 1, "staff": 2}
 type InteractionAvailability = Callable[[], bool]
+type GuildCommandSyncHealth = Callable[[str, HealthState, str], None]
+type _GuildTopCommand = app_commands.Command[Any, ..., None] | app_commands.Group
+type _GuildSyncPhase = Literal["track", "publish", "forget"]
 
 
 class GuildCommandScopeStore(Protocol):
@@ -90,6 +100,45 @@ _COMPONENT_TEMPLATE = (
     rf"{CUSTOM_ID_PREFIX}:(?P<module>[a-z][a-z0-9_-]*):(?P<key>[a-z][a-z0-9_]*)(?::(?P<rest>.*))?"
 )
 _VIEW_CACHE_TIMEOUT_SECONDS = 180.0
+INTERACTION_DRAIN_SECONDS = 5.0
+INTERACTION_CANCEL_GRACE_SECONDS = 1.0
+COMMAND_SYNC_CANCEL_GRACE_SECONDS = 1.0
+GUILD_COMMAND_SYNC_RETRY_DELAYS = (1.0, 5.0, 30.0)
+
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    """Retrieve a detached task's outcome so it cannot warn at collection."""
+
+    with suppress(BaseException):
+        task.result()
+
+
+async def _cancel_tasks_bounded(
+    tasks: set[asyncio.Task[Any]],
+    *,
+    timeout: float,
+    what: str,
+) -> set[asyncio.Task[Any]]:
+    """Cancel tasks, but never let cancellation-resistant work block teardown."""
+
+    current = asyncio.current_task()
+    pending = {task for task in tasks if task is not current and not task.done()}
+    for task in pending:
+        task.cancel()
+    if not pending:
+        return set()
+    done, still_running = await asyncio.wait(pending, timeout=max(0.0, timeout))
+    for task in done:
+        _consume_task_result(task)
+    for task in still_running:
+        task.add_done_callback(_consume_task_result)
+    if still_running:
+        log.error(
+            "Timed out cancelling %d %s task(s); continuing bounded shutdown",
+            len(still_running),
+            what,
+        )
+    return still_running
 
 
 def build_embed(spec: OutgoingEmbed) -> discord.Embed:
@@ -104,6 +153,7 @@ def build_embed(spec: OutgoingEmbed) -> discord.Embed:
 
 
 def _build_control(component: Any, module_name: str) -> discord.ui.Item[Any]:
+    validate_component_spec(component)
     if isinstance(component, ButtonSpec):
         return discord.ui.Button(
             label=component.label,
@@ -172,7 +222,10 @@ def build_layout_view(
             raise ModuleContractError(f"unsupported layout item {item!r}")
 
     view = discord.ui.LayoutView(timeout=_VIEW_CACHE_TIMEOUT_SECONDS)
-    view.add_item(discord.ui.Container(*children, accent_color=layout.accent_color))
+    # Discord.py drops a falsy accent, so a raw 0 would silently lose a black
+    # accent the contract explicitly permits. A Color instance is always truthy.
+    accent = None if layout.accent_color is None else discord.Color(layout.accent_color)
+    view.add_item(discord.ui.Container(*children, accent_color=accent))
 
     row_items: list[discord.ui.Item[Any]] = []
     for component in components:
@@ -214,6 +267,46 @@ def _text_values(data: Any) -> dict[str, str]:
     return found
 
 
+# Discord.py keys open modals by custom_id alone, so two people opening the same
+# module action would share one entry: the second open evicts the first, and
+# whichever submits first removes the survivor. A per-open suffix keeps them
+# apart. A counter, not randomness: uniqueness within the process is exactly
+# what is needed, and the ID is not a secret. The table now holds one entry per
+# open until it is submitted or times out, rather than one per module action.
+_modal_opens = itertools.count()
+# Masked so the suffix is always MODAL_NONCE_CHARS wide. The budget a module gets
+# must not depend on how long the host has been running, and wrapping needs 2**32
+# opens inside one modal's 30-minute lifetime to collide.
+_MODAL_NONCE_MASK = (1 << (4 * MODAL_NONCE_CHARS)) - 1
+
+
+def _mint_modal_custom_id(module_name: str, spec: ModalSpec) -> str:
+    """Build a modal ID, reserving the fixed-width per-open suffix."""
+
+    declared = build_custom_id(module_name, spec.key, *spec.parts)
+    if len(declared) > MODAL_CUSTOM_ID_MAX_LENGTH:
+        raise ModuleContractError(
+            f"modal custom_id exceeds {MODAL_CUSTOM_ID_MAX_LENGTH} characters; "
+            f"a modal reserves {MODAL_NONCE_CHARS} more for its per-open suffix"
+        )
+    return f"{declared}:{format(next(_modal_opens) & _MODAL_NONCE_MASK, f'0{MODAL_NONCE_CHARS}x')}"
+
+
+def _strip_modal_nonce(custom_id: str) -> str:
+    """Return the ID the module described, without the per-open suffix.
+
+    An ID we did not mint has no suffix to remove and is passed through.
+    """
+
+    parsed = parse_custom_id(custom_id)
+    if parsed is None:
+        return custom_id
+    module_name, key, parts = parsed
+    if not parts:
+        return custom_id
+    return build_custom_id(module_name, key, *parts[:-1])
+
+
 class _ModuleModal(discord.ui.Modal):
     def __init__(
         self,
@@ -225,7 +318,7 @@ class _ModuleModal(discord.ui.Modal):
         super().__init__(
             title=spec.title,
             timeout=30 * 60,
-            custom_id=build_custom_id(module_name, spec.key, *spec.parts),
+            custom_id=_mint_modal_custom_id(module_name, spec),
         )
         self._dispatcher = dispatcher
         for input_spec in spec.inputs:
@@ -295,7 +388,12 @@ class ModuleInteractionAdapter:
     def custom_id(self) -> str | None:
         data = getattr(self._interaction, "data", None) or {}
         value = data.get("custom_id") if isinstance(data, dict) else None
-        return str(value) if value else None
+        if not value:
+            return None
+        if getattr(self._interaction, "type", None) is discord.InteractionType.modal_submit:
+            # The per-open suffix is ours; the module gets back the ID it described.
+            return _strip_modal_nonce(str(value))
+        return str(value)
 
     @property
     def values(self) -> tuple[str, ...]:
@@ -459,6 +557,19 @@ class _Registration:
                 self.router._forget_registration(self)
 
 
+@dataclass(frozen=True, slots=True)
+class _GuildCommandState:
+    top_names: frozenset[str]
+    commands: tuple[_GuildTopCommand, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GuildSyncOutcome:
+    error: Exception | None = None
+    published: bool = False
+    phase: _GuildSyncPhase = "publish"
+
+
 class ComponentDispatcher:
     """One process-wide table of (module, kind, key) -> handler."""
 
@@ -472,6 +583,80 @@ class ComponentDispatcher:
         self._is_available = is_available
         self._handlers: dict[tuple[str, str, str], _ComponentRegistration] = {}
         self._routers: dict[str, InteractionRouterImpl] = {}
+        self._in_flight: set[asyncio.Task[Any]] = set()
+        self._admitting = True
+
+    @property
+    def admitting(self) -> bool:
+        """Whether a new interaction may still enter a module handler."""
+
+        return self._admitting
+
+    def stop_admitting(self) -> None:
+        self._admitting = False
+
+    @contextmanager
+    def track_in_flight(self) -> Iterator[None]:
+        """Register the running handler so shutdown can wait for it.
+
+        Discord.py dispatches interactions in tasks it owns and never cancels,
+        so without this the application would close its modules and database
+        underneath a handler that is still running.
+        """
+
+        task = asyncio.current_task()
+        if task is None:
+            yield
+            return
+        self._in_flight.add(task)
+        try:
+            yield
+        finally:
+            self._in_flight.discard(task)
+
+    @contextmanager
+    def admit_in_flight(self) -> Iterator[bool]:
+        """Atomically admit and track one interaction task.
+
+        There is deliberately no await between checking ``_admitting`` and
+        adding the current task to ``_in_flight``. Once shutdown closes the
+        admission gate, it can therefore account for every task that may still
+        await a trust lookup or enter module code.
+        """
+
+        if not self._admitting:
+            yield False
+            return
+        with self.track_in_flight():
+            yield True
+
+    async def drain(
+        self,
+        timeout: float = INTERACTION_DRAIN_SECONDS,
+        *,
+        cancel_timeout: float = INTERACTION_CANCEL_GRACE_SECONDS,
+    ) -> None:
+        """Let admitted handlers finish, then cancel whatever outlasts the bound."""
+
+        pending = {task for task in self._in_flight if task is not asyncio.current_task()}
+        if not pending:
+            return
+        done, running = await asyncio.wait(pending, timeout=timeout)
+        for task in done:
+            with suppress(BaseException):
+                task.result()
+        for task in running:
+            task.cancel()
+        if running:
+            log.warning("Timed out draining %d module interaction handler(s)", len(running))
+            # Cancellation is cooperative. Give finally blocks a second bounded
+            # window, then detach a task that refuses cancellation rather than
+            # holding module/database teardown forever.
+            await _cancel_tasks_bounded(
+                set(running),
+                timeout=cancel_timeout,
+                what="module interaction handler",
+            )
 
     def register(
         self,
@@ -531,20 +716,27 @@ class ComponentDispatcher:
         if not available:
             await _quiet_reply(interaction, "This control is temporarily unavailable.")
             return True
-        if registration.expires_at is not None and self._clock() > registration.expires_at:
-            self._handlers.pop((module_name, kind, key), None)
-            await _quiet_reply(interaction, "This control has expired.")
-            return True
-        if not await registration.router._allowed(interaction, registration.min_tier):
-            await _quiet_reply(
-                interaction,
-                "Staff only." if registration.min_tier == "staff" else "Not allowed.",
-            )
-            return True
         try:
-            await registration.handler(
-                ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
-            )
+            with self.admit_in_flight() as admitted:
+                if not admitted:
+                    await _quiet_reply(interaction, "This control is temporarily unavailable.")
+                    return True
+                if registration.expires_at is not None and self._clock() > registration.expires_at:
+                    self._handlers.pop((module_name, kind, key), None)
+                    await _quiet_reply(interaction, "This control has expired.")
+                    return True
+                if not await registration.router._allowed(interaction, registration.min_tier):
+                    await _quiet_reply(
+                        interaction,
+                        "Staff only." if registration.min_tier == "staff" else "Not allowed.",
+                    )
+                    return True
+                if not self._admitting:
+                    await _quiet_reply(interaction, "This control is temporarily unavailable.")
+                    return True
+                await registration.handler(
+                    ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
+                )
         except Exception:
             log.exception("Module %s component %s/%s failed", module_name, kind, key)
             await _quiet_reply(interaction, "Something went wrong handling that control.")
@@ -639,6 +831,7 @@ class InteractionRouterImpl:
     ) -> _Registration:
         if self._closed:
             raise RuntimeError(f"module {self._module_name!r} interactions are closed")
+        validate_command_spec(spec)
         qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
         if (spec.group, spec.name) in self._commands:
             raise ModuleContractError(
@@ -693,7 +886,7 @@ class InteractionRouterImpl:
         self,
         guild_id: int,
         commands: Sequence[GuildCommand],
-    ) -> None:
+    ) -> _GuildCommandState:
         if self._closed:
             raise RuntimeError(f"module {self._module_name!r} interactions are closed")
         if guild_id <= 0:
@@ -704,9 +897,13 @@ class InteractionRouterImpl:
             )
 
         guild = discord.Object(id=guild_id)
-        old_top_names = self._guild_top_names.get(guild_id, set())
-        prepared: dict[str, app_commands.Command[Any, ..., None] | app_commands.Group] = {}
+        old_top_names = set(self._guild_top_names.get(guild_id, set()))
+        prepared: dict[str, _GuildTopCommand] = {}
         qualified_names: set[str] = set()
+        # Validate the whole desired set before touching the tree: one malformed
+        # command would otherwise reject this guild's entire bulk sync.
+        for binding in commands:
+            validate_command_spec(binding.spec)
         for binding in commands:
             spec = binding.spec
             qualified = f"{spec.group}.{spec.name}" if spec.group else spec.name
@@ -765,25 +962,64 @@ class InteractionRouterImpl:
             )
 
         old_commands = {
-            name: existing_command
-            for name in old_top_names
-            if (existing_command := self._bot.tree.get_command(name, guild=guild)) is not None
+            command.name: command
+            for command in existing_chat_commands
+            if command.name in old_top_names
         }
+        previous = _GuildCommandState(
+            top_names=frozenset(old_top_names),
+            commands=tuple(old_commands.values()),
+        )
         for name in old_top_names:
             self._bot.tree.remove_command(name, guild=guild)
         try:
             for top_command in prepared.values():
                 self._bot.tree.add_command(top_command, guild=guild)
-        except app_commands.CommandLimitReached as exc:
-            for name in prepared:
-                self._bot.tree.remove_command(name, guild=guild)
-            for old_command in old_commands.values():
-                self._bot.tree.add_command(old_command, guild=guild)
-            raise ModuleContractError(
-                f"guild {guild_id} slash commands exceed Discord's limit of 100"
-            ) from exc
+        except Exception as exc:
+            try:
+                self._restore_guild_commands_local(guild_id, previous, set(prepared))
+            except Exception as rollback_error:
+                raise ExceptionGroup(
+                    f"failed to stage and restore guild {guild_id} commands",
+                    [exc, rollback_error],
+                ) from None
+            if isinstance(exc, app_commands.CommandLimitReached):
+                raise ModuleContractError(
+                    f"guild {guild_id} slash commands exceed Discord's limit of 100"
+                ) from exc
+            raise
         if prepared:
             self._guild_top_names[guild_id] = set(prepared)
+        else:
+            self._guild_top_names.pop(guild_id, None)
+        return previous
+
+    def _restore_guild_commands_local(
+        self,
+        guild_id: int,
+        state: _GuildCommandState,
+        remove_names: set[str] | frozenset[str],
+    ) -> None:
+        """Restore an opaque local command snapshot after staging/publication fails."""
+
+        guild = discord.Object(id=guild_id)
+        for name in set(remove_names) | set(self._guild_top_names.get(guild_id, set())):
+            self._bot.tree.remove_command(name, guild=guild)
+
+        restored_names: set[str] = set()
+        try:
+            for command in state.commands:
+                self._bot.tree.add_command(command, guild=guild)
+                restored_names.add(command.name)
+        except Exception:
+            if restored_names:
+                self._guild_top_names[guild_id] = restored_names
+            else:
+                self._guild_top_names.pop(guild_id, None)
+            raise
+
+        if state.top_names:
+            self._guild_top_names[guild_id] = set(state.top_names)
         else:
             self._guild_top_names.pop(guild_id, None)
 
@@ -812,19 +1048,33 @@ class InteractionRouterImpl:
     ) -> app_commands.Command[Any, ..., None]:
         module_name = self._module_name
         option_names = [option.name for option in spec.options]
+        if autocomplete is None and any(option.autocomplete for option in spec.options):
+            # Otherwise Discord would offer a suggestion box nothing answers.
+            raise ModuleContractError(
+                f"module {module_name!r} command {spec.name!r} declares an autocomplete "
+                "option but supplied no autocomplete handler"
+            )
 
         async def callback(interaction: discord.Interaction, **kwargs: Any) -> None:
             options = {name: _option_value(kwargs.get(name)) for name in option_names}
             adapter = ModuleInteractionAdapter(
                 interaction, module_name, options=options, dispatcher=self._dispatcher
             )
-            if not await self._allowed(interaction, spec.min_tier):
-                await adapter.respond(
-                    "Staff only." if spec.min_tier == "staff" else "Not allowed.", ephemeral=True
-                )
-                return
             try:
-                await handler(adapter)
+                with self._dispatcher.admit_in_flight() as admitted:
+                    if not admitted:
+                        await _quiet_reply(interaction, "This command is temporarily unavailable.")
+                        return
+                    if not await self._allowed(interaction, spec.min_tier):
+                        await adapter.respond(
+                            "Staff only." if spec.min_tier == "staff" else "Not allowed.",
+                            ephemeral=True,
+                        )
+                        return
+                    if not self._dispatcher.admitting:
+                        await _quiet_reply(interaction, "This command is temporarily unavailable.")
+                        return
+                    await handler(adapter)
             except Exception:
                 log.exception("Module %s command %s failed", module_name, spec.name)
                 await _quiet_reply(interaction, "Something went wrong running that command.")
@@ -886,14 +1136,21 @@ class InteractionRouterImpl:
         async def run(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[Any]]:
-            if not await self._allowed(interaction, min_tier):
-                return []
             try:
-                results = await handler(
-                    ModuleInteractionAdapter(interaction, module_name, dispatcher=self._dispatcher),
-                    option_name,
-                    current,
-                )
+                with self._dispatcher.admit_in_flight() as admitted:
+                    if not admitted:
+                        return []
+                    if not await self._allowed(interaction, min_tier):
+                        return []
+                    if not self._dispatcher.admitting:
+                        return []
+                    results = await handler(
+                        ModuleInteractionAdapter(
+                            interaction, module_name, dispatcher=self._dispatcher
+                        ),
+                        option_name,
+                        current,
+                    )
             except Exception:
                 log.exception("Module %s autocomplete for %s failed", module_name, option_name)
                 return []
@@ -974,11 +1231,30 @@ class InteractionRuntime:
     bot: commands.Bot
     is_available: InteractionAvailability = _always_available
     scope_store: GuildCommandScopeStore | None = None
+    on_sync_health: GuildCommandSyncHealth | None = None
+    sync_retry_delays: tuple[float, ...] = GUILD_COMMAND_SYNC_RETRY_DELAYS
     dispatcher: ComponentDispatcher = field(init=False)
     installed: bool = False
     _live: bool = False
+    _closed: bool = False
     _sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _routers: list[InteractionRouterImpl] = field(default_factory=list, init=False)
+    _sync_failures: dict[int, str] = field(default_factory=dict, init=False)
+    _sync_failure_phases: dict[int, _GuildSyncPhase] = field(default_factory=dict, init=False)
+    _sync_failure_modules: dict[int, frozenset[str]] = field(default_factory=dict, init=False)
+    _sync_retry_attempts: dict[int, int] = field(default_factory=dict, init=False)
+    _sync_exhausted: set[int] = field(default_factory=set, init=False)
+    _sync_retry_tasks: dict[int, asyncio.Task[None]] = field(default_factory=dict, init=False)
+    _retired_sync_retry_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    _sync_operations: set[asyncio.Task[Any]] = field(default_factory=set, init=False)
+    _scope_discovery_failure: str | None = field(default=None, init=False)
+    _scope_discovery_failure_modules: frozenset[str] = field(default_factory=frozenset, init=False)
+    _scope_discovery_retry_attempt: int = field(default=0, init=False)
+    _scope_discovery_exhausted: bool = field(default=False, init=False)
+    _scope_discovery_retry_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _reported_sync_health: dict[str, tuple[HealthState, str]] = field(
+        default_factory=dict, init=False
+    )
 
     def __post_init__(self) -> None:
         self.dispatcher = ComponentDispatcher(is_available=self.is_available)
@@ -1006,6 +1282,78 @@ class InteractionRuntime:
     def unregister_router(self, router: InteractionRouterImpl) -> None:
         if router in self._routers:
             self._routers.remove(router)
+        for guild_id in self._sync_failures:
+            self._sync_failure_modules[guild_id] = self._modules_for_guild(guild_id)
+        self._publish_sync_health()
+
+    @property
+    def command_sync_degraded(self) -> bool:
+        """Whether one or more guild command scopes still need reconciliation."""
+
+        return bool(self._sync_failures) or self._scope_discovery_failure is not None
+
+    @property
+    def command_sync_failures(self) -> Mapping[int, str]:
+        """Bounded, non-secret failure summaries keyed by guild ID."""
+
+        return dict(self._sync_failures)
+
+    @property
+    def command_sync_exhausted_guild_ids(self) -> tuple[int, ...]:
+        """Guilds whose current bounded automatic retry series is exhausted."""
+
+        return tuple(sorted(self._sync_exhausted))
+
+    @property
+    def command_scope_discovery_failure(self) -> str | None:
+        """Bounded non-secret summary when persisted scope discovery is unavailable."""
+
+        return self._scope_discovery_failure
+
+    @contextmanager
+    def _track_sync_operation(self) -> Iterator[None]:
+        task = asyncio.current_task()
+        if task is None:
+            yield
+            return
+        self._sync_operations.add(task)
+        try:
+            yield
+        finally:
+            self._sync_operations.discard(task)
+
+    async def drain(
+        self,
+        *,
+        interaction_timeout: float = INTERACTION_DRAIN_SECONDS,
+        cancel_timeout: float = INTERACTION_CANCEL_GRACE_SECONDS,
+        sync_cancel_timeout: float = COMMAND_SYNC_CANCEL_GRACE_SECONDS,
+    ) -> None:
+        """Stop admitting interactions and wait out the handlers already running.
+
+        The caller runs this while the Discord HTTP session is still open, so a
+        handler can finish its reply before its module and the database close.
+        """
+
+        # These assignments contain no await, so a waiter that has not entered
+        # the sync lock yet observes closure before it can mutate the tree.
+        self.dispatcher.stop_admitting()
+        self._closed = True
+        self._live = False
+        await self._cancel_sync_retries()
+        # A handler that calls replace_guild_commands is both an in-flight
+        # interaction and a sync operation. Drain first so it keeps the full
+        # interaction window; cancelling sync work up front would cut it off
+        # after the shorter sync grace and leave the interaction unanswered.
+        await self.dispatcher.drain(
+            timeout=interaction_timeout,
+            cancel_timeout=cancel_timeout,
+        )
+        await _cancel_tasks_bounded(
+            set(self._sync_operations),
+            timeout=sync_cancel_timeout,
+            what="guild command synchronization",
+        )
 
     def guild_command_owner(self, top_name: str) -> str | None:
         for router in self._routers:
@@ -1019,43 +1367,545 @@ class InteractionRuntime:
         guild_id: int,
         commands: Sequence[GuildCommand],
     ) -> None:
+        with self._track_sync_operation():
+            await self._replace_guild_commands(router, guild_id, commands)
+
+    async def _replace_guild_commands(
+        self,
+        router: InteractionRouterImpl,
+        guild_id: int,
+        commands: Sequence[GuildCommand],
+    ) -> None:
         async with self._sync_lock:
-            router._replace_guild_commands_local(guild_id, commands)
-            await self._track(guild_id)
+            if self._closed:
+                raise RuntimeError("module interactions are shutting down")
+            prior_failure_phase = self._sync_failure_phases.get(guild_id)
+            try:
+                previous = router._replace_guild_commands_local(guild_id, commands)
+            except ExceptionGroup as exc:
+                self._record_sync_failure(
+                    guild_id,
+                    exc,
+                    {router.module_name},
+                    reset_attempts=True,
+                )
+                self._sync_exhausted.add(guild_id)
+                self._publish_sync_health()
+                raise
+            staged_names = frozenset(router._guild_top_names.get(guild_id, set()))
             if not self._live:
+                try:
+                    await self._track(guild_id)
+                except Exception as exc:
+                    router._restore_guild_commands_local(guild_id, previous, staged_names)
+                    self._record_sync_failure(
+                        guild_id,
+                        exc,
+                        {router.module_name},
+                        phase=prior_failure_phase or "track",
+                        reset_attempts=True,
+                    )
+                    raise CommandSyncError(
+                        f"could not persist guild command scope for guild {guild_id}"
+                    ) from exc
                 return
-            error = await self._sync_one(guild_id)
-            if error is not None:
+
+            outcome = await self._sync_one(guild_id)
+            if self._closed:
+                return
+            if outcome.error is None:
+                self._clear_sync_failure(guild_id)
+                return
+            if outcome.published:
+                # Discord accepted the desired set. A subsequent persistence
+                # cleanup failed, so rolling back handlers would itself create
+                # the remote/local mismatch this transaction prevents.
+                self._record_sync_failure(
+                    guild_id,
+                    outcome.error,
+                    {router.module_name},
+                    phase=outcome.phase,
+                    reset_attempts=True,
+                )
+                self._schedule_sync_retry(guild_id, restart=True)
+                return
+
+            try:
+                router._restore_guild_commands_local(guild_id, previous, staged_names)
+            except Exception as rollback_error:
+                combined = ExceptionGroup(
+                    f"guild {guild_id} publication and local rollback both failed",
+                    [outcome.error, rollback_error],
+                )
+                self._record_sync_failure(
+                    guild_id,
+                    combined,
+                    {router.module_name},
+                    reset_attempts=True,
+                )
+                # The tree is now partial/unknown. Automatically publishing it
+                # could destroy the last coherent remote scope, so require an
+                # explicit replacement/READY generation to repair it.
+                self._sync_exhausted.add(guild_id)
+                self._publish_sync_health()
                 raise CommandSyncError(
-                    f"could not synchronize guild commands for guild {guild_id}"
-                ) from error
+                    f"guild command publication and local rollback failed for guild {guild_id}"
+                ) from combined
 
-    async def sync_ready(self) -> None:
+            if outcome.phase == "track":
+                # Discord was never touched, so the restored tree already
+                # matches remote state. Retry only the failed persistence marker.
+                self._record_sync_failure(
+                    guild_id,
+                    outcome.error,
+                    {router.module_name},
+                    phase=prior_failure_phase or "track",
+                    reset_attempts=True,
+                )
+                self._schedule_sync_retry(guild_id, restart=True)
+                raise CommandSyncError(
+                    f"could not persist guild command scope for guild {guild_id}"
+                ) from outcome.error
+
+            # A transport exception is ambiguous: Discord may have accepted the
+            # PUT even though the client never received its response. Republish
+            # the restored tree once so old handlers and the remote schema agree.
+            compensation = await self._sync_one(guild_id)
+            if compensation.error is None:
+                self._clear_sync_failure(guild_id)
+            else:
+                self._record_sync_failure(
+                    guild_id,
+                    compensation.error,
+                    {router.module_name},
+                    # If compensation could not even persist its marker, the
+                    # original PUT is still transport-ambiguous: a later retry
+                    # must perform the restored PUT, not stop after tracking.
+                    phase="forget" if compensation.phase == "forget" else "publish",
+                    reset_attempts=True,
+                )
+                self._schedule_sync_retry(guild_id, restart=True)
+            raise CommandSyncError(
+                f"could not synchronize guild commands for guild {guild_id}"
+            ) from outcome.error
+
+    async def sync_ready(
+        self,
+        *,
+        is_current: Callable[[], bool] = _always_available,
+    ) -> None:
         """Publish staged commands and retry every persisted guild scope."""
-        async with self._sync_lock:
-            self._live = True
-            tracked = set(await self._tracked_guild_ids())
-            local = {
-                guild_id for router in self._routers for guild_id in router.guild_command_ids()
-            }
-            connected = {int(guild.id) for guild in self.bot.guilds}
-            for guild_id in tracked - connected:
-                await self._forget(guild_id)
-            for guild_id in sorted((tracked | local) & connected):
-                await self._sync_one(guild_id)
 
-    async def _sync_one(self, guild_id: int) -> Exception | None:
+        with self._track_sync_operation():
+            async with self._sync_lock:
+                # The generation predicate is evaluated while holding the same
+                # lock as pause_sync. If a disconnect won first, stale READY work
+                # cannot reopen publication; if sync won, pause runs last.
+                if self._closed or not is_current():
+                    return
+                self._live = True
+                local = {
+                    guild_id for router in self._routers for guild_id in router.guild_command_ids()
+                }
+                connected = {int(guild.id) for guild in self.bot.guilds}
+                try:
+                    tracked = set(await self._tracked_guild_ids())
+                except Exception as exc:
+                    log.warning("Failed to discover persisted guild command scopes", exc_info=True)
+                    self._record_scope_discovery_failure(exc, reset_attempts=True)
+                    self._schedule_scope_discovery_retry(restart=True)
+                    # Scope discovery and local publication are independent. A
+                    # read-side database failure must not strand commands whose
+                    # guild IDs are already known from the local tree.
+                    tracked = set()
+                else:
+                    self._clear_scope_discovery_failure()
+                await self._reconcile_scopes_locked(tracked, local, connected)
+
+    async def _reconcile_scopes_locked(
+        self,
+        tracked: set[int],
+        local: set[int],
+        connected: set[int],
+    ) -> None:
+        for guild_id in sorted(tracked - connected):
+            try:
+                await self._forget(guild_id)
+            except Exception as exc:
+                log.warning(
+                    "Failed to forget disconnected guild command scope %s",
+                    guild_id,
+                    exc_info=True,
+                )
+                self._record_sync_failure(
+                    guild_id,
+                    exc,
+                    phase="forget",
+                    reset_attempts=True,
+                )
+                self._schedule_sync_retry(guild_id, restart=True)
+            else:
+                self._clear_sync_failure(guild_id)
+
+        for guild_id in sorted((tracked | local | set(self._sync_failures)) & connected):
+            outcome = await self._sync_one(guild_id)
+            if self._closed:
+                return
+            if outcome.error is None:
+                self._clear_sync_failure(guild_id)
+            else:
+                self._record_sync_failure(
+                    guild_id,
+                    outcome.error,
+                    # A track failure happened before the desired startup PUT.
+                    # Retrying only the marker would report healthy while leaving
+                    # the command tree unpublished.
+                    phase="forget" if outcome.phase == "forget" else "publish",
+                    reset_attempts=True,
+                )
+                self._schedule_sync_retry(guild_id, restart=True)
+
+    async def pause_sync(self) -> None:
+        """Pause publication retries while the gateway is disconnected."""
+
+        # A generation-guarded sync that has not entered the lock will refuse
+        # itself; one already inside set _live before this synchronous write, so
+        # this write wins without waiting behind Discord or database I/O.
+        self._live = False
+        await self._cancel_sync_retries()
+
+    async def resume_sync(
+        self,
+        *,
+        is_current: Callable[[], bool] = _always_available,
+    ) -> None:
+        """Publish work staged during a disconnect and rearm failed scopes."""
+
+        if self._closed:
+            return
+        await self.sync_ready(is_current=is_current)
+
+    async def _sync_one(self, guild_id: int) -> _GuildSyncOutcome:
         has_commands = any(router.has_guild_commands(guild_id) for router in self._routers)
+        try:
+            # Track before every PUT, including an empty cleanup. A failed or
+            # transport-ambiguous publication must remain discoverable after a
+            # restart; a successful empty publication forgets it below.
+            await self._track(guild_id)
+        except Exception as exc:
+            log.warning(
+                "Failed to persist slash-command scope for guild %s", guild_id, exc_info=True
+            )
+            return _GuildSyncOutcome(error=exc, phase="track")
         try:
             synced = await self.bot.tree.sync(guild=discord.Object(id=guild_id))
         except Exception as exc:
             log.warning("Failed to sync slash commands for guild %s", guild_id, exc_info=True)
-            return exc
+            return _GuildSyncOutcome(error=exc)
 
         if not has_commands:
-            await self._forget(guild_id)
+            try:
+                await self._forget(guild_id)
+            except Exception as exc:
+                log.warning(
+                    "Published empty slash-command scope for guild %s but could not "
+                    "forget its cleanup marker",
+                    guild_id,
+                    exc_info=True,
+                )
+                return _GuildSyncOutcome(error=exc, published=True, phase="forget")
         log.info("Synced %d guild slash command(s) for guild %s", len(synced), guild_id)
-        return None
+        return _GuildSyncOutcome(published=True)
+
+    def _modules_for_guild(self, guild_id: int) -> frozenset[str]:
+        return frozenset(
+            router.module_name for router in self._routers if router.has_guild_commands(guild_id)
+        )
+
+    def _modules_with_guild_commands(self) -> frozenset[str]:
+        return frozenset(
+            router.module_name for router in self._routers if router.guild_command_ids()
+        )
+
+    def _record_scope_discovery_failure(
+        self,
+        error: Exception,
+        *,
+        reset_attempts: bool = False,
+    ) -> None:
+        self._scope_discovery_failure = type(error).__name__
+        self._scope_discovery_failure_modules = (
+            self._scope_discovery_failure_modules | self._modules_with_guild_commands()
+        )
+        if reset_attempts:
+            self._scope_discovery_retry_attempt = 0
+            self._scope_discovery_exhausted = False
+        self._publish_sync_health()
+
+    def _clear_scope_discovery_failure(self) -> None:
+        self._scope_discovery_failure = None
+        self._scope_discovery_failure_modules = frozenset()
+        self._scope_discovery_retry_attempt = 0
+        self._scope_discovery_exhausted = False
+        task = self._scope_discovery_retry_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            self._retired_sync_retry_tasks.add(task)
+        self._publish_sync_health()
+
+    def _record_sync_failure(
+        self,
+        guild_id: int,
+        error: Exception,
+        modules: set[str] | frozenset[str] | None = None,
+        *,
+        phase: _GuildSyncPhase = "publish",
+        reset_attempts: bool = False,
+    ) -> None:
+        self._sync_failures[guild_id] = type(error).__name__
+        self._sync_failure_phases[guild_id] = phase
+        if reset_attempts:
+            self._sync_retry_attempts.pop(guild_id, None)
+            self._sync_exhausted.discard(guild_id)
+        affected = set(self._sync_failure_modules.get(guild_id, frozenset()))
+        affected.update(self._modules_for_guild(guild_id))
+        if modules is not None:
+            affected.update(modules)
+        self._sync_failure_modules[guild_id] = frozenset(affected)
+        self._publish_sync_health()
+
+    def _clear_sync_failure(self, guild_id: int) -> None:
+        self._sync_failures.pop(guild_id, None)
+        self._sync_failure_phases.pop(guild_id, None)
+        self._sync_failure_modules.pop(guild_id, None)
+        self._sync_retry_attempts.pop(guild_id, None)
+        self._sync_exhausted.discard(guild_id)
+        task = self._sync_retry_tasks.get(guild_id)
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        self._publish_sync_health()
+
+    def _publish_sync_health(self) -> None:
+        if self.on_sync_health is None:
+            return
+        failed_guilds_by_module: dict[str, list[int]] = {}
+        for guild_id, modules in self._sync_failure_modules.items():
+            for module_name in modules:
+                failed_guilds_by_module.setdefault(module_name, []).append(guild_id)
+
+        affected_modules = (
+            set(self._reported_sync_health)
+            | set(failed_guilds_by_module)
+            | set(self._scope_discovery_failure_modules)
+        )
+        for module_name in affected_modules:
+            guild_ids = sorted(failed_guilds_by_module.get(module_name, []))
+            exhausted = [guild_id for guild_id in guild_ids if guild_id in self._sync_exhausted]
+            discovery_pending = module_name in self._scope_discovery_failure_modules
+            if exhausted or (discovery_pending and self._scope_discovery_exhausted):
+                state: HealthState = "failed"
+                details: list[str] = []
+                if exhausted:
+                    details.append(
+                        "Discord guild command sync retries exhausted for guild(s) "
+                        + ", ".join(str(guild_id) for guild_id in exhausted)
+                    )
+                if discovery_pending and self._scope_discovery_exhausted:
+                    details.append("Discord guild command scope discovery retries exhausted")
+                detail = "; ".join(details)
+            elif guild_ids or discovery_pending:
+                state = "degraded"
+                details = []
+                if guild_ids:
+                    details.append(
+                        "Discord guild command sync pending for guild(s) "
+                        + ", ".join(str(guild_id) for guild_id in guild_ids)
+                    )
+                if discovery_pending:
+                    details.append("Discord guild command scope discovery pending")
+                detail = "; ".join(details)
+            else:
+                state = "healthy"
+                detail = ""
+            reported = (state, detail)
+            if self._reported_sync_health.get(module_name) == reported:
+                continue
+            try:
+                self.on_sync_health(module_name, state, detail)
+            except Exception:
+                log.exception("Guild command sync health observer failed for %s", module_name)
+                continue
+            if detail:
+                self._reported_sync_health[module_name] = reported
+            else:
+                self._reported_sync_health.pop(module_name, None)
+
+    def _schedule_sync_retry(self, guild_id: int, *, restart: bool = False) -> None:
+        if self._closed or not self._live:
+            return
+        if not self.sync_retry_delays:
+            self._sync_exhausted.add(guild_id)
+            self._publish_sync_health()
+            return
+        existing = self._sync_retry_tasks.get(guild_id)
+        if existing is not None and not existing.done():
+            if not restart:
+                return
+            existing.cancel()
+            self._retired_sync_retry_tasks.add(existing)
+        task = asyncio.create_task(
+            self._retry_guild_sync(guild_id),
+            name=f"module-guild-command-sync-{guild_id}",
+        )
+        self._sync_retry_tasks[guild_id] = task
+
+        def done(completed: asyncio.Task[None]) -> None:
+            self._sync_retry_done(guild_id, completed)
+
+        task.add_done_callback(done)
+
+    def _schedule_scope_discovery_retry(self, *, restart: bool = False) -> None:
+        if self._closed or not self._live:
+            return
+        if not self.sync_retry_delays:
+            self._scope_discovery_exhausted = True
+            self._publish_sync_health()
+            return
+        existing = self._scope_discovery_retry_task
+        if existing is not None and not existing.done():
+            if not restart:
+                return
+            existing.cancel()
+            self._retired_sync_retry_tasks.add(existing)
+        task = asyncio.create_task(
+            self._retry_scope_discovery(),
+            name="module-guild-command-scope-discovery",
+        )
+        self._scope_discovery_retry_task = task
+        task.add_done_callback(self._scope_discovery_retry_done)
+
+    async def _retry_scope_discovery(self) -> None:
+        for attempt, delay in enumerate(self.sync_retry_delays, start=1):
+            await asyncio.sleep(max(0.0, delay))
+            async with self._sync_lock:
+                if self._closed or not self._live or self._scope_discovery_failure is None:
+                    return
+                self._scope_discovery_retry_attempt = attempt
+                try:
+                    tracked = set(await self._tracked_guild_ids())
+                except Exception as exc:
+                    self._record_scope_discovery_failure(exc)
+                    continue
+                if self._closed or not self._live:
+                    return
+                local = {
+                    guild_id for router in self._routers for guild_id in router.guild_command_ids()
+                }
+                connected = {int(guild.id) for guild in self.bot.guilds}
+                self._clear_scope_discovery_failure()
+                await self._reconcile_scopes_locked(tracked, local, connected)
+                return
+        if self._scope_discovery_failure is not None:
+            self._scope_discovery_exhausted = True
+            self._publish_sync_health()
+            log.error(
+                "Exhausted %d automatic guild-command scope discovery retries",
+                len(self.sync_retry_delays),
+            )
+
+    def _scope_discovery_retry_done(self, task: asyncio.Task[None]) -> None:
+        self._retired_sync_retry_tasks.discard(task)
+        if self._scope_discovery_retry_task is task:
+            self._scope_discovery_retry_task = None
+        with suppress(asyncio.CancelledError):
+            error = task.exception()
+            if error is not None:
+                self._scope_discovery_exhausted = True
+                self._publish_sync_health()
+                log.error(
+                    "Guild command scope discovery retry task failed",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+    async def _retry_guild_sync(self, guild_id: int) -> None:
+        for attempt, delay in enumerate(self.sync_retry_delays, start=1):
+            await asyncio.sleep(max(0.0, delay))
+            async with self._sync_lock:
+                if self._closed or not self._live or guild_id not in self._sync_failures:
+                    return
+                self._sync_retry_attempts[guild_id] = attempt
+                phase = self._sync_failure_phases.get(guild_id, "publish")
+                if phase == "track":
+                    try:
+                        await self._track(guild_id)
+                    except Exception as exc:
+                        outcome = _GuildSyncOutcome(error=exc, phase="track")
+                    else:
+                        outcome = _GuildSyncOutcome(phase="track")
+                elif phase == "forget":
+                    try:
+                        await self._forget(guild_id)
+                    except Exception as exc:
+                        outcome = _GuildSyncOutcome(error=exc, published=True, phase="forget")
+                    else:
+                        outcome = _GuildSyncOutcome(published=True, phase="forget")
+                else:
+                    outcome = await self._sync_one(guild_id)
+                if self._closed or not self._live:
+                    return
+                if outcome.error is None:
+                    self._clear_sync_failure(guild_id)
+                    return
+                self._record_sync_failure(
+                    guild_id,
+                    outcome.error,
+                    # A publish retry that fails in its prerequisite track step
+                    # must remain a publish retry. Only a successful empty PUT
+                    # followed by failed cleanup narrows the remaining work.
+                    phase="forget" if outcome.phase == "forget" else phase,
+                )
+        if guild_id in self._sync_failures:
+            self._sync_exhausted.add(guild_id)
+            self._publish_sync_health()
+            log.error(
+                "Exhausted %d automatic slash-command sync retries for guild %s",
+                len(self.sync_retry_delays),
+                guild_id,
+            )
+
+    def _sync_retry_done(self, guild_id: int, task: asyncio.Task[None]) -> None:
+        self._retired_sync_retry_tasks.discard(task)
+        if self._sync_retry_tasks.get(guild_id) is task:
+            self._sync_retry_tasks.pop(guild_id, None)
+        with suppress(asyncio.CancelledError):
+            error = task.exception()
+            if error is not None:
+                log.error(
+                    "Guild command retry task failed for guild %s",
+                    guild_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+    async def _cancel_sync_retries(self) -> None:
+        current = asyncio.current_task()
+        scope_task = self._scope_discovery_retry_task
+        tasks = {
+            task
+            for task in (
+                *self._sync_retry_tasks.values(),
+                *self._retired_sync_retry_tasks,
+                *((scope_task,) if scope_task is not None else ()),
+            )
+            if task is not current and not task.done()
+        }
+        still_running = await _cancel_tasks_bounded(
+            tasks,
+            timeout=COMMAND_SYNC_CANCEL_GRACE_SECONDS,
+            what="guild command retry",
+        )
+        self._sync_retry_tasks.clear()
+        self._scope_discovery_retry_task = None
+        self._retired_sync_retry_tasks = {task for task in still_running if not task.done()}
 
     async def _track(self, guild_id: int) -> None:
         if self.scope_store is not None:

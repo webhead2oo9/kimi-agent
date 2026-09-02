@@ -6,6 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from discord_adapter.io import is_user_only_integration
+
 StopCallback = Callable[[discord.Interaction, bool, str | None], Awaitable[str]]
 
 
@@ -31,7 +33,7 @@ def register_stop_command(
         scope: app_commands.Choice[str] | None = None,
         task_id: str | None = None,
     ) -> None:
-        is_user_install = _is_user_only_install(interaction)
+        is_user_install = is_user_only_integration(interaction)
         if not is_user_install and (interaction.guild_id is None or interaction.channel_id is None):
             await interaction.response.send_message(
                 "Stop is only available in a server channel.", ephemeral=True
@@ -54,14 +56,3 @@ def register_stop_command(
         )(stop)
 
     bot.tree.add_command(stop, override=True)
-
-
-def _is_user_only_install(interaction: discord.Interaction) -> bool:
-    is_user = getattr(interaction, "is_user_integration", None)
-    is_guild = getattr(interaction, "is_guild_integration", None)
-    if not callable(is_user) or not callable(is_guild):
-        return False
-    try:
-        return bool(is_user()) and not bool(is_guild())
-    except Exception:
-        return False

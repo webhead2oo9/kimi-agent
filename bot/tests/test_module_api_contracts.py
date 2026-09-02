@@ -34,15 +34,22 @@ from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     CUSTOM_ID_MAX_LENGTH,
     Backoff,
+    ButtonSpec,
+    CommandOption,
+    CommandSpec,
     EventTopicError,
     GuildSettingField,
     HttpHostRule,
     ModuleContractError,
+    SelectSpec,
     build_custom_id,
     parse_custom_id,
     split_topic,
     table_prefix,
+    validate_command_spec,
+    validate_component_spec,
     validate_guild_settings_schema,
+    validate_select_spec,
     validate_host_rule,
     validate_module_name,
     validate_permissions,
@@ -612,7 +619,7 @@ async def test_fake_interaction_records_modal_values_and_layouts() -> None:
     )
     from kimi_agent_module_api.testing import FakeInteraction
 
-    interaction = FakeInteraction(text_values={"title": "Hello"})
+    interaction = FakeInteraction(text_values={"title": "Hello"}, module_name="demo")
     modal = ModalSpec("edit", "Edit", (TextInputSpec("title", "Title"),))
     layout = OutgoingLayout((LayoutText("Preview"),))
 
@@ -710,3 +717,249 @@ def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
 
     with pytest.raises(ModuleContractError):
         registry.provide("s", 1, Board())
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        CommandSpec(name="Bad", description="d"),
+        CommandSpec(name="x", description="d", group="Bad"),
+        CommandSpec(name="x", description=""),
+        CommandSpec(name="x", description="d" * 101),
+        CommandSpec(name="x", description="d", group="g", group_description="d" * 101),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=tuple(CommandOption(f"o{i}", "string", "d") for i in range(26)),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "string", "d"), CommandOption("a", "string", "d")),
+        ),
+        CommandSpec(name="x", description="d", options=(CommandOption("a", "string", ""),)),
+        CommandSpec(name="x", description="d", options=(CommandOption("a", "string", "d" * 101),)),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "number", "d"),),  # type: ignore[arg-type]
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(
+                CommandOption(
+                    "a",
+                    "string",
+                    "d",
+                    choices=tuple((f"n{i}", f"v{i}") for i in range(26)),
+                ),
+            ),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "string", "d", choices=(("N", "v"),), autocomplete=True),),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "boolean", "d", choices=(("N", "v"),)),),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "user", "d", autocomplete=True),),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "string", "d", choices=(("A", "v"), ("B", "v"))),),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "integer", "d", min_value=5, max_value=2),),
+        ),
+        CommandSpec(
+            name="x", description="d", options=(CommandOption("a", "string", "d", min_value=1),)
+        ),
+    ],
+)
+def test_command_spec_validation_rejects_payloads_discord_refuses(spec: CommandSpec) -> None:
+    # tree.sync() is one bulk PUT, so a single malformed command rejects the
+    # whole scope; discord.py checks names but none of these.
+    with pytest.raises(ModuleContractError):
+        validate_command_spec(spec)
+
+
+def test_command_spec_validation_accepts_a_fully_populated_spec() -> None:
+    validate_command_spec(
+        CommandSpec(
+            name="warn",
+            description="Warn someone",
+            group="mod",
+            group_description="Moderation",
+            options=(
+                CommandOption("user", "user", "Who", required=True),
+                CommandOption("days", "integer", "Days", min_value=0, max_value=7),
+                CommandOption("mode", "string", "Mode", choices=(("Soft", "soft"),)),
+                CommandOption("query", "string", "Query", autocomplete=True),
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "select",
+    [
+        SelectSpec(key="k", options=()),
+        SelectSpec(key="k", options=tuple((f"l{i}", f"v{i}", None) for i in range(26))),
+        SelectSpec(key="k", options=(("", "a", None),)),
+        SelectSpec(key="k", options=(("A", "a" * 101, None),)),
+        SelectSpec(key="k", options=(("A", "a", ""),)),
+        SelectSpec(key="k", options=(("A", "a", None), ("B", "a", None)), max_values=2),
+        SelectSpec(key="k", options=(("A", "a", None),), placeholder="p" * 151),
+        SelectSpec(
+            key="k", options=(("A", "a", None), ("B", "b", None)), min_values=2, max_values=1
+        ),
+        SelectSpec(key="k", options=(("A", "a", None),), min_values=26, max_values=26),
+        SelectSpec(
+            key="k", options=(("A", "a", None), ("B", "b", None)), min_values=3, max_values=5
+        ),
+        SelectSpec(key="Bad", options=(("A", "a", None),)),
+        SelectSpec(key="k", options=(("A", "a", None),), parts=("bad:part",)),
+    ],
+)
+def test_select_spec_validation_rejects_payloads_discord_refuses(select: SelectSpec) -> None:
+    with pytest.raises(ModuleContractError):
+        validate_select_spec(select)
+
+
+def test_select_spec_validation_accepts_a_multi_select() -> None:
+    validate_select_spec(
+        SelectSpec(
+            key="page",
+            options=(("A", "a", None), ("B", "b", "second")),
+            placeholder="Pick",
+            min_values=0,
+            max_values=2,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # discord.py checks command names but not option names, so an uppercase
+        # one reached Discord verbatim and rejected the whole bulk PUT.
+        CommandSpec(name="x", description="d", options=(CommandOption("Days", "string", "d"),)),
+        CommandSpec(name="x", description="d", options=(CommandOption("", "string", "d"),)),
+        CommandSpec(name="x", description="d", options=(CommandOption("a" * 33, "string", "d"),)),
+        # Legal for Discord, impossible as a Python parameter: inspect.Parameter
+        # would raise a bare ValueError from inside registration instead.
+        CommandSpec(name="x", description="d", options=(CommandOption("my-opt", "string", "d"),)),
+        CommandSpec(name="x", description="d", options=(CommandOption("1st", "string", "d"),)),
+        CommandSpec(name="x", description="d", options=(CommandOption("class", "string", "d"),)),
+        # A choice value whose type disagrees with its option is a 400.
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "integer", "d", choices=(("N", "text"),)),),
+        ),
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption("a", "string", "d", choices=(("N", 7),)),),
+        ),
+    ],
+)
+def test_command_spec_validation_rejects_option_names_and_choice_types(spec: CommandSpec) -> None:
+    with pytest.raises(ModuleContractError):
+        validate_command_spec(spec)
+
+
+def test_command_spec_validation_accepts_matching_choice_types() -> None:
+    validate_command_spec(
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(
+                CommandOption("count", "integer", "d", choices=(("Seven", 7),)),
+                CommandOption("mode", "string", "d", choices=(("Soft", "soft"),)),
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        CommandOption("n", "integer", "d", choices=(("Too high", 1 << 53),)),
+        CommandOption("n", "integer", "d", choices=(("Too low", -(1 << 53)),)),
+        CommandOption("n", "integer", "d", min_value=-(1 << 53)),
+        CommandOption("n", "integer", "d", max_value=1 << 53),
+    ],
+)
+def test_command_spec_validation_rejects_integers_outside_discord_safe_range(
+    option: CommandOption,
+) -> None:
+    with pytest.raises(ModuleContractError, match="between"):
+        validate_command_spec(CommandSpec(name="x", description="d", options=(option,)))
+
+
+def test_command_spec_validation_accepts_discord_safe_integer_endpoints() -> None:
+    maximum = (1 << 53) - 1
+    validate_command_spec(
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(
+                CommandOption(
+                    "n",
+                    "integer",
+                    "d",
+                    choices=(("Minimum", -maximum), ("Maximum", maximum)),
+                    min_value=-maximum,
+                    max_value=maximum,
+                ),
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize("name", ["_query", "café", "検索"])
+def test_command_spec_validation_accepts_discord_python_identifier_intersection(
+    name: str,
+) -> None:
+    validate_command_spec(
+        CommandSpec(
+            name="x",
+            description="d",
+            options=(CommandOption(name, "string", "d"),),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "button",
+    [
+        ButtonSpec(key="k", label=""),
+        ButtonSpec(key="k", label="x" * 81),
+        ButtonSpec(key="Bad", label="Go"),
+        ButtonSpec(key="k", label="Go", style="rainbow"),  # type: ignore[arg-type]
+        ButtonSpec(key="k", label="Go", parts=("bad:part",)),
+        ButtonSpec(key="k", label="Go", emoji=""),
+    ],
+)
+def test_button_spec_validation_rejects_payloads_discord_refuses(button: ButtonSpec) -> None:
+    with pytest.raises(ModuleContractError):
+        validate_component_spec(button)
+
+
+def test_button_spec_validation_accepts_an_ordinary_button() -> None:
+    validate_component_spec(ButtonSpec(key="confirm", label="Confirm", style="danger", emoji="✅"))
+
+
+def test_button_spec_validation_accepts_an_emoji_without_a_label() -> None:
+    validate_component_spec(ButtonSpec(key="confirm", label="", emoji="✅"))

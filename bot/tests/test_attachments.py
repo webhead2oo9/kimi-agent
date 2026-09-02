@@ -114,6 +114,56 @@ def test_collect_turn_images_uses_filename_when_content_type_missing(
     assert list(tmp_path.rglob("cat.png"))
 
 
+def test_collect_turn_images_uses_filename_when_content_type_is_generic(
+    tmp_path: Path,
+) -> None:
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
+    message = SimpleNamespace(
+        id=55,
+        attachments=[
+            FakeAttachment(
+                filename="cat.png",
+                content_type="application/octet-stream",
+                payload=_PNG_HEADER,
+            )
+        ],
+    )
+
+    parts = _collect_current(store, message)
+
+    assert len(parts) == 1
+    assert parts[0].media_type == "image/png"
+    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert list(tmp_path.rglob("cat.png"))
+
+
+def test_collect_turn_images_tracks_validated_current_attachment_identity(
+    tmp_path: Path,
+) -> None:
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
+    attachment = FakeAttachment(
+        filename="cat.png",
+        content_type="application/octet-stream",
+        payload=_PNG_HEADER,
+    )
+    message = SimpleNamespace(id=55, attachments=[attachment])
+
+    result = asyncio.run(
+        collect_turn_images(
+            message,
+            store=store,
+            conversation_key="guild:chan",
+            detail="auto",
+            images_supported=True,
+            history_hashes=set(),
+            lookback=1,
+            max_images=1,
+        )
+    )
+
+    assert result.current_attachment_source_ids == frozenset({id(attachment)})
+
+
 def test_collect_turn_images_sniffs_actual_media_type(tmp_path: Path) -> None:
     store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
     message = SimpleNamespace(
@@ -448,7 +498,10 @@ def test_collect_turn_images_skips_non_images(tmp_path: Path) -> None:
     assert parts == []
 
 
-def test_collect_turn_images_removes_declared_image_with_invalid_bytes(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_collect_turn_images_marks_declared_image_with_invalid_bytes_unavailable(
+    tmp_path: Path,
+) -> None:
     store = AttachmentStore(base_dir=tmp_path, max_bytes=1024)
     message = SimpleNamespace(
         id=55,
@@ -461,9 +514,19 @@ def test_collect_turn_images_removes_declared_image_with_invalid_bytes(tmp_path:
         ],
     )
 
-    parts = _collect_current(store, message)
+    result = await collect_turn_images(
+        message,
+        store=store,
+        conversation_key="guild:chan",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
 
-    assert parts == []
+    assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert not list(tmp_path.rglob("fake.png"))
 
 
@@ -680,6 +743,7 @@ async def test_dishonest_attachment_size_exhausts_turn_byte_budget(tmp_path: Pat
     )
 
     assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert (dishonest.read_count, second.read_count) == (1, 0)
     assert not list(tmp_path.rglob("*.png"))
 
@@ -712,6 +776,7 @@ async def test_staging_failure_still_spends_declared_turn_byte_budget(
     )
 
     assert result.vision_parts == []
+    assert result.current_image_unavailable is True
     assert (first.read_count, second.read_count) == (1, 0)
     assert not list(tmp_path.rglob("*.png"))
 
@@ -1146,6 +1211,19 @@ def test_message_has_image_attachment_detects_image_filename_without_content_typ
     assert message_has_image_attachment(msg) is True
 
 
+def test_message_has_image_attachment_detects_image_filename_with_generic_content_type():
+    msg = _FakeMessage(
+        attachments=[
+            _FakeAttachment(
+                b"X",
+                name="photo.png",
+                content_type="application/octet-stream",
+            ),
+        ]
+    )
+    assert message_has_image_attachment(msg) is True
+
+
 def test_message_has_image_attachment_false_for_non_image():
     msg = _FakeMessage(attachments=[_FakeAttachment(b"X", content_type="text/plain")])
     assert message_has_image_attachment(msg) is False
@@ -1455,10 +1533,9 @@ def test_collect_turn_attachments_skips_images() -> None:
     assert refs[0].content_type == "application/zip"
 
 
-def test_collect_turn_attachments_skips_image_filename_without_content_type() -> None:
-    # The vision path collects photo.png via the filename fallback, so the
-    # importable-file path must skip it too. Otherwise the same image is
-    # surfaced twice (vision part AND import_attachment context).
+def test_collect_turn_attachments_keeps_unvalidated_image_filename_candidate() -> None:
+    # This synchronous collector cannot sniff the bytes. Turn preparation
+    # removes photo.png after the vision collector validates it successfully.
     msg = _att_message(
         [
             _AttSrc(filename="photo.png", content_type=None, payload=b"x"),
@@ -1466,7 +1543,25 @@ def test_collect_turn_attachments_skips_image_filename_without_content_type() ->
         ]
     )
     refs = collect_turn_attachments(msg)
-    assert [r.filename for r in refs] == ["notes.bin"]
+    assert [r.filename for r in refs] == ["photo.png", "notes.bin"]
+
+
+def test_collect_turn_attachments_keeps_image_filename_with_generic_content_type() -> None:
+    """A generic-typed file with an image name is only a vision candidate. If
+    its bytes are not an image, this ref is the only way it stays reachable."""
+
+    msg = _att_message(
+        [
+            _AttSrc(
+                filename="photo.png",
+                content_type="application/octet-stream",
+                payload=b"x",
+            ),
+            _AttSrc(filename="notes.bin", content_type=None, payload=b"data"),
+        ]
+    )
+    refs = collect_turn_attachments(msg)
+    assert [r.filename for r in refs] == ["photo.png", "notes.bin"]
 
 
 @pytest.mark.asyncio
@@ -1646,3 +1741,37 @@ async def test_turn_has_image_input_ignores_cross_channel_reference() -> None:
     channel = _FakeChannel(channel_id=10)
     msg = _FakeMessage(attachments=[], reference=ref, channel=channel)
     assert await turn_has_image_input(msg, bot_user=SimpleNamespace(id=999)) is False
+
+
+@pytest.mark.asyncio
+async def test_collect_turn_images_skips_oversized_declared_image_without_refusing_the_turn(
+    tmp_path: Path,
+) -> None:
+    """An image above the attachment cap is never read, so it must not flag the
+    turn as unable to read the image; the user's text still gets answered."""
+
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=16)
+    message = SimpleNamespace(
+        id=56,
+        attachments=[
+            FakeAttachment(
+                filename="huge.png",
+                content_type="image/png",
+                payload=b"x" * 64,
+            )
+        ],
+    )
+
+    result = await collect_turn_images(
+        message,
+        store=store,
+        conversation_key="guild:chan",
+        detail="auto",
+        images_supported=True,
+        history_hashes=set(),
+        lookback=0,
+        max_images=1,
+    )
+
+    assert result.vision_parts == []
+    assert result.current_image_unavailable is False

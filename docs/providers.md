@@ -599,7 +599,12 @@ history so tool-use continuations can echo provider state back unchanged.
 ## Images
 
 Discord image attachments are stored under `ATTACHMENT_STORE_DIR` and enter the
-conversation as image content parts. `IMAGE_DETAIL` accepts `low`, `high`,
+conversation as image content parts.
+
+A message that advertises an image whose bytes cannot be read (unsupported
+type, over the size limit, or an empty download) answers with a re-upload
+prompt instead of running the provider; the exchange is not persisted to the
+transcript, in both guild and personal chat. `IMAGE_DETAIL` accepts `low`, `high`,
 `original`, or `auto`, set in `.env` or the `<CONFIG_DIR>/settings.md` overlay;
 an unknown value falls back to `auto`.
 
@@ -649,7 +654,15 @@ Image input stays capability-gated in `agent/core.py`: a provider without
 Provider-native image output remains available to direct `ProviderRequest`
 callers that explicitly request `ProviderCapability.IMAGE_OUTPUT`; normal
 Discord turns never infer it from message text. Their image-creation surface is
-the provider-independent [`generate_image` tool](image-generation.md). Native
+the provider-independent [`generate_image` tool](image-generation.md).
+
+Every provider's returned image bytes go through one decode-level validation
+(`providers/assets.py:validate_generated_assets`, run off the event loop)
+before output moderation sees them and again at the writer: at most 8 assets,
+10 MiB each and 25 MiB aggregate per response (rejected candidates consume the
+budget too), and each payload must fully decode as PNG, JPEG, GIF, or WebP -
+its canonical type comes from the bytes, not the provider's label. OpenRouter's
+response parser applies only the caps and a signature sniff inline. Native
 provider assets are written under `WORKSPACE_DIR/generated/` and attached
 through `discord_adapter.io.send_response`; tool-generated images instead live
 under the caller's reusable workspace `generated_images/` path.

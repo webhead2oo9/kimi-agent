@@ -10,7 +10,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -544,6 +544,10 @@ CREATE TABLE IF NOT EXISTS module_scheduler_runner (
 );
 INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) VALUES (1, NULL, 0);
 
+CREATE TABLE IF NOT EXISTS module_command_guilds (
+    guild_id TEXT PRIMARY KEY
+);
+
 """
 
 
@@ -721,10 +725,79 @@ async def _migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX idx_provider_circuits_retry_at ON provider_circuits(retry_at)")
 
 
+async def _migrate_v4_to_v5(conn: aiosqlite.Connection) -> None:
+    statements = (
+        """CREATE TABLE IF NOT EXISTS config_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            module_name TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_revision TEXT NOT NULL,
+            base_exists INTEGER NOT NULL CHECK (base_exists IN (0, 1)),
+            base_content TEXT NOT NULL,
+            base_revision TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            actor_json TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending','applied','rejected')),
+            decided_by TEXT,
+            decision_reason TEXT NOT NULL DEFAULT '',
+            message_channel_id TEXT,
+            message_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_config_proposals_state_time
+            ON config_proposals(state, created_at DESC)""",
+        """CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
+            job_id           TEXT PRIMARY KEY,
+            module_name      TEXT NOT NULL,
+            job_key          TEXT NOT NULL,
+            handler          TEXT NOT NULL,
+            run_at           REAL NOT NULL,
+            interval_seconds REAL,
+            jitter_seconds   REAL NOT NULL DEFAULT 0,
+            backoff_json     TEXT NOT NULL DEFAULT '{}',
+            payload_json     TEXT NOT NULL DEFAULT '{}',
+            attempt          INTEGER NOT NULL DEFAULT 0,
+            leased_until     REAL,
+            lease_token      TEXT,
+            last_error       TEXT,
+            created_at       REAL NOT NULL,
+            updated_at       REAL NOT NULL,
+            UNIQUE (module_name, job_key)
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
+            ON module_scheduler_jobs(run_at, leased_until)""",
+        """CREATE TABLE IF NOT EXISTS module_scheduler_runner (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            token        TEXT,
+            leased_until REAL NOT NULL DEFAULT 0
+        )""",
+        (
+            "INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) "
+            "VALUES (1, NULL, 0)"
+        ),
+        """CREATE TABLE IF NOT EXISTS module_command_guilds (
+            guild_id TEXT PRIMARY KEY
+        )""",
+        """CREATE TABLE IF NOT EXISTS module_schema_versions (
+            module_name TEXT NOT NULL,
+            version     INTEGER NOT NULL CHECK (version > 0),
+            name        TEXT NOT NULL,
+            applied_at  TEXT NOT NULL,
+            PRIMARY KEY (module_name, version)
+        )""",
+    )
+    for statement in statements:
+        await conn.execute(statement)
+
+
 _MIGRATIONS: dict[int, Migration] = {
     2: ("coding_task_context_inputs", _migrate_v1_to_v2),
     3: ("video_understanding_sessions", _migrate_v2_to_v3),
     4: ("provider_circuit_breakers", _migrate_v3_to_v4),
+    5: ("core_runtime_tables", _migrate_v4_to_v5),
 }
 
 
@@ -760,80 +833,6 @@ async def _apply_migrations(conn: aiosqlite.Connection, current: int) -> None:
         except BaseException:
             await conn.rollback()
             raise
-
-
-async def _ensure_config_proposal_schema(conn: aiosqlite.Connection) -> None:
-    """Adopt the guild-fragment proposal table without changing core schema v2."""
-    statements = (
-        """CREATE TABLE IF NOT EXISTS config_proposals (
-            proposal_id TEXT PRIMARY KEY,
-            module_name TEXT NOT NULL,
-            guild_id TEXT NOT NULL,
-            target TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_revision TEXT NOT NULL,
-            base_exists INTEGER NOT NULL CHECK (base_exists IN (0, 1)),
-            base_content TEXT NOT NULL,
-            base_revision TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            actor_json TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('pending','applied','rejected')),
-            decided_by TEXT,
-            decision_reason TEXT NOT NULL DEFAULT '',
-            message_channel_id TEXT,
-            message_id TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )""",
-        """CREATE INDEX IF NOT EXISTS idx_config_proposals_state_time
-            ON config_proposals(state, created_at DESC)""",
-    )
-    for statement in statements:
-        await conn.execute(statement)
-
-
-async def _ensure_module_runtime_schema(conn: aiosqlite.Connection) -> None:
-    """Core-owned module runtime tables, adopted idempotently like the ledger."""
-    await conn.execute(
-        """CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
-            job_id           TEXT PRIMARY KEY,
-            module_name      TEXT NOT NULL,
-            job_key          TEXT NOT NULL,
-            handler          TEXT NOT NULL,
-            run_at           REAL NOT NULL,
-            interval_seconds REAL,
-            jitter_seconds   REAL NOT NULL DEFAULT 0,
-            backoff_json     TEXT NOT NULL DEFAULT '{}',
-            payload_json     TEXT NOT NULL DEFAULT '{}',
-            attempt          INTEGER NOT NULL DEFAULT 0,
-            leased_until     REAL,
-            lease_token      TEXT,
-            last_error       TEXT,
-            created_at       REAL NOT NULL,
-            updated_at       REAL NOT NULL,
-            UNIQUE (module_name, job_key)
-        )"""
-    )
-    await conn.execute(
-        """CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
-            ON module_scheduler_jobs(run_at, leased_until)"""
-    )
-    # One row, one runner: the module scheduler's singleton lease.
-    await conn.execute(
-        """CREATE TABLE IF NOT EXISTS module_scheduler_runner (
-            id           INTEGER PRIMARY KEY CHECK (id = 1),
-            token        TEXT,
-            leased_until REAL NOT NULL DEFAULT 0
-        )"""
-    )
-    await conn.execute(
-        "INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) VALUES (1, NULL, 0)"
-    )
-    await conn.execute(
-        """CREATE TABLE IF NOT EXISTS module_command_guilds (
-            guild_id TEXT PRIMARY KEY
-        )"""
-    )
 
 
 def _sql_quote(value: str) -> str:
@@ -929,21 +928,6 @@ class Database:
             await conn.commit()
         elif current < SCHEMA_VERSION:
             await _apply_migrations(conn, current)
-
-        # Keep the module ledger idempotent so older development databases can
-        # adopt module support independently of the core migration history.
-        await conn.execute(
-            """CREATE TABLE IF NOT EXISTS module_schema_versions (
-                module_name TEXT NOT NULL,
-                version     INTEGER NOT NULL CHECK (version > 0),
-                name        TEXT NOT NULL,
-                applied_at  TEXT NOT NULL,
-                PRIMARY KEY (module_name, version)
-            )"""
-        )
-        await _ensure_config_proposal_schema(conn)
-        await _ensure_module_runtime_schema(conn)
-        await conn.commit()
 
         log.info("Database ready at %s (schema v%d)", self._path, SCHEMA_VERSION)
 

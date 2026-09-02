@@ -4,7 +4,7 @@ import logging
 import sys
 
 from app.runtime import build_app
-from config.settings import settings
+from config.settings import Settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,6 +14,7 @@ logging.basicConfig(
 
 
 def main() -> None:
+    settings = Settings()
     app = build_app(settings)
     raise SystemExit(app.run())
 

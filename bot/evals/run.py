@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from app.providers import close_provider
-from config.settings import settings
+from config.settings import Settings
 from evals.capture import InstrumentedProvider
 from evals.harness import image_part, run_scenario_for_model
 from evals.image_caption import caption_scenario_turns
@@ -46,7 +46,7 @@ def plan_matrix(candidate: str, models: ModelsConfig, scenario_ids: list[str]) -
     return lines
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace, settings: Settings) -> int:
     models = load_models(args.models)
     caption_cache_dir = Path(getattr(args, "captions", EVALS_DIR / "captions"))
     scenarios = load_scenarios(args.scenarios)
@@ -285,7 +285,8 @@ def main() -> None:
         help="Print the run plan and exit without calling any provider.",
     )
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(_run(args)))
+    settings = Settings()
+    raise SystemExit(asyncio.run(_run(args, settings)))
 
 
 if __name__ == "__main__":

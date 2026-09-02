@@ -20,11 +20,18 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 _SKIP_PREFIXES = (".venv/", "tests/", "workspaces/", "data/", "skills/store/")
+_EXPLICIT_PACKAGE_ROOTS = {
+    PROJECT_ROOT / "packages" / "kimi-agent-module-api" / "src" / "kimi_agent_module_api": (
+        "kimi_agent_module_api"
+    ),
+}
 
 # Package -> the packages it may import. Leaves map to an empty set.
 #
-# Three cycles survive and are listed on both sides deliberately. Each is a
-# known seam rather than an oversight:
+# Four direct bidirectional seams survive and are listed on both sides
+# deliberately. The first three merge transitively with memory, skills, storage,
+# and usage into one eight-node SCC; app/modules is the second nontrivial SCC.
+# Each seam is known rather than an oversight:
 #
 #   agent <-> tools            the ReAct core dispatches through the registry,
 #                              while the registry needs the core's activity
@@ -62,6 +69,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "config",
         "discord_adapter",
         "image_gen",
+        "kimi_agent_module_api",
         "memory",
         "moderation",
         "modules",
@@ -83,6 +91,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "codex": {"utils"},
     "commands": {
         "discord_adapter",
+        "kimi_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -90,9 +99,10 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
         "workspace",
     },
-    "config": {"providers", "tools", "trust", "utils"},
+    "config": {"kimi_agent_module_api", "providers", "tools", "trust", "utils"},
     "discord_adapter": {
         "agent",
+        "kimi_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -113,15 +123,19 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "usage",
         "utils",
     },
-    "image_gen": {"codex"},
+    "image_gen": {"codex", "utils"},
+    # Core may depend on the shared SDK vocabulary, but the standalone SDK may not
+    # depend on core. Its broader third-party allowlist is pinned by
+    # test_module_api_contracts.py::test_entire_sdk_has_no_core_runtime_imports.
+    "kimi_agent_module_api": set(),
     "memory": {"providers", "storage", "utils"},
     "moderation": {"observability", "providers", "trust", "utils"},
     # Module API runtime services. Grows as each service lands; the app edge is
     # the harness cycle documented above.
-    "modules": {"app", "config", "storage", "tools", "utils"},
+    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
     "providers": {"codex", "utils"},
-    "scripts": {"codex"},
+    "scripts": {"app", "codex", "config", "kimi_agent_module_api", "sandbox", "skills"},
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": {"utils"},
@@ -145,13 +159,31 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "workspace",
         "web_browser",
     },
-    "trust": set(),
+    "trust": {"kimi_agent_module_api"},
     "usage": {"config"},
-    "utils": set(),
+    "utils": {"kimi_agent_module_api"},
     "video_understanding": {"utils"},
     "web_browser": {"sandbox"},
     "workspace": set(),
 }
+
+_EXPECTED_NONTRIVIAL_SCCS: frozenset[frozenset[str]] = frozenset(
+    {
+        frozenset(
+            {
+                "agent",
+                "config",
+                "discord_adapter",
+                "memory",
+                "skills",
+                "storage",
+                "tools",
+                "usage",
+            }
+        ),
+        frozenset({"app", "modules"}),
+    }
+)
 
 
 def _local_packages() -> set[str]:
@@ -161,7 +193,16 @@ def _local_packages() -> set[str]:
         if path.is_dir() and (path / "__init__.py").exists() and path.name != "tests"
     }
     # bot.py is a module, not a package, but it is a graph node all the same.
-    return packages | {"bot"}
+    return packages | {"bot", *_EXPLICIT_PACKAGE_ROOTS.values()}
+
+
+def _source_package(path: Path, packages: set[str]) -> str | None:
+    for root, package in _EXPLICIT_PACKAGE_ROOTS.items():
+        if path.is_relative_to(root):
+            return package
+    relative = path.relative_to(PROJECT_ROOT).as_posix()
+    source = relative.split("/")[0] if "/" in relative else relative.removesuffix(".py")
+    return source if source in packages else None
 
 
 def _runtime_imports(tree: ast.Module) -> set[str]:
@@ -185,22 +226,74 @@ def _runtime_imports(tree: ast.Module) -> set[str]:
     return modules
 
 
-def _observed_edges() -> dict[str, set[str]]:
+def _observed_graph() -> tuple[set[str], dict[str, set[str]]]:
     packages = _local_packages()
+    nodes: set[str] = set()
     edges: dict[str, set[str]] = {}
     for path in PROJECT_ROOT.rglob("*.py"):
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         if relative.startswith(_SKIP_PREFIXES):
             continue
-        source = relative.split("/")[0] if "/" in relative else relative.removesuffix(".py")
-        if source not in packages:
+        source = _source_package(path, packages)
+        if source is None:
             continue
+        nodes.add(source)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
         for module in _runtime_imports(tree):
             target = module.split(".")[0]
             if target in packages and target != source:
                 edges.setdefault(source, set()).add(target)
-    return edges
+    return nodes, edges
+
+
+def _observed_edges() -> dict[str, set[str]]:
+    return _observed_graph()[1]
+
+
+def _strongly_connected_components(graph: dict[str, set[str]]) -> list[frozenset[str]]:
+    next_index = 0
+    indexes: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[frozenset[str]] = []
+
+    def visit(node: str) -> None:
+        nonlocal next_index
+        indexes[node] = next_index
+        lowlinks[node] = next_index
+        next_index += 1
+        stack.append(node)
+        on_stack.add(node)
+
+        for target in sorted(graph.get(node, set())):
+            if target not in indexes:
+                visit(target)
+                lowlinks[node] = min(lowlinks[node], lowlinks[target])
+            elif target in on_stack:
+                lowlinks[node] = min(lowlinks[node], indexes[target])
+
+        if lowlinks[node] != indexes[node]:
+            return
+        component: set[str] = set()
+        while stack:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.add(member)
+            if member == node:
+                break
+        components.append(frozenset(component))
+
+    nodes = set(graph)
+    nodes.update(target for targets in graph.values() for target in targets)
+    for node in sorted(nodes):
+        if node not in indexes:
+            visit(node)
+    return components
+
+
+def _display_components(components: frozenset[frozenset[str]]) -> list[list[str]]:
+    return sorted((sorted(component) for component in components), key=lambda members: members[0])
 
 
 def test_no_undeclared_package_dependencies() -> None:
@@ -219,6 +312,13 @@ def test_no_undeclared_package_dependencies() -> None:
     )
 
 
+def test_standalone_sdk_is_scanned() -> None:
+    observed_nodes, _ = _observed_graph()
+    assert "kimi_agent_module_api" in observed_nodes, (
+        "Standalone SDK source root disappeared from package-graph discovery"
+    )
+
+
 def test_declared_edges_still_exist() -> None:
     """Reject stale allowlist entries that weaken the graph constraint."""
 
@@ -232,10 +332,30 @@ def test_declared_edges_still_exist() -> None:
     assert not stale, f"_ALLOWED_EDGES lists unobserved dependencies: {stale}"
 
 
+def test_allowed_dependency_sccs_do_not_grow() -> None:
+    actual = frozenset(
+        component
+        for component in _strongly_connected_components(_ALLOWED_EDGES)
+        if len(component) > 1
+    )
+    unexpected = actual - _EXPECTED_NONTRIVIAL_SCCS
+    missing = _EXPECTED_NONTRIVIAL_SCCS - actual
+    assert actual == _EXPECTED_NONTRIVIAL_SCCS, (
+        "Allowed dependency cycles changed; a node joined, left, or created a nontrivial SCC. "
+        f"Unexpected components: {_display_components(unexpected)}; "
+        f"missing components: {_display_components(missing)}"
+    )
+
+
 def test_forbidden_dependency_edges_are_absent() -> None:
     """High-risk dependency boundaries fail with named, specific diagnostics."""
 
     observed = _observed_edges()
+    sdk_core_dependencies = observed.get("kimi_agent_module_api", set())
+    assert not sdk_core_dependencies, (
+        "kimi_agent_module_api -> core is forbidden: the standalone SDK must remain "
+        f"host-independent; found {sorted(sdk_core_dependencies)}"
+    )
     assert "app" not in observed.get("commands", set()), (
         "commands must not import app: app/runtime.py imports every command "
         "module at import time, so this is a runtime cycle held together only "

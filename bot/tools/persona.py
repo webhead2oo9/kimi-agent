@@ -255,6 +255,10 @@ async def _capture_compiler_usage(
         usage=normalize_usage(response.usage),
         usage_present=response.has_reported_usage,
         pricing_model=response.pricing_model or provider_model,
+        upstream_provider=response.upstream_provider,
+        service_tier=response.service_tier,
+        openrouter_charge_usd=response.openrouter_charge_usd,
+        is_byok=response.is_byok,
     )
     if ctx.record_usage_call is not None:
         await ctx.record_usage_call(call)

@@ -43,6 +43,14 @@ working `bwrap` (Bubblewrap) and `prlimit` (util-linux) binaries, and a namespac
 smoke test. UID 0 is rejected. The bot does not register or run the script
 without that boundary.
 
+The interpreter's runtime directories are bind-mounted read-only into the
+jail: the `bin` directory of every path the interpreter is reached through,
+the `lib` trees beside it, and the process's own prefix. Directories above the
+runtime prefix are never bound, however many of them are symlinks. Keep
+interpreters inside a dedicated venv or runtime tree: a runtime rooted at the
+service home itself is refused by the startup probe rather than exposing the
+whole home read-only.
+
 Each invocation gets a new user, mount, PID, IPC, UTS, cgroup, and (normally)
 network namespace; all capabilities are dropped and nested user namespaces are
 disabled. The skill and interpreter runtime are read-only, `/tmp` is a private

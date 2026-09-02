@@ -179,23 +179,34 @@ def is_eligible_to_respond(
     return True
 
 
-def _is_user_only_integration(interaction: discord.Interaction) -> bool:
+def _integration_marker(interaction: discord.Interaction, name: str) -> bool | None:
+    marker = getattr(interaction, name, None)
+    if not callable(marker):
+        return None
+    try:
+        return bool(marker())
+    except Exception:
+        return None
+
+
+def is_user_integration(interaction: discord.Interaction) -> bool:
+    """Return the interaction's user-install marker, failing closed."""
+
+    return _integration_marker(interaction, "is_user_integration") is True
+
+
+def is_user_only_integration(interaction: discord.Interaction) -> bool:
     """True when the interaction arrived via the user installation alone.
 
     Fails closed: if the integration markers are unavailable (older discord.py,
     a test stub, or an unexpected interaction shape) this returns ``False`` so
     the guild allowlist still applies, preserving the stricter behavior.
     """
-    is_user = getattr(interaction, "is_user_integration", None)
-    is_guild = getattr(interaction, "is_guild_integration", None)
-    if not callable(is_user) or not callable(is_guild):
-        # Require BOTH markers so a partial/unexpected shape stays gated rather
-        # than granting the exemption on incomplete information.
-        return False
-    try:
-        return bool(is_user()) and not bool(is_guild())
-    except Exception:
-        return False
+    user_marker = _integration_marker(interaction, "is_user_integration")
+    guild_marker = _integration_marker(interaction, "is_guild_integration")
+    # Require BOTH markers so a partial/unexpected shape stays gated rather
+    # than granting the exemption on incomplete information.
+    return user_marker is True and guild_marker is False
 
 
 def is_allowed_guild_interaction(
@@ -213,7 +224,7 @@ def is_allowed_guild_interaction(
     """
     if allowed_guilds is None:
         return True
-    if _is_user_only_integration(interaction):
+    if is_user_only_integration(interaction):
         return True
     guild_id = getattr(interaction, "guild_id", None)
     return guild_id is None or guild_id in allowed_guilds

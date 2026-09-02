@@ -132,8 +132,10 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
   workspace file.
 - Formats: source bytes are sniffed for PNG, JPEG, or WebP signatures rather
   than trusted by filename.
-- Output: base64 must decode, carry a PNG signature, and fit the 10 MiB Discord
-  default file limit before it is written.
+- Output: base64 must decode, fit the 10 MiB Discord default file limit, and
+  pass the same full-decode PNG validation as provider-native image assets
+  (`utils/image_types.py:decoded_image_media_type`) before it is written. A
+  bare PNG signature, a CRC-corrupt chunk, or a truncated file is rejected.
 - Workspace reads, writes, and the complete provider call hold the same
   per-workspace activity lease as the file tools, preventing mutation races and
   sweeper/privacy deletion. A slow call can therefore delay maintenance for up

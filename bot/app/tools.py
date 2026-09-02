@@ -21,8 +21,8 @@ from providers.factory import get_codex_auth_manager
 from skills.admin import SkillAdminService
 from skills.loader import SharedSkillCatalog, scan_skills
 from skills.personal import PersonalSkillManager
-from skills.registration import reload_all_skill_tools
-from skills.sandbox import validate_sandbox_runtime
+from skills.registration import build_script_sandbox_limits, reload_all_skill_tools
+from skills.sandbox import ScriptSandboxLimits, validate_sandbox_runtime
 from skills.secrets import load_secrets
 from search.brave import BraveSearchBackend
 from search.chain import SearchChain
@@ -71,12 +71,12 @@ from web_browser.visual_service import VisualService
 log = logging.getLogger(__name__)
 
 
-def _validate_executable_skill_sandbox(skills_store: Path) -> bool:
+def _validate_executable_skill_sandbox(skills_store: Path, limits: ScriptSandboxLimits) -> bool:
     """Validate the OS boundary iff this store contains executable tools."""
 
     if not any(meta.tools for meta in scan_skills(skills_store).values()):
         return False
-    validate_sandbox_runtime()
+    validate_sandbox_runtime(limits)
     return True
 
 
@@ -150,7 +150,9 @@ def build_runtime_tools(
     def ensure_executable_skill_sandbox() -> None:
         nonlocal sandbox_runtime_validated
         if not sandbox_runtime_validated:
-            sandbox_runtime_validated = _validate_executable_skill_sandbox(skills_store)
+            sandbox_runtime_validated = _validate_executable_skill_sandbox(
+                skills_store, build_script_sandbox_limits(settings)
+            )
 
     init_browse_tools(registry)
     init_plan_tool(registry)
@@ -244,6 +246,7 @@ def build_runtime_tools(
             skills_store=skills_store,
             registry=registry,
             secrets=all_secrets,
+            settings=settings,
             workspace_manager=workspace_manager,
             script_semaphore=script_semaphore,
             workspace_locks=workspace_locks,
@@ -549,20 +552,13 @@ def _register_video(
     return service
 
 
-def _register_code_exec(
-    settings: Settings,
-    registry: ToolRegistry,
-    workspace_manager: WorkspaceManager,
-    locks: UserLocks,
-    *,
-    netns_lease: NetnsLease | None = None,
-    netns_conflict: Callable[[str, str], bool] | None = None,
-    runtime_guards: CodeExecRuntimeGuards | None = None,
-) -> SandboxConfig | None:
-    if not settings.code_exec_enabled:
-        log.info("Code execution disabled; CODE_EXEC_ENABLED is not set")
-        return None
+def build_sandbox_config(settings: Settings) -> SandboxConfig:
+    """The code-execution profile startup runs, derived from the live settings.
 
+    Shared with scripts/sandbox_probe.py so an operator's diagnostic exercises
+    the same interpreter, network mode, binds, and workspace root that
+    registration will, rather than the dataclass defaults.
+    """
     venv_dir = settings.code_exec_venv_dir.strip()
     python_bin = (
         str(Path(venv_dir) / "bin" / "python3") if venv_dir else settings.code_exec_python_bin
@@ -574,7 +570,7 @@ def _register_code_exec(
         if path
     )
     network_mode = cast(SandboxNetworkMode, settings.code_exec_network_mode)
-    sandbox_config = SandboxConfig(
+    return SandboxConfig(
         python_bin=python_bin,
         bwrap_bin=settings.code_exec_bwrap_bin,
         prlimit_bin=settings.code_exec_prlimit_bin,
@@ -616,6 +612,24 @@ def _register_code_exec(
         max_env_bytes=settings.code_exec_env_dir_max_mb * 1024 * 1024,
         max_env_files=settings.code_exec_env_dir_max_files,
     )
+
+
+def _register_code_exec(
+    settings: Settings,
+    registry: ToolRegistry,
+    workspace_manager: WorkspaceManager,
+    locks: UserLocks,
+    *,
+    netns_lease: NetnsLease | None = None,
+    netns_conflict: Callable[[str, str], bool] | None = None,
+    runtime_guards: CodeExecRuntimeGuards | None = None,
+) -> SandboxConfig | None:
+    if not settings.code_exec_enabled:
+        log.info("Code execution disabled; CODE_EXEC_ENABLED is not set")
+        return None
+
+    sandbox_config = build_sandbox_config(settings)
+    network_mode = sandbox_config.network_mode
     if not sandbox_available(sandbox_config):
         log.warning(
             "Code execution enabled but the %s sandbox profile failed its startup "

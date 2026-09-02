@@ -365,6 +365,33 @@ class CodingTaskStore:
             await self._append_event_conn(conn, task_id, "started", {}, now)
         return await self.get_task(task_id)
 
+    async def release_claim(self, task_id: str) -> bool:
+        """Put a just-claimed task back in the queue.
+
+        For the window between claim_next() and worker registration where the
+        scheduler decides the claim must not stand (for example the block check
+        raised): without this the row stays 'running' with no worker until the
+        next restart, and its workspace admits no other task.
+        """
+
+        now = time.time()
+        async with self._db.write_transaction() as conn:
+            changed = await conn.execute(
+                """
+                UPDATE coding_tasks
+                SET status = 'queued', updated_at = ?, heartbeat_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (now, now, task_id),
+            )
+            if changed.rowcount != 1:
+                # The row moved (a cancel landed, or privacy deletion removed
+                # it); recording a release that did not happen would falsify
+                # the durable event log.
+                return False
+            await self._append_event_conn(conn, task_id, "claim_released", {}, now)
+        return True
+
     async def bind_handoff_target(
         self,
         task_id: str,
@@ -672,7 +699,15 @@ class CodingTaskStore:
     async def request_cancel(self, task_id: str, *, reason: str = "") -> bool:
         now = time.time()
         async with self._db.write_transaction() as conn:
-            changed = await conn.execute(
+            async with conn.execute(
+                "SELECT status FROM coding_tasks WHERE id = ?", (task_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return False
+            prior = str(row[0])
+            terminalized = prior in ("queued", "waiting_for_input")
+            await conn.execute(
                 """
                 UPDATE coding_tasks
                 SET cancel_requested = 1,
@@ -684,16 +719,24 @@ class CodingTaskStore:
                                   ELSE 'cancelling' END,
                     finished_at = CASE WHEN status IN ('queued','waiting_for_input')
                                        THEN ? ELSE finished_at END,
+                    delivery_state = CASE WHEN status IN ('queued','waiting_for_input')
+                                          THEN 'final_pending' ELSE delivery_state END,
                     updated_at = ?, heartbeat_at = ?
                 WHERE id = ?
                 """,
                 (now, now, now, task_id),
             )
-            if changed.rowcount != 1:
-                return False
             await self._append_event_conn(
                 conn, task_id, "cancel_requested", {"reason": reason}, now
             )
+            if terminalized:
+                # A row cancelled straight from the queue reaches no worker and
+                # no finish() call; without the finished event and the
+                # final_pending state the sweeper never announces it when the
+                # caller's immediate notify fails.
+                await self._append_event_conn(
+                    conn, task_id, "finished", {"status": "cancelled", "error": ""}, now
+                )
         return True
 
     async def finish(
@@ -918,7 +961,7 @@ class CodingTaskStore:
         async with self._db.write_transaction() as conn:
             async with conn.execute(
                 """
-                SELECT id FROM coding_tasks
+                SELECT id, cancel_requested FROM coding_tasks
                 WHERE status IN (
                     'recovering','running','waiting_for_job','waiting_for_input','cancelling'
                 )
@@ -928,6 +971,7 @@ class CodingTaskStore:
             for row in rows:
                 task_id = str(row[0])
                 recovered.append(task_id)
+                cancelled_on_recovery = bool(row[1])
                 await conn.execute(
                     """
                     UPDATE coding_tasks
@@ -937,11 +981,17 @@ class CodingTaskStore:
                             ELSE 'queued'
                         END,
                         finished_at = CASE WHEN cancel_requested = 1 THEN ? ELSE NULL END,
+                        delivery_state = CASE WHEN cancel_requested = 1
+                                              THEN 'final_pending' ELSE delivery_state END,
                         updated_at = ?, heartbeat_at = ?
                     WHERE id = ?
                     """,
                     (now, now, now, task_id),
                 )
+                if cancelled_on_recovery:
+                    await self._append_event_conn(
+                        conn, task_id, "finished", {"status": "cancelled", "error": ""}, now
+                    )
                 await conn.execute(
                     """
                     UPDATE coding_command_jobs

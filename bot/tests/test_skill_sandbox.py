@@ -11,7 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from skills import sandbox as sandbox_module
 from skills.runner import run_script
+from config.settings import Settings
+from skills.registration import build_script_sandbox_limits
 from skills.sandbox import (
     SandboxRuntime,
     SandboxUnavailableError,
@@ -20,6 +23,7 @@ from skills.sandbox import (
     detect_sandbox_runtime,
     validate_sandbox_runtime,
 )
+from tests.sandbox_gate import sandbox_skip_allowed
 
 
 def _command_fixture(tmp_path: Path, *, allow_network: bool = False) -> list[str]:
@@ -124,11 +128,11 @@ def test_configured_executable_tools_require_successful_startup_probe(
     monkeypatch.setattr(
         app_tools,
         "validate_sandbox_runtime",
-        lambda: (_ for _ in ()).throw(SandboxUnavailableError("probe denied")),
+        lambda _limits: (_ for _ in ()).throw(SandboxUnavailableError("probe denied")),
     )
 
     with pytest.raises(SandboxUnavailableError, match="probe denied"):
-        app_tools._validate_executable_skill_sandbox(tmp_path)
+        app_tools._validate_executable_skill_sandbox(tmp_path, ScriptSandboxLimits())
 
 
 def test_instruction_only_store_does_not_require_linux_sandbox(
@@ -145,24 +149,240 @@ def test_instruction_only_store_does_not_require_linux_sandbox(
     monkeypatch.setattr(
         app_tools,
         "validate_sandbox_runtime",
-        lambda: (_ for _ in ()).throw(AssertionError("should not probe")),
+        lambda _limits: (_ for _ in ()).throw(AssertionError("should not probe")),
     )
 
-    assert app_tools._validate_executable_skill_sandbox(tmp_path) is False
+    assert app_tools._validate_executable_skill_sandbox(tmp_path, ScriptSandboxLimits()) is False
+
+
+def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
+    """uv reaches its interpreter through a version-alias directory symlink;
+    mounting only the resolved target leaves that hop missing inside the jail
+    and execvp fails with ENOENT despite every visible component existing."""
+    store = tmp_path / "store"
+    real_bin = store / "cpython-1.2.3" / "bin"
+    real_bin.mkdir(parents=True)
+    (store / "cpython-1.2.3" / "lib").mkdir()
+    (real_bin / "python1.2").write_text("", encoding="utf-8")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    try:
+        (store / "cpython-1.2").symlink_to(store / "cpython-1.2.3", target_is_directory=True)
+        (venv_bin / "python").symlink_to(store / "cpython-1.2" / "bin" / "python1.2")
+        (venv_bin / "python3").symlink_to("python")
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+
+    mounts = sandbox_module._runtime_mounts((venv_bin / "python3").absolute())
+
+    alias_bin = store / "cpython-1.2" / "bin"
+    # The stdlib lives next to the executable's path, so the alias tree must
+    # be covered as a whole, not just its bin directory.
+    alias_lib = store / "cpython-1.2" / "lib"
+    for needed in (venv_bin, alias_bin, alias_lib, real_bin):
+        assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
+            f"{needed} is not covered by {mounts}"
+        )
+
+
+def test_runtime_mounts_never_bind_a_symlinked_ancestor_above_the_runtime(
+    tmp_path: Path,
+) -> None:
+    """A symlink high in the interpreter path (a relocated ``~/.local``) must
+    not turn into a whole-tree bind: everything beside the runtime under that
+    ancestor - databases, tokens, skill stores - would enter every jail."""
+    real_local = tmp_path / "volume" / "local"
+    runtime = real_local / "share" / "uv" / "python" / "cpython-1.2.3"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "lib").mkdir()
+    (runtime / "bin" / "python1.2").write_text("", encoding="utf-8")
+    (real_local / "share" / "kimi").mkdir()
+    (real_local / "share" / "kimi" / "bot.db").write_text("secret", encoding="utf-8")
+    local = tmp_path / "home" / ".local"
+    local.parent.mkdir()
+    try:
+        local.symlink_to(real_local, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+    interpreter = local / "share" / "uv" / "python" / "cpython-1.2.3" / "bin" / "python1.2"
+
+    mounts = sandbox_module._runtime_mounts(interpreter.absolute())
+
+    secret = local / "share" / "kimi" / "bot.db"
+    for mount in mounts:
+        assert not secret.is_relative_to(mount), f"{mount} exposes {secret}"
+        assert not real_local.is_relative_to(mount) and mount != local, mount
+    alias_prefix = interpreter.parent.parent
+    for needed in (alias_prefix / "bin", alias_prefix / "lib"):
+        assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
+            f"{needed} is not covered by {mounts}"
+        )
+
+
+def test_runtime_mounts_refuse_an_interpreter_directly_in_the_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An interpreter parented by the service home would ro-bind the whole
+    home - credentials included - into every jail."""
+    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: tmp_path))
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module._runtime_mounts(interpreter.absolute())
+
+
+def test_runtime_mounts_canonicalize_a_symlinked_service_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_home = tmp_path / "real" / "service-home"
+    real_home.mkdir(parents=True)
+    logical_home = tmp_path / "logical-home"
+    runtime_alias = tmp_path / "runtime-alias"
+    executable = tmp_path / "python-runtime" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    try:
+        logical_home.symlink_to(real_home, target_is_directory=True)
+        runtime_alias.symlink_to(real_home.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+    monkeypatch.setattr(
+        sandbox_module.Path,
+        "home",
+        classmethod(lambda cls: logical_home),
+    )
+    monkeypatch.setattr(sandbox_module.sys, "executable", str(executable))
+    monkeypatch.setattr(sandbox_module.sys, "prefix", str(runtime_alias))
+    monkeypatch.setattr(sandbox_module.sys, "base_prefix", str(executable.parent))
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module._runtime_mounts(executable)
+
+
+def test_runtime_mounts_fail_closed_when_home_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_home = tmp_path / "missing-home"
+    interpreter = tmp_path / "runtime" / "python"
+    interpreter.parent.mkdir()
+    interpreter.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        sandbox_module.Path,
+        "home",
+        classmethod(lambda cls: missing_home),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="Could not resolve the service home"):
+        sandbox_module._runtime_mounts(interpreter)
+
+
+def test_runtime_mounts_fail_closed_on_dotdot_across_an_alias(tmp_path: Path) -> None:
+    """A relative .. hop that crosses an unresolved directory symlink is
+    normalized the way the jail will see it; when that path does not exist on
+    the host the layout is refused by name rather than mounted wrongly."""
+    srv = tmp_path / "srv"
+    (srv / "python-v2").mkdir(parents=True)
+    (srv / "python-v2" / "python").write_text("", encoding="utf-8")
+    (srv / "python-v1").mkdir()
+    aliases = tmp_path / "opt" / "aliases"
+    aliases.mkdir(parents=True)
+    try:
+        (aliases / "current").symlink_to(srv / "python-v1", target_is_directory=True)
+        (srv / "python-v1" / "python").symlink_to(Path("..") / "python-v2" / "python")
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+
+    with pytest.raises(SandboxUnavailableError, match="does not exist"):
+        sandbox_module._runtime_mounts((aliases / "current" / "python").absolute())
+
+
+def test_validate_probe_refuses_a_home_rooted_interpreter_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The README promises the home-rooted refusal at boot, not on the first
+    skill call, so the probe checks the interpreter's mount layout itself."""
+    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: tmp_path))
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sandbox_module.sys, "executable", str(interpreter))
+    monkeypatch.setattr(
+        sandbox_module,
+        "detect_sandbox_runtime",
+        lambda: SandboxRuntime(bwrap="/usr/bin/bwrap", prlimit="/usr/bin/prlimit"),
+    )
+    probes: list[list[str]] = []
+    monkeypatch.setattr(
+        sandbox_module.subprocess,
+        "run",
+        lambda command, **kwargs: probes.append(command),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module.validate_sandbox_runtime(ScriptSandboxLimits())
+
+    assert probes == []
+
+
+def test_validate_probe_applies_every_configured_limit(monkeypatch, tmp_path: Path) -> None:
+    """The startup probe must exercise the same ceilings real invocations use,
+    tmpfs included, or a host that rejects one passes validation and every
+    skill call fails."""
+    recorded: dict = {}
+
+    class _Done:
+        returncode = 0
+        stderr = b""
+
+    def capture(command, **kwargs):
+        recorded["command"] = command
+        return _Done()
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", capture)
+    monkeypatch.setattr(
+        sandbox_module,
+        "detect_sandbox_runtime",
+        lambda: SandboxRuntime(bwrap="bwrap", prlimit="prlimit"),
+    )
+    monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(sandbox_module, "_covered_by_base_mount", lambda path: True)
+
+    limits = ScriptSandboxLimits(
+        memory_bytes=111,
+        cpu_seconds=22,
+        file_size_bytes=333,
+        open_files=44,
+        processes=55,
+        tmpfs_bytes=789,
+    )
+    validate_sandbox_runtime(limits)
+
+    command = recorded["command"]
+    for expected in ("--as=111", "--cpu=22", "--fsize=333", "--nofile=44", "--nproc=55"):
+        assert expected in command
+    size_index = command.index("--size")
+    assert command[size_index + 1] == "789"
+    assert command[size_index + 2 : size_index + 4] == ["--tmpfs", "/tmp"]
 
 
 def _live_linux_sandbox_unavailable() -> bool:
     if sys.platform != "linux" or not shutil.which("bwrap") or not shutil.which("prlimit"):
         return True
     try:
-        validate_sandbox_runtime()
+        # The configured ceilings, not the dataclass defaults: a gate that
+        # passes at limits real invocations never use certifies nothing. This
+        # runs at collection time, so it deliberately reads the live profile
+        # (allowlisted in test_settings_isolation.py).
+        validate_sandbox_runtime(build_script_sandbox_limits(Settings()))  # type: ignore[call-arg]
     except SandboxUnavailableError:
         return True
     return False
 
 
 _requires_linux_sandbox = pytest.mark.skipif(
-    _live_linux_sandbox_unavailable(),
+    sandbox_skip_allowed(_live_linux_sandbox_unavailable()),
     reason="requires a working production Linux Bubblewrap sandbox",
 )
 

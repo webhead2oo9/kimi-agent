@@ -877,6 +877,45 @@ async def test_prepare_turn_proceeds_for_non_image_attachment_only_message() -> 
 
 
 @pytest.mark.asyncio
+async def test_prepare_turn_removes_validated_image_from_generic_attachment_path() -> None:
+    source = SimpleNamespace(
+        filename="photo.png",
+        content_type="application/octet-stream",
+    )
+    attachment = AttachmentRef(
+        filename=source.filename,
+        size=12,
+        content_type=source.content_type,
+        source=source,
+    )
+    image_part = ContentPart.from_image_url(
+        url="data:image/png;base64,YWJj",
+        media_type="image/png",
+    )
+    collect_images = RecordingCollectImages(
+        TurnImages(
+            vision_parts=[image_part],
+            edit_target=None,
+            current_attachment_source_ids=frozenset({id(source)}),
+        )
+    )
+    dependencies, _ = _dependencies(
+        collect_images=collect_images,
+        collect_attachments_result=(attachment,),
+    )
+
+    prepared = await prepare_turn(
+        _input(SimpleNamespace(attachments=[source])),
+        dependencies=dependencies,
+        config=_config(),
+    )
+
+    assert prepared is not None
+    assert prepared.input_parts == (image_part,)
+    assert prepared.attachments == ()
+
+
+@pytest.mark.asyncio
 async def test_zero_image_budget_rejects_image_only_turn_before_context_or_reads() -> None:
     image = SimpleNamespace(content_type="image/png", filename="pic.png")
     message = SimpleNamespace(attachments=[image])
@@ -884,6 +923,37 @@ async def test_zero_image_budget_rejects_image_only_turn_before_context_or_reads
     dependencies, manager = _dependencies(
         strip_mention=RecordingStripMention(result=""),
         collect_images=collect_images,
+    )
+
+    prepared = await prepare_turn(
+        _input(message),
+        dependencies=dependencies,
+        config=replace(_config(), max_turn_images=0),
+    )
+
+    assert prepared is None
+    assert manager.calls == []
+    assert collect_images.calls == []
+
+
+@pytest.mark.asyncio
+async def test_zero_image_budget_rejects_generic_image_candidate_attachment() -> None:
+    source = SimpleNamespace(
+        content_type="application/octet-stream",
+        filename="pic.png",
+    )
+    attachment = AttachmentRef(
+        filename=source.filename,
+        size=12,
+        content_type=source.content_type,
+        source=source,
+    )
+    message = SimpleNamespace(attachments=[source])
+    collect_images = RecordingCollectImages()
+    dependencies, manager = _dependencies(
+        strip_mention=RecordingStripMention(result=""),
+        collect_images=collect_images,
+        collect_attachments_result=(attachment,),
     )
 
     prepared = await prepare_turn(

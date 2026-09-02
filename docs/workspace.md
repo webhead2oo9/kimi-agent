@@ -4,7 +4,7 @@ In ordinary guild chat, each user gets a sandboxed workspace directory **per com
 
 ## Quick reference
 
-If you just want the gist:
+The short version:
 
 - **One workspace per (user, guild)** in guild chat; **one per user** across `/chat` and personal DMs. The composite key is `ctx.workspace_key` and the model never sees it.
 - **Path safety is enforced at one chokepoint** (`WorkspaceManager.resolve_user_file_path`): absolute paths, `..` traversal, depth over `MAX_PATH_DEPTH` (40), and any symlink in the resolved chain are rejected.

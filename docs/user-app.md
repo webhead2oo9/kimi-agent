@@ -1,6 +1,6 @@
 # Discord user-app personal chat
 
-The optional user-install surface gives an approved Discord user one personal conversation with the assistant through `/chat`. It is deliberately disabled by default and doesn't change the bot's normal mention/reply behavior.
+Discord lets a bot be installed on a user account as well as in a server. Kimi uses that to give an approved user one personal conversation with the assistant through `/chat`, usable from any server or DM. It is off by default and does not change the bot's normal mention/reply behavior in servers.
 
 ## What is exposed
 
@@ -11,13 +11,13 @@ When `USER_APP_CHAT_ENABLED=true`, the application registers these commands for 
 
 It also makes the existing self-service `/privacy`, `/memory`, and `/stop` commands available to both Guild Install and User Install. `/chat` itself is ID-allowlisted. `/chat-reset`, `/privacy`, `/memory`, and `/stop` remain caller-scoped so a user can clear or control their data even after access is removed.
 
-Discord user installs are command-only. Installing the app on a user account does **not** let it receive arbitrary channel messages, replies, or an ambient `hey Kimi` trigger in servers where the bot is absent. Use `/chat` there.
+Discord user installs are command-only. Installing the app on a user account does **not** let it see channel messages, replies, or a `hey Kimi` in servers where the bot itself is not installed. Use `/chat` there.
 
 ## Direct messages
 
 Want to continue the conversation without running `/chat` each time? Turn on `USER_APP_DM_ENABLED`. An approved user can then message the bot directly and pick up exactly where `/chat` left off. The setting is off by default and requires `USER_APP_CHAT_ENABLED`.
 
-Both entry points share one transcript, workspace, reset, privacy deletion, conversation lock, and `chat` prompt template. A conversation started with `/chat` in a server therefore continues naturally in DM, and switching back to `/chat` keeps the same context. Neither personal entry point applies the guild new-user onboarding threshold or its prior-message counter. Both neutralize line breaks in user input before building the model's labeled speaker line, so embedded `Name: content` text cannot forge another turn.
+Both entry points share one transcript, workspace, reset, privacy deletion, conversation lock, and `chat` prompt template. A conversation started with `/chat` in a server continues naturally in DM, and switching back to `/chat` keeps the same context. Neither personal entry point applies the guild new-user onboarding threshold. Both strip line breaks from user input before building the model's `Name: content` speaker line, so a message cannot forge another speaker's turn.
 
 Only users on the `USER_APP_*` access lists can use personal DMs. Messages from everyone else are ignored without a reply. Access is checked again after acquiring the conversation lock, so removing a user from the list also stops queued messages from running. `/chat` likewise rechecks access and the user block after waiting for that lock; its initial block check remains before consent or any other response.
 
@@ -25,7 +25,7 @@ Two differences from `/chat` follow from being a real message rather than a slas
 
 While a response is running, send `stop`, `cancel`, or `abort` by itself to end it. At other times those words remain ordinary chat messages.
 
-Under the hood, DMs and `/chat` use the same `userchat:<user_id>` root, `<user_id>__userapp` workspace, and `userapp` cancellation scope. This keeps transcripts and cleanup caller-scoped across both Discord entry points.
+Under the hood, DMs and `/chat` use the same `userchat:<user_id>` conversation root, `<user_id>__userapp` workspace, and `userapp` cancellation scope, so transcripts and cleanup stay tied to the caller across both entry points.
 
 `app/user_app_chat.py:UserAppChatController` owns the personal interaction and DM policy, generation tokens, reset, and rooted execution. `app/user_app_consent.py:UserAppConsentPrompter` is the shared fail-closed consent boundary for `/chat` and **Teach <bot>**. `app/work_cancellation.py:WorkCancellationCoordinator` unifies `/stop`, reset, and privacy teardown across foreground turns and durable coding work.
 

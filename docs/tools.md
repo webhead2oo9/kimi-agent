@@ -1,9 +1,8 @@
 # Tool catalog
 
-This page lists every built-in tool Kimi can expose to the language model,
-along with who can use each one and which runtime gates decide whether it gets
-registered at all. The schemas and the enforcement behind them live in
-`tools/`.
+This page lists every built-in tool Kimi can offer the language model, who can
+use each one, and which settings decide whether it is registered at all. The
+schemas and the enforcement behind them live in `tools/`.
 
 Deployment plugins, installed application modules, and operator-authored
 script-backed skill tools are dynamic rather than built in, so they get their
@@ -11,9 +10,8 @@ own treatment under [Extensible tools](#extensible-tools).
 
 ## Discord application commands
 
-Before the tools themselves, it helps to separate out the slash commands. These
-are direct Discord UI actions that a person invokes; the model never selects
-them:
+First, the slash commands, which are not tools. A person invokes these
+directly in Discord; the model never selects them:
 
 | Command | Access | Purpose |
 |---|---|---|
@@ -47,11 +45,11 @@ The tables below use a few terms consistently, so here is what they mean:
   `pinned_tools`. Neither mechanism bypasses the trust or dispatch checks. See
   [configuration](configuration.md).
 
-When a tool is unavailable or the caller is not authorized, it is left out of
-the model-facing surface and masked as `Unknown tool` at dispatch, so its
-existence never leaks. The registry in
-[`bot/tools/registry.py`](../bot/tools/registry.py) is the authoritative
-boundary; prompt text is never an access control.
+When a tool is unavailable or the caller is not allowed to use it, it is left
+out of the model's tool list and answered with `Unknown tool` if the model
+tries anyway, so its existence never leaks. The registry in
+[`bot/tools/registry.py`](../bot/tools/registry.py) is the enforcement point;
+prompt text is never an access control.
 
 ## Discovery and task flow
 

@@ -198,6 +198,67 @@ def test_ordinary_animated_images_survive_frame_budgeting(
     assert image_types.decoded_image_media_type(buffer.getvalue()) == media_type
 
 
+def test_canvas_sized_animation_frames_do_not_exhaust_the_pixel_budget() -> None:
+    """Pillow reports the full canvas for every frame, so a 120-frame 640x480
+    GIF costs 36.9M canvas pixels: over the single-image cap but ordinary
+    output that must validate."""
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    frames = [Image.new("P", (640, 480), index % 256) for index in range(120)]
+    buffer = BytesIO()
+    frames[0].save(
+        buffer, format="GIF", save_all=True, append_images=frames[1:], duration=50, loop=0
+    )
+
+    assert image_types._MAX_VALIDATED_IMAGE_PIXELS < 120 * 640 * 480
+    assert image_types.decoded_image_media_type(buffer.getvalue()) == "image/gif"
+
+
+def test_animation_budget_is_still_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single frame over the memory cap, or a run of frames past the work
+    cap, is rejected without decoding further."""
+
+    class Frame:
+        def __init__(self, width: int, height: int) -> None:
+            self.size = (width, height)
+
+    class FakeImage:
+        format = "GIF"
+
+        def __init__(self, frames: list[Frame]) -> None:
+            self._frames = frames
+            self.size = frames[0].size
+            self.loaded = 0
+
+        def seek(self, frame: int) -> None:
+            if frame >= len(self._frames):
+                raise EOFError
+            self.size = self._frames[frame].size
+
+        def load(self) -> None:
+            self.loaded += 1
+
+        def __enter__(self) -> FakeImage:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    gif = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+    cases = {
+        "oversized frame": [Frame(4097, 4096)],
+        "work cap": [Frame(4096, 4096)] * 17,
+    }
+    for label, frames in cases.items():
+        image = FakeImage(frames)
+        monkeypatch.setattr(image_types.Image, "open", lambda _payload, image=image: image)
+        assert image_types.decoded_image_media_type(gif) is None, label
+        assert image.loaded < len(frames), label
+
+
 def test_trailing_bytes_after_the_container_terminator_are_tolerated() -> None:
     """Decoders ignore padding after IEND/EOI/trailer/RIFF end, and providers
     occasionally emit it; the container walk must not be stricter than Pillow."""

@@ -8,7 +8,7 @@ Enabling the browser adds real attack surface. It is off by default. Only turn i
 
 Each Discord user gets their own profile. The folder name is a hash of their user id, not the id itself. Cookies and local storage persist in that user's profile across conversations, while tabs stay inside one conversation. Nothing mixes across users. Only one worker runs at a time; switching users closes the current worker before the next one starts.
 
-Each call sends one bounded Playwright snippet to the bridge and gets structured JSON back. Screenshots are accepted only from the current profile's artifact directory. They are checked for path, type, and size, then copied into the user's workspace. If the model can see images, it receives them. A proof screenshot is also attached to the Discord reply. All page content is treated as untrusted data.
+Each call sends one bounded Playwright snippet to the bridge and gets structured JSON back. Screenshots are accepted only from the current profile's artifact directory. They are checked for path, type, and size, then copied into the user's workspace. If the model can see images, it receives them. When the model takes a proof screenshot (`screenshot({kind:'proof'})`), that image is also attached to the Discord reply so the user can see what the bot saw. All page content is treated as untrusted data.
 
 BetterWright's credential vault, automatic downloads, public-search fallback, and live view are disabled. The bridge blocks loopback and private networks. Cloud and daemon providers are never used.
 
@@ -72,13 +72,13 @@ Point the probe at a real private endpoint that must stay unreachable. At boot, 
 
 ## Limits, profiles, and privacy
 
-Startup limits are listed in the configuration guide. Live guild or channel config can only make per-call limits tighter. A worker closes after `BROWSER_IDLE_TTL_SECONDS` of inactivity and is recycled before the next call once it passes `BROWSER_WORKER_MAX_LIFETIME_SECONDS`.
+Startup limits are listed in the [configuration guide](configuration.md). Live guild or channel config can only make per-call limits tighter. A worker closes after `BROWSER_IDLE_TTL_SECONDS` of inactivity and is recycled before the next call once it passes `BROWSER_WORKER_MAX_LIFETIME_SECONDS`.
 
 If a profile grows past `BROWSER_MAX_PROFILE_MB`, it is deleted (not trimmed). Any logged-in sessions in that profile are lost. The next call for that user starts fresh. Profiles also expire after `BROWSER_PROFILE_TTL_SECONDS` of inactivity.
 
 `/privacy` → **Delete my data** waits for active work, closes the worker, and removes the profile immediately.
 
-Treat `data/browser_profiles/` with the same private storage, backup, access, and deletion policy as workspaces. See the privacy policy.
+Treat `data/browser_profiles/` with the same private storage, backup, access, and deletion policy as workspaces. See the [privacy policy](privacy-policy.md).
 
 ## Upgrading the runtime
 

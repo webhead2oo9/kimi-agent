@@ -1,16 +1,16 @@
 # ReAct-loop context compaction
 
-When a tool-heavy turn grows long, the projected request can approach the model window limit. Instead of failing or dropping history, Kimi runs an automatic compaction step that summarizes the oldest iterations into a single progress note. This keeps the turn moving without losing the important facts, artifacts, and decisions.
+When a tool-heavy turn runs long, the next request to the model can get close to the model's context window. Instead of failing or silently dropping history, Kimi runs an automatic compaction step that summarizes the oldest tool iterations into a single progress note. The turn keeps moving, and the important facts, file paths, and decisions stay in view.
 
-Compaction only affects the in-flight request. The persisted channel transcript is never touched. The same turn can compact multiple times; each new summary folds the previous note in so they roll forward rather than stacking up.
+Compaction only changes what is sent to the model for the current turn. The saved channel transcript is never touched. The same turn can compact more than once; each new summary folds the previous note into itself, so notes roll forward rather than piling up.
 
 ## Why it exists
 
-Long tool-using conversations can easily exceed even generous context windows. Without compaction, the turn would either hit a hard limit or require the model to drop earlier work. Compaction gives the model a structured handoff of what happened so far, keeps the original request visible, and preserves a tail of recent raw iterations. The goal is to stay under budget while keeping the important context intact.
+A turn that reads files, runs tests, and fixes things for twenty iterations can outgrow even a generous context window. Without compaction, the turn would either hit a hard limit or have to throw away earlier work. Compaction hands the model a structured summary of what happened so far, keeps the original request visible, and leaves the most recent iterations untouched. The goal is to stay under budget without losing the context that matters.
 
 ## When compaction fires
 
-Compaction triggers when the projected input tokens reach `COMPACTION_TRIGGER_TOKENS`. The projection uses the provider's last measured input-token count and adds an estimate of everything appended since. The estimate is deliberately conservative (characters divided by 3.5 instead of the more common ~4), so it tends to fire a little early. That is the safe side of overflowing the window.
+Compaction fires when the estimated size of the next request reaches `COMPACTION_TRIGGER_TOKENS` (120,000 by default). The estimate starts from the input-token count the provider reported for the previous call and adds an estimate for everything appended since. That estimate is deliberately pessimistic (characters divided by 3.5 rather than the more usual 4), so compaction tends to fire a little early. Early is the safe side of overflowing the window.
 
 **Tuning guidance:**
 
@@ -18,13 +18,13 @@ Compaction triggers when the projected input tokens reach `COMPACTION_TRIGGER_TO
 - Lower it if you see frequent hard truncations or if the summarizer is cheap and reliable.
 - The trigger must leave enough room for `REACT_MAX_TOKENS` of new output. At startup Kimi checks that every reachable chat model's `context_window` satisfies `COMPACTION_TRIGGER_TOKENS + REACT_MAX_TOKENS`.
 
-If a response carries no usable usage figures, the whole request is estimated the same conservative way.
+If the provider did not report usage figures, the whole request is estimated the same pessimistic way.
 
 ## The summarizer role
 
-The summary is produced by a dedicated provider chosen via `roles.compaction` in `config/models.yaml`. You can also configure `compaction_fallbacks` exactly like any other role. The profile can use any key in the `api_key_env` set (including the special `COMPACTION_API_KEY`) or run keyless.
+The summary is written by whichever model `roles.compaction` names in `config/models.yaml`. You can add `compaction_fallbacks` exactly as for any other role. The profile can use any key named in `api_key_env`, including the dedicated `COMPACTION_API_KEY`, or run without a key.
 
-The prompt asks for a comprehensive structured handoff: facts with attribution, artifact paths, commands run and their outcomes, ruled-out approaches, and remaining work. The target length scales with the amount of material being replaced (roughly 1 word per 25 prefix tokens, clamped between 300–4000 words). The resulting note itself is capped by `COMPACTION_MAX_TOKENS`.
+The prompt asks for a thorough, structured handoff: facts and who said them, file paths, commands run and what they returned, approaches ruled out, and what is left to do. The target length scales with how much material is being replaced (about 1 word per 25 tokens summarized, kept between 300 and 4,000 words). The note itself is capped by `COMPACTION_MAX_TOKENS` (32,768 by default).
 
 **Practical notes on the summarizer:**
 
@@ -38,15 +38,15 @@ Three things are deliberately protected:
 
 - **The live plan checklist**: If the turn has an active `plan` tool checklist, it is re-appended verbatim under a "Current checklist" header after every compaction. The summarizer is told to skip any checklist block already present so the live version always wins.
 - **The original request**: Once compaction has summarized something, the turn's triggering request is restated as the final message. This keeps the point of action salient instead of burying it between the new note and the recent tail. The restatement is text-only, head/tail-capped, and treated as untrusted input.
-- **A recent tail of raw iterations**: The most recent whole iterations are kept verbatim up to the `COMPACTION_KEEP_RECENT_TOKENS` budget, with a hard minimum of `COMPACTION_KEEP_RECENT_ITERATIONS`. This gives the model fresh, unsummarized context for the current step.
+- **A recent tail of raw iterations**: The most recent whole iterations are kept word for word, up to `COMPACTION_KEEP_RECENT_TOKENS` (50,000 by default) and never fewer than `COMPACTION_KEEP_RECENT_ITERATIONS` (3 by default). This gives the model fresh, unsummarized context for the current step.
 
-If a compaction pass summarizes nothing (`split == 0`), it still refreshes the checklist note and the request re-anchor when they exist.
+If a compaction pass finds nothing old enough to summarize, it still refreshes the checklist note and the restated request when they exist.
 
 ## Example: a turn before and after compaction
 
 Here is a fictional but realistic sequence. A user asks the bot to refactor a small module. The bot reads, edits, runs tests, fixes a flaky assertion, runs again, and is now ready to send its next request after the 12th iteration.
 
-The message list is simplified for readability. `system` is the prompt with all instructions and prompt-fragment fragments; `user(role)` and `assistant(role)` are real conversation messages; `tool(role)` is the result message from the named tool. Sizes are illustrative, not literal.
+The message list is simplified for readability. `system` is the system prompt with all its instruction fragments; `user(...)` and `assistant(...)` are real conversation messages; `tool(...)` is the result message from the named tool. Sizes are illustrative, not literal.
 
 **Step 1: the compactor measures the projected request.** The provider's last reported input-token count was 110k for iteration 11. The compactor estimates the new request at 11k tokens (system + user ask + iterations 1–12, characters / 3.5; deliberately conservative). Projected total: 121k, which crosses the default `COMPACTION_TRIGGER_TOKENS` of 120k. Compaction fires.
 
@@ -112,7 +112,7 @@ Three things to notice:
 ```
 [system,
  user(refactor_request),
- assistant(note_message("Compaction summary unavailable; tool bodies in the older prefix were elided.")),
+ assistant(note_message("(summary unavailable; earlier tool output was elided in place)")),
  elided_iter_1, elided_iter_2, …, elided_iter_9,
  iter_10, iter_11, iter_12,
  user(request_anchor)]
@@ -132,8 +132,8 @@ Hard truncation only targets tool bodies. It never touches an existing compactio
 
 Two further protections apply during the turn:
 
-- A per-iteration tool-output budget (`COMPACTION_MAX_ITERATION_TOOL_OUTPUT_TOKENS`). Results are kept whole until the budget is exhausted; the iteration that crosses the limit is head/tail-capped, and once too little remains to be worth slicing the rest collapses to a stub naming the tool and the size dropped.
-- Heuristic context-overflow detection that can trigger one emergency compaction and retry.
+- A per-iteration tool-output budget (`COMPACTION_MAX_ITERATION_TOOL_OUTPUT_TOKENS`, 48,000 by default). Tool results in one iteration are kept whole until the budget runs out; the result that crosses the limit is cut to a head and tail slice, and once too little budget remains to be worth slicing, the remaining results collapse to a one-line stub naming the tool and how much was dropped.
+- If the provider rejects a request as too large despite the estimate, Kimi recognises the error, runs one emergency compaction, and retries once.
 
 ## Observing and debugging compaction
 
@@ -147,7 +147,7 @@ Common things to watch:
 
 - Frequent compaction on the same turn may indicate the trigger is too low or the summarizer is producing notes that are still too large.
 - Summarizer failures that fall back to elision or truncation can lose fidelity. Consider a stronger or more reliable compaction model if this happens often.
-- If a model declares `SERVER_SIDE_CONTEXT`, local compaction clears the continuation state so the next request rebases on the compacted transcript. No shipped provider currently uses this path.
+- If a provider declares the `SERVER_SIDE_CONTEXT` capability (none of the shipped providers do), compaction also clears its server-side continuation so the next request is rebuilt from the compacted transcript.
 
 ## Tuning checklist
 
@@ -158,4 +158,4 @@ When adjusting compaction behavior, consider these in order:
 3. Tune the recent-tail budget (`COMPACTION_KEEP_RECENT_TOKENS` / `COMPACTION_KEEP_RECENT_ITERATIONS`) if you find the model is losing too much fresh context.
 4. Only adjust the per-iteration tool-output budget or max note size if you have specific evidence that the defaults are causing problems.
 
-Compaction is mandatory for every chat provider. It is one of the mechanisms that lets Kimi handle genuinely long, tool-heavy conversations without the turn collapsing under its own history.
+Compaction is always on, for every chat provider. It is one of the things that lets Kimi handle long, tool-heavy turns without collapsing under its own history.

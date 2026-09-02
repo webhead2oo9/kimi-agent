@@ -136,6 +136,7 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
         name=TOOL_NAME,
         description=(
             "Search current posts on X with optional date, account, image, and video filters. "
+            "Keep the search query to 50 words or fewer. "
             "Calls may take several minutes; wait for completion instead of retrying only "
             "because the search is slow. "
             "Returns a synthesized answer plus citations and explicitly marks responses where "
@@ -146,7 +147,10 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Question or search query about current posts on X.",
+                    "description": (
+                        "Question or search query about current posts on X; must be 50 words "
+                        "or fewer."
+                    ),
                 },
                 "allowed_x_handles": {
                     "type": "array",

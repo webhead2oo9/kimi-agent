@@ -124,7 +124,24 @@ jobs:
             modules/example/src modules/example/tests
 
       - name: Tests
-        run: uv run python -m pytest -q
+        id: tests
+        run: >-
+          uv run python -m pytest -q
+          --cov=.
+          --cov-report=term
+          --cov-report=xml:coverage.xml
+
+      - name: Upload Python coverage report
+        if: >-
+          ${{ !cancelled()
+              && (steps.tests.outcome == 'success'
+                  || steps.tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage
+          path: bot/coverage.xml
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Build module API and reference consumer
         run: |

@@ -15,6 +15,7 @@ from app.foreground_turn import TurnSurfaceOutcome, TurnSurfaceOutcomeKind
 from app.user_app_turn_adapter import UserAppInteractionTurnAdapter
 from discord_adapter.interaction_io import PartialPublicDeliveryError
 from tools.embeds import EmbedSpec
+from tools.registry import TurnOutbox
 
 
 class FakeFollowup:
@@ -63,12 +64,14 @@ async def test_delivery_receipt_preserves_visibility_and_synthetic_transcript_fi
 ) -> None:
     interaction = FakeInteraction()
     calls: list[tuple[bool, bool]] = []
+    delivery_kwargs: dict[str, object] = {}
 
     async def send_result(
         _interaction: object,
         content: str,
         **kwargs: object,
     ) -> None:
+        delivery_kwargs.update(kwargs)
         calls.append((bool(kwargs["ephemeral"]), bool(kwargs["original_ephemeral"])))
         callback = cast(
             Callable[[str], Awaitable[None]],
@@ -80,9 +83,22 @@ async def test_delivery_receipt_preserves_visibility_and_synthetic_transcript_fi
     receipt = await _adapter(
         interaction,
         requested_public=requested_public,
-    ).deliver(TurnResult(response_text="answer"), conversation_id=9)
+    ).deliver(
+        TurnResult(
+            response_text="answer",
+            outbox=TurnOutbox(
+                output_files=("report.txt",),
+                output_file_descriptions={"report.txt": "Weekly report"},
+                allowed_file_roots=("workspace",),
+            ),
+        ),
+        conversation_id=9,
+    )
 
     assert calls == [(not requested_public, not requested_public)]
+    assert delivery_kwargs["output_files"] == ("report.txt",)
+    assert delivery_kwargs["output_file_descriptions"] == (("report.txt", "Weekly report"),)
+    assert delivery_kwargs["allowed_file_roots"] == ("workspace",)
     assert receipt.delivery_failed is False
     assert receipt.context_channel_id == "userapp"
     assert len(receipt.replies) == 1
@@ -227,7 +243,7 @@ async def test_embed_only_delivery_receipt_uses_transcript_summary(
     receipt = await _adapter(interaction).deliver(
         TurnResult(
             response_text="",
-            embed=EmbedSpec(title="Forecast", description="Clear skies"),
+            outbox=TurnOutbox(embed=EmbedSpec(title="Forecast", description="Clear skies")),
         ),
         conversation_id=9,
     )

@@ -175,8 +175,8 @@ async def test_generation_saves_reusable_workspace_png_and_queues_it(tmp_path: P
     assert not service.edit_requests
     saved = manager.resolve_user_file_path(ctx.workspace_key, result["path"], must_exist=True)
     assert saved.read_bytes() == PNG_BYTES
-    assert ctx.output_files == [str(saved.resolve())]
-    assert ctx.output_file_descriptions[str(saved.resolve())] == (
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
+    assert ctx.outbox.output_file_descriptions[str(saved.resolve())] == (
         "A moonlit cabin surrounded by pine trees."
     )
 
@@ -284,7 +284,7 @@ async def test_cancellation_waits_for_completed_image_usage_recording(tmp_path: 
     assert len(recorded) == 1
     assert recorded[0].role == "image_generation"
     assert recorded[0].usage.input_tokens == 17
-    assert not ctx.output_files
+    assert not ctx.outbox.output_files
 
 
 @pytest.mark.asyncio
@@ -464,7 +464,7 @@ async def test_cancelled_worker_holds_workspace_lease_until_cleanup(
     await asyncio.wait_for(acquired.wait(), timeout=1)
     await contender_task
     assert not partial.exists()
-    assert not ctx.output_files
+    assert not ctx.outbox.output_files
 
 
 @pytest.mark.asyncio
@@ -517,7 +517,7 @@ async def test_cancelled_completed_write_removes_only_its_generated_file(
     assert prior.read_bytes() == b"prior"
     assert not generated[0].exists()
     assert list(output_dir.iterdir()) == [prior]
-    assert not ctx.output_files
+    assert not ctx.outbox.output_files
 
 
 def test_output_temp_file_is_removed_when_atomic_replace_fails(

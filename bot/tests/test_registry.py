@@ -1,10 +1,12 @@
 import json
+from dataclasses import FrozenInstanceError
 from typing import Any, cast
 
 import pytest
 
 from storage.usage import PaidUsageCall
 from tools.config_spec import KIND_INT, ToolConfigField
+from tools.embeds import EmbedSpec
 from tools.registry import (
     UNTRUSTED_CONTEXT_NOTE,
     BudgetName,
@@ -12,7 +14,10 @@ from tools.registry import (
     ToolBudgetSpec,
     ToolRegistry,
     TurnBudget,
+    TurnHandoff,
+    TurnOutbox,
 )
+from tools.threads import ThreadRequest
 from trust.tiers import TrustTier
 
 
@@ -97,6 +102,62 @@ def test_registry_resolves_configured_budget_cap_once_per_turn() -> None:
     captured = registry.resolve_turn_budget(live_config)
     live_config["metered"]["limit"] = 8
     assert captured.caps == {BudgetName.VIDEO_CALLS: 5}
+
+
+def test_turn_outbox_is_a_defensive_frozen_snapshot() -> None:
+    descriptions = {"report.txt": "Original description"}
+    remove_ids = {"attachment:1": "report.txt"}
+    outbox = TurnOutbox(
+        output_files=("report.txt",),
+        output_file_descriptions=descriptions,
+        output_file_remove_ids=remove_ids,
+        output_file_remove_id_counter=1,
+    )
+
+    descriptions["report.txt"] = "Mutated outside the snapshot"
+    remove_ids.clear()
+
+    assert outbox.output_file_descriptions == {"report.txt": "Original description"}
+    assert outbox.output_file_remove_ids == {"attachment:1": "report.txt"}
+    with pytest.raises(FrozenInstanceError):
+        cast(Any, outbox).output_files = ()
+    with pytest.raises(TypeError):
+        cast(dict[str, str], outbox.output_file_descriptions)["report.txt"] = "mutated"
+
+
+def test_message_context_replaces_outbox_without_mutating_prior_snapshot() -> None:
+    ctx = _make_ctx()
+    original = ctx.outbox
+
+    updated = ctx.update_outbox(output_files=("report.txt",))
+
+    assert original.output_files == ()
+    assert updated is ctx.outbox
+    assert updated.output_files == ("report.txt",)
+
+
+def test_turn_outbox_files_only_clears_one_response_directives() -> None:
+    outbox = TurnOutbox(
+        output_files=("report.txt",),
+        output_file_descriptions={"report.txt": "Weekly report"},
+        output_file_remove_ids={"attachment:1": "report.txt"},
+        output_file_remove_id_counter=1,
+        allowed_file_roots=("workspace",),
+        embed=EmbedSpec(title="Report"),
+        thread_request=ThreadRequest(name="Report thread"),
+        terminal_handoff=TurnHandoff(response_text="queued", reason="coding_task"),
+    )
+
+    resumed = outbox.files_only()
+
+    assert resumed.output_files == outbox.output_files
+    assert resumed.output_file_descriptions == outbox.output_file_descriptions
+    assert resumed.output_file_remove_ids == outbox.output_file_remove_ids
+    assert resumed.output_file_remove_id_counter == outbox.output_file_remove_id_counter
+    assert resumed.allowed_file_roots == outbox.allowed_file_roots
+    assert resumed.embed is None
+    assert resumed.thread_request is None
+    assert resumed.terminal_handoff is None
 
 
 def test_searchable_tool_excluded_from_core_schemas() -> None:

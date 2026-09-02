@@ -18,7 +18,7 @@ import os
 import re
 import stat
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -419,7 +419,7 @@ def init_code_exec_tool(
                 workspace_root = workspace_manager.user_files_dir(ctx.workspace_key).resolve()
                 stale_outputs = await asyncio.to_thread(
                     _unavailable_queued_workspace_files,
-                    ctx.output_files,
+                    ctx.outbox.output_files,
                     workspace_root,
                 )
                 for output in stale_outputs:
@@ -789,7 +789,7 @@ def _changed_files_payload(
     changed_files: list[dict[str, object]],
     ctx: MessageContext,
 ) -> list[dict[str, object]]:
-    attached_paths = set(ctx.output_files)
+    attached_paths = set(ctx.outbox.output_files)
     payload: list[dict[str, object]] = []
     for item in changed_files:
         rel = str(item["path"])
@@ -807,7 +807,9 @@ def _changed_files_payload(
     return payload
 
 
-def _unavailable_queued_workspace_files(output_files: list[str], workspace_root: Path) -> list[str]:
+def _unavailable_queued_workspace_files(
+    output_files: Sequence[str], workspace_root: Path
+) -> list[str]:
     stale: list[str] = []
     for output in output_files:
         path = Path(output)

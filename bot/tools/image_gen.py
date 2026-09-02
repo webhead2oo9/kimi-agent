@@ -134,14 +134,14 @@ def init_image_gen_tool(
         max_attachments = _configured_int(ctx, "max_attachments", default=5)
         if ctx.budget_remaining(BudgetName.IMAGE_GEN_CALLS) <= 0:
             return tool_error(f"image generation limit reached ({max_calls} calls per turn)")
-        if len(ctx.output_files) >= max_attachments:
+        if len(ctx.outbox.output_files) >= max_attachments:
             return tool_error(f"attachment limit reached ({max_attachments})")
 
         async with workspace_activity(workspace_locks, ctx):
             # Re-check mutable per-turn rails after acquiring the workspace lock.
             if ctx.budget_remaining(BudgetName.IMAGE_GEN_CALLS) <= 0:
                 return tool_error(f"image generation limit reached ({max_calls} calls per turn)")
-            if len(ctx.output_files) >= max_attachments:
+            if len(ctx.outbox.output_files) >= max_attachments:
                 return tool_error(f"attachment limit reached ({max_attachments})")
             try:
                 reference_urls = await _run_worker(

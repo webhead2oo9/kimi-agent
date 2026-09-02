@@ -15,7 +15,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -81,7 +81,7 @@ from providers.types import (
     ProviderCapability,
     ProviderRequest,
 )
-from tools.registry import ToolRegistry, TurnHandoff
+from tools.registry import ToolRegistry, TurnOutbox
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from usage.pricing import price_usage_call
@@ -94,8 +94,7 @@ if TYPE_CHECKING:
     from moderation.service import ModerationService
     from storage.conversations import ConversationAccessScope
     from storage.usage import UsageStore
-    from tools.embeds import EmbedAttachment, EmbedSpec
-    from tools.threads import ThreadCloseRequest, ThreadRequest
+    from tools.embeds import EmbedAttachment
 
 log = logging.getLogger(__name__)
 
@@ -417,14 +416,8 @@ class TurnRequest:
 @dataclass(frozen=True)
 class TurnResult:
     response_text: str
-    output_files: tuple[str, ...] = ()
-    output_file_descriptions: tuple[tuple[str, str], ...] = ()
-    allowed_file_roots: tuple[str | Path, ...] = ()
+    outbox: TurnOutbox = field(default_factory=TurnOutbox)
     workspace_key: WorkspaceKey | None = None
-    embed: EmbedSpec | None = None
-    thread_request: ThreadRequest | None = None
-    thread_close_request: ThreadCloseRequest | None = None
-    terminal_handoff: TurnHandoff | None = None
     blocked_by_moderation: bool = False
     termination_reason: TurnTerminationReason = "completed"
     # Set by the Discord boundary when the turn produced a reply but no chunk
@@ -1194,7 +1187,7 @@ async def execute_turn(
         usage = UsageBreakdown()
         for call in usage_sink:
             usage = usage + call.usage
-        handoff = turn.context.pending_terminal_handoff
+        handoff = turn.context.pending_outbox.terminal_handoff
         run_result = ConversationRunResult(
             text=(
                 handoff.response_text
@@ -1207,7 +1200,7 @@ async def execute_turn(
             timed_out=handoff is None,
             turn_id=turn_id,
             termination_reason="completed" if handoff is not None else "timed_out",
-            terminal_handoff=handoff,
+            outbox=turn.context.pending_outbox,
         )
 
     usage_recorder.absorb(run_result.llm_calls)
@@ -1230,14 +1223,16 @@ async def execute_turn(
     if deadline is not None:
         deadline += time.monotonic() - usage_write_started
 
-    if run_result.terminal_handoff is not None:
-        thread_request = turn.context.pending_thread_request
+    if run_result.outbox.terminal_handoff is not None:
+        terminal_outbox = TurnOutbox(
+            thread_request=run_result.outbox.thread_request,
+            terminal_handoff=run_result.outbox.terminal_handoff,
+        )
         _clear_pending_response_artifacts(turn.context)
         return TurnResult(
             response_text=run_result.text,
+            outbox=terminal_outbox,
             workspace_key=_workspace_key_for_turn(turn),
-            thread_request=thread_request,
-            terminal_handoff=run_result.terminal_handoff,
             termination_reason=run_result.termination_reason,
         )
 
@@ -1298,12 +1293,12 @@ async def execute_turn(
             moderation_service.check(
                 text=_output_moderation_text(
                     run_result.text,
-                    turn.context.pending_output_file_descriptions,
+                    turn.context.pending_outbox.output_file_descriptions,
                 ),
                 direction=Direction.OUTPUT,
                 generated_assets=run_result.generated_assets,
-                embed=turn.context.pending_embed,
-                embed_attachment=turn.context.pending_embed_attachment,
+                embed=turn.context.pending_outbox.embed,
+                embed_attachment=turn.context.pending_outbox.embed_attachment,
                 user_id=turn.user_id,
                 channel_id=turn.channel_id,
                 thread_id=turn.thread_id,
@@ -1369,18 +1364,20 @@ async def execute_turn(
             activity_guard=run_dependencies.user_activity,
             on_detached_result=cleanup_detached_assets,
         )
-        turn.context.pending_output_files.extend(str(path) for path in asset_paths)
-        turn.context.pending_allowed_file_roots.append(str(generated_root.resolve()))
+        outbox = turn.context.pending_outbox
+        turn.context.pending_outbox = replace(
+            outbox,
+            output_files=(*outbox.output_files, *(str(path) for path in asset_paths)),
+            allowed_file_roots=(*outbox.allowed_file_roots, str(generated_root.resolve())),
+        )
     else:
         asset_paths = []
 
-    pending_files = list(turn.context.pending_output_files)
-    pending_descriptions = dict(turn.context.pending_output_file_descriptions)
-    pending_roots: list[str | Path] = list(turn.context.pending_allowed_file_roots)
-    embed = turn.context.pending_embed
-    embed_attachment = turn.context.pending_embed_attachment
-    thread_request = turn.context.pending_thread_request
-    thread_close_request = turn.context.pending_thread_close_request
+    pending_outbox = turn.context.pending_outbox
+    pending_files = list(pending_outbox.output_files)
+    pending_descriptions = dict(pending_outbox.output_file_descriptions)
+    pending_roots: list[str | Path] = list(pending_outbox.allowed_file_roots)
+    embed_attachment = pending_outbox.embed_attachment
     # Materialize the embed-owned image onto the file rails here, at the single
     # boundary, so a replaced/abandoned embed never leaks a stale attachment.
     # Dedup by exact path so a file that is both embedded and queue_file'd is
@@ -1390,13 +1387,17 @@ async def execute_turn(
         if embed_attachment.root not in pending_roots:
             pending_roots.append(embed_attachment.root)
 
-    turn.context.pending_output_files.clear()
-    turn.context.pending_output_file_descriptions.clear()
-    turn.context.pending_allowed_file_roots.clear()
-    turn.context.pending_embed = None
-    turn.context.pending_embed_attachment = None
-    turn.context.pending_thread_request = None
-    turn.context.pending_thread_close_request = None
+    result_outbox = replace(
+        pending_outbox,
+        output_files=tuple(pending_files),
+        output_file_descriptions={
+            path: pending_descriptions[path]
+            for path in pending_files
+            if path in pending_descriptions
+        },
+        allowed_file_roots=tuple(pending_roots),
+    )
+    turn.context.pending_outbox = TurnOutbox()
     try:
         _raise_if_turn_deadline_expired(deadline)
     except ConversationTurnTimeoutError:
@@ -1406,18 +1407,8 @@ async def execute_turn(
 
     return TurnResult(
         response_text=run_result.text,
-        output_files=tuple(pending_files),
-        output_file_descriptions=tuple(
-            (path, pending_descriptions[path])
-            for path in pending_files
-            if path in pending_descriptions
-        ),
-        allowed_file_roots=tuple(pending_roots),
+        outbox=result_outbox,
         workspace_key=_workspace_key_for_turn(turn),
-        embed=embed,
-        thread_request=thread_request,
-        thread_close_request=thread_close_request,
-        terminal_handoff=run_result.terminal_handoff,
         termination_reason=run_result.termination_reason,
     )
 
@@ -1438,16 +1429,17 @@ async def _stage_pending_response_files(
     manager = dependencies.workspace_manager
     locks = dependencies.workspace_locks
     context = turn.context
-    files = list(context.pending_output_files)
-    descriptions = dict(context.pending_output_file_descriptions)
-    embed_attachment = context.pending_embed_attachment
+    outbox = context.pending_outbox
+    files = list(outbox.output_files)
+    descriptions = dict(outbox.output_file_descriptions)
+    embed_attachment = outbox.embed_attachment
     if embed_attachment is not None and embed_attachment.path not in files:
         files.append(embed_attachment.path)
     if not files:
         return
 
     async def stage() -> tuple[list[str], str, Any | None, dict[str, str]]:
-        allowed_roots = list(context.pending_allowed_file_roots)
+        allowed_roots = list(outbox.allowed_file_roots)
         if embed_attachment is not None and embed_attachment.root not in allowed_roots:
             allowed_roots.append(embed_attachment.root)
         async with locks.activity(_workspace_key_for_turn(turn)):
@@ -1473,10 +1465,19 @@ async def _stage_pending_response_files(
         user_id=turn.user_id,
         activity_guard=dependencies.user_activity,
     )
-    context.pending_output_files[:] = staged_files
-    context.pending_output_file_descriptions = staged_descriptions
-    context.pending_allowed_file_roots[:] = [staged_root]
-    context.pending_embed_attachment = staged_embed
+    staged_by_source = dict(zip(dict.fromkeys(files), staged_files, strict=True))
+    context.pending_outbox = replace(
+        outbox,
+        output_files=tuple(staged_files),
+        output_file_descriptions=staged_descriptions,
+        output_file_remove_ids={
+            remove_id: staged_by_source[source]
+            for remove_id, source in outbox.output_file_remove_ids.items()
+            if source in staged_by_source
+        },
+        allowed_file_roots=(staged_root,),
+        embed_attachment=staged_embed,
+    )
 
 
 def _stage_response_files_sync(
@@ -2187,11 +2188,4 @@ def _content_part_image_urls(part: ContentPart | None) -> set[str]:
 
 
 def _clear_pending_response_artifacts(context: ConversationContext) -> None:
-    context.pending_output_files.clear()
-    context.pending_output_file_descriptions.clear()
-    context.pending_allowed_file_roots.clear()
-    context.pending_embed = None
-    context.pending_embed_attachment = None
-    context.pending_thread_request = None
-    context.pending_thread_close_request = None
-    context.pending_terminal_handoff = None
+    context.pending_outbox = TurnOutbox()

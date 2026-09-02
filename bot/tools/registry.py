@@ -8,6 +8,7 @@ import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,49 @@ class TurnHandoff:
     reason: str
     task_id: str | None = None
     allowed_followup_tools: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class TurnOutbox:
+    """Immutable reply artifacts carried intact from tools to surface delivery."""
+
+    output_files: tuple[str, ...] = ()
+    output_file_descriptions: Mapping[str, str] = field(default_factory=dict)
+    output_file_remove_ids: Mapping[str, str] = field(default_factory=dict)
+    output_file_remove_id_counter: int = 0
+    allowed_file_roots: tuple[str | Path, ...] = ()
+    embed: EmbedSpec | None = None
+    embed_attachment: EmbedAttachment | None = None
+    thread_request: ThreadRequest | None = None
+    thread_close_request: ThreadCloseRequest | None = None
+    terminal_handoff: TurnHandoff | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "output_files", tuple(self.output_files))
+        object.__setattr__(
+            self,
+            "output_file_descriptions",
+            MappingProxyType(dict(self.output_file_descriptions)),
+        )
+        object.__setattr__(
+            self,
+            "output_file_remove_ids",
+            MappingProxyType(dict(self.output_file_remove_ids)),
+        )
+        object.__setattr__(self, "allowed_file_roots", tuple(self.allowed_file_roots))
+        if self.output_file_remove_id_counter < 0:
+            raise ValueError("Output-file removal counter must be non-negative")
+
+    def files_only(self) -> TurnOutbox:
+        """Retain resumable file rails while clearing one-response directives."""
+
+        return TurnOutbox(
+            output_files=self.output_files,
+            output_file_descriptions=self.output_file_descriptions,
+            output_file_remove_ids=self.output_file_remove_ids,
+            output_file_remove_id_counter=self.output_file_remove_id_counter,
+            allowed_file_roots=self.allowed_file_roots,
+        )
 
 
 class BudgetName(StrEnum):
@@ -218,18 +262,9 @@ class MessageContext:
     # the `or {}` covers bare test contexts and tools with no spec. Never
     # persisted; the fragment stays the source of truth.
     tool_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    output_files: list[str] = field(default_factory=list)
-    # Optional Discord attachment descriptions keyed by the exact queued path.
-    # Kept parallel to output_files so ordinary files pay no metadata cost.
-    output_file_descriptions: dict[str, str] = field(default_factory=dict)
-    # Opaque, per-turn selectors for queued outputs whose safe display paths may
-    # collide (notably script-backed skill files from separate job directories).
-    # Values remain absolute internally; only the short keys are exposed to the
-    # model. The monotonic counter prevents a stale selector from being reused
-    # for a later attachment after removal.
-    output_file_remove_ids: dict[str, str] = field(default_factory=dict)
-    output_file_remove_id_counter: int = 0
-    allowed_file_roots: list[str] = field(default_factory=list)
+    # Files, embeds, thread directives, and a terminal handoff travel together as
+    # one immutable value. Writers replace this field through update_outbox().
+    outbox: TurnOutbox = field(default_factory=TurnOutbox)
     input_parts: list[ContentPart] = field(default_factory=list)
     # Images from the message this turn replies to, as filtered upstream: an image
     # already carried by the rooted transcript is deduped away, and the reply's
@@ -256,10 +291,6 @@ class MessageContext:
     # before cancelling the root so admission-style tools can undo a boundary
     # commit instead of creating work after the cancellation sweep.
     stop_event: asyncio.Event | None = None
-    # A successful durable delegation can finish the foreground turn without
-    # paying for another model call. The core completes the current provider
-    # tool-call envelope, persists this deterministic acknowledgement, and exits.
-    terminal_handoff: TurnHandoff | None = None
     usage_store: UsageStore | None = None
     # Shared with the core ReAct accounting state. Direct model-backed tools
     # append through the awaited recorder when present so detached calls are
@@ -267,10 +298,6 @@ class MessageContext:
     # the plain sink.
     usage_sink: list[LLMUsageCall] | None = None
     record_usage_call: Callable[[LLMUsageCall], Awaitable[None]] | None = None
-    embed: EmbedSpec | None = None
-    embed_attachment: EmbedAttachment | None = None
-    thread_request: ThreadRequest | None = None
-    thread_close_request: ThreadCloseRequest | None = None
     workspace_key_override: WorkspaceKey | None = None
     personal_chat: bool = False
     # Where the interaction physically happened, independent of the logical
@@ -329,6 +356,10 @@ class MessageContext:
 
     def budget_remaining(self, name: BudgetName) -> int:
         return self.budget.remaining(name)
+
+    def update_outbox(self, **changes: Any) -> TurnOutbox:
+        self.outbox = replace(self.outbox, **changes)
+        return self.outbox
 
     async def record_paid_usage(self, call: PaidUsageCall) -> None:
         """Durably attribute a non-LLM provider charge to this turn.

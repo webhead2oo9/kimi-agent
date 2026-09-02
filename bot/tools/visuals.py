@@ -456,7 +456,7 @@ def init_visual_tool(
             return tool_error("visuals can only be rendered in a conversation context")
         if ctx.budget_remaining(BudgetName.VISUAL_RENDERS) <= 0:
             return tool_error(f"visual render limit reached ({MAX_RENDERS_PER_TURN})")
-        if len(ctx.output_files) >= config.max_attachments:
+        if len(ctx.outbox.output_files) >= config.max_attachments:
             return tool_error(f"attachment limit reached ({config.max_attachments})")
 
         job_dir: Path | None = None
@@ -464,7 +464,7 @@ def init_visual_tool(
         async with workspace_activity(workspace_locks, ctx):
             if ctx.budget_remaining(BudgetName.VISUAL_RENDERS) <= 0:
                 return tool_error(f"visual render limit reached ({MAX_RENDERS_PER_TURN})")
-            if len(ctx.output_files) >= config.max_attachments:
+            if len(ctx.outbox.output_files) >= config.max_attachments:
                 return tool_error(f"attachment limit reached ({config.max_attachments})")
             try:
                 job_dir = await asyncio.to_thread(

@@ -72,13 +72,13 @@ async def test_fetch_url_downloads_to_workspace_without_attaching(
     entry = next(item for item in reg.get_all_tools() if item.name == "fetch_url")
     assert entry.untrusted is True
     assert saved.read_bytes() == b"downloaded"
-    assert ctx.output_files == []
-    assert ctx.allowed_file_roots == []
+    assert ctx.outbox.output_files == ()
+    assert ctx.outbox.allowed_file_roots == ()
 
     queued = json.loads(await reg.dispatch("queue_file", {"path": "report.txt"}, ctx))
     assert queued["queued"] is True
-    assert ctx.output_files == [str(saved.resolve())]
-    assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
+    assert ctx.outbox.allowed_file_roots == (str(mgr.user_files_dir(WS).resolve()),)
 
 
 @pytest.mark.asyncio

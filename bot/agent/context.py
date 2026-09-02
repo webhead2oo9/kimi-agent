@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from providers.types import ContentPart, ConversationMessage
 from storage.conversations import (
@@ -11,11 +11,7 @@ from storage.conversations import (
     ConversationAccessScope,
     ConversationStore,
 )
-
-if TYPE_CHECKING:
-    from tools.embeds import EmbedAttachment, EmbedSpec
-    from tools.registry import TurnHandoff
-    from tools.threads import ThreadCloseRequest, ThreadRequest
+from tools.registry import TurnOutbox
 
 log = logging.getLogger(__name__)
 
@@ -50,14 +46,7 @@ class ConversationContext:
     # spans many ReAct iterations and minutes of wall time. Tools that hold
     # turn-scoped resources (the browser's netns lease) release per call instead.
     background_task: bool = False
-    pending_output_files: list[str] = field(default_factory=list)
-    pending_output_file_descriptions: dict[str, str] = field(default_factory=dict)
-    pending_allowed_file_roots: list[str] = field(default_factory=list)
-    pending_embed: EmbedSpec | None = None
-    pending_embed_attachment: EmbedAttachment | None = None
-    pending_thread_request: ThreadRequest | None = None
-    pending_thread_close_request: ThreadCloseRequest | None = None
-    pending_terminal_handoff: TurnHandoff | None = None
+    pending_outbox: TurnOutbox = field(default_factory=TurnOutbox)
     participants: dict[str, str] = field(default_factory=dict)
 
     def add_participant(self, user_id: str, user_name: str) -> None:

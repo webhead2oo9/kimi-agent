@@ -4,11 +4,25 @@ Thread handoff lets the model move a conversation out of a busy channel into a D
 
 A managed thread has a **mode**: auto-responding (the default, where every message gets an answer) or paused, where it falls back to the ordinary channel contract. See [Thread mode](#thread-mode-pause-and-resume).
 
+## Quick reference for operators
+
+The rest of this page explains the design in depth. If you only need to configure it:
+
+| What you want | Where to set it |
+|---|---|
+| Turn the feature off everywhere | `THREAD_HANDOFF_ENABLED=false` in `.env`; restart. Existing managed threads go back to mention-only, nothing is deleted. |
+| Nudge the model to open a thread after a long tool-heavy turn | `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` (default 5; `0` disables). |
+| Allow or forbid new threads per server or channel | `thread_handoff: true|false` in `config/servers/<guild_id>.md` or `config/channels/<channel_id>.md`. Channel wins over server. No restart. |
+| Choose whether new threads answer every message or wait to be addressed | `thread_auto_respond: true|false` at the same two scopes. Applies to new threads only. |
+| Force long replies into a thread even when the model does not ask | `THREAD_AUTO_HANDOFF_ENABLED=true` plus `auto_thread_min_lines`, `auto_thread_min_chars`, or `auto_thread_always` in the channel fragment. |
+| Let the bot move a conversation to a different channel ("take this to #bot-spam") | `thread_targets: [<channel ids>]` in the server fragment. Off unless listed. |
+
+The bot needs the **Create Public Threads**, **Send Messages in Threads**, and **Manage Threads** permissions. Inside a thread, the person who asked for it, configured STAFF, and anyone with Discord's Manage Threads permission can pause, resume, or close it by asking the bot.
 
 ## Where it lives
 
 - `tools/threads.py`: the four thread tools, the plain-data `ThreadRequest`, and the pure `match_thread_target` (no `discord` import), registered in `app/tools.py` behind the config gate. The instruction-only `start-thread` skill teaches the model when to use them.
-- `app/threads.py`: `ThreadHandoffManager`, the durable thread→root mapping plus the two in-memory id sets it owns (every managed thread, and the subset currently auto-responding); created and loaded in `on_ready`.
+- `app/threads.py`: `ThreadHandoffManager`, the durable thread→root mapping plus the two in-memory id sets it owns (every managed thread, and the subset currently auto-responding); created and loaded during READY initialization in `app/lifecycle.py`.
 - `app/thread_handoff_boundary.py`: `ThreadHandoffBoundary`, which owns `create_handoff_thread` (creation plus enrollment at the send boundary) and its cross-channel branch `_open_cross_channel_thread`, `_thread_target_candidates` / `resolve_thread_target` (the cross-channel gate and the seam the tool is given), `thread_state_blocked_tools` (the per-turn tool mask), and the `_can_open_thread` permission check.
 - `app/message_runtime.py`: `DiscordMessageController` owns `responds_without_mention` (the gate's predicate) and constructs the foreground adapter.
 - `app/guild_turn_adapter.py`: calls the boundary through `GuildTurnCollaborators.threads` and reports the channel each reply actually landed in so `app/foreground_turn.py` persists it under that destination.
@@ -158,7 +172,7 @@ CREATE TABLE IF NOT EXISTS thread_conversations (
 );
 ```
 
-The table is defined in `storage/db.py` (see [`database.md`](database.md)). `creator_user_id` can be NULL, because the handoff initiator can't be reconstructed safely from conversation ownership, and a row without one fails closed to STAFF/Manage Threads. CRUD lives in `storage/conversations.py`. `on_ready` calls `ThreadHandoffManager.load()`, which fills both id sets from the table so that participation *and* an explicit pause survive restarts.
+The table is defined in `storage/db.py` (see [`database.md`](database.md)). `creator_user_id` can be NULL, because the handoff initiator can't be reconstructed safely from conversation ownership, and a row without one fails closed to STAFF/Manage Threads. CRUD lives in `storage/conversations.py`. READY initialization calls `ThreadHandoffManager.load()`, which fills both id sets from the table so that participation *and* an explicit pause survive restarts.
 
 `map_thread_conversation` is an `INSERT OR REPLACE` and therefore always writes `auto_respond` explicitly; re-enrolling a thread would otherwise silently reset its mode to the column default. `set_thread_auto_respond` reports whether a row was actually updated, since the mapping can be swept out from under a live thread id (retention, privacy deletion), and the manager drops the stale id instead of announcing a mode change that would not survive a restart.
 

@@ -162,6 +162,7 @@ def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
     store = tmp_path / "store"
     real_bin = store / "cpython-1.2.3" / "bin"
     real_bin.mkdir(parents=True)
+    (store / "cpython-1.2.3" / "lib").mkdir()
     (real_bin / "python1.2").write_text("", encoding="utf-8")
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -179,6 +180,40 @@ def test_runtime_mounts_cover_every_symlink_hop(tmp_path: Path) -> None:
     # be covered as a whole, not just its bin directory.
     alias_lib = store / "cpython-1.2" / "lib"
     for needed in (venv_bin, alias_bin, alias_lib, real_bin):
+        assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
+            f"{needed} is not covered by {mounts}"
+        )
+
+
+def test_runtime_mounts_never_bind_a_symlinked_ancestor_above_the_runtime(
+    tmp_path: Path,
+) -> None:
+    """A symlink high in the interpreter path (a relocated ``~/.local``) must
+    not turn into a whole-tree bind: everything beside the runtime under that
+    ancestor - databases, tokens, skill stores - would enter every jail."""
+    real_local = tmp_path / "volume" / "local"
+    runtime = real_local / "share" / "uv" / "python" / "cpython-1.2.3"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "lib").mkdir()
+    (runtime / "bin" / "python1.2").write_text("", encoding="utf-8")
+    (real_local / "share" / "kimi").mkdir()
+    (real_local / "share" / "kimi" / "bot.db").write_text("secret", encoding="utf-8")
+    local = tmp_path / "home" / ".local"
+    local.parent.mkdir()
+    try:
+        local.symlink_to(real_local, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+    interpreter = local / "share" / "uv" / "python" / "cpython-1.2.3" / "bin" / "python1.2"
+
+    mounts = sandbox_module._runtime_mounts(interpreter.absolute())
+
+    secret = local / "share" / "kimi" / "bot.db"
+    for mount in mounts:
+        assert not secret.is_relative_to(mount), f"{mount} exposes {secret}"
+        assert not real_local.is_relative_to(mount) and mount != local, mount
+    alias_prefix = interpreter.parent.parent
+    for needed in (alias_prefix / "bin", alias_prefix / "lib"):
         assert any(needed == mount or needed.is_relative_to(mount) for mount in mounts), (
             f"{needed} is not covered by {mounts}"
         )
@@ -262,6 +297,33 @@ def test_runtime_mounts_fail_closed_on_dotdot_across_an_alias(tmp_path: Path) ->
 
     with pytest.raises(SandboxUnavailableError, match="does not exist"):
         sandbox_module._runtime_mounts((aliases / "current" / "python").absolute())
+
+
+def test_validate_probe_refuses_a_home_rooted_interpreter_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The README promises the home-rooted refusal at boot, not on the first
+    skill call, so the probe checks the interpreter's mount layout itself."""
+    monkeypatch.setattr(sandbox_module.Path, "home", classmethod(lambda cls: tmp_path))
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sandbox_module.sys, "executable", str(interpreter))
+    monkeypatch.setattr(
+        sandbox_module,
+        "detect_sandbox_runtime",
+        lambda: SandboxRuntime(bwrap="/usr/bin/bwrap", prlimit="/usr/bin/prlimit"),
+    )
+    probes: list[list[str]] = []
+    monkeypatch.setattr(
+        sandbox_module.subprocess,
+        "run",
+        lambda command, **kwargs: probes.append(command),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="service home"):
+        sandbox_module.validate_sandbox_runtime(ScriptSandboxLimits())
+
+    assert probes == []
 
 
 def test_validate_probe_applies_every_configured_limit(monkeypatch, tmp_path: Path) -> None:

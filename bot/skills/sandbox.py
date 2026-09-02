@@ -159,38 +159,33 @@ def _covered_by_base_mount(path: Path) -> bool:
 
 
 _SYMLINK_HOP_LIMIT = 40
-# A symlinked ancestor this shallow (/, /home, /tmp) must never become a
-# whole-tree bind; those layouts fall back to the plain parent mount.
-_MIN_SYMLINKED_ANCESTOR_PARTS = 3
-
-
-def _deepest_symlinked_ancestor(path: Path) -> Path | None:
-    probe = Path(path.anchor or "/")
-    found: Path | None = None
-    for component in path.parts[len(probe.parts) :]:
-        probe = probe / component
-        try:
-            if probe.is_symlink():
-                found = probe
-        except OSError:
-            break
-    return found
+# Sibling trees a runtime prefix keeps next to ``bin``. python-build-standalone
+# and venvs locate the stdlib and site-packages relative to the executable's
+# own path, so a hop reached through a directory alias needs these present at
+# the alias path, not only at the resolved one.
+_RUNTIME_PREFIX_SIBLINGS = ("lib", "lib64")
 
 
 def _hop_candidates(hop_dir: Path) -> list[Path]:
-    """The directory a hop needs, plus the symlinked ancestor that names it.
+    """The directory a hop needs, plus the runtime trees that sit beside it.
 
     Binding only the hop's literal parent is not enough for a runtime reached
-    through a directory symlink: python-build-standalone finds its stdlib
-    relative to the executable's path, so the alias directory needs its whole
-    tree (bin and lib) present, which binding the ancestor itself provides -
-    bwrap resolves the bind source through the symlink on the host.
+    through a directory symlink: the stdlib is found relative to the
+    executable's path, so the alias prefix's ``lib`` must exist at the alias
+    path too. bwrap resolves each bind source through the symlink on the host,
+    so binding those siblings by their unresolved paths places the real
+    content where the chain names it. The candidates deliberately stop at the
+    prefix's runtime siblings: binding a symlinked ancestor whole would expose
+    everything under it, which for a symlinked ``~/.local`` is the service's
+    own databases and credentials.
     """
 
     candidates = [hop_dir]
-    ancestor = _deepest_symlinked_ancestor(hop_dir)
-    if ancestor is not None and len(ancestor.parts) >= _MIN_SYMLINKED_ANCESTOR_PARTS:
-        candidates.append(ancestor)
+    if hop_dir.name == "bin":
+        for sibling in _RUNTIME_PREFIX_SIBLINGS:
+            candidate = hop_dir.parent / sibling
+            if candidate.is_dir():
+                candidates.append(candidate)
     return candidates
 
 
@@ -204,8 +199,9 @@ def _runtime_mounts(interpreter: Path) -> list[Path]:
     reached through a symlinked directory - uv's version-alias layout
     (``cpython-3.14 -> cpython-3.14.7``) made ``execvp`` fail with ENOENT on a
     chain whose every visible component existed - so each hop contributes its
-    parent and, when that parent sits under a directory symlink, the symlinked
-    ancestor itself.
+    parent and, for a ``bin`` directory, the runtime ``lib`` trees beside it.
+    Nothing above the prefix is ever bound: the hop's ancestors stay outside
+    the jail however many of them are symlinks.
 
     Known limitation, held fail-closed: a relative ``..`` link that crosses an
     unresolved directory symlink normalizes lexically here, which is how the
@@ -367,6 +363,10 @@ def validate_sandbox_runtime(limits: ScriptSandboxLimits) -> SandboxRuntime:
     """
 
     runtime = detect_sandbox_runtime()
+    # The Python skill interpreter is this process's own executable, so its
+    # mount layout is known at boot. Refusing a home-rooted or unresolvable
+    # runtime here keeps that failure at startup instead of on the first call.
+    _runtime_mounts(Path(sys.executable).absolute())
     true_path = shutil.which("true")
     if true_path is None:
         raise SandboxUnavailableError("Executable skill sandbox probe requires the true utility")

@@ -14,6 +14,7 @@ from discord.ext import commands
 
 from agent.auto_handoff import build_auto_handoff_request
 from agent.backfill import message_source_timestamp, strip_chunk_marker
+from agent.context import ConversationContext
 from app.coding_jobs import CodingJobManager
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
 from app.root_locks import RootLockPool
@@ -134,7 +135,7 @@ class CodingDelivery:
         self._config = config
         self._strip_message_invocation = strip_message_invocation
 
-    async def publish(self, task: CodingTask, context: Any | None) -> None:
+    async def publish(self, task: CodingTask, context: ConversationContext | None) -> None:
         """Project durable task state onto one edited status and one final reply."""
 
         # A worker completion, debounced milestone, and delivery retry can become
@@ -146,7 +147,11 @@ class CodingDelivery:
                 return
             await self._publish_locked(refreshed, context)
 
-    async def _publish_locked(self, task: CodingTask, context: Any | None) -> None:
+    async def _publish_locked(
+        self,
+        task: CodingTask,
+        context: ConversationContext | None,
+    ) -> None:
         target_id = task.thread_id or task.channel_id
         try:
             channel = self._bot.get_channel(int(target_id))
@@ -300,13 +305,11 @@ class CodingDelivery:
                         prepared_text,
                         attachment_plan,
                     )
-                    if not sent or bool(getattr(sent, "delivery_failed", False)):
+                    if not sent or sent.delivery_failed:
                         if sent:
                             await self._delete_messages(list(sent))
-                        if bool(getattr(sent, "delivery_permanent", False)):
-                            error = str(
-                                getattr(sent, "delivery_error", "Discord permission failure")
-                            )
+                        if sent.delivery_permanent:
+                            error = sent.delivery_error or "Discord permission failure"
                             await self._mark_permanent_failure(task, error)
                         return
                     await self._commit_final_delivery(
@@ -450,7 +453,7 @@ class CodingDelivery:
             trigger = await fallback.fetch_message(int(task.trigger_discord_message_id))
         except ValueError, discord.HTTPException:
             return fallback
-        existing_thread = await self._threads._adopt_managed_handoff_thread(trigger)
+        existing_thread = await self._threads.adopt_managed_handoff_thread(trigger)
         if existing_thread is not None:
             await self._save_delivery_thread(task, existing_thread.id)
             return existing_thread
@@ -801,14 +804,14 @@ class CodingTaskController:
             return
 
         model_config = self._provider_manager.model_config
-        coding_model = model_config.roles.coding if model_config is not None else None
         # A missing role or sandbox leaves the coding surface unregistered instead
         # of taking the whole bot down: a sandbox probe that stops passing after a
         # host upgrade must not turn into a Discord outage (docs/coding-agent.md).
-        if coding_model is None:
+        if model_config is None or model_config.roles.coding is None:
             self._state = CodingTaskControllerState.DISABLED
             log.warning("Coding tasks requested but config/models.yaml assigns no coding role")
             return
+        coding_model = model_config.roles.coding
         sandbox_config = self._tools.code_sandbox_config
         if sandbox_config is None:
             self._state = CodingTaskControllerState.DISABLED

@@ -218,6 +218,7 @@ def test_video_tool_is_searchable_member_surface_with_typed_config() -> None:
 
     assert entry.searchable is True
     assert entry.min_tier is TrustTier.MEMBER
+    assert entry.untrusted is True
     assert default_config(registry.config_specs()[TOOL_NAME]) == {
         "model": "gemini-3.7-flash",
         "thinking_level": "low",

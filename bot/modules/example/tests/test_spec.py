@@ -67,6 +67,8 @@ def test_create_registers_tools_and_labels() -> None:
     assert registry.tools[TOOL_GIVE].guild_only and registry.tools[TOOL_LEADERBOARD].guild_only
     assert registry.tools[TOOL_GIVE].searchable is False
     assert registry.tools[TOOL_LEADERBOARD].searchable is True
+    assert registry.tools[TOOL_GIVE].untrusted is True
+    assert registry.tools[TOOL_LEADERBOARD].untrusted is True
     assert set(labels) == {TOOL_GIVE, TOOL_LEADERBOARD}
     assert set(registry.tools[TOOL_GIVE].parameters["required"]) == {"user", "reason"}
 

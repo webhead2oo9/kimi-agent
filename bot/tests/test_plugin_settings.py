@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 
 import pytest
 from pydantic import SecretStr
@@ -18,6 +19,7 @@ from config.plugin_settings import (
     PluginSettingsRegistry,
 )
 from config.settings import Settings
+from discord_adapter.gateway import DiscordGateway
 from tools.registry import ToolRegistry
 
 
@@ -72,7 +74,11 @@ def _ctx(tmp_path: Path) -> PluginContext:
         _env_file=None,
         config_dir=str(tmp_path),
     )
-    return build_plugin_context(settings, ToolRegistry(), gateway=object())
+    return build_plugin_context(
+        settings,
+        ToolRegistry(),
+        gateway=cast(DiscordGateway, object()),
+    )
 
 
 def _module(monkeypatch: pytest.MonkeyPatch, register) -> None:

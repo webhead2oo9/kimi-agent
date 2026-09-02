@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio"]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-cov"]
 
 # This repo is an application, not an importable library: code is run via
 # `.venv/bin/python bot.py` and tests import it through `pythonpath = ["."]`, so
@@ -151,3 +151,16 @@ markers = [
 # Pin the fixture loop scope rather than inheriting pytest-asyncio's default,
 # which it warns about on every run and intends to change.
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["."]
+omit = [
+    "tests/*",
+    "modules/example/tests/*",
+    "packages/*/tests/*",
+    "evals/*",
+    "workspaces/*",
+    "data/*/workspaces/*",
+]

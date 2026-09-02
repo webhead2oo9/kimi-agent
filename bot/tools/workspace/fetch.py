@@ -140,4 +140,5 @@ def register_fetch_tools(
         },
         handler=_fetch_url,
         min_tier=TrustTier.MEMBER,
+        untrusted=True,
     )

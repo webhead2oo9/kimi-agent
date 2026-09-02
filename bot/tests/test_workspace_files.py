@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent.attachments import AttachmentRef
+from tools.registry import UNTRUSTED_CONTEXT_NOTE
 from tools.downloads import (
     FetchUrlError,
     validate_fetch_url,
@@ -49,7 +50,11 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
     assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
 
     read_result = await reg.dispatch("read_file", {"path": "notes/hello.txt"}, ctx)
-    assert read_result == "notes/hello.txt: lines 1-2 of 2\n1: Hello\n2: World"
+    assert json.loads(read_result) == {
+        "result": "notes/hello.txt: lines 1-2 of 2\n1: Hello\n2: World",
+        "context_is_untrusted": True,
+        "note": UNTRUSTED_CONTEXT_NOTE,
+    }
 
     list_result = await reg.dispatch("list_workspace", {"path": "notes"}, ctx)
     parsed_list = json.loads(list_result)
@@ -59,9 +64,13 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
 
     grep_result = await reg.dispatch("grep_workspace", {"pattern": "hello"}, ctx)
     parsed_grep = json.loads(grep_result)
+    assert parsed_grep["context_is_untrusted"] is True
     assert parsed_grep["matches"] == [
         {"file": "notes/hello.txt", "line_number": 1, "text": "Hello"}
     ]
+    entries = {entry.name: entry for entry in reg.get_all_tools()}
+    assert entries["read_file"].untrusted is True
+    assert entries["grep_workspace"].untrusted is True
 
     delete_result = await reg.dispatch("delete_file", {"path": "notes/hello.txt"}, ctx)
     # The write explicitly queued the file; deleting it must also drop the stale rail
@@ -281,7 +290,7 @@ async def test_read_file_negative_offset_reads_tail(tmp_path: Path) -> None:
 
     result = await reg.dispatch("read_file", {"path": "log.txt", "offset": -2}, ctx)
 
-    assert result == "log.txt: lines 4-5 of 5\n4: l4\n5: l5"
+    assert json.loads(result)["result"] == "log.txt: lines 4-5 of 5\n4: l4\n5: l5"
 
 
 def test_workspace_tool_config_defaults_match_settings() -> None:
@@ -904,7 +913,7 @@ async def test_read_file_empty_file(tmp_path: Path) -> None:
 
     result = await reg.dispatch("read_file", {"path": "empty.txt"}, ctx)
 
-    assert result == "empty.txt: empty file"
+    assert json.loads(result)["result"] == "empty.txt: empty file"
 
 
 @pytest.mark.asyncio
@@ -943,7 +952,7 @@ async def test_read_file_truncation_header_matches_shown_lines(tmp_path: Path) -
 
     result = await reg.dispatch("read_file", {"path": "big.txt"}, ctx)
 
-    header, _, body = result.partition("\n")
+    header, _, body = json.loads(result)["result"].partition("\n")
     assert body.endswith("[TRUNCATED]")
     shown_lines = body.rsplit("\n[TRUNCATED]", 1)[0].split("\n")
     # The header range equals what the truncated body actually shows.

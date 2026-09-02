@@ -5,7 +5,7 @@ import contextlib
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
@@ -53,11 +53,11 @@ class AttachmentDeliveryPlan:
     notice_text: str | None = None
 
 
-class SentMessages(list[Any]):
+class SentMessages(list[discord.Message]):
     """Delivered messages plus whether any expected chunk failed permanently."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, messages: Iterable[discord.Message] = ()) -> None:
+        super().__init__(messages)
         self.delivery_failed = False
         self.delivery_permanent = False
         self.delivery_error = ""

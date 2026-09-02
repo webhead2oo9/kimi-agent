@@ -18,6 +18,7 @@ from app.guild_turn_adapter import (
     GuildTurnDeliveryConfig,
 )
 from app.response_delivery import DiscordResponseSender
+from discord_adapter.io import SentMessages
 from tests.helpers import StubProviderManager, make_settings
 from tools.registry import TurnHandoff
 from tools.threads import ThreadCloseRequest, ThreadRequest
@@ -184,6 +185,7 @@ class FakeCollaborators:
         *,
         created_thread: FakeThread | None = None,
         sent_contents: tuple[str, ...] = ("answer",),
+        delivery_failed: bool = False,
     ) -> None:
         self.events: list[str] = []
         self.config = GuildTurnDeliveryConfig(
@@ -197,6 +199,7 @@ class FakeCollaborators:
         self.thread_handoff = FakeThreadHandoff()
         self.coding = FakeCodingTasks(self.events)
         self.sent_contents = sent_contents
+        self.delivery_failed = delivery_failed
         self.send_calls: list[tuple[object, str, dict[str, object]]] = []
         self.channel = channel
 
@@ -209,13 +212,20 @@ class FakeCollaborators:
         channel: object,
         content: str,
         **kwargs: object,
-    ) -> list[FakeSentMessage]:
+    ) -> SentMessages:
         self.events.append("send")
         self.send_calls.append((channel, content, kwargs))
-        return [
-            FakeSentMessage(700 + index, chunk, cast(FakeChannel, channel))
-            for index, chunk in enumerate(self.sent_contents)
-        ]
+        result = SentMessages(
+            cast(
+                list[discord.Message],
+                [
+                    FakeSentMessage(700 + index, chunk, cast(FakeChannel, channel))
+                    for index, chunk in enumerate(self.sent_contents)
+                ],
+            )
+        )
+        result.delivery_failed = self.delivery_failed
+        return result
 
     def bundle(self) -> GuildTurnCollaborators:
         return GuildTurnCollaborators(
@@ -357,6 +367,20 @@ async def test_delivery_failure_is_explicit_when_no_message_was_sent() -> None:
     assert receipt.replies == ()
     assert receipt.delivery_failed is True
     assert receipt.context_channel_id == "100"
+
+
+@pytest.mark.asyncio
+async def test_partial_delivery_failure_is_explicit_with_sent_messages() -> None:
+    channel = FakeChannel(100)
+    app = FakeCollaborators(channel, delivery_failed=True)
+
+    receipt = await _adapter(app, FakeMessage(channel)).deliver(
+        TurnResult(response_text="answer"),
+        conversation_id=9,
+    )
+
+    assert [reply.content for reply in receipt.replies] == ["answer"]
+    assert receipt.delivery_failed is True
 
 
 def test_bind_turn_source_scopes_gateway_binding() -> None:

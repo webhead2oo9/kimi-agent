@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakValueDictionary
 
 import discord
+from discord.ext import commands
 
 from config.fragments.channel_pins import (
     load_channel_thread_auto_respond,
@@ -142,7 +143,7 @@ class ThreadHandoffBoundary:
     def __init__(
         self,
         *,
-        get_bot: Callable[[], Any],
+        get_bot: Callable[[], commands.Bot],
         settings: Settings,
         get_manager: Callable[[], ThreadHandoffManager | None],
     ) -> None:
@@ -154,7 +155,7 @@ class ThreadHandoffBoundary:
         )
 
     @property
-    def bot(self) -> Any:
+    def bot(self) -> commands.Bot:
         """Live client reference: ``KimiApplication.bot`` is rebindable."""
         return self._get_bot()
 
@@ -344,7 +345,7 @@ class ThreadHandoffBoundary:
 
     async def _create_thread_with_retry(
         self,
-        create: Callable[[], Any],
+        create: Callable[[], Awaitable[discord.Thread]],
         *,
         subject: str,
     ) -> discord.Thread | None:
@@ -482,11 +483,17 @@ class ThreadHandoffBoundary:
             self._thread_creation_locks[key] = lock
         return lock
 
-    async def _adopt_managed_handoff_thread(
+    async def adopt_managed_handoff_thread(
         self,
         message: discord.Message,
     ) -> discord.Thread | None:
-        """Adopt a thread another delivery path already created for this message."""
+        """Adopt a thread another delivery path already created for this message.
+
+        This is the public coordination seam used by deliveries that may race
+        to hand off the same trigger message. It only returns threads already
+        enrolled by this boundary; callers cannot use it to adopt arbitrary
+        Discord threads.
+        """
 
         manager = self.thread_handoff
         if manager is None or isinstance(message.channel, discord.Thread):

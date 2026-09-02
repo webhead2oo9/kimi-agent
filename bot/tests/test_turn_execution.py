@@ -1588,7 +1588,9 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
         ) -> list[Path]:
             assert generated_assets == [asset]
             worker_started.set()
-            allow_worker_finish.wait(timeout=1.0)
+            # Stay blocked well beyond the turn deadline so timeout, rather
+            # than worker completion, deterministically wins this race.
+            allow_worker_finish.wait(timeout=5.0)
             paths = write_generated_assets(generated_assets, output_dir=output_dir)
             worker_finished.set()
             return paths
@@ -1607,18 +1609,20 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
             config=TurnExecutionConfig(
                 max_iterations=7,
                 max_tokens=1234,
-                timeout_seconds=0.01,
+                # The deadline exercises the real timeout path, but leaves
+                # enough room for thread-pool startup on a loaded CI host.
+                timeout_seconds=1.0,
             ),
         )
     )
-    assert await asyncio.to_thread(worker_started.wait, 1.0)
+    assert await asyncio.to_thread(worker_started.wait, 2.0)
     with pytest.raises(ConversationTurnTimeoutError):
-        await asyncio.wait_for(task, timeout=1.0)
+        await asyncio.wait_for(task, timeout=2.0)
 
     # Root-visible execution has timed out, but the shielded worker drains under
     # its child activity lifetime. Its eventual result is cleanup-only.
     allow_worker_finish.set()
-    assert await asyncio.to_thread(worker_finished.wait, 1.0)
+    assert await asyncio.to_thread(worker_finished.wait, 2.0)
     for _ in range(20):
         if not (generated_root / "late-2.png").exists():
             break

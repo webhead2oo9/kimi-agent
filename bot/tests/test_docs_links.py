@@ -13,6 +13,7 @@ import ast
 import re
 from pathlib import Path
 
+from agent.activity import _TOOL_LABELS
 from config.settings import Settings
 from tests.helpers import PROJECT_ROOT
 
@@ -37,6 +38,8 @@ _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 # A backticked all-caps token in prose reads as an env var. Five characters
 # avoids matching short prose acronyms while still covering every real setting.
 _ENV_TOKEN_RE = re.compile(r"`([A-Z][A-Z0-9_]{4,})`")
+
+_TOOL_TABLE_ROW_RE = re.compile(r"^\|\s*`([a-z][a-z0-9_]*)`\s*\|", re.MULTILINE)
 
 # Tokens that look like settings but are deliberately not `Settings` fields.
 _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
@@ -102,6 +105,58 @@ def _code_symbols() -> set[str]:
     return symbols
 
 
+def _builtin_tool_names() -> set[str]:
+    """Resolve static ``registry.register`` names under the built-in tools tree."""
+
+    names: set[str] = set()
+    unresolved: list[str] = []
+    for path in sorted((PROJECT_ROOT / "tools").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        constants: dict[str, str] = {}
+        for statement in tree.body:
+            if (
+                isinstance(statement, ast.Assign)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ):
+                constants.update(
+                    (target.id, statement.value.value)
+                    for target in statement.targets
+                    if isinstance(target, ast.Name)
+                )
+            elif (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ):
+                constants[statement.target.id] = statement.value.value
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "register"
+            ):
+                continue
+            name_node = next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+                node.args[0] if node.args else None,
+            )
+            if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str):
+                names.add(name_node.value)
+            elif isinstance(name_node, ast.Name) and name_node.id in constants:
+                names.add(constants[name_node.id])
+            else:
+                relative = path.relative_to(PROJECT_ROOT)
+                unresolved.append(f"{relative}:{node.lineno}")
+
+    assert not unresolved, (
+        "Built-in tool registrations need a statically resolvable name so labels and docs "
+        f"can be checked: {unresolved}"
+    )
+    return names
+
+
 def test_relative_doc_links_resolve() -> None:
     broken: list[str] = []
     for page in _DOC_PAGES:
@@ -163,3 +218,22 @@ def test_source_and_docs_do_not_reference_missing_spec_tree() -> None:
                 offenders.append(str(path.relative_to(REPO_ROOT)))
 
     assert not offenders, f"References to the missing docs/superpowers tree: {offenders}"
+
+
+def test_builtin_tools_have_activity_labels_and_catalog_documentation() -> None:
+    """Every static built-in registration stays mirrored in UI labels and tools docs."""
+
+    registered = _builtin_tool_names()
+    documented = set(
+        _TOOL_TABLE_ROW_RE.findall((REPO_ROOT / "docs" / "tools.md").read_text(encoding="utf-8"))
+    )
+
+    assert not (missing := registered - _TOOL_LABELS.keys()), (
+        "Built-in tools missing agent.activity labels: " + ", ".join(sorted(missing))
+    )
+    assert not (missing := registered - documented), (
+        "Built-in tools missing from docs/tools.md: " + ", ".join(sorted(missing))
+    )
+    assert not (stale := documented - registered), (
+        "docs/tools.md lists tools with no built-in registration: " + ", ".join(sorted(stale))
+    )

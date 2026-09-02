@@ -2,23 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
-
-UNTRUSTED_CONTEXT_KEY = "context_is_untrusted"
 
 
 def tool_error(message: str) -> str:
     return json.dumps({"error": message})
-
-
-def untrusted_payload(payload: dict[str, Any], note: str) -> dict[str, Any]:
-    # Trust keys are spread last so a payload carrying an upstream response can
-    # never override the envelope (e.g. a colliding "context_is_untrusted" key).
-    return {**payload, UNTRUSTED_CONTEXT_KEY: True, "note": note}
-
-
-def json_untrusted_payload(payload: dict[str, Any], note: str) -> str:
-    return json.dumps(untrusted_payload(payload, note))
 
 
 def get_int(

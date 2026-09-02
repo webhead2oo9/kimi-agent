@@ -410,6 +410,8 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
 
     assert manager.load_state.loaded == ("base", "dependent")
     assert registry.is_registered("module_demo")
+    entry = next(tool for tool in registry.get_all_tools() if tool.name == "module_demo")
+    assert entry.untrusted is True
     assert manager.spec("base").name == "base"
     assert manager.tool_names("base") == ("module_demo",)
     assert manager.tool_names("dependent") == ()
@@ -703,7 +705,14 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         return "ok"
 
     def create(ctx: ModuleLoadContext) -> FakeModule:
-        ctx.registry.register("echo", "echo", {"type": "object"}, echo, guild_ids=frozenset({7}))
+        ctx.registry.register(
+            "echo",
+            "echo",
+            {"type": "object"},
+            echo,
+            guild_ids=frozenset({7}),
+            untrusted=False,
+        )
         return FakeModule("m", [])
 
     registry = ToolRegistry()
@@ -760,8 +769,15 @@ async def test_module_tools_refuse_guilds_where_the_module_is_inactive(tmp_path:
         return "ran"
 
     def create(ctx: ModuleLoadContext) -> FakeModule:
-        ctx.registry.register("count", "count", {"type": "object"}, count)
-        ctx.registry.register("anywhere", "dm ok", {"type": "object"}, count, guild_only=False)
+        ctx.registry.register("count", "count", {"type": "object"}, count, untrusted=False)
+        ctx.registry.register(
+            "anywhere",
+            "dm ok",
+            {"type": "object"},
+            count,
+            guild_only=False,
+            untrusted=False,
+        )
         return FakeModule("m", [])
 
     registry = ToolRegistry()
@@ -930,7 +946,14 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
         return "ok"
 
     def create(ctx: ModuleLoadContext) -> FakeModule:
-        ctx.registry.register("echo", "echo", {"type": "object"}, echo, guild_only=False)
+        ctx.registry.register(
+            "echo",
+            "echo",
+            {"type": "object"},
+            echo,
+            guild_only=False,
+            untrusted=False,
+        )
         return FakeModule("m", [])
 
     registry = ToolRegistry()

@@ -97,7 +97,7 @@ class FakeThreads:
         self.create = AsyncCall()
         self.creation_allowed = False
 
-    async def _adopt_managed_handoff_thread(self, message: object) -> object | None:
+    async def adopt_managed_handoff_thread(self, message: object) -> object | None:
         return await self.adopt(message)
 
     def thread_handoff_creation_allowed(self, message: object) -> bool:

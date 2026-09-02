@@ -8,12 +8,13 @@ the real ``ToolRegistry`` privilege boundary, and persistence across a restart.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from modules.testing import build_test_runtime
-from tools.registry import MessageContext
+from tools.registry import UNTRUSTED_CONTEXT_NOTE, MessageContext
 from trust.tiers import TrustTier
 
 MODULE = "reference_kudos"
@@ -54,12 +55,17 @@ async def test_installed_reference_module_migrates_dispatches_and_persists(
         first = await runtime.registry.dispatch(
             "give_kudos", {"user": "<@7>", "reason": "shipped it"}, _tool_context("1")
         )
-        assert first == "Kudos to <@7>: shipped it"
+        first_payload = json.loads(first)
+        assert first_payload == {
+            "result": "Kudos to <@7>: shipped it",
+            "context_is_untrusted": True,
+            "note": UNTRUSTED_CONTEXT_NOTE,
+        }
         # The operator's daily_limit override of 1 is in force.
         second = await runtime.registry.dispatch(
             "give_kudos", {"user": "<@8>", "reason": "again"}, _tool_context("1")
         )
-        assert "last 24 hours" in second
+        assert "last 24 hours" in json.loads(second)["result"]
         # Guild-only tools are masked, not refused, for a guild-less caller (DM or
         # personal chat): the registry answers as if the tool did not exist.
         masked = await runtime.registry.dispatch(
@@ -74,6 +80,8 @@ async def test_installed_reference_module_migrates_dispatches_and_persists(
         board = await restarted.registry.dispatch(
             "kudos_leaderboard", {"days": 1}, _tool_context("2")
         )
-        assert board.splitlines()[1:] == ["1. <@7> — 1"]
+        board_payload = json.loads(board)
+        assert board_payload["context_is_untrusted"] is True
+        assert board_payload["result"].splitlines()[1:] == ["1. <@7> — 1"]
     finally:
         await restarted.close()

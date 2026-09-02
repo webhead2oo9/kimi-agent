@@ -14,6 +14,7 @@ import agent.activity as activity
 from app import tool_surfaces
 from app.plugins import PLUGIN_API_VERSION, PluginContext, build_plugin_context, load_plugins
 from config.settings import Settings
+from discord_adapter.gateway import DiscordGateway
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
@@ -23,7 +24,11 @@ def _settings(**kwargs: object) -> Settings:
 
 
 def _ctx(registry: ToolRegistry) -> PluginContext:
-    return build_plugin_context(_settings(), registry, gateway=object())
+    return build_plugin_context(
+        _settings(),
+        registry,
+        gateway=cast(DiscordGateway, object()),
+    )
 
 
 async def _noop_handler(args: dict, ctx: MessageContext) -> str:
@@ -231,7 +236,7 @@ def test_build_runtime_tools_loads_configured_plugins(
 
     runtime_tools = build_runtime_tools(
         settings,
-        gateway,
+        cast(DiscordGateway, gateway),
         ProviderManager(settings=settings, main=cast(LLMProvider, StubProvider())),
         MemoryManager(settings=settings, registry=ToolRegistry()),
     )

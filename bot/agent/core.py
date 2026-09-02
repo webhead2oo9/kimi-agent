@@ -312,6 +312,7 @@ class ConversationRunRequest:
     attachments: list[AttachmentRef] | None = None
     compactor: Compactor | None = None
     activity_reporter: ActivityReporter | None = None
+    # Opaque persistence seam: agent/core.py is intentionally storage-free.
     usage_store: Any | None = None
     timeout_seconds: float | None = None
     # Absolute time.monotonic() deadline inherited from the Discord turn-entry

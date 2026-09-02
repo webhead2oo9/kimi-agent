@@ -27,6 +27,7 @@ from agent.activity import (
 )
 from agent.attachments import (
     AttachmentRef,
+    AttachmentStore,
     CollectedImage,
     TurnImages,
     cleanup_attachment_paths,
@@ -87,9 +88,13 @@ from usage.pricing import price_usage_call
 from usage.normalization import LLMUsageCall, UsageBreakdown, normalize_usage
 
 if TYPE_CHECKING:
+    from agent.compaction import Compactor
+    from config.model_config import ModelConfig
+    from memory.client import MemoryClient
     from moderation.service import ModerationService
     from storage.conversations import ConversationAccessScope
-    from tools.embeds import EmbedSpec
+    from storage.usage import UsageStore
+    from tools.embeds import EmbedAttachment, EmbedSpec
     from tools.threads import ThreadCloseRequest, ThreadRequest
 
 log = logging.getLogger(__name__)
@@ -142,7 +147,7 @@ class MemoryPreferenceStore(Protocol):
 class EnsureUserBank(Protocol):
     async def __call__(
         self,
-        memory_client: Any,
+        memory_client: MemoryClient,
         user_id: str,
         user_name: str,
         /,
@@ -153,7 +158,7 @@ class RecallCurrentUserContext(Protocol):
     async def __call__(
         self,
         *,
-        memory_client: Any,
+        memory_client: MemoryClient | None,
         preference_store: MemoryPreferenceStore | None,
         user_id: str,
         user_message: str,
@@ -209,9 +214,9 @@ class ToolConfigs(Protocol):
 class CollectTurnImages(Protocol):
     async def __call__(
         self,
-        message: Any,
+        message: object,
         *,
-        store: Any,
+        store: AttachmentStore,
         conversation_key: str,
         detail: str,
         images_supported: bool,
@@ -231,10 +236,10 @@ class ResolveDiscordReferences(Protocol):
 class CollectReplyContext(Protocol):
     async def __call__(
         self,
-        message: Any,
+        message: object,
         *,
         bot_user: Any,
-        store: Any,
+        store: AttachmentStore,
         conversation_key: str,
         detail: str,
         images_supported: bool,
@@ -247,7 +252,7 @@ class CollectReplyContext(Protocol):
 
 
 class CollectTurnAttachments(Protocol):
-    def __call__(self, message: Any) -> list[AttachmentRef]: ...
+    def __call__(self, message: object) -> list[AttachmentRef]: ...
 
 
 class StripMention(Protocol):
@@ -316,7 +321,7 @@ class ModerationServiceLike(Protocol):
 @dataclass(frozen=True)
 class TurnPreparationInput:
     raw_content: str
-    source_message: Any
+    source_message: object
     bot_user: Any
     guild_id: str | None
     channel_id: str
@@ -464,12 +469,12 @@ class TurnDependencies:
     context_manager: TurnContextManager
     provider: TurnProvider
     registry: object
-    attachment_store: object
+    attachment_store: AttachmentStore
     workspace_dir: Path
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     llm_semaphore: asyncio.Semaphore
-    memory_client: Any | None
+    memory_client: MemoryClient | None
     preference_store: MemoryPreferenceStore | None
     ensure_user_bank: EnsureUserBank
     recall_current_user_context: RecallCurrentUserContext
@@ -491,13 +496,13 @@ class TurnDependencies:
     chat_model_name_resolver: ChatModelNameResolver
     persist_prepared_user_message: PersistPreparedUserMessage
     write_generated_assets: WriteGeneratedAssets
-    compactor: Any | None
+    compactor: Compactor | None
     activity_reporter: ActivityReporter | None
     # None whenever moderation is disabled (app/moderation.py:build_moderation_service).
     moderation_service: ModerationService | ModerationServiceLike | None
-    usage_store: Any | None
+    usage_store: UsageStore | None
     image_distillation_store: ImageDistillationCache | None
-    model_config: Any | None
+    model_config: ModelConfig | None
     resolved_model_name: str
     # Child mutable operations take their own privacy-barrier lease so a timed-out
     # worker can finish before an exclusive deletion begins.
@@ -1475,14 +1480,14 @@ async def _stage_pending_response_files(
 
 
 def _stage_response_files_sync(
-    workspace_manager: Any,
+    workspace_manager: WorkspaceManager,
     context_key: str,
     user_id: str,
     files: list[str],
     allowed_roots: Sequence[str | Path],
-    embed_attachment: Any | None,
+    embed_attachment: EmbedAttachment | None,
     descriptions: Mapping[str, str],
-) -> tuple[list[str], str, Any | None, dict[str, str]]:
+) -> tuple[list[str], str, EmbedAttachment | None, dict[str, str]]:
     roots = [Path(root).resolve(strict=False) for root in allowed_roots]
     job_dir = workspace_manager.generated_job_dir(
         context_key,
@@ -1950,7 +1955,7 @@ def _output_moderation_exempt_tier(
 class _ModeratedActivityReporter:
     def __init__(
         self,
-        delegate: Any,
+        delegate: ActivityReporter,
         *,
         moderation_service: ModerationServiceLike,
         user_id: str,

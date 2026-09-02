@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.activity import ActivityReporter
 from agent.attachments import (
+    AttachmentStore,
     collect_reply_context,
     collect_turn_attachments,
     collect_turn_images,
@@ -48,6 +49,7 @@ from agent.turn import (
     TurnContextManager,
     TurnPreparationConfig,
     TurnPreparationInput,
+    TurnProvider,
     WriteGeneratedAssets,
 )
 from config.model_config import Scope
@@ -63,8 +65,10 @@ from workspace import WorkspaceManager
 
 if TYPE_CHECKING:
     from app.providers import ProviderManager
+    from memory.client import MemoryClient
     from moderation.service import ModerationService
     from storage.image_distillations import ImageDistillationStore
+    from storage.usage import UsageStore
 
 
 class TurnHasImageInput(Protocol):
@@ -131,13 +135,13 @@ class TurnEntryServices:
     context_manager: TurnContextManager
     registry: ToolRegistry
     preference_store: TurnPreferenceStore | None
-    usage_store: object | None
-    attachment_store: object
+    usage_store: UsageStore | None
+    attachment_store: AttachmentStore
     workspace_dir: Path
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     llm_semaphore: asyncio.Semaphore
-    get_memory_client: Callable[[], object | None]
+    get_memory_client: Callable[[], MemoryClient | None]
     skills_index: Callable[[str | None], str]
     personal_skills_index: Callable[[str], str]
     resolve_reference_hints: ResolveReferenceHints
@@ -181,7 +185,12 @@ class TurnDependencyFactory:
         )
 
 
-def _resolve_chat_provider(provider_manager: object, scope: Scope, *, images: bool = False) -> Any:
+def _resolve_chat_provider(
+    provider_manager: object,
+    scope: Scope,
+    *,
+    images: bool = False,
+) -> TurnProvider:
     resolve = getattr(provider_manager, "resolve", None)
     if callable(resolve):
         return resolve("chat", scope, images=images)
@@ -190,7 +199,12 @@ def _resolve_chat_provider(provider_manager: object, scope: Scope, *, images: bo
     return getattr(provider_manager, "main")  # noqa: B009
 
 
-def chat_model_name_for_scope(provider_manager: Any, scope: Scope, *, images: bool = False) -> str:
+def chat_model_name_for_scope(
+    provider_manager: ProviderManager,
+    scope: Scope,
+    *,
+    images: bool = False,
+) -> str:
     """The configured chat model for a scope, or "" when routing is unavailable.
 
     One implementation, called both here and by the application's own method
@@ -297,7 +311,7 @@ async def build_turn_dependencies(
         command=command_template,
     )
 
-    def chat_provider_for_turn(*, images: bool = False) -> Any:
+    def chat_provider_for_turn(*, images: bool = False) -> TurnProvider:
         return _resolve_chat_provider(
             services.provider_manager,
             chat_scope,

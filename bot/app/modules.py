@@ -115,7 +115,7 @@ class _LoadTimeToolRegistry:
         parameters: dict[str, Any],
         handler: ModuleToolHandler,
         *,
-        min_tier: Any,
+        min_tier: TrustTier,
         searchable: bool,
         owner_only: bool,
         guild_only: bool,

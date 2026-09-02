@@ -8,17 +8,19 @@ import re
 import shutil
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 from pathlib import Path
 
+from agent.compaction import Compactor
 from agent.context import ConversationContext
 from agent.core import ConversationRunRequest, run_conversation
 from app.coding_jobs import CodingJobManager
-from config.model_config import Scope
+from app.providers import ProviderManager
+from config.model_config import ModelConfig, Scope
 from config.settings import Settings
 from providers.types import ContentPart, ConversationMessage, ToolCall
 from storage.coding_tasks import (
@@ -35,6 +37,7 @@ from tools.coding_tasks import (
     MAX_STARTING_FILES,
     build_coding_registry,
 )
+from tools.config_spec import ToolConfigField
 from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks, workspace_activity
 from tools.workspace.config import WorkspaceToolConfig
@@ -56,7 +59,10 @@ _LOWER_HEX_CHARS = frozenset("0123456789abcdef")
 TaskNotifier = Callable[[CodingTask, ConversationContext | None], Awaitable[None]]
 UserActivityGuard = Callable[[str], AbstractAsyncContextManager[None]]
 BlockedToolsResolver = Callable[[str, str], frozenset[str]]
-ToolConfigResolver = Callable[[Any], dict[str, dict[str, Any]]]
+ToolConfigResolver = Callable[
+    [Mapping[str, Sequence[ToolConfigField]]],
+    dict[str, dict[str, Any]],
+]
 
 
 UserBlockedCheck = Callable[[str], Awaitable[bool]]
@@ -67,12 +73,12 @@ class CodingTaskRuntime:
     settings: Settings
     store: CodingTaskStore
     usage_store: UsageStore
-    provider_manager: Any
+    provider_manager: ProviderManager
     source_registry: ToolRegistry
     jobs: CodingJobManager
     llm_semaphore: asyncio.Semaphore
-    compactor: Any
-    model_config: Any
+    compactor: Compactor
+    model_config: ModelConfig
     notifier: TaskNotifier
     user_activity: UserActivityGuard
     user_blocked: UserBlockedCheck

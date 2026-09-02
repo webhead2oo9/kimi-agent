@@ -1,11 +1,8 @@
 # Development
 
-> **To be expanded.** This page covers the first-time setup and the basics of
-> running an isolated dev instance. The maintainer sections on lock auditing,
-> distribution builds, and module lifecycle ceilings are intentionally
-> abbreviated. Operators and contributors who need the deep-end setup should
-> treat this as a starting point and follow the linked references for the
-> full procedures.
+This page covers first-time setup and running an isolated dev instance. The
+maintainer sections on lock auditing, distribution builds, and module lifecycle
+ceilings are kept short; follow the linked pages for the full procedures.
 
 The bot is a long-lived process that talks to live Discord, so an end-to-end
 "dev mode" really means **a second real instance**, with its own bot token,
@@ -78,7 +75,7 @@ The other explicit executable mappings are `.venv/bin/ruff` to
 `.\.venv\Scripts\ruff.exe` and `.venv/bin/mypy` to
 `.\.venv\Scripts\mypy.exe`.
 
-## The switch
+## Choosing which dotenv file to load
 
 `ENV_FILE` selects the dotenv file for the core `Settings` object **and every
 enabled plugin or application-module settings class**, through the shared helper in
@@ -97,7 +94,7 @@ $env:ENV_FILE = ".env.dev"
 Remove-Item Env:ENV_FILE
 ```
 
-When `ENV_FILE` is unset, the bot loads `.env`. A path that doesn't exist raises at import, and that's intentional. Loading nothing silently would hand you a valid-but-empty config that dies somewhere far from the typo.
+When `ENV_FILE` is unset, the bot loads `.env`. If the file you name does not exist, the bot refuses to start. That is deliberate: silently loading nothing would give you a valid-looking but empty config that fails somewhere far from the typo.
 
 Plugin and module settings must not declare their own hard-coded `env_file`. Put their private credentials and environment-only connection settings in the selected file (`.env.dev` here), never in `.env`, so the second process stays isolated across core and optional integrations. See [plugins.md](plugins.md) and [modules.md](modules.md) for their complete contracts.
 
@@ -170,7 +167,7 @@ which reads the shell environment first and then `bot/.env`
 (`evals/models.py:resolve_api_key`), so export the key in the shell or keep it
 in `.env`. See [evals.md](evals.md).
 
-Of all these settings, `DATABASE_PATH` is the one that matters most. Production `data/bot.db` is real user data, and a dev boot writing into it is exactly the mistake worth engineering against.
+Of all these settings, `DATABASE_PATH` is the one that matters most. Production `data/bot.db` is real user data, and a dev instance writing into it is exactly the mistake this setup exists to prevent.
 
 Local state deserves the same care. Encryption is off by default on every platform, and this repository installs SQLCipher only on Linux. A normal Windows dev database is therefore plaintext and may contain retained transcripts (30 days by default). Before cleaning or retiring a dev machine, review what needs to be kept. `git clean -ndx` previews ignored files; `git clean -fdx` removes them, including `data/`, dotenv files, and `config/models.yaml`.
 
@@ -331,7 +328,7 @@ MODULE_START_TIMEOUT_SECONDS=60   # start() past this fails the module and abort
 MODULE_CLOSE_TIMEOUT_SECONDS=15   # close() past this is cancelled; shutdown continues
 ```
 
-A start timeout raises `Kimi module '<name>' start() exceeded 60s` and emits a `module_health` event with state `failed`; the process then exits like any other module failure, so the log and event are the diagnostic surface. A close timeout logs `Kimi module <name> close() exceeded 15s; continuing shutdown` and the remaining modules still close. In both cases the module's coroutine is cancelled and given five seconds; one that ignores cancellation is logged as abandoned and left to the event loop.
+A start timeout raises `Kimi module '<name>' start() exceeded 60s`, emits a `module_health` event with state `failed`, and the process exits like it would for any other module failure, so look at the log and the event to diagnose it. A close timeout logs `Kimi module <name> close() exceeded 15s; continuing shutdown` and the remaining modules still close. In both cases the module's coroutine is cancelled and given five seconds to stop; one that ignores cancellation is logged as abandoned and left to the event loop.
 
 If a module trips either ceiling during development, the fix belongs in the module (move slow work into a scheduler job, or make `close()` cancel rather than await), not in the setting.
 

@@ -326,6 +326,7 @@ supplied public HTTPS target and sends no stored transcript or memory.
 | TinyFish internet search | Search queries and filters; for page reading, the requested public URLs | `TINYFISH_API_KEY` | off |
 | Exa internet search | Search queries and filters; for page reading, the requested public URLs | `EXA_API_KEY` | off |
 | Brave internet search | Search queries and filters | `BRAVE_API_KEY` | off |
+| xAI X search | The search query, optional date and account-handle filters, and the model's instructions to the hosted search; sent under the operator's xAI OAuth token or `GROK_API_KEY` | `X_SEARCH_ENABLED` + OAuth token file or `GROK_API_KEY` | off |
 | OpenAI image generation | The image prompt, requested output settings, and any selected PNG/JPEG/WebP workspace reference bytes | `IMAGE_GEN_ENABLED` + Codex OAuth or `IMAGE_GEN_API_KEY` | off |
 | Wolfram\|Alpha | A bounded single-line computation query and optional units choice | `WOLFRAM_ALPHA_APP_ID` | off |
 | Google Gemini video understanding | A public YouTube URL or streamed Discord/workspace video bytes plus the user's questions; Google temporarily stores uploaded Files and the Interaction chain for stateful continuation | `VIDEO_UNDERSTANDING_ENABLED` + `GEMINI_API_KEY` | off |

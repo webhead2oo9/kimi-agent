@@ -7,12 +7,12 @@ import pytest
 
 import evals.registry as registry_module
 from app.tool_surfaces import surface_tools
-from config.settings import Settings, settings
+from config.settings import Settings
 from evals.capture import InstrumentedRegistry
 from evals.identity import EvalIdentity
 from evals.registry import build_eval_registry, compose_tools
 from evals.stub_gateway import SAFE_STUB_TOOLS, StubCodingControls, StubGateway
-from tests.helpers import PROJECT_ROOT
+from tests.helpers import PROJECT_ROOT, make_settings
 from tools.registry import MessageContext
 from trust.tiers import TrustTier
 
@@ -32,7 +32,7 @@ def eval_settings(tmp_path: Path) -> Settings:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     shutil.copy(PROJECT_ROOT / "config" / "models.example.yaml", config_dir / "models.yaml")
-    return settings.model_copy(update={"config_dir": str(config_dir)})
+    return make_settings(config_dir=str(config_dir))
 
 
 def test_compose_tools_registers_core_tools_and_installs_safe_stubs(eval_settings):
@@ -298,7 +298,7 @@ def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_set
                 context_key=first.context_key,
                 must_exist=True,
             )
-            assert resolved.path == generated_file
+            assert resolved.path == generated_file.resolve()
             with pytest.raises(
                 ValueError, match="Generated file is outside this conversation context"
             ):

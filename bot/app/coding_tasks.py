@@ -59,6 +59,9 @@ BlockedToolsResolver = Callable[[str, str], frozenset[str]]
 ToolConfigResolver = Callable[[Any], dict[str, dict[str, Any]]]
 
 
+UserBlockedCheck = Callable[[str], Awaitable[bool]]
+
+
 @dataclass(frozen=True, slots=True)
 class CodingTaskRuntime:
     settings: Settings
@@ -72,6 +75,7 @@ class CodingTaskRuntime:
     model_config: Any
     notifier: TaskNotifier
     user_activity: UserActivityGuard
+    user_blocked: UserBlockedCheck
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     workspace_config: WorkspaceToolConfig
@@ -658,10 +662,24 @@ class CodingTaskService:
                     completed.result()
             if pending:
                 logger.warning("Coding task %s cancellation cleanup is still running", task_id)
+            else:
+                # A task cancelled before its first step never runs any of the
+                # worker body, so nothing marked the row terminal; without this
+                # it stays a workerless 'cancelling' claim until restart. The
+                # pending-delivery sweeper announces the settled row.
+                refreshed = await self._store.get_task(task_id)
+                if refreshed is not None and refreshed.status in ACTIVE_TASK_STATUSES:
+                    await self._store.finish(task_id, CodingTaskStatus.CANCELLED)
         else:
             refreshed = await self._store.get_task(task_id)
             if refreshed is not None and refreshed.status == CodingTaskStatus.CANCELLED:
                 await self._notify(refreshed)
+            elif refreshed is not None and refreshed.status is CodingTaskStatus.CANCELLING:
+                # Claimed but not yet registered: the scheduler is inside its
+                # block check and there is no worker to observe the cancel.
+                # Settle the row; the claim loop treats the terminal status as
+                # the expected outcome and the sweeper announces it.
+                await self._store.finish(task_id, CodingTaskStatus.CANCELLED)
         self._wake.set()
         return True
 
@@ -799,7 +817,7 @@ class CodingTaskService:
                             partial(self._delivery_retry_done, task_id=pending.id)
                         )
                 while len(self._workers) < self._runtime.settings.coding_task_max_concurrency:
-                    task = await self._store.claim_next()
+                    task = await self._claim_next_runnable()
                     if task is None:
                         break
                     worker = asyncio.create_task(
@@ -815,6 +833,69 @@ class CodingTaskService:
             except Exception:
                 logger.exception("Coding task scheduler failed")
                 await asyncio.sleep(1.0)
+
+    async def _claim_next_runnable(self) -> CodingTask | None:
+        """Claim the next task whose owner may still use the bot.
+
+        A block that lands while a task is queued, or while the process is down
+        and the task waits for recovery, has to hold when the task would start.
+        The claim has already moved the row to running, so a refused task is
+        finished as cancelled here rather than handed to a worker. The stored
+        text is neutral because it is published to the channel the task was
+        started in; the block itself is only logged. Delivery is left to the
+        pending-delivery sweeper so the scheduler loop never awaits Discord.
+        """
+        while True:
+            task = await self._store.claim_next()
+            if task is None:
+                return None
+            try:
+                blocked = await self._runtime.user_blocked(task.user_id)
+            except BaseException:
+                # An unanswered block question must not orphan a running row
+                # with no worker; put the claim back and surface the failure.
+                # The compensating write shares the database with the failed
+                # read, so it gets its own guard: a second failure is logged
+                # rather than allowed to mask the original error.
+                try:
+                    released = await self._store.release_claim(task.id)
+                    if not released:
+                        refreshed = await self._store.get_task(task.id)
+                        if refreshed is not None and refreshed.cancel_requested:
+                            await self._store.finish(task.id, CodingTaskStatus.CANCELLED)
+                except Exception:
+                    logger.exception("Could not release the claim on coding task %s", task.id)
+                raise
+            if not blocked:
+                refreshed = await self._store.get_task(task.id)
+                if refreshed is None:
+                    logger.warning("Coding task %s vanished between claim and start", task.id)
+                    continue
+                if refreshed.status not in ACTIVE_TASK_STATUSES:
+                    # A concurrent /stop settled the claim while the block
+                    # check ran; this is the expected shape, not an anomaly.
+                    continue
+                if refreshed.cancel_requested:
+                    # A /stop or /privacy cancel landed during the block check,
+                    # before any worker existed to observe it. Settle the row
+                    # here instead of leaving a workerless 'cancelling' claim
+                    # for restart recovery.
+                    await self._store.finish(task.id, CodingTaskStatus.CANCELLED)
+                    continue
+                if refreshed.status is not CodingTaskStatus.RUNNING:
+                    logger.warning(
+                        "Dropping coding task %s claimed at unexpected status %s",
+                        task.id,
+                        refreshed.status.value,
+                    )
+                    continue
+                return refreshed
+            logger.info("Cancelling coding task %s: user %s is blocked", task.id, task.user_id)
+            await self._store.finish(
+                task.id,
+                CodingTaskStatus.CANCELLED,
+                error_text="This task was cancelled before it started.",
+            )
 
     async def _retry_pending_delivery(self, task: CodingTask) -> None:
         async with self._delivery_semaphore:

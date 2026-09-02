@@ -163,7 +163,7 @@ class ThreadHandoffBoundary:
         """Live manager reference; ``None`` until on_ready builds it."""
         return self._get_manager()
 
-    def _thread_state_blocked_tools(self, message: discord.Message) -> frozenset[str]:
+    def thread_state_blocked_tools(self, message: discord.Message) -> frozenset[str]:
         """Mask thread tools that cannot act on the current Discord surface.
 
         Outside a managed thread that hides all of them; inside one it hides
@@ -185,7 +185,7 @@ class ThreadHandoffBoundary:
             blocked |= {"move_to_thread"}
         return blocked
 
-    def _thread_handoff_creation_allowed(self, message: discord.Message) -> bool:
+    def thread_handoff_creation_allowed(self, message: discord.Message) -> bool:
         """Resolve the live creation policy for the message's parent channel."""
         channel_id = resolve_parent_channel_id(message.channel)
         guild_id = str(message.guild.id) if message.guild else ""
@@ -497,7 +497,7 @@ class ThreadHandoffBoundary:
                 return None
             return thread
 
-    async def _create_handoff_thread(
+    async def create_handoff_thread(
         self,
         message: discord.Message,
         request: ThreadRequest,
@@ -518,7 +518,7 @@ class ThreadHandoffBoundary:
         manager = self.thread_handoff
         if manager is None or conv_id is None:
             return None
-        if not self._thread_handoff_creation_allowed(message):
+        if not self.thread_handoff_creation_allowed(message):
             return None
         if request.target_channel_id is not None:
             thread, cancellation = await _await_definitive(
@@ -646,7 +646,7 @@ class ThreadHandoffBoundary:
                 log.exception("Could not roll back enrollment for thread %s", thread.id)
             if thread_owned:
                 if cross_channel:
-                    await self._discard_cross_channel_thread(thread)
+                    await self.discard_cross_channel_thread(thread)
                 else:
                     await _delete_thread_quietly(thread)
 
@@ -679,7 +679,7 @@ class ThreadHandoffBoundary:
             auto_respond=auto_respond,
         )
 
-    async def _send_cross_channel_pointer(
+    async def send_cross_channel_pointer(
         self,
         message: discord.Message,
         thread: discord.Thread,
@@ -715,7 +715,7 @@ class ThreadHandoffBoundary:
                 exc_info=True,
             )
 
-    async def _discard_cross_channel_thread(self, thread: discord.Thread) -> None:
+    async def discard_cross_channel_thread(self, thread: discord.Thread) -> None:
         """Delete the anchor of a cross-channel thread that never got its reply.
 
         A thread created from a message shares that message's id, so the anchor
@@ -728,7 +728,7 @@ class ThreadHandoffBoundary:
             return
         await _delete_message_quietly(parent.get_partial_message(thread.id))
 
-    async def _close_handoff_thread(
+    async def close_handoff_thread(
         self,
         channel: discord.abc.Messageable,
         request: ThreadCloseRequest,

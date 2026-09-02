@@ -5,10 +5,17 @@ import math
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from branding import provider_identity
 from providers.factory import ProviderConfig, SUPPORTED_PROVIDER_NAMES
@@ -36,6 +43,24 @@ _PROFILE_REASONING_EFFORT_PROVIDER_TYPES = _REASONING_EFFORT_PROVIDER_TYPES | {"
 ANTHROPIC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
+def _reject_boolean(value: Any) -> Any:
+    """Refuse a YAML boolean where a number is expected.
+
+    ``bool`` subclasses ``int``, so pydantic's lax mode silently turns ``true``
+    into ``1``. Numeric limits sit next to genuine booleans in these documents,
+    so a confused key would otherwise boot with an unintended limit instead of
+    aborting startup.
+    """
+
+    if isinstance(value, bool):
+        raise ValueError("expected a number, not a boolean")
+    return value
+
+
+ConfigFloat = Annotated[float, BeforeValidator(_reject_boolean)]
+ConfigInt = Annotated[int, BeforeValidator(_reject_boolean)]
+
+
 @dataclass(frozen=True)
 class Scope:
     guild_id: str | None = None
@@ -47,9 +72,9 @@ class Scope:
 class CircuitBreakerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    outage_cooldown_seconds: float = Field(default=300.0, gt=0)
-    quota_cooldown_seconds: float = Field(default=1800.0, gt=0)
-    rate_limit_cooldown_seconds: float = Field(default=60.0, gt=0)
+    outage_cooldown_seconds: ConfigFloat = Field(default=300.0, gt=0)
+    quota_cooldown_seconds: ConfigFloat = Field(default=1800.0, gt=0)
+    rate_limit_cooldown_seconds: ConfigFloat = Field(default=60.0, gt=0)
 
 
 class OpenRouterPercentileThreshold(BaseModel):
@@ -57,10 +82,10 @@ class OpenRouterPercentileThreshold(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    p50: float | None = Field(default=None, gt=0)
-    p75: float | None = Field(default=None, gt=0)
-    p90: float | None = Field(default=None, gt=0)
-    p99: float | None = Field(default=None, gt=0)
+    p50: ConfigFloat | None = Field(default=None, gt=0)
+    p75: ConfigFloat | None = Field(default=None, gt=0)
+    p90: ConfigFloat | None = Field(default=None, gt=0)
+    p99: ConfigFloat | None = Field(default=None, gt=0)
 
     @field_validator("p50", "p75", "p90", "p99")
     @classmethod
@@ -81,11 +106,11 @@ class OpenRouterMaxPrice(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt: float | None = Field(default=None, ge=0)
-    completion: float | None = Field(default=None, ge=0)
-    image: float | None = Field(default=None, ge=0)
-    audio: float | None = Field(default=None, ge=0)
-    request: float | None = Field(default=None, ge=0)
+    prompt: ConfigFloat | None = Field(default=None, ge=0)
+    completion: ConfigFloat | None = Field(default=None, ge=0)
+    image: ConfigFloat | None = Field(default=None, ge=0)
+    audio: ConfigFloat | None = Field(default=None, ge=0)
+    request: ConfigFloat | None = Field(default=None, ge=0)
 
     @field_validator("prompt", "completion", "image", "audio", "request")
     @classmethod
@@ -142,8 +167,8 @@ class OpenRouterRoutingPolicy(BaseModel):
     quantizations: list[OpenRouterQuantization] | None = None
     sort: Literal["price", "throughput", "latency"] | OpenRouterSort | None = None
     max_price: OpenRouterMaxPrice | None = None
-    preferred_min_throughput: float | OpenRouterPercentileThreshold | None = None
-    preferred_max_latency: float | OpenRouterPercentileThreshold | None = None
+    preferred_min_throughput: ConfigFloat | OpenRouterPercentileThreshold | None = None
+    preferred_max_latency: ConfigFloat | OpenRouterPercentileThreshold | None = None
 
     @field_validator("order", "only", "ignore")
     @classmethod
@@ -215,11 +240,11 @@ class ProviderProfile(BaseModel):
     app_name: str = ""
     app_url: str = ""
     service_tier: str = ""
-    timeout_seconds: float = 900.0
+    timeout_seconds: ConfigFloat = 900.0
     # Optional hard output-token ceiling imposed by the endpoint. This is kept
     # on the provider profile so it applies to every model using that gateway,
     # without lowering the global limit for other providers.
-    max_output_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: ConfigInt | None = Field(default=None, gt=0)
     # Optional per-request tracing header used by OpenAI-compatible gateways.
     request_id_header: str = ""
     # Optional per-profile reasoning-effort default. Codex and openai_responses
@@ -326,10 +351,10 @@ class ProviderProfile(BaseModel):
 class ModelPricing(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    input: float | None = None
-    output: float | None = None
-    cached_read: float | None = None
-    cache_write: float | None = None
+    input: ConfigFloat | None = None
+    output: ConfigFloat | None = None
+    cached_read: ConfigFloat | None = None
+    cache_write: ConfigFloat | None = None
 
     @field_validator("input", "output", "cached_read", "cache_write")
     @classmethod
@@ -344,7 +369,7 @@ class ModelEntry(BaseModel):
 
     provider: str
     model: str
-    context_window: int = 0
+    context_window: ConfigInt = 0
     capabilities: list[str] = Field(default_factory=list)
     pricing: ModelPricing | None = None
     # Model-specific, monotonic reasoning escalation. Keys are effort levels;

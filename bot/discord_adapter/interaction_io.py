@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,6 +32,7 @@ async def send_interaction_result(
     output_file_descriptions: tuple[tuple[str, str], ...] = (),
     allowed_file_roots: tuple[str | Path, ...] = (),
     embed: Any | None = None,
+    on_primary_delivered: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     """Deliver a deferred response within Discord's user-install followup cap."""
 
@@ -86,6 +88,7 @@ async def send_interaction_result(
     if plan.embed is not None:
         first_kwargs["embed"] = build_embed(plan.embed)
 
+    delivered_chunks = [first] if first is not None else []
     if ephemeral == original_ephemeral:
         edit_kwargs = dict(first_kwargs)
         edit_kwargs["attachments"] = edit_kwargs.pop("files", [])
@@ -97,25 +100,34 @@ async def send_interaction_result(
         remaining = chunks[1:MAX_INTERACTION_FOLLOWUPS]
     else:
         await interaction.followup.send(ephemeral=False, **first_kwargs)
-        await interaction.edit_original_response(
-            content="Posted the response publicly.",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
         # The public first message consumed one of the five user-install
         # followups; four remain after the private deferred acknowledgement.
         remaining = chunks[1:MAX_INTERACTION_FOLLOWUPS]
 
     try:
+        if not ephemeral and ephemeral != original_ephemeral:
+            await interaction.edit_original_response(
+                content="Posted the response publicly.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         for chunk in remaining:
             await interaction.followup.send(
                 chunk,
                 ephemeral=ephemeral,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            delivered_chunks.append(chunk)
     except discord.HTTPException as exc:
-        if not ephemeral and not original_ephemeral:
+        if on_primary_delivered is not None:
+            # With an overflow file the first message already carried the whole
+            # response; the visible chunk is only the placeholder pointing at it.
+            delivered_text = prepared if overflow_file is not None else "\n".join(delivered_chunks)
+            await on_primary_delivered(delivered_text)
+        if not ephemeral:
             raise PartialPublicDeliveryError from exc
         raise
+    if on_primary_delivered is not None:
+        await on_primary_delivered(prepared)
 
 
 async def send_interaction_status(

@@ -17,15 +17,17 @@ Discord user installs are command-only. Installing the app on a user account doe
 
 Want to continue the conversation without running `/chat` each time? Turn on `USER_APP_DM_ENABLED`. An approved user can then message the bot directly and pick up exactly where `/chat` left off. The setting is off by default and requires `USER_APP_CHAT_ENABLED`.
 
-Both entry points share one transcript, workspace, reset, privacy deletion, and conversation lock. A conversation started with `/chat` in a server therefore continues naturally in DM, and switching back to `/chat` keeps the same context.
+Both entry points share one transcript, workspace, reset, privacy deletion, conversation lock, and `chat` prompt template. A conversation started with `/chat` in a server therefore continues naturally in DM, and switching back to `/chat` keeps the same context. Neither personal entry point applies the guild new-user onboarding threshold or its prior-message counter. Both neutralize line breaks in user input before building the model's labeled speaker line, so embedded `Name: content` text cannot forge another turn.
 
-Only users on the `USER_APP_*` access lists can use personal DMs. Messages from everyone else are ignored without a reply. Access is checked again before a queued turn starts, so removing a user from the list also stops queued messages from running.
+Only users on the `USER_APP_*` access lists can use personal DMs. Messages from everyone else are ignored without a reply. Access is checked again after acquiring the conversation lock, so removing a user from the list also stops queued messages from running. `/chat` likewise rechecks access and the user block after waiting for that lock; its initial block check remains before consent or any other response.
 
 Two differences from `/chat` follow from being a real message rather than a slash interaction. There is no invocation gate, because a DM has nothing else to be addressed to, and no `visibility:` option, because a DM is already private. There is also no interaction token, so `USER_APP_CHAT_TIMEOUT_SECONDS` doesn't bound a DM turn and replies are delivered as ordinary chunked messages.
 
 While a response is running, send `stop`, `cancel`, or `abort` by itself to end it. At other times those words remain ordinary chat messages.
 
 Under the hood, DMs and `/chat` use the same `userchat:<user_id>` root, `<user_id>__userapp` workspace, and `userapp` cancellation scope. This keeps transcripts and cleanup caller-scoped across both Discord entry points.
+
+`app/user_app_chat.py:UserAppChatController` owns the personal interaction and DM policy, generation tokens, reset, and rooted execution. `app/user_app_consent.py:UserAppConsentPrompter` is the shared fail-closed consent boundary for `/chat` and **Teach <bot>**. `app/work_cancellation.py:WorkCancellationCoordinator` unifies `/stop`, reset, and privacy teardown across foreground turns and durable coding work.
 
 ## Developer Portal setup
 
@@ -56,16 +58,18 @@ Settings and command registration are read at startup. Restart after enabling, d
 
 ## Conversation, tools, and workspace scope
 
-Each Discord user has exactly one owner-only transcript, keyed internally as `userchat:<user_id>`. It follows them across servers, channels, group DMs, and DMs; it's never keyed by channel. Concurrent turns serialize on that root.
+Each Discord user has exactly one owner-only transcript, keyed internally as `userchat:<user_id>`. It follows them across servers, channels, group DMs, and DMs; it's never keyed by channel. Concurrent turns serialize on that root. For `/chat`, the root lock and turn-admission lease remain held through Discord delivery and assistant-transcript persistence, so replies for one personal root cannot land out of order and delivery still counts as active load. The prepared user message is stored before the model runs; the assistant row is stored only after Discord accepts the primary result, using the content actually prepared for delivery. A complete delivery failure therefore leaves no assistant row.
 
 The assistant uses the ordinary agent and tool registry rather than a second chat implementation. Trust and owner-only tool gates still apply. Deployment-wide tool blocks and tool configuration still apply, while the guild/channel pins, blocks, model overrides, and instructions of the invocation location don't leak into the personal thread. Thread-handoff actions are unavailable because personal chat is guild-less; `_PERSONAL_CHAT_BLOCKED_TOOLS` masks them on both entry paths.
+
+The registered `/chat` command keeps access, block, consent, admission, privacy, and root-lock policy at the interaction boundary. It then runs the lifecycle through the shared foreground-turn runner, with `UserAppInteractionTurnAdapter` owning deferred-response activity, delivery, and user-facing outcome status.
 
 Personal chat is guild-less for every trust, policy, and data-scope decision, in both directions. The invocation location grants no standing: a tool scoped to specific guilds isn't dispatchable, and tools whose target is a guild or deployment artifact are unavailable rather than silently aimed at wherever the command was typed. Those are community memory (`teach`, `recall_community`, `reflect_community`) and shared skill management (`skill_create`, `skill_edit`, `skill_delete`). User-app trust is granted by ID allowlist independently of guild roles, so letting it reach into a guild's shared state would hand someone standing in a server they hold no role in. Personal skills and the user's own long-term memory remain available and are the personal-surface equivalents.
 
 The scopes are intentionally split:
 
 - Transcript, prompt/model routing, usage, and recalled long-term memory are personal/global rather than tied to the current guild.
-- Workspace files live at `<user_id>__userapp`, shared by that user's `/chat` turns and isolated from their guild workspaces.
+- Workspace files live at `<user_id>__userapp`, shared by that user's `/chat` turns and isolated from their guild workspaces. A `/chat` result with generated files waits for the workspace activity lock through Discord's attachment consumption; text-only delivery does not take that lock.
 - Tools read a logical scope that is guild-less here, so anything keyed by guild resolves to "no guild" rather than to the invocation location. The actual invoking member, guild, and channel travel separately for genuinely location-bound work (a member permission check, a jump URL) and confer no authority of their own.
 - Auto-retained facts from this personal transcript are global to that user.
 

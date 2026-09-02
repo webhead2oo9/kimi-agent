@@ -39,7 +39,7 @@ The foreground assistant calls `start_coding_task` with the objective, acceptanc
 
 The worker does not start until the Discord boundary has delivered that acknowledgement and created the initial status message. Workers are globally bounded, and only one writer may hold a workspace at a time, so extra tasks wait in FIFO order.
 
-Once the queue succeeds, the foreground assistant is done. Progress and completion arrive later through the durable delivery path.
+Once the queue succeeds, the foreground assistant is done. Progress and completion arrive later through the durable delivery path in `app/coding_delivery.py`.
 
 ## Status messages and visibility
 
@@ -79,7 +79,7 @@ Input preparation is all-or-nothing. If a named attachment is unavailable, a pat
 
 ## Recovery, steering, and cancellation
 
-After every completed tool batch, the worker stores its conversation checkpoint, provider state, current plan, and event cursor. On startup, interrupted workers are requeued. Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the original total deadline. Only one worker may resume a given workspace at a time.
+After every completed tool batch, the worker stores its conversation checkpoint, provider state, current plan, and event cursor. On startup, interrupted workers are requeued. When the scheduler claims a queued or requeued task whose owner has since been blocked, it finishes the task as cancelled instead of running it, with a neutral stored message delivered by the pending-delivery sweeper within its ten-second cadence (the block itself is only logged, because the final text is published to the channel the task was started in); a task already running is not interrupted by a block and ends on its own. Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the original total deadline. Only one worker may resume a given workspace at a time.
 
 Members can cancel with `/stop`, or by sending a bot-directed message containing exactly `stop`, `cancel`, or `abort` (case-insensitive). That lane runs before normal turn admission and cancels both the foreground response and any coding work in the current root. `/stop scope:all` covers all of that member's active work. Partial workspace changes are preserved so they can be inspected or resumed later.
 

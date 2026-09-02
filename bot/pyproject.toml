@@ -19,6 +19,9 @@ dependencies = [
     "pyyaml",
     "anthropic>=1.0.0",
     "emoji>=2.0",
+    # Decode provider-returned images before they enter output moderation. Magic
+    # bytes and container framing alone cannot prove compressed pixels are valid.
+    "pillow>=12.0",
     "pymupdf>=1.27.2.3",
     # Office document → Markdown conversion for extract_document_text
     # (tools/workspace/documents.py). Pure-Rust PyO3 binding with abi3 wheels
@@ -142,6 +145,9 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests", "modules/example/tests"]
 pythonpath = ["."]
+markers = [
+  "uses_live_settings_env: allow a test to read the operator's Settings environment",
+]
 # Pin the fixture loop scope rather than inheriting pytest-asyncio's default,
 # which it warns about on every run and intends to change.
 asyncio_default_fixture_loop_scope = "function"

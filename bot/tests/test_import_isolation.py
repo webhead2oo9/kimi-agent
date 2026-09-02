@@ -1,11 +1,11 @@
-"""Modules that must not drag in the settings singleton or bot runtime.
+"""Modules that must not drag in the settings model or bot runtime.
 
 ``config/paths.py`` supplies the config directory to readers that run before the
-settings singleton exists, so importing settings there would be a cycle and would
-make the process-wide default unsettable. ``tools/config_spec.py`` is declared at
-import time by tool modules that load long before the settings overlay is
-applied, so coupling it would put boot ordering between a tool and its own
-configuration declaration.
+application settings are constructed, so importing settings there would be a
+cycle and would make the process-wide default unsettable. ``tools/config_spec.py``
+is declared at import time by tool modules that load long before the settings
+overlay is applied, so coupling it would put boot ordering between a tool and its
+own configuration declaration.
 """
 
 from __future__ import annotations

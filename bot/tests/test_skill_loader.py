@@ -13,6 +13,7 @@ from skills.loader import (
     scan_skills,
     validate_builtin_skills,
 )
+from tests.helpers import make_settings
 
 
 def _write_skill(tmp: Path, name: str, frontmatter: str, body: str = "# Content") -> Path:
@@ -634,6 +635,7 @@ def test_skill_tool_registers_when_its_secret_resolves(tmp_path: Path) -> None:
         skills_store=store,
         registry=registry,
         secrets={"SERVICE_KEY": "value"},
+        settings=make_settings(),
         workspace_base_dir=tmp_path / "workspaces",
     )
 
@@ -656,6 +658,7 @@ def test_skill_tool_is_not_registered_when_its_secret_is_missing(tmp_path: Path)
         skills_store=store,
         registry=registry,
         secrets={},
+        settings=make_settings(),
         workspace_base_dir=tmp_path / "workspaces",
     )
 

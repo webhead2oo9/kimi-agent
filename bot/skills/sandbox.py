@@ -158,28 +158,112 @@ def _covered_by_base_mount(path: Path) -> bool:
     return any(path == root or path.is_relative_to(root) for root in roots)
 
 
-def _runtime_mounts(interpreter: Path) -> list[Path]:
-    """Return non-FHS Python/runtime roots needed by the selected interpreter."""
+_SYMLINK_HOP_LIMIT = 40
+# Sibling trees a runtime prefix keeps next to ``bin``. python-build-standalone
+# and venvs locate the stdlib and site-packages relative to the executable's
+# own path, so a hop reached through a directory alias needs these present at
+# the alias path, not only at the resolved one.
+_RUNTIME_PREFIX_SIBLINGS = ("lib", "lib64")
 
-    candidates = [interpreter.parent, interpreter.resolve().parent]
-    if interpreter.resolve() == Path(sys.executable).resolve():
+
+def _hop_candidates(hop_dir: Path) -> list[Path]:
+    """The directory a hop needs, plus the runtime trees that sit beside it.
+
+    Binding only the hop's literal parent is not enough for a runtime reached
+    through a directory symlink: the stdlib is found relative to the
+    executable's path, so the alias prefix's ``lib`` must exist at the alias
+    path too. bwrap resolves each bind source through the symlink on the host,
+    so binding those siblings by their unresolved paths places the real
+    content where the chain names it. The candidates deliberately stop at the
+    prefix's runtime siblings: binding a symlinked ancestor whole would expose
+    everything under it, which for a symlinked ``~/.local`` is the service's
+    own databases and credentials.
+    """
+
+    candidates = [hop_dir]
+    if hop_dir.name == "bin":
+        for sibling in _RUNTIME_PREFIX_SIBLINGS:
+            candidate = hop_dir.parent / sibling
+            if candidate.is_dir():
+                candidates.append(candidate)
+    return candidates
+
+
+def _runtime_mounts(interpreter: Path) -> list[Path]:
+    """Return non-FHS runtime roots for every path the interpreter is reached by.
+
+    The returned paths deliberately stay unresolved: bwrap resolves bind
+    sources on the host, so binding an unresolved directory places the real
+    content at the path the interpreter's symlink chain actually names inside
+    the jail. Mounting only the fully resolved target broke any interpreter
+    reached through a symlinked directory - uv's version-alias layout
+    (``cpython-3.14 -> cpython-3.14.7``) made ``execvp`` fail with ENOENT on a
+    chain whose every visible component existed - so each hop contributes its
+    parent and, for a ``bin`` directory, the runtime ``lib`` trees beside it.
+    Nothing above the prefix is ever bound: the hop's ancestors stay outside
+    the jail however many of them are symlinks.
+
+    Known limitation, held fail-closed: a relative ``..`` link that crosses an
+    unresolved directory symlink normalizes lexically here, which is how the
+    jail's bind layout resolves it but not how the host does. Such a layout
+    fails the existence check below with a named error instead of binding the
+    wrong directory; recreating every symlink component inside the jail would
+    lift it if a real deployment ever needs that shape.
+    """
+
+    candidates = _hop_candidates(interpreter.parent)
+    current = interpreter
+    for _ in range(_SYMLINK_HOP_LIMIT):
+        try:
+            if not current.is_symlink():
+                break
+            target = Path(os.readlink(current))
+        except OSError:
+            break
+        current = target if target.is_absolute() else current.parent / target
+        current = Path(os.path.normpath(current))
+        candidates.extend(_hop_candidates(current.parent))
+    resolved_interpreter = interpreter.resolve()
+    candidates.append(resolved_interpreter.parent)
+    if resolved_interpreter == Path(sys.executable).resolve():
         candidates.extend((Path(sys.prefix), Path(sys.base_prefix)))
 
+    lexical_home = Path.home()
+    try:
+        resolved_home = lexical_home.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SandboxUnavailableError(
+            f"Could not resolve the service home for interpreter mounts: {lexical_home}"
+        ) from exc
     mounts: list[Path] = []
     for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved == Path("/"):
+        normalized = Path(os.path.normpath(candidate))
+        resolved = normalized.resolve()
+        if resolved == Path("/") or normalized == Path("/"):
             raise SandboxUnavailableError(
                 "Refusing to expose the host root as an interpreter mount"
             )
-        if _covered_by_base_mount(resolved):
+        if (
+            normalized == lexical_home
+            or lexical_home.is_relative_to(normalized)
+            or resolved == resolved_home
+            or resolved_home.is_relative_to(resolved)
+        ):
+            # An interpreter sitting directly in (or above) the service home
+            # would ro-bind the whole home - credentials, config, databases -
+            # into every skill jail. A venv or runtime tree under the home is
+            # fine; the home itself never is.
+            raise SandboxUnavailableError(
+                f"Refusing to expose the service home as an interpreter mount: {normalized}"
+            )
+        if _covered_by_base_mount(normalized) and _covered_by_base_mount(resolved):
             continue
         if not resolved.exists():
             raise SandboxUnavailableError(f"Interpreter runtime path does not exist: {resolved}")
-        if any(resolved == parent or resolved.is_relative_to(parent) for parent in mounts):
+        if any(normalized == parent or normalized.is_relative_to(parent) for parent in mounts):
             continue
-        mounts = [child for child in mounts if not child.is_relative_to(resolved)]
-        mounts.append(resolved)
+        mounts = [child for child in mounts if not child.is_relative_to(normalized)]
+        mounts.append(normalized)
     return sorted(mounts, key=lambda item: (len(item.parts), str(item)))
 
 
@@ -268,10 +352,21 @@ def build_sandbox_command(
     return command
 
 
-def validate_sandbox_runtime() -> SandboxRuntime:
-    """Run a minimal namespace probe so configured script tools fail at boot."""
+def validate_sandbox_runtime(limits: ScriptSandboxLimits) -> SandboxRuntime:
+    """Run a minimal namespace probe so configured script tools fail at boot.
+
+    The probe applies the same prlimit ceilings real invocations will use, so
+    a host that cannot start a jail under the configured limits fails here, by
+    name, instead of registering tools whose every run would die at clone().
+    ``limits`` is required on purpose: a probe that quietly falls back to
+    defaults certifies ceilings nobody runs.
+    """
 
     runtime = detect_sandbox_runtime()
+    # The Python skill interpreter is this process's own executable, so its
+    # mount layout is known at boot. Refusing a home-rooted or unresolvable
+    # runtime here keeps that failure at startup instead of on the first call.
+    _runtime_mounts(Path(sys.executable).absolute())
     true_path = shutil.which("true")
     if true_path is None:
         raise SandboxUnavailableError("Executable skill sandbox probe requires the true utility")
@@ -283,14 +378,20 @@ def validate_sandbox_runtime() -> SandboxRuntime:
 
     command = [
         runtime.prlimit,
-        "--as=268435456",
-        "--cpu=5",
-        "--fsize=1048576",
-        "--nofile=64",
-        "--nproc=16",
+        f"--as={limits.memory_bytes}",
+        f"--cpu={limits.cpu_seconds}",
+        f"--fsize={limits.file_size_bytes}",
+        f"--nofile={limits.open_files}",
+        f"--nproc={limits.processes}",
         "--core=0",
         "--",
         *_base_bwrap_command(runtime, allow_network=False),
+        # The tmpfs cap is part of the real invocation shape too; a bwrap that
+        # cannot apply it must fail here, not on the first skill call.
+        "--size",
+        str(limits.tmpfs_bytes),
+        "--tmpfs",
+        "/tmp",
         "--",
         str(resolved_true),
     ]
@@ -307,6 +408,14 @@ def validate_sandbox_runtime() -> SandboxRuntime:
     if completed.returncode != 0:
         detail = completed.stderr.decode(errors="replace").strip().splitlines()
         suffix = f": {detail[-1]}" if detail else ""
+        if any("Resource temporarily unavailable" in line for line in detail):
+            # RLIMIT_NPROC counts every process of the service uid, so the
+            # configured ceiling has to clear what the account already runs.
+            # EAGAIN has other per-uid sources too, hence "likely".
+            suffix += (
+                f" (likely the uid's process count exceeds the configured "
+                f"SCRIPT_SANDBOX_MAX_PROCESSES={limits.processes})"
+            )
         raise SandboxUnavailableError(
             f"Executable skill sandbox probe exited {completed.returncode}{suffix}"
         )

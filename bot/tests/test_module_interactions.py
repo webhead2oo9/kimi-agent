@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +11,7 @@ import discord
 import pytest
 from discord import app_commands
 
+from discord_adapter import module_interactions
 from discord_adapter.module_interactions import (
     ComponentDispatcher,
     InteractionRouterImpl,
@@ -20,6 +22,8 @@ from discord_adapter.module_interactions import (
     build_layout_view,
 )
 from kimi_agent_module_api.contracts import (
+    CUSTOM_ID_MAX_LENGTH,
+    MODAL_CUSTOM_ID_MAX_LENGTH,
     ButtonSpec,
     CommandSyncError,
     CommandOption,
@@ -37,6 +41,7 @@ from kimi_agent_module_api.contracts import (
     SelectSpec,
     TextInputSpec,
     TrustTierName,
+    build_custom_id,
 )
 from kimi_agent_module_api.testing import FakeTrust
 
@@ -45,9 +50,12 @@ class _Tree:
     def __init__(self) -> None:
         self.commands: dict[str, Any] = {}
         self.guild_commands: dict[int, dict[str, Any]] = {}
+        self.published_guild_commands: dict[int, dict[str, Any]] = {}
         self.sync_calls: list[int | None] = []
         self.sync_error: Exception | None = None
+        self.sync_accept_then_error: Exception | None = None
         self.command_limit_on_name: str | None = None
+        self.add_error_on_name: str | None = None
 
     def add_command(self, command: Any, *, guild: Any = None, **_kwargs: Any) -> None:
         if command.name == self.command_limit_on_name:
@@ -56,6 +64,9 @@ class _Tree:
                 None if guild is None else guild.id,
                 100,
             )
+        if command.name == self.add_error_on_name:
+            self.add_error_on_name = None
+            raise RuntimeError(f"injected add failure for {command.name}")
         target = self.commands if guild is None else self.guild_commands.setdefault(guild.id, {})
         target[command.name] = command
 
@@ -76,6 +87,12 @@ class _Tree:
         if self.sync_error is not None:
             raise self.sync_error
         target = self.commands if guild is None else self.guild_commands.get(guild.id, {})
+        if guild is not None:
+            self.published_guild_commands[guild.id] = dict(target)
+        if self.sync_accept_then_error is not None:
+            error = self.sync_accept_then_error
+            self.sync_accept_then_error = None
+            raise error
         return list(target.values())
 
 
@@ -92,14 +109,31 @@ class _Bot:
 class _ScopeStore:
     def __init__(self, guild_ids: set[int] | None = None) -> None:
         self.tracked = set(guild_ids or set())
+        self.track_error: Exception | None = None
+        self.guild_ids_error: Exception | None = None
+        self.forget_error: Exception | None = None
+        self.forget_error_guild_ids: set[int] = set()
+        self.track_calls: list[int] = []
+        self.forget_calls: list[int] = []
+        self.track_called = asyncio.Event()
 
     async def track(self, guild_id: int) -> None:
+        self.track_calls.append(guild_id)
+        self.track_called.set()
+        if self.track_error is not None:
+            raise self.track_error
         self.tracked.add(guild_id)
 
     async def guild_ids(self) -> tuple[int, ...]:
+        if self.guild_ids_error is not None:
+            raise self.guild_ids_error
         return tuple(sorted(self.tracked))
 
     async def forget(self, guild_id: int) -> None:
+        self.forget_calls.append(guild_id)
+        if self.forget_error is not None or guild_id in self.forget_error_guild_ids:
+            error = self.forget_error or RuntimeError(f"database busy for guild {guild_id}")
+            raise error
         self.tracked.discard(guild_id)
 
 
@@ -451,12 +485,130 @@ async def test_guild_command_limit_exception_is_normalized_and_rolled_back() -> 
 
 
 @pytest.mark.asyncio
-async def test_guild_command_sync_failure_keeps_desired_state_and_retries_on_ready() -> None:
+async def test_generic_guild_command_add_failure_restores_tree_and_ownership() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="before", description="before"), handler),),
+    )
+    previous = bot.tree.guild_commands[1]["before"]
+    bot.tree.add_error_on_name = "after_two"
+
+    with pytest.raises(RuntimeError, match="injected add failure"):
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(CommandSpec(name="after_one", description="one"), handler),
+                GuildCommand(CommandSpec(name="after_two", description="two"), handler),
+            ),
+        )
+
+    assert bot.tree.guild_commands[1] == {"before": previous}
+    assert router._guild_top_names[1] == {"before"}
+
+
+@pytest.mark.asyncio
+async def test_live_guild_sync_failure_restores_handlers_and_retries_compensation() -> None:
     bot = _Bot()
     store = _ScopeStore()
+    health: list[tuple[str, str, str]] = []
     runtime = InteractionRuntime(
         bot,  # type: ignore[arg-type]
         scope_store=store,
+        on_sync_health=lambda module, state, detail: health.append((module, state, detail)),
+        sync_retry_delays=(0.0,),
+    )
+    router = runtime.router_for(
+        "mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        is_guild_active=lambda _g: True,
+    )
+    calls: list[str] = []
+
+    async def before_handler(_interaction: ModuleInteraction) -> None:
+        calls.append("before")
+
+    async def rejected_handler(_interaction: ModuleInteraction) -> None:
+        calls.append("rejected")
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="stable", description="before"), before_handler),),
+    )
+    await runtime.sync_ready()
+    published_before = bot.tree.published_guild_commands[1]["stable"]
+
+    bot.tree.sync_error = RuntimeError("offline")
+    with pytest.raises(CommandSyncError):
+        await router.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="stable", description="after"), rejected_handler),),
+        )
+    # The failed desired callback is rejected. The second failed PUT is the
+    # compensating publication of the restored, previously published tree.
+    assert bot.tree.guild_commands[1]["stable"] is published_before
+    await bot.tree.guild_commands[1]["stable"].callback(_Interaction())
+    assert calls == ["before"]
+    assert store.tracked == {1}
+    assert runtime.command_sync_degraded is True
+    assert health[-1][1] == "degraded"
+
+    bot.tree.sync_error = None
+    retry = runtime._sync_retry_tasks[1]
+    await retry
+
+    assert bot.tree.sync_calls == [1, 1, 1, 1]
+    assert bot.tree.published_guild_commands[1]["stable"] is published_before
+    assert runtime.command_sync_degraded is False
+    assert health[-1] == ("mod", "healthy", "")
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_live_publication_compensates_the_restored_tree() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def before_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def rejected_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="stable", description="before"), before_handler),),
+    )
+    await runtime.sync_ready()
+    published_before = bot.tree.published_guild_commands[1]["stable"]
+    bot.tree.sync_accept_then_error = RuntimeError("response lost after acceptance")
+
+    with pytest.raises(CommandSyncError):
+        await router.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="stable", description="after"), rejected_handler),),
+        )
+
+    assert bot.tree.guild_commands[1]["stable"] is published_before
+    assert bot.tree.published_guild_commands[1]["stable"] is published_before
+    assert bot.tree.sync_calls == [1, 1, 1]
+    assert runtime.command_sync_degraded is False
+    assert runtime._sync_retry_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_live_rollback_is_not_automatically_published() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=_ScopeStore(),
+        sync_retry_delays=(0.0,),
     )
     router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
 
@@ -468,29 +620,55 @@ async def test_guild_command_sync_failure_keeps_desired_state_and_retries_on_rea
         (GuildCommand(CommandSpec(name="before", description="before"), handler),),
     )
     await runtime.sync_ready()
-
     bot.tree.sync_error = RuntimeError("offline")
-    with pytest.raises(CommandSyncError):
+    bot.tree.add_error_on_name = "before"
+
+    with pytest.raises(CommandSyncError) as raised:
         await router.replace_guild_commands(
             1,
             (GuildCommand(CommandSpec(name="after", description="after"), handler),),
         )
-    assert set(bot.tree.guild_commands[1]) == {"after"}
-    assert store.tracked == {1}
 
-    bot.tree.sync_error = None
-    await runtime.sync_ready()
-    assert bot.tree.sync_calls == [1, 1, 1]
+    assert isinstance(raised.value.__cause__, ExceptionGroup)
+    assert len(raised.value.__cause__.exceptions) == 2
+    assert bot.tree.sync_calls == [1, 1]
+    assert runtime.command_sync_exhausted_guild_ids == (1,)
+    assert runtime._sync_retry_tasks == {}
 
 
 @pytest.mark.asyncio
-async def test_startup_guild_sync_failure_stays_tracked_without_raising() -> None:
+async def test_scope_tracking_failure_rolls_back_without_a_discord_put() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    store.track_error = RuntimeError("database busy")
+    runtime = InteractionRuntime(bot, scope_store=store)  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    with pytest.raises(CommandSyncError, match="persist guild command scope"):
+        await router.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+        )
+
+    assert bot.tree.guild_commands[1] == {}
+    assert router.has_guild_commands(1) is False
+    assert bot.tree.sync_calls == []
+
+
+@pytest.mark.asyncio
+async def test_startup_guild_sync_failure_retries_without_another_ready() -> None:
     bot = _Bot()
     bot.tree.sync_error = RuntimeError("offline")
     store = _ScopeStore()
+    health: list[tuple[str, str, str]] = []
     runtime = InteractionRuntime(
         bot,  # type: ignore[arg-type]
         scope_store=store,
+        on_sync_health=lambda module, state, detail: health.append((module, state, detail)),
+        sync_retry_delays=(0.0,),
     )
     router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
 
@@ -506,6 +684,298 @@ async def test_startup_guild_sync_failure_stays_tracked_without_raising() -> Non
 
     assert set(bot.tree.guild_commands[1]) == {"pending"}
     assert store.tracked == {1}
+    assert runtime.command_sync_degraded is True
+    bot.tree.sync_error = None
+    retry = runtime._sync_retry_tasks[1]
+    await retry
+
+    assert bot.tree.sync_calls == [1, 1]
+    assert set(bot.tree.published_guild_commands[1]) == {"pending"}
+    assert runtime.command_sync_degraded is False
+    assert health[-1] == ("mod", "healthy", "")
+
+
+@pytest.mark.asyncio
+async def test_startup_track_retry_still_publishes_the_desired_tree() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+        sync_retry_delays=(0.0, 0.05),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    store.track_called.clear()
+    store.track_error = RuntimeError("database busy")
+    await runtime.sync_ready()
+    retry = runtime._sync_retry_tasks[1]
+
+    # Let the first retry prove that a second track error does not narrow the
+    # remaining work to persistence-only, then recover before the next delay.
+    store.track_called.clear()
+    await store.track_called.wait()
+    store.track_error = None
+    await retry
+
+    assert bot.tree.sync_calls == [1]
+    assert set(bot.tree.published_guild_commands[1]) == {"pending"}
+    assert runtime.command_sync_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_live_track_failure_preserves_an_existing_pending_publish() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+        sync_retry_delays=(60.0,),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    bot.tree.sync_error = RuntimeError("offline")
+    await runtime.sync_ready()
+    assert runtime._sync_failure_phases[1] == "publish"
+
+    store.track_error = RuntimeError("database busy")
+    with pytest.raises(CommandSyncError, match="persist guild command scope"):
+        await router.replace_guild_commands(
+            1,
+            (GuildCommand(CommandSpec(name="rejected", description="rejected"), handler),),
+        )
+
+    assert set(bot.tree.guild_commands[1]) == {"pending"}
+    assert runtime._sync_failure_phases[1] == "publish"
+
+    scheduled = runtime._sync_retry_tasks[1]
+    store.track_error = None
+    bot.tree.sync_error = None
+    runtime.sync_retry_delays = (0.0,)
+    await runtime._retry_guild_sync(1)
+    await asyncio.gather(scheduled, return_exceptions=True)
+
+    assert set(bot.tree.published_guild_commands[1]) == {"pending"}
+    assert runtime.command_sync_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_guild_sync_retry_budget_exhaustion_is_observable() -> None:
+    bot = _Bot()
+    bot.tree.sync_error = RuntimeError("offline")
+    health: list[tuple[str, str, str]] = []
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=_ScopeStore(),
+        on_sync_health=lambda module, state, detail: health.append((module, state, detail)),
+        sync_retry_delays=(0.0, 0.0),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    await runtime.sync_ready()
+    retry = runtime._sync_retry_tasks[1]
+    await retry
+
+    assert bot.tree.sync_calls == [1, 1, 1]
+    assert runtime.command_sync_exhausted_guild_ids == (1,)
+    assert health[-1][1] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_scope_discovery_failure_does_not_block_known_local_publication() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    health: list[tuple[str, str, str]] = []
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+        on_sync_health=lambda module, state, detail: health.append((module, state, detail)),
+        sync_retry_delays=(60.0,),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="known", description="known"), handler),),
+    )
+    store.guild_ids_error = RuntimeError("database busy")
+
+    await runtime.sync_ready()
+
+    assert set(bot.tree.published_guild_commands[1]) == {"known"}
+    assert runtime.command_scope_discovery_failure == "RuntimeError"
+    assert health[-1][1] == "degraded"
+
+    scheduled = runtime._scope_discovery_retry_task
+    assert scheduled is not None
+    store.guild_ids_error = None
+    runtime.sync_retry_delays = (0.0,)
+    await runtime._retry_scope_discovery()
+    await asyncio.gather(scheduled, return_exceptions=True)
+
+    assert runtime.command_scope_discovery_failure is None
+    assert runtime.command_sync_degraded is False
+    assert health[-1] == ("mod", "healthy", "")
+
+
+@pytest.mark.asyncio
+async def test_empty_publication_retries_only_failed_scope_cleanup() -> None:
+    bot = _Bot()
+    store = _ScopeStore()
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+        sync_retry_delays=(0.0,),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="before", description="before"), handler),),
+    )
+    await runtime.sync_ready()
+    store.forget_error = RuntimeError("database busy")
+
+    await router.replace_guild_commands(1, ())
+
+    assert bot.tree.guild_commands[1] == {}
+    assert bot.tree.published_guild_commands[1] == {}
+    assert runtime.command_sync_degraded is True
+    assert bot.tree.sync_calls == [1, 1]
+
+    store.forget_error = None
+    retry = runtime._sync_retry_tasks[1]
+    await retry
+
+    assert bot.tree.sync_calls == [1, 1]
+    assert store.forget_calls == [1, 1]
+    assert runtime.command_sync_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_disconnect_pauses_retry_and_resume_rearms_it() -> None:
+    bot = _Bot()
+    bot.tree.sync_error = RuntimeError("offline")
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=_ScopeStore(),
+        sync_retry_delays=(60.0,),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    await runtime.sync_ready()
+    retry = runtime._sync_retry_tasks[1]
+
+    await runtime.pause_sync()
+
+    assert retry.done()
+    assert bot.tree.sync_calls == [1]
+    bot.tree.sync_error = None
+    await runtime.resume_sync()
+    assert bot.tree.sync_calls == [1, 1]
+    assert runtime.command_sync_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_pause_does_not_wait_behind_a_stubborn_sync_lock_owner() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    sync_started = asyncio.Event()
+    release_sync = asyncio.Event()
+
+    async def stubborn_sync(*, guild: Any = None) -> list[Any]:
+        assert guild is not None
+        sync_started.set()
+        while not release_sync.is_set():
+            try:
+                await release_sync.wait()
+            except asyncio.CancelledError:
+                continue
+        return []
+
+    bot.tree.sync = stubborn_sync  # type: ignore[method-assign]
+    syncing = asyncio.create_task(runtime.sync_ready())
+    await sync_started.wait()
+
+    await asyncio.wait_for(runtime.pause_sync(), timeout=0.1)
+
+    assert runtime._live is False
+    assert syncing.done() is False
+    release_sync.set()
+    await asyncio.wait_for(syncing, timeout=0.2)
+    assert runtime._live is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_cancels_retries_and_rejects_replacement() -> None:
+    bot = _Bot()
+    bot.tree.sync_error = RuntimeError("offline")
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=_ScopeStore(),
+        sync_retry_delays=(60.0,),
+    )
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        1,
+        (GuildCommand(CommandSpec(name="pending", description="pending"), handler),),
+    )
+    await runtime.sync_ready()
+    retry = runtime._sync_retry_tasks[1]
+
+    await runtime.drain()
+
+    assert retry.done()
+    assert runtime._sync_retry_tasks == {}
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await router.replace_guild_commands(1, ())
 
 
 @pytest.mark.asyncio
@@ -519,6 +989,64 @@ async def test_ready_clears_stale_scopes_and_forgets_disconnected_guilds() -> No
 
     assert bot.tree.sync_calls == [1]
     assert store.tracked == set()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_scope_forget_failure_does_not_block_connected_scopes() -> None:
+    bot = _Bot()
+    bot.guilds = [SimpleNamespace(id=1)]
+    store = _ScopeStore({1, 99})
+    store.forget_error_guild_ids.add(99)
+    runtime = InteractionRuntime(
+        bot,  # type: ignore[arg-type]
+        scope_store=store,
+        sync_retry_delays=(60.0,),
+    )
+
+    await runtime.sync_ready()
+
+    assert bot.tree.sync_calls == [1]
+    assert store.tracked == {99}
+    assert runtime.command_sync_failures == {99: "RuntimeError"}
+
+    scheduled = runtime._sync_retry_tasks[99]
+    store.forget_error_guild_ids.clear()
+    runtime.sync_retry_delays = (0.0,)
+    await runtime._retry_guild_sync(99)
+    await asyncio.gather(scheduled, return_exceptions=True)
+
+    assert store.tracked == set()
+    assert runtime.command_sync_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_ready_retracks_a_guild_it_forgot_while_disconnected() -> None:
+    # A scope forgotten while the guild was away must come back when the staged
+    # commands are actually published, or a later restart can never clean them up.
+    bot = _Bot()
+    bot.guilds = []
+    store = _ScopeStore()
+    runtime = InteractionRuntime(bot, scope_store=store)  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=FakeTrust(), is_guild_active=lambda _g: True)
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    await router.replace_guild_commands(
+        7,
+        (GuildCommand(CommandSpec(name="staged", description="staged"), handler),),
+    )
+    assert store.tracked == {7}
+
+    await runtime.sync_ready()
+    assert store.tracked == set()
+    assert router.has_guild_commands(7) is True
+
+    bot.guilds = [SimpleNamespace(id=7)]
+    await runtime.sync_ready()
+
+    assert bot.tree.sync_calls == [7]
+    assert store.tracked == {7}
 
 
 @pytest.mark.asyncio
@@ -852,7 +1380,7 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
     assert view.timeout == 180.0
     container, button_row, select_row = view.children
     assert isinstance(container, discord.ui.Container)
-    assert container.accent_colour == 0x123456
+    assert container.to_component_dict()["accent_color"] == 0x123456
     assert [type(item) for item in container.children] == [
         discord.ui.TextDisplay,
         discord.ui.Separator,
@@ -868,6 +1396,28 @@ def test_build_layout_view_renders_typed_items_and_control_rows() -> None:
     assert isinstance(page_select, discord.ui.Select)
     assert first_button.custom_id == "m:mod:back"
     assert page_select.custom_id == "m:mod:page"
+
+
+def test_build_layout_view_keeps_a_black_accent_colour() -> None:
+    # Discord.py drops a falsy accent, so a raw 0 would serialize as absent even
+    # though the contract admits it. Only the serialized payload proves it survived.
+    black = build_layout_view(
+        OutgoingLayout(items=(LayoutText("Heading"),), accent_color=0),
+        (),
+        "mod",
+    )
+    container = black.children[0]
+    assert isinstance(container, discord.ui.Container)
+    assert container.to_component_dict()["accent_color"] == 0
+
+    absent = build_layout_view(
+        OutgoingLayout(items=(LayoutText("Heading"),), accent_color=None),
+        (),
+        "mod",
+    )
+    unaccented = absent.children[0]
+    assert isinstance(unaccented, discord.ui.Container)
+    assert unaccented.to_component_dict()["accent_color"] is None
 
 
 @pytest.mark.asyncio
@@ -898,14 +1448,15 @@ async def test_modal_show_submit_values_and_validation() -> None:
     )
 
     modal = opening.response.modals[0]
-    assert modal.custom_id == "m:mod:edit:42"
+    # The wire ID carries a per-open suffix; the module still sees its own ID.
+    assert modal.custom_id.startswith("m:mod:edit:42:")
     assert modal.timeout == 30 * 60
     assert [child.custom_id for child in modal.children] == ["title", "body"]
 
     submit = _Interaction(
         type=discord.InteractionType.modal_submit,
         data={
-            "custom_id": "m:mod:edit:42",
+            "custom_id": modal.custom_id,
             "components": [
                 {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Hi"}]},
                 {
@@ -1108,3 +1659,555 @@ async def test_dynamic_item_routes_buttons_and_selects_without_template_collisio
     await select.callback(_Interaction(data={"custom_id": select_id}))  # type: ignore[arg-type]
 
     assert hits == ["button", "select"]
+
+
+@pytest.mark.asyncio
+async def test_drain_waits_for_an_in_flight_component_handler() -> None:
+    # discord.py dispatches interactions in tasks it never cancels, so without
+    # tracking, shutdown would close modules and SQLite under a running handler.
+    dispatcher = ComponentDispatcher()
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        await release.wait()
+        finished.append("done")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    draining = asyncio.create_task(dispatcher.drain(timeout=5.0))
+    await asyncio.sleep(0)
+    assert not draining.done()
+
+    release.set()
+    await asyncio.wait_for(draining, timeout=1.0)
+    assert finished == ["done"]
+    await running
+
+
+@pytest.mark.asyncio
+async def test_drain_cancels_a_handler_that_outlasts_the_bound() -> None:
+    dispatcher = ComponentDispatcher()
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    router.register_component("button", "hang", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("hang")})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    await dispatcher.drain(timeout=0.01)
+
+    assert running.done()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+
+@pytest.mark.asyncio
+async def test_drain_remains_bounded_when_a_handler_suppresses_cancellation() -> None:
+    dispatcher = ComponentDispatcher()
+    bot = _Bot()
+    router = InteractionRouterImpl(
+        bot=bot,  # type: ignore[arg-type]
+        module_name="mod",
+        trust=FakeTrust({(1, 10): "staff"}),
+        dispatcher=dispatcher,
+        is_guild_active=lambda _g: True,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    router.register_component("button", "stubborn", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("stubborn")})
+    running = asyncio.create_task(dispatcher.dispatch(interaction, "button"))  # type: ignore[arg-type]
+    await started.wait()
+
+    await asyncio.wait_for(
+        dispatcher.drain(timeout=0.01, cancel_timeout=0.01),
+        timeout=0.2,
+    )
+
+    assert running.done() is False
+    release.set()
+    await asyncio.wait_for(running, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_runtime_drain_cancels_sync_owner_before_waiting_for_the_lock() -> None:
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    await runtime.sync_ready()
+    sync_started = asyncio.Event()
+    release_sync = asyncio.Event()
+
+    async def stubborn_sync(*, guild: Any = None) -> list[Any]:
+        assert guild is not None
+        sync_started.set()
+        while not release_sync.is_set():
+            try:
+                await release_sync.wait()
+            except asyncio.CancelledError:
+                continue
+        return []
+
+    bot.tree.sync = stubborn_sync  # type: ignore[method-assign]
+
+    async def replacement_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def command_handler(_interaction: ModuleInteraction) -> None:
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(
+                    CommandSpec(name="installed", description="installed"),
+                    replacement_handler,
+                ),
+            ),
+        )
+
+    router.add_command(CommandSpec(name="trigger", description="trigger"), command_handler)
+    running = asyncio.create_task(bot.tree.commands["trigger"].callback(_Interaction()))
+    await sync_started.wait()
+
+    await asyncio.wait_for(
+        runtime.drain(
+            interaction_timeout=0.01,
+            cancel_timeout=0.01,
+            sync_cancel_timeout=0.01,
+        ),
+        timeout=0.2,
+    )
+
+    assert running.done() is False
+    release_sync.set()
+    await asyncio.wait_for(running, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_runtime_drain_refuses_new_interactions_before_waiting() -> None:
+    runtime = InteractionRuntime(_Bot())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    ran: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        ran.append("ran")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    await runtime.drain()
+
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    assert await runtime.dispatcher.dispatch(interaction, "button") is True  # type: ignore[arg-type]
+
+    assert ran == []
+    assert runtime.dispatcher.admitting is False
+    assert interaction.response.sent[0]["content"] == "This control is temporarily unavailable."
+
+
+@pytest.mark.asyncio
+async def test_component_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
+    class BlockingTrust:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
+            self.started.set()
+            await self.release.wait()
+            return "staff"
+
+    trust = BlockingTrust()
+    runtime = InteractionRuntime(_Bot())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)
+    ran: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        ran.append("ran")
+
+    router.register_component("button", "confirm", handler, min_tier="staff")
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    dispatching = asyncio.create_task(
+        runtime.dispatcher.dispatch(interaction, "button")  # type: ignore[arg-type]
+    )
+    await trust.started.wait()
+
+    draining = asyncio.create_task(runtime.drain())
+    await asyncio.sleep(0)
+    assert not draining.done()
+    trust.release.set()
+    await draining
+    await dispatching
+
+    assert ran == []
+    assert interaction.response.sent[0]["content"] == "This control is temporarily unavailable."
+
+
+@pytest.mark.asyncio
+async def test_slash_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
+    class BlockingTrust:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
+            self.started.set()
+            await self.release.wait()
+            return "staff"
+
+    trust = BlockingTrust()
+    bot = _Bot()
+    runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)
+    ran: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        ran.append("ran")
+
+    router.add_command(CommandSpec(name="ping", description="ping"), handler)
+    interaction = _Interaction()
+    dispatching = asyncio.create_task(bot.tree.commands["ping"].callback(interaction))
+    await trust.started.wait()
+
+    draining = asyncio.create_task(runtime.drain())
+    await asyncio.sleep(0)
+    assert not draining.done()
+    trust.release.set()
+    await draining
+    await dispatching
+
+    assert ran == []
+    assert interaction.response.sent[0]["content"] == "This command is temporarily unavailable."
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
+    class BlockingTrust:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
+            self.started.set()
+            await self.release.wait()
+            return "staff"
+
+    trust = BlockingTrust()
+    bot = _Bot()
+    runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)
+    ran: list[str] = []
+
+    async def command_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def autocomplete_handler(
+        _interaction: ModuleInteraction, _option: str, _current: str
+    ) -> list[tuple[str, str]]:
+        ran.append("ran")
+        return [("one", "one")]
+
+    router.add_command(
+        CommandSpec(
+            name="lookup",
+            description="lookup",
+            options=(CommandOption("query", "string", "query", autocomplete=True),),
+        ),
+        command_handler,
+        autocomplete=autocomplete_handler,
+    )
+    autocomplete = bot.tree.commands["lookup"]._params["query"].autocomplete
+    dispatching = asyncio.create_task(autocomplete(_Interaction(), "one"))
+    await trust.started.wait()
+
+    draining = asyncio.create_task(runtime.drain())
+    await asyncio.sleep(0)
+    assert not draining.done()
+    trust.release.set()
+    await draining
+
+    assert await dispatching == []
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_modal_opens_survive_each_other_in_the_real_view_store() -> None:
+    # Discord.py keys open modals by custom_id, so identical IDs made the second
+    # open evict the first and the first submit remove the survivor, silently
+    # dropping the other person's submission.
+    router, _, dispatcher = _router()
+    submitted: list[str] = []
+
+    async def handler(interaction: ModuleInteraction) -> None:
+        submitted.append(str(interaction.custom_id))
+
+    router.register_component("modal", "edit", handler, min_tier="staff")
+    spec = ModalSpec(
+        key="edit",
+        title="Edit",
+        inputs=(TextInputSpec("title", "Title"),),
+        parts=("42",),
+    )
+
+    async def open_for(user_id: int) -> Any:
+        opening = _Interaction(user_id=user_id)
+        await ModuleInteractionAdapter(
+            opening,  # type: ignore[arg-type]
+            "mod",
+            dispatcher=dispatcher,
+        ).show_modal(spec)
+        return opening.response.modals[0]
+
+    first = await open_for(10)
+    second = await open_for(11)
+    assert first.custom_id != second.custom_id
+
+    store = discord.ui.view.ViewStore(None)  # type: ignore[arg-type]
+    store.add_view(first)
+    store.add_view(second)
+    assert store._modals[first.custom_id] is first
+    assert store._modals[second.custom_id] is second
+
+    # The first submitter's modal completing must not unregister the second's.
+    first.stop()
+    assert first.custom_id not in store._modals
+    assert store._modals[second.custom_id] is second
+
+    for modal in (first, second):
+        interaction = _Interaction(
+            type=discord.InteractionType.modal_submit,
+            data={
+                "custom_id": modal.custom_id,
+                "components": [
+                    {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Hi"}]}
+                ],
+            },
+        )
+        assert await dispatcher.dispatch(interaction, "modal") is True  # type: ignore[arg-type]
+
+    # Both submissions reached the handler, each seeing the ID the module described.
+    assert submitted == ["m:mod:edit:42", "m:mod:edit:42"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_command_specs_are_refused_before_the_tree_is_touched() -> None:
+    # A whole guild scope syncs as one bulk PUT, so a malformed command has to be
+    # rejected at registration rather than rejecting every sibling command later.
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    bad = CommandSpec(
+        name="broken",
+        description="d",
+        options=(CommandOption("a", "string", "d", choices=(("N", "v"),), autocomplete=True),),
+    )
+    with pytest.raises(ModuleContractError, match="choices and autocomplete"):
+        router.add_command(bad, handler)
+    assert bot.tree.commands == {}
+
+    router.add_command(CommandSpec(name="good", description="d"), handler)
+    with pytest.raises(ModuleContractError, match="more than 25 options"):
+        await router.replace_guild_commands(
+            7,
+            (
+                GuildCommand(CommandSpec(name="fine", description="d"), handler),
+                GuildCommand(
+                    CommandSpec(
+                        name="huge",
+                        description="d",
+                        options=tuple(CommandOption(f"o{i}", "string", "d") for i in range(26)),
+                    ),
+                    handler,
+                ),
+            ),
+        )
+    # The valid sibling in the same batch must not have been staged either.
+    assert bot.tree.guild_commands.get(7, {}) == {}
+    assert router.has_guild_commands(7) is False
+
+
+def test_invalid_select_specs_are_refused_when_a_view_is_built() -> None:
+    with pytest.raises(ModuleContractError, match="between one and 25 options"):
+        build_view((SelectSpec(key="pick", options=()),), "mod")
+    with pytest.raises(ModuleContractError, match="min_values cannot exceed max_values"):
+        build_view(
+            (
+                SelectSpec(
+                    key="pick",
+                    options=(("A", "a", None), ("B", "b", None)),
+                    min_values=2,
+                    max_values=1,
+                ),
+            ),
+            "mod",
+        )
+
+
+@pytest.mark.asyncio
+async def test_modal_custom_id_budget_does_not_shrink_as_the_host_runs() -> None:
+    # The per-open suffix is fixed width on purpose. A variable-width one would
+    # let a modal open successfully N times and then fail permanently once the
+    # process-wide counter grew a digit, blaming a limit the module never hit.
+    _, _, dispatcher = _router()
+    padding = "m" * (MODAL_CUSTOM_ID_MAX_LENGTH - len(build_custom_id("mod", "edit", "")))
+    at_budget = ModalSpec(
+        key="edit",
+        title="Edit",
+        inputs=(TextInputSpec("title", "Title"),),
+        parts=(padding,),
+    )
+    assert len(build_custom_id("mod", "edit", padding)) == MODAL_CUSTOM_ID_MAX_LENGTH
+
+    widths: set[int] = set()
+    for start in (0, 16, 4096, 2**32 - 1):
+        module_interactions._modal_opens = itertools.count(start)
+        interaction = _Interaction()
+        await ModuleInteractionAdapter(
+            interaction,  # type: ignore[arg-type]
+            "mod",
+            dispatcher=dispatcher,
+        ).show_modal(at_budget)
+        minted = interaction.response.modals[0].custom_id
+        assert len(minted) <= CUSTOM_ID_MAX_LENGTH
+        widths.add(len(minted))
+    assert widths == {CUSTOM_ID_MAX_LENGTH}
+
+    over_budget = ModalSpec(
+        key="edit",
+        title="Edit",
+        inputs=(TextInputSpec("title", "Title"),),
+        parts=(padding + "m",),
+    )
+    module_interactions._modal_opens = itertools.count(0)
+    with pytest.raises(ModuleContractError, match=f"exceeds {MODAL_CUSTOM_ID_MAX_LENGTH}"):
+        await ModuleInteractionAdapter(
+            _Interaction(),  # type: ignore[arg-type]
+            "mod",
+            dispatcher=dispatcher,
+        ).show_modal(over_budget)
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_option_without_a_handler_is_refused() -> None:
+    # Discord would render a suggestion box that nothing ever answers.
+    router, bot, _ = _router()
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    spec = CommandSpec(
+        name="search",
+        description="Search",
+        options=(CommandOption("query", "string", "Query", autocomplete=True),),
+    )
+    with pytest.raises(ModuleContractError, match="no autocomplete handler"):
+        router.add_command(spec, handler)
+    assert bot.tree.commands == {}
+
+    async def complete(_i: ModuleInteraction, _name: str, _current: str) -> list[Any]:
+        return []
+
+    router.add_command(spec, handler, autocomplete=complete)
+    assert "search" in bot.tree.commands
+
+
+def test_invalid_button_specs_are_refused_when_a_view_is_built() -> None:
+    with pytest.raises(ModuleContractError, match="label or emoji"):
+        build_view((ButtonSpec(key="go", label=""),), "mod")
+
+
+@pytest.mark.asyncio
+async def test_runtime_drain_lets_a_syncing_handler_finish_inside_the_interaction_window() -> None:
+    """A handler that replaces guild commands is tracked as both an in-flight
+    interaction and a sync operation. Drain must give it the interaction
+    window rather than cancelling it after the shorter sync grace."""
+
+    bot = _Bot()
+    runtime = InteractionRuntime(bot, scope_store=_ScopeStore())  # type: ignore[arg-type]
+    router = runtime.router_for(
+        "mod", trust=FakeTrust({(1, 10): "staff"}), is_guild_active=lambda _g: True
+    )
+    await runtime.sync_ready()
+    sync_started = asyncio.Event()
+    finished: list[str] = []
+
+    async def brief_sync(*, guild: Any = None) -> list[Any]:
+        assert guild is not None
+        sync_started.set()
+        await asyncio.sleep(0.05)
+        return []
+
+    bot.tree.sync = brief_sync  # type: ignore[method-assign]
+
+    async def replacement_handler(_interaction: ModuleInteraction) -> None:
+        pass
+
+    async def command_handler(_interaction: ModuleInteraction) -> None:
+        await router.replace_guild_commands(
+            1,
+            (
+                GuildCommand(
+                    CommandSpec(name="installed", description="installed"),
+                    replacement_handler,
+                ),
+            ),
+        )
+        finished.append("replied")
+
+    router.add_command(CommandSpec(name="trigger", description="trigger"), command_handler)
+    running = asyncio.create_task(bot.tree.commands["trigger"].callback(_Interaction()))
+    await sync_started.wait()
+
+    await asyncio.wait_for(
+        runtime.drain(
+            interaction_timeout=1.0,
+            cancel_timeout=0.01,
+            sync_cancel_timeout=0.01,
+        ),
+        timeout=2.0,
+    )
+
+    assert running.done() is True
+    assert finished == ["replied"]

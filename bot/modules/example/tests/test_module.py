@@ -143,7 +143,7 @@ async def test_leaderboard_tool_ranks_receivers(started: Harness, member_ctx: To
 @pytest.mark.asyncio
 async def test_give_command_replies_with_thank_back_button(started: Harness) -> None:
     _spec, handler = started.interactions.commands["kudos.give"]
-    interaction = FakeInteraction(
+    interaction = started.interactions.interaction(
         guild_id=GUILD, channel_id=555, user_id=ALICE, options={"member": BOB, "reason": "helped"}
     )
 
@@ -160,7 +160,7 @@ async def test_give_command_replies_with_thank_back_button(started: Harness) -> 
 async def test_thank_back_button_only_works_for_the_receiver(started: Harness) -> None:
     _spec, give = started.interactions.commands["kudos.give"]
     await give(
-        FakeInteraction(
+        started.interactions.interaction(
             guild_id=GUILD,
             channel_id=555,
             user_id=ALICE,

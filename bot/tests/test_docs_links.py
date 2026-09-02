@@ -66,6 +66,13 @@ _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
         # Brave's own error code, quoted in configuration.md so an operator can
         # recognize it. It is a provider response value, not a setting.
         "OPTION_NOT_IN_PLAN",
+        # Test-harness switch read by tests/conftest.py and
+        # tests/test_sandbox_required.py, never by the bot; it turns a skipped
+        # live-sandbox suite into a failure in CI.
+        "KIMI_REQUIRE_SANDBOX_TESTS",
+        # Second EnvironmentFile the shipped systemd unit reads; consumed by
+        # scripts/preflight and scripts/sandbox_probe.py, not by Settings.
+        "RUNTIME_ENV",
     }
 )
 

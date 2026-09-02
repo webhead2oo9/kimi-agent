@@ -32,6 +32,7 @@ from agent.attachments import (
     cleanup_attachment_paths,
     image_byte_hashes,
     image_part_hash,
+    is_image_attachment_candidate,
     message_has_image_attachment,
 )
 from agent.context import ConversationContext
@@ -39,7 +40,9 @@ from agent.discord_references import (
     ResolvedDiscordReferenceHint,
     discord_reference_hints_text,
 )
+from providers.assets import validate_generated_assets
 from agent.core import (
+    generated_assets_response_text,
     ConversationTerminationReason,
     ConversationRunRequest,
     ConversationRunResult,
@@ -142,6 +145,7 @@ class EnsureUserBank(Protocol):
         memory_client: Any,
         user_id: str,
         user_name: str,
+        /,
     ) -> str | None: ...
 
 
@@ -281,6 +285,7 @@ class PersistPreparedUserMessage(Protocol):
         self,
         source: TurnPreparationInput,
         turn: TurnRequest,
+        /,
     ) -> None: ...
 
 
@@ -294,6 +299,7 @@ class WriteGeneratedAssets(Protocol):
     def __call__(
         self,
         generated_assets: list[GeneratedAsset],
+        /,
         *,
         output_dir: Path,
     ) -> list[Path]: ...
@@ -421,7 +427,19 @@ class TurnResult:
     delivery_failed: bool = False
 
 
-type TurnTerminationReason = ConversationTerminationReason | Literal["moderation_blocked"]
+type TurnTerminationReason = (
+    ConversationTerminationReason | Literal["attachment_error", "moderation_blocked"]
+)
+
+
+_CURRENT_IMAGE_UNAVAILABLE_RESPONSE = (
+    "I couldn't read the attached image. Re-upload it as a valid PNG, JPEG, GIF, or WebP "
+    "within the attachment size limit."
+)
+
+
+class _CurrentImageUnavailableError(Exception):
+    """The trigger advertised an image, but no validated image bytes were available."""
 
 
 def _workspace_key_for_turn(turn: TurnRequest) -> WorkspaceKey:
@@ -602,6 +620,11 @@ async def handle_turn(
             ),
             deadline,
         )
+    except _CurrentImageUnavailableError:
+        return TurnResult(
+            response_text=_CURRENT_IMAGE_UNAVAILABLE_RESPONSE,
+            termination_reason="attachment_error",
+        )
     except ConversationTurnTimeoutError:
         if usage_recorder is not None:
             await usage_recorder.flush()
@@ -635,6 +658,15 @@ async def prepare_turn(
     _raise_if_turn_deadline_expired(deadline)
     content = dependencies.strip_mention(source.raw_content, bot_user=source.bot_user)
     turn_attachments = dependencies.collect_turn_attachments(source.source_message)
+    if config.max_turn_images <= 0:
+        # A generic/missing MIME type can leave an image-named upload on the
+        # provisional attachment path. Remove those candidates too so zero is
+        # the documented hard image-input kill switch, not just a vision limit.
+        turn_attachments = [
+            attachment
+            for attachment in turn_attachments
+            if not is_image_attachment_candidate(attachment)
+        ]
     if (
         not content
         and not (config.max_turn_images > 0 and message_has_image_attachment(source.source_message))
@@ -734,6 +766,18 @@ async def prepare_turn(
             ),
             deadline,
         )
+        if turn_images.current_image_unavailable:
+            raise _CurrentImageUnavailableError
+        if turn_images.current_attachment_source_ids:
+            # Generic/missing MIME metadata leaves image-suffixed files on the
+            # provisional import surface. Once byte validation admits one as a
+            # current vision image, expose that upload only through vision.
+            turn_attachments = [
+                attachment
+                for attachment in turn_attachments
+                if attachment.source is None
+                or id(attachment.source) not in turn_images.current_attachment_source_ids
+            ]
         reply_image_budget = max(0, config.max_turn_images - len(turn_images.vision_parts))
         reply_context = await _await_with_deadline(
             _collect_reply_context(
@@ -1192,6 +1236,45 @@ async def execute_turn(
             termination_reason=run_result.termination_reason,
         )
 
+    if run_result.generated_assets:
+        # One decode-level validation for every provider's assets, off the
+        # event loop, before moderation sees them: an invalid payload must
+        # neither fail an otherwise fine text reply closed at the moderation
+        # backend nor reach the workspace writer.
+        original_assets = run_result.generated_assets
+        validated_assets = await _await_guarded_with_deadline(
+            lambda: asyncio.to_thread(validate_generated_assets, original_assets),
+            deadline=deadline,
+            user_id=turn.user_id,
+            activity_guard=run_dependencies.user_activity,
+        )
+        if len(validated_assets) != len(original_assets):
+            log.warning(
+                "Dropped %d of %d provider assets at validation",
+                len(original_assets) - len(validated_assets),
+                len(original_assets),
+            )
+        synthesized = run_result.text == generated_assets_response_text(original_assets)
+        # Always adopt the validated list: even at equal length it carries the
+        # canonical media types the bytes earned, which moderation and the
+        # writer must both see.
+        run_result = replace(run_result, generated_assets=validated_assets)
+        if synthesized and len(validated_assets) != len(original_assets):
+            # The loop synthesized "Generated image(s) attached." for an
+            # asset-only reply; keep that claim matched to what will actually
+            # be attached, or replace it when nothing survived.
+            run_result = replace(
+                run_result,
+                text=(
+                    generated_assets_response_text(validated_assets)
+                    if validated_assets
+                    else (
+                        "I generated a file, but it did not survive validation "
+                        "and was not attached."
+                    )
+                ),
+            )
+
     await _stage_pending_response_files(
         turn,
         run_dependencies,
@@ -1604,6 +1687,10 @@ async def _describe_images(
             role="image_distillation",
             usage=normalize_usage(response.usage),
             usage_present=response.has_reported_usage,
+            upstream_provider=response.upstream_provider,
+            service_tier=response.service_tier,
+            openrouter_charge_usd=response.openrouter_charge_usd,
+            is_byok=response.is_byok,
         )
     )
     try:

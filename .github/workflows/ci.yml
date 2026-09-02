@@ -76,7 +76,8 @@ jobs:
 
       - name: Check browser runtime lock
         run: |
-          npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
+          npm ci --prefix deploy/betterwright \
+            --omit=dev --omit=optional --ignore-scripts
           npm audit --prefix deploy/betterwright --omit=dev
           node --check web_browser/bridge.mjs
           node --check web_browser/visual_bridge.mjs
@@ -119,23 +120,141 @@ jobs:
       - name: Mypy
         run: |
           uv run mypy .
-          uv run mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests
+          uv run mypy --config-file modules/example/pyproject.toml \
+            modules/example/src modules/example/tests
 
       - name: Tests
         run: uv run python -m pytest -q
 
       - name: Build module API and reference consumer
         run: |
-          uv build --package kimi-agent-module-api --no-sources --out-dir dist/module-api
-          uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
+          uv build --package kimi-agent-module-api --no-sources \
+            --out-dir dist/module-api
+          uv build --package community-agent-reference-module --no-sources \
+            --out-dir dist/reference-module
 
       - name: Test built module API through the reference wheel
         shell: bash
         run: |
-          api_wheel=$(find dist/module-api -maxdepth 1 -name '*.whl' -print -quit)
-          api_sdist=$(find dist/module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
-          reference_wheel=$(find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit)
+          api_wheel=$(
+            find dist/module-api -maxdepth 1 -name '*.whl' -print -quit
+          )
+          api_sdist=$(
+            find dist/module-api -maxdepth 1 -name '*.tar.gz' -print -quit
+          )
+          reference_wheel=$(
+            find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit
+          )
           test -n "${api_wheel}"
           test -n "${api_sdist}"
           test -n "${reference_wheel}"
-          uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"
+          uv run python scripts/verify_module_api_dist.py verify \
+            "${api_wheel}" "${api_sdist}" "${reference_wheel}"
+
+  # The check job's runner has no Bubblewrap and ships Apport's piped
+  # core_pattern, so every live-jail test skips there and the most
+  # security-critical code in the repo would otherwise never execute in CI.
+  # This job provisions the boundary the way docs/code-exec.md tells an
+  # operator to, and KIMI_REQUIRE_SANDBOX_TESTS turns "unavailable" from a
+  # skip into a failure.
+  sandbox:
+    name: live sandbox tests
+    # Pinned: the AppArmor provisioning below is Noble-specific (package
+    # paths, profile ABI, sysctl), and ubuntu-latest migrates under it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: bot/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-packages --extra dev
+
+      - name: Install the sandbox boundary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap libseccomp2 util-linux dbus-user-session \
+            apparmor-profiles
+
+      - name: Configure the host like a deployment
+        shell: bash
+        run: |
+          # RLIMIT_CORE=0 is only authoritative with a file core pattern, so the
+          # sandbox refuses Apport's pipe pattern by design.
+          sudo sysctl -w kernel.core_pattern=core
+          # The probe deliberately refuses to create WORKSPACE_DIR (a run from
+          # the wrong account must not plant a root the bot cannot use), so
+          # provision it here the way a first bot start would.
+          mkdir -p workspaces
+          # Ubuntu 24.04 strips capabilities from unprivileged user namespaces
+          # unless the creating binary is confined by an AppArmor profile that
+          # grants them, and the bubblewrap package ships no such profile; the
+          # jail failed here with "loopback: Failed RTM_NEWADDR: Operation not
+          # permitted". Install the same profile a real host uses and keep the
+          # restriction on, so CI proves the production posture rather than a
+          # relaxed one (docs/code-exec.md, Host requirements).
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          # Set the restriction deliberately rather than trusting the image
+          # default, so the job tests the documented posture even if a future
+          # image ships it relaxed.
+          apparmor_knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ ! -e "$apparmor_knob" ]; then
+            echo "kernel has no apparmor_restrict_unprivileged_userns knob" >&2
+            exit 1
+          fi
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          # systemd-run --user needs a lingering user manager and its bus; this
+          # is the same recipe as the "Host requirements" section.
+          uid=$(id -u)
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${uid}.service"
+          for _ in $(seq 1 30); do
+            [ -S "/run/user/${uid}/bus" ] && break
+            sleep 1
+          done
+          test -S "/run/user/${uid}/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" \
+            >> "$GITHUB_ENV"
+          # --wait blocks until the manager leaves initializing/starting, so a
+          # slow boot is not read as failure; the exit code is dropped only so
+          # the accept-list below is the single verdict.
+          state=$(
+            XDG_RUNTIME_DIR="/run/user/${uid}" \
+              systemctl --user is-system-running --wait || true
+          )
+          echo "user manager: ${state}"
+          case "${state}" in
+            running|degraded) ;;
+            *) echo "user manager is not usable" >&2; exit 1 ;;
+          esac
+
+      # Names the first missing prerequisite instead of a bare False.
+      - name: Probe the sandbox
+        run: uv run python -m scripts.sandbox_probe
+
+      - name: Live sandbox tests
+        env:
+          KIMI_REQUIRE_SANDBOX_TESTS: "1"
+        run: >-
+          uv run python -m pytest -q -rs
+          tests/test_sandbox_required.py
+          tests/test_sandbox_runner.py
+          tests/test_code_exec_tool.py
+          tests/test_skill_sandbox.py

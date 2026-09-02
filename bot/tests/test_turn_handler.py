@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 import agent.turn as turn_module
-from agent.attachments import AttachmentRef
+from agent.attachments import AttachmentRef, TurnImages
 from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.discord_references import DiscordReferenceHint
@@ -210,6 +210,42 @@ async def test_handle_turn_returns_none_when_preparation_skips(
 
     assert result is None
     assert calls == ["prepare"]
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_reports_unavailable_current_image_without_running_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unavailable_image(*_args: Any, **_kwargs: Any) -> TurnImages:
+        return TurnImages(
+            vision_parts=[],
+            edit_target=None,
+            current_image_unavailable=True,
+        )
+
+    async def fail_persist(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("an unavailable image must not be persisted")
+
+    async def fail_execute(*_args: Any, **_kwargs: Any) -> TurnResult:
+        raise AssertionError("an unavailable image must not reach the provider")
+
+    monkeypatch.setattr(turn_module, "execute_turn", fail_execute)
+    result = await handle_turn(
+        _source(),
+        dependencies=_dependencies(
+            collect_turn_images=unavailable_image,
+            persist_prepared_user_message=fail_persist,
+        ),
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None
+    assert result.termination_reason == "attachment_error"
+    assert result.response_text == (
+        "I couldn't read the attached image. Re-upload it as a valid PNG, JPEG, GIF, or "
+        "WebP within the attachment size limit."
+    )
 
 
 @pytest.mark.asyncio

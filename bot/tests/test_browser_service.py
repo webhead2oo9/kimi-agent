@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ import app.tools as app_tools
 import web_browser.service as browser_service
 from config.settings import Settings
 from sandbox.netns_lease import NetnsLease
+from tests.helpers import make_settings
 from tools.registry import ToolRegistry
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -33,6 +36,15 @@ from web_browser.service import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BETTERWRIGHT_INSTALLER = PROJECT_ROOT / "deploy/betterwright/install.sh"
+
+
+def _load_betterwright_smoke() -> Any:
+    path = PROJECT_ROOT / "deploy/betterwright/smoke_test.py"
+    spec = importlib.util.spec_from_file_location("betterwright_smoke_test_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run_installer_preflight(tmp_path: Path, target: str) -> subprocess.CompletedProcess[str]:
@@ -177,7 +189,10 @@ def test_betterwright_installer_shell_syntax() -> None:
     subprocess.run(["sh", "-n", str(BETTERWRIGHT_INSTALLER)], check=True)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="BetterWright runtime installation is Linux-only",
+)
 def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path: Path) -> None:
     lexical = _run_installer_preflight(tmp_path, "/opt/kimi/../kimi/betterwright")
     alias = tmp_path / "runtime-alias"
@@ -190,7 +205,10 @@ def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path
         assert "refusing runtime directory" not in result.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason="BetterWright installer tests require POSIX")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="BetterWright runtime installation is Linux-only",
+)
 def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Path) -> None:
     victim = tmp_path / "victim"
     victim.mkdir()
@@ -204,6 +222,30 @@ def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Pa
     assert result.returncode == 2
     assert "refusing runtime directory outside /opt/kimi/betterwright" in result.stderr
     assert marker.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_browser_smoke_uses_injected_effective_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    betterwright_smoke = _load_betterwright_smoke()
+    settings = make_settings(browser_network_mode="netns")
+    captured: list[Settings] = []
+
+    class UnavailableService:
+        def availability_error(self) -> str:
+            return "stop after settings capture"
+
+    def capture(effective_settings: Settings) -> UnavailableService:
+        captured.append(effective_settings)
+        return UnavailableService()
+
+    monkeypatch.setattr(betterwright_smoke, "build_service", capture)
+
+    with pytest.raises(RuntimeError, match="stop after settings capture"):
+        await betterwright_smoke.main(settings)
+
+    assert captured == [settings]
 
 
 def test_visual_math_node_suite() -> None:

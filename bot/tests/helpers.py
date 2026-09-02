@@ -9,8 +9,13 @@ sessions) intentionally stay local to their test files.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import tempfile
+import zlib
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,15 +25,281 @@ from agent.attachments import TurnImages
 from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
+from app.foreground_turn import HandleTurn
+from app.command_sync import CommandSyncSnapshot
+from app.lifecycle import AppRepositories, LifecycleSnapshot
+from app.message_runtime import remove_processing_reaction as remove_message_processing_reaction
+from app.root_locks import RootLockSnapshot
+from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
 from providers.types import ProviderCapability
+from storage.blocked_users import BlockedUserStore
+from storage.coding_tasks import CodingTaskStore
+from storage.conversations import ConversationStore
+from storage.db import Database
+from storage.image_distillations import ImageDistillationStore
+from storage.memory_banks import UserMemoryBankStateStore
+from storage.model_selection import ModelSelectionStore
+from storage.preferences import PreferenceStore
+from storage.privacy import PrivacyDeletionRequestStore
+from storage.usage import UsageStore
+from storage.video_sessions import VideoSessionStore
 from tools.registry import MessageContext
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
+
 from workspace.manager import WorkspaceManager
+
+
+# Real 1x1 images that survive full decoding. Provider-output validation
+# rejects bare signatures, so tests that need "an image" must use these.
+VALID_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAA7EAAAOxAGVKw4b"
+    "AAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
+VALID_JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUG"
+    "BgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYH"
+    "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wgAR"
+    "CAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQBAQAAAAAAAAAAAAAAAA"
+    "AAAAD/2gAMAwEAAhADEAAAAX8f/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QA"
+    "FBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAA"
+    "gBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAA"
+    "AAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP"
+    "/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAA"
+    "AAAAAAAAAAAAAP/aAAgBAQABPxB//9k="
+)
+
+
+class NobodyBlocked:
+    """Blocked-user store that blocks nobody, for tests that bypass init."""
+
+    async def is_blocked(self, user_id: str) -> bool:
+        return False
+
+
+class LifecycleProbe:
+    """Test seam for the extracted ``app.lifecycle`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> LifecycleSnapshot:
+        return self._app.lifecycle.snapshot()
+
+    async def first_init_core(self) -> None:
+        await self._app.lifecycle.initialize()
+
+    async def close_resources(self) -> None:
+        await self._app.lifecycle.close()
+
+    async def resume_pending_privacy_deletions(self, *, auto_retain_watermarks: Any) -> None:
+        await self._app.lifecycle.resume_pending_privacy_deletions(
+            auto_retain_watermarks=auto_retain_watermarks
+        )
+
+    # These reach into ApplicationLifecycle's private state on purpose: the
+    # states are unreachable without starting Discord or blocking shutdown, and
+    # keeping the pokes here keeps test-only mutators off the production class.
+    @property
+    def _lifecycle(self) -> Any:
+        return self._app.lifecycle
+
+    def set_closed(self, value: bool = True) -> None:
+        self._lifecycle._closed = value
+
+    def set_startup_error(self, error: Exception | None) -> None:
+        self._lifecycle._startup_error = error
+
+    def set_db_initialized(self, value: bool = True) -> None:
+        self._lifecycle._db_initialized = value
+
+    def set_gateway_ready(self, value: bool = True) -> None:
+        self._lifecycle._gateway_ready = value
+
+    def set_workspace_sweeper_started(self, value: bool = True) -> None:
+        self._lifecycle._workspace_sweeper_started = value
+
+    def set_video_session_sweeper_started(self, value: bool = True) -> None:
+        self._lifecycle._video_session_sweeper_started = value
+
+    def set_guild_activation_refresh_task(self, task: Any | None) -> None:
+        self._lifecycle.resources.guild_activation._refresh_task = task
+
+    def set_video_session_sweeper_task(self, task: Any | None) -> None:
+        self._lifecycle._video_session_sweeper_task = task
+
+    def set_module_event_publisher(self, publisher: Any | None) -> None:
+        self._lifecycle._module_event_publisher = publisher
+
+    def set_module_interaction_runtime(self, runtime: Any | None) -> None:
+        self._lifecycle._module_interaction_runtime = runtime
+
+    def set_thread_handoff(self, handoff: Any | None) -> None:
+        self._lifecycle._thread_handoff = handoff
+
+
+def set_command_sync_retired_tasks(command_sync: Any, tasks: Iterable[Any]) -> None:
+    """Replace retired tasks for the stable-snapshot concurrency invariant test."""
+
+    command_sync._retired_global_sync_tasks.clear()
+    command_sync._retired_global_sync_tasks.update(tasks)
+
+
+def replace_app_repositories(app: Any, **changes: Any) -> None:
+    """Substitute stores in the frozen ``app.lifecycle.AppRepositories`` bundle."""
+
+    replace_lifecycle_resources(app, repositories=replace(app.repositories, **changes))
+
+
+def replace_app_database(app: Any, database: Database) -> None:
+    """Rebuild the complete ``app.lifecycle.AppRepositories`` bundle for one test DB."""
+
+    repositories = AppRepositories(
+        conversation_store=ConversationStore(database),
+        preference_store=PreferenceStore(database),
+        blocked_user_store=BlockedUserStore(database),
+        model_selection_store=ModelSelectionStore(database),
+        image_distillation_store=ImageDistillationStore(database),
+        usage_store=UsageStore(database),
+        video_session_store=VideoSessionStore(database),
+        coding_task_store=CodingTaskStore(database),
+        privacy_deletion_store=PrivacyDeletionRequestStore(database),
+        user_memory_bank_state_store=UserMemoryBankStateStore(database),
+    )
+    replace_lifecycle_resources(app, database=database, repositories=repositories)
+
+
+def replace_lifecycle_resources(app: Any, **changes: Any) -> None:
+    """Substitute collaborators in the frozen ``app.lifecycle.LifecycleResources`` bundle."""
+
+    lifecycle = app.lifecycle
+    lifecycle._resources = replace(lifecycle.resources, **changes)
+
+
+class CommandSyncProbe:
+    """Test seam for the extracted ``app.command_sync`` module."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> CommandSyncSnapshot:
+        return self._app.command_sync.snapshot()
+
+
+class PersonalChatDriver:
+    """Test driver for the extracted ``app.user_app_chat`` controller."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def run_chat(self, *args: Any, **kwargs: Any) -> Any:
+        request_generation = kwargs.pop("request_generation")
+        interaction = args[0] if args else kwargs.get("interaction")
+        assert interaction is not None
+        request = UserAppChatRequest(
+            user_id=str(interaction.user.id),
+            generation=request_generation,
+        )
+        return await self._app.user_app_chat.run(*args, request=request, **kwargs)
+
+    async def reset(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app.user_app_chat.reset(*args, **kwargs)
+
+    def generation(self, user_id: str) -> int:
+        return self._app.user_app_chat.generation(user_id)
+
+    def dm_tier(self, *args: Any, **kwargs: Any) -> Any:
+        return self._app.user_app_chat.classify_dm(*args, **kwargs)
+
+    async def resolve_dm_conversation(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._app.user_app_chat.resolve_dm_conversation(*args, **kwargs)
+
+
+class RootLockProbe:
+    """Test probe for the public ``app.root_locks`` pool."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def snapshot(self) -> RootLockSnapshot:
+        return self._app.root_locks.snapshot()
+
+    @asynccontextmanager
+    async def hold(self, key: str) -> AsyncIterator[None]:
+        async with self._app.root_locks.hold(key):
+            yield
+
+    @asynccontextmanager
+    async def hold_user_conversations(self, user_id: str) -> AsyncIterator[None]:
+        async with self._app.root_locks.hold_user_conversations(
+            user_id,
+            self._app.conversation_store,
+        ):
+            yield
+
+
+async def remove_processing_reaction(
+    app: Any,
+    message: Any,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    """Exercise the public message-runtime reaction cleanup seam."""
+
+    await remove_message_processing_reaction(app.discord_gateway, message, timeout)
+
+
+def install_foreground_turn_handler(app: Any, handle_turn_hook: HandleTurn) -> None:
+    """Replace one application's foreground provider seam for a focused test."""
+
+    runner = app.message_controller.make_foreground_turn_runner(handle_turn_hook=handle_turn_hook)
+    replace_lifecycle_resources(app, turn_runner=runner)
+    app.user_app_chat._turn_runner = runner
+
+
+PNG_SIGNATURE_ONLY = b"\x89PNG\r\n\x1a\n"
+VALID_PNG_BASE64 = base64.b64encode(VALID_PNG_BYTES).decode("ascii")
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """Build test settings without consulting the checkout's dotenv file."""
+
+    return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
+
+
+def corrupt_png_idat_stream(png: bytes) -> bytes:
+    """Valid chunk framing and CRCs around a garbage DEFLATE payload.
+
+    The container walk passes (every CRC checks out); only an actual decode
+    notices the stream is not zlib data. This is the fixture that proves the
+    Pillow layer runs at all.
+    """
+
+    idat = png.index(b"IDAT")
+    length = int.from_bytes(png[idat - 4 : idat], "big")
+    data_start = idat + 4
+    data_end = data_start + length
+    junk = bytes((i * 37 + 11) % 251 for i in range(length))
+    crc = zlib.crc32(junk, zlib.crc32(b"IDAT")).to_bytes(4, "big")
+    return png[:data_start] + junk + crc + png[data_end + 4 :]
+
+
+def corrupt_png_crc(png: bytes) -> bytes:
+    """Flip one byte inside the first IDAT payload without updating its CRC.
+
+    The result still starts with a PNG signature and a well-formed IHDR, so a
+    signature-only check accepts it; a chunk walk that verifies CRCs does not.
+    """
+
+    data_start = png.index(b"IDAT") + 4
+    corrupted = bytearray(png)
+    corrupted[data_start + 2] ^= 0xFF
+    return bytes(corrupted)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

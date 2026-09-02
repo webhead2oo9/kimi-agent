@@ -234,6 +234,14 @@ has actually loaded.
 - **Executable skills** need Linux with `bubblewrap` + `util-linux` and a
   non-root service account; on a Windows/macOS dev host, use an instruction-only
   or empty skill store (see [setup.md](setup.md)).
+- **Code execution and coding tasks** need the full Linux boundary in
+  [code-exec.md](code-exec.md) (Bubblewrap, `prlimit`, libseccomp, a lingering
+  user systemd manager, and a file `core_pattern`). Without it the live-jail
+  tests skip, and `run_code` does not register.
+  `python -m scripts.sandbox_probe` names the missing prerequisite for the
+  configured profile; the CI `sandbox` job provisions all of them and runs
+  those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
+  counts as failure.
 - **Persistent browser and visual rendering** also need the Linux isolation
   stack and pinned BetterWright/Mermaid runtime. They are off unless
   `BROWSER_ENABLED=true`, so a Windows/macOS dev host needs no change and can
@@ -247,8 +255,14 @@ has actually loaded.
 
 ## Tests
 
-The Python suite needs no dotenv file, Discord connection, or network. After the
-first-time standard environment setup, run these checks from `bot/`:
+The Python suite needs no dotenv file, Discord connection, or network. Tests
+construct `Settings` through `tests.helpers.make_settings` (or pass
+`_env_file=None` explicitly), and an autouse fixture removes ambient settings
+variables before each test; `tests/test_settings_isolation.py` enforces both.
+A test that intentionally reads the live operator profile carries the
+`uses_live_settings_env` marker. `KIMI_REQUIRE_SANDBOX_TESTS` is not a setting
+and is never removed. After the first-time standard environment setup, run these
+checks from `bot/`:
 
 ```bash
 .venv/bin/ruff check .

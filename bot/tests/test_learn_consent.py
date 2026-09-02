@@ -540,10 +540,39 @@ async def test_user_app_consent_accept_failure_does_not_resume_request(failure: 
 
     assert accepted == []
     assert interaction.response.deferred == []
-    assert interaction.response.edited == [
-        {
-            "content": "I couldn't save your privacy choice. Please try again.",
-            "embed": None,
-            "view": None,
-        }
-    ]
+    expected = (
+        "I couldn't save your privacy choice. Please try again."
+        if failure == "write"
+        # The write succeeded, so the user must not be told to retry a prompt
+        # that will no longer be shown.
+        else "Your privacy choice was saved, but I couldn't continue. Run the command again."
+    )
+    assert interaction.response.edited == [{"content": expected, "embed": None, "view": None}]
+
+
+@pytest.mark.asyncio
+async def test_teach_replies_when_blocked_user_lookup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing block lookup stays fail-closed but must still answer the click."""
+
+    app, calls = await _build_learn_app(tmp_path, monkeypatch, consent_enabled=False)
+    interaction = _Interaction()
+    try:
+
+        async def failing_is_blocked(_user_id: str) -> bool:
+            raise RuntimeError("database is locked")
+
+        assert app.blocked_user_store is not None
+        monkeypatch.setattr(app.blocked_user_store, "is_blocked", failing_is_blocked)
+
+        await _teach_menu(app).callback(cast(Any, interaction), cast(Any, _message()))
+
+        assert calls == []
+        replies = [message["content"] for message in interaction.response.sent] + [
+            message["content"] for message in interaction.followup.sent
+        ]
+        assert replies == ["You can't use this right now."]
+    finally:
+        await app.close()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -72,12 +72,6 @@ class DiscordCommandSync:
             ready_event_tasks=tuple(self._ready_event_tasks),
             ready_event_generations=MappingProxyType(dict(self._ready_event_generations)),
         )
-
-    def set_retired_tasks_for_test(self, tasks: Iterable[asyncio.Task[None]]) -> None:
-        """Replace retired tasks for the stable-snapshot concurrency invariant test."""
-
-        self._retired_global_sync_tasks.clear()
-        self._retired_global_sync_tasks.update(tasks)
 
     @asynccontextmanager
     async def ready_cohort(self) -> AsyncIterator[int]:

@@ -76,7 +76,16 @@ def register_learn_command(
         if tier < TrustTier.STAFF:
             await _send_message(interaction, _NO_STANDING)
             return False
-        if await is_blocked(str(interaction.user.id)):
+        try:
+            blocked = await is_blocked(str(interaction.user.id))
+        except Exception:
+            # Standing stays fail-closed, but the staff member must still get a
+            # reply: an escaped exception leaves the click or the resumed consent
+            # interaction hanging with no answer.
+            log.exception("Blocked-user lookup failed for user %s", interaction.user.id)
+            await _send_message(interaction, _BLOCKED)
+            return False
+        if blocked:
             await _send_message(interaction, _BLOCKED)
             return False
         if guild_id is None:

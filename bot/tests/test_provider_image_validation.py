@@ -196,3 +196,27 @@ def test_ordinary_animated_images_survive_frame_budgeting(
     )
 
     assert image_types.decoded_image_media_type(buffer.getvalue()) == media_type
+
+
+def test_trailing_bytes_after_the_container_terminator_are_tolerated() -> None:
+    """Decoders ignore padding after IEND/EOI/trailer/RIFF end, and providers
+    occasionally emit it; the container walk must not be stricter than Pillow."""
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    payloads: list[tuple[bytes, str]] = [(VALID_PNG_BYTES, "image/png")]
+    for pillow_format, media_type in (
+        ("JPEG", "image/jpeg"),
+        ("GIF", "image/gif"),
+        ("WEBP", "image/webp"),
+    ):
+        buffer = BytesIO()
+        Image.new("RGB", (8, 8), (200, 10, 10)).save(buffer, format=pillow_format)
+        payloads.append((buffer.getvalue(), media_type))
+
+    for payload, media_type in payloads:
+        padded = payload + b"\x00"
+        assert image_types.structurally_valid_image_media_type(padded) == media_type, media_type
+        assert image_types.decoded_image_media_type(padded) == media_type, media_type

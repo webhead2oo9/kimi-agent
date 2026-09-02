@@ -1,18 +1,17 @@
 # Kimi privacy policy
 
-_Last updated: 2026-08-29_
+_Last updated: 2026-09-01_
 
-> **Deployment template:** Before publishing this policy, the operator must
-> verify that its enabled services, retention periods, moderation features, and
-> contact route match the deployment, then update the date and host it at the
-> URL configured by `PRIVACY_POLICY_URL`.
-> This template covers Kimi core only. Separately installed application modules
-> must publish their own privacy notice.
+> **Deployment template.** Before publishing this policy, check that the
+> services, retention periods, moderation features, and contact route it
+> describes match your deployment, update the date, and host it at the URL you
+> set in `PRIVACY_POLICY_URL`. This template covers Kimi core only. Separately
+> installed application modules must publish their own privacy notice.
 
 Kimi is a general-purpose assistant bot for Discord communities. This page
-explains, in plain language, what data a Kimi deployment handles when you talk
-to it, who that data is shared with, how long it's kept, and the controls you
-have. If you want the technical details, see [`privacy.md`](privacy.md).
+explains, in plain language, what data Kimi handles when you talk to it, who
+that data is shared with, how long it is kept, and the controls you have. The
+technical version is [`privacy.md`](privacy.md).
 
 ## TL;DR
 
@@ -22,8 +21,9 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
   your account) a direct message. Ordinary DMs to the bot are ignored by
   default. Personal DMs join the same private conversation as `/chat`.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
-  services receive the input needed for the feature you request. Browser tasks
-  and network-enabled code can also contact sites or services chosen by the task.
+  features (search, video, images, and so on) send only what that feature
+  needs. If you ask Kimi to browse a site or run code with network access, the
+  sites and services that task touches will see the request.
 - Conversation history auto-deletes after **30 days**. When long-term memory is
   available, it is on by default; you can opt out with `/memory opt-out`, or
   wipe it any time with `/privacy`.
@@ -75,14 +75,14 @@ Depending on the features a server enables, Kimi handles:
   and join dates, and roles. Anyone in the server can already see all of that.
   The lookup goes to the AI provider as context for that one reply and is not
   stored.
-- **Usage metadata**: token counts and attributed LLM/tool-provider costs for a
-  turn, plus short-lived counters used to enforce bounded-tool limits. None of
-  this includes the content of your messages, code, tool queries, or results.
-- **Video-session metadata, if enabled**: source kind, safe display filename or
-  relative workspace locator and byte size (or a canonical YouTube URL), opaque
-  local and Google File/Interaction identifiers, model, owner/conversation
-  scope, counts, and timestamps. Uploaded bytes, Discord CDN URLs, questions,
-  and answers are not duplicated into local session tables.
+- **Usage records**: how many tokens each reply used and what it cost, plus
+  short-lived counters that enforce per-user limits on some tools. None of this
+  includes the content of your messages, code, tool queries, or results.
+- **Video session details, if video understanding is enabled**: where the
+  video came from (a YouTube URL, or the filename and size of an upload), the
+  identifiers Google assigned to it, which model was used, who started the
+  session and in which conversation, and timestamps. Kimi does not keep a copy
+  of the video, the Discord link to it, your questions, or the answers.
 - **Messages in channels Kimi can read**: when someone asks Kimi
   something, it may pull recent messages from that channel, or from channels
   the operator has configured for search. It may also retrieve an exact message
@@ -97,6 +97,7 @@ Depending on the features a server enables, Kimi handles:
   be stored in community memory or a shared skill. If the server configures a
   staff learn-log channel, Kimi attempts to post a summary there; the log is
   optional and a failed post does not undo the learned item.
+
 When personal DMs are disabled, or you are not on the approved access list,
 messages sent directly to Kimi are ignored without being read into a turn,
 stored in its transcript, or sent to an AI provider. Kimi may also check whether
@@ -110,13 +111,13 @@ that lets a moderator close a managed thread.
   may also receive recalled personal or community memory and tool results needed
   for the turn, and may process or log that input under its own policies.
 - **Coding work.** If the coding agent is enabled, its provider receives the
-  task objective, acceptance criteria, bounded conversation context, and files
-  or tool results the worker reads. This may be a different provider from chat.
-- **Long-term memory.** When enabled, conversation slices, durable facts, and
-  recall queries are sent to the configured Hindsight service for users who
-  have not opted out. That service may be self-hosted or hosted by a third
-  party. A self-hosted Hindsight deployment may also use a separate model
-  endpoint selected by the operator for memory processing.
+  task description, a limited excerpt of the conversation, and the files or
+  tool results the worker reads. This may be a different provider from chat.
+- **Long-term memory.** When enabled, excerpts of your conversations, facts
+  you share, and the queries used to look them up are sent to the configured
+  Hindsight memory service, unless you have opted out. That service may be run
+  by the operator or hosted by a third party, and it may use its own separate
+  AI model to process memories.
 - **Safety checks.** If conversational content moderation is enabled, your
   message to Kimi and Kimi's draft reply may be checked by a moderation service
   before sending.
@@ -128,6 +129,8 @@ that lets a moderator close a managed thread.
   search filters, or URLs to the configured search provider. Built-in providers
   include TinyFish, Exa, and Brave. Opening a public URL also shows up as a
   normal web request to that website.
+- **X search.** If enabled, Kimi sends your search query and any date or
+  account filters to xAI, which searches X (formerly Twitter) on its behalf.
 - **Persistent browser.** If enabled, sites receive normal browser requests and
   anything entered or submitted during the task. They can set cookies and site
   storage in your private browser profile. Depending on operator configuration,
@@ -153,6 +156,7 @@ that lets a moderator close a managed thread.
 - **Operator-added tools.** The server operator may install plugins or scripted
   tools that contact additional services when used. The operator is responsible
   for documenting those services and limiting the data each tool sends.
+
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
 
@@ -188,10 +192,11 @@ the configured services and tools needed to answer you.
   These are shared server resources. They are not part of your personal memory
   and are not removed by `/privacy`.
 - **Diagnostic logs: size-limited.** If diagnostic logging is on, technical
-  logs live in rotating files that discard the oldest file as they fill. The
-  default mode records metadata only, though operators can choose modes that
-  also record message and response text, retrieved channel context, and tool
-  inputs and results. `/privacy` does not edit these files.
+  logs are kept in a file that is replaced once it reaches a fixed size, with
+  one older copy kept. By default these logs contain only timings, identifiers,
+  and tool names, but an operator can choose a mode that also records message
+  and reply text, retrieved channel context, and tool inputs and results.
+  `/privacy` does not edit these files.
 - **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting
   records (which contain no message text) are kept for cost tracking and are
   not on the 30-day clock.
@@ -212,13 +217,12 @@ the configured services and tools needed to answer you.
   deletes Kimi's local copy of conversations you started, your messages in
   conversations started by someone else, your workspace files, browser profile,
   and video sessions. For those sessions Kimi also requests deletion of every
-  known stored Gemini Interaction and Files API upload and retries temporary
-  failures. If Gemini access is unavailable, local deletion still completes.
-  Provider deletion remains independently queued; this does not keep your account
-  activity paused. If you started a shared conversation, Kimi's local copy of
-  that whole conversation is removed, including messages other people added to
-  it; their other conversations, workspaces, preferences, and personal memory
-  are left alone.
+  known stored Gemini Interaction and Files API upload, and keeps retrying if
+  Google is temporarily unreachable; your local deletion finishes either way
+  and does not keep you blocked while that retry runs. If you started a shared
+  conversation, Kimi's local copy of that whole conversation is removed,
+  including messages other people added to it; their other conversations,
+  workspaces, preferences, and personal memory are left alone.
 - **What `/privacy` cannot delete**: messages or files stored by Discord;
   provider safety logs, legally required records, backups, and copies outside
   the stored Gemini video Interactions Kimi knows how to delete; diagnostic
@@ -230,9 +234,9 @@ Deletion waits for any interaction already in progress, and blocks new activity
 for you until the required local deletion finishes. Your confirmation is saved
 before deletion starts, so a restart cannot lose it. If a required local or
 memory service is temporarily unavailable, the request stays pending; retry
-`/privacy` or ask staff for help. Gemini video-provider deletion is different:
-local video-session deletion can finish while content-free File/Interaction
-cleanup rows remain queued for later retry.
+`/privacy` or ask staff for help. The one exception is Google's copy of a video
+session: your local deletion can finish while Kimi is still retrying the
+deletion request to Google in the background.
 
 - **`/memory status`**: see whether memory is on for you.
 - **`/memory opt-out`**: stop Kimi from remembering anything new about you.
@@ -246,10 +250,10 @@ cleanup rows remain queued for later retry.
 
 The bot operator can access the database, workspace files, diagnostic logs, and
 the configured Hindsight service through the deployment's credentials. Anyone
-can check their own usage totals with `/usage`. Discord staff can use `/moderation` and view
-other users' usage totals. Staff with access to configured learning channels can
-see the event cards posted there. None of these commands expose private
-transcripts or personal memory.
+can check their own usage totals with `/usage`. Server staff can manage bot
+blocks with `/moderation` and view other users' usage totals. Staff with access
+to a configured learning channel can see the cards posted there. None of these
+commands expose private transcripts or personal memory.
 
 ## Age
 

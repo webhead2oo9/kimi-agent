@@ -26,7 +26,7 @@ dependencies = [
     # Office document → Markdown conversion for extract_document_text
     # (tools/workspace/documents.py). Pure-Rust PyO3 binding with abi3 wheels
     # covering both dev (win_amd64) and prod (manylinux x86_64).
-    "firecrawl-anydoc==0.2.3",
+    "firecrawl-anydoc==0.2.4",
     # Backtracking-safe regex engine for grep_workspace (tools/workspace/search.py).
     # stdlib `re` holds the GIL and has no match timeout, so a member-supplied
     # catastrophic pattern would pin the event loop; `regex` checks a deadline during

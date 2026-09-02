@@ -1,6 +1,6 @@
 # Public source and private instance data
 
-The repository is the application, not a deployment backup. A public checkout contains code, generic templates, and synthetic fixtures. Anything that identifies a live Discord deployment, contains community knowledge, records user activity, or reveals private provider routing is instance data, and it stays outside the public repository.
+The repository is the application, not a backup of your deployment. A public checkout contains code, generic templates, and made-up test fixtures. Anything that identifies a live Discord deployment, contains community knowledge, records user activity, or reveals which providers you route to is instance data, and it stays outside the public repository.
 
 ## Boundary
 
@@ -62,7 +62,7 @@ When user-app chat is enabled, copy and customize
 the gitignored `chat.local.md` override instead; private `CONFIG_DIR`
 deployments normally keep their customized `chat.md` in the private tree.
 
-Numeric fragments, full overrides, module/plugin/tool files, and skills are only included when the deployment actually uses them. Copy the public `bot/config/prompt.md`, `persona.md`, tracked shared command templates, and `models.example.yaml` as starting points; from then on the private copies are the deployment's source of truth. `models.yaml` is validated at startup, but `prompt.md` is first opened when a model turn builds its prompt, so provisioning must include a real message smoke test rather than treating a successful process start as sufficient.
+Server, channel, and thread fragments, full prompt overrides, module/plugin/tool files, and skills only need to exist when the deployment uses them. Copy the public `bot/config/prompt.md`, `persona.md`, the tracked command templates, and `models.example.yaml` as starting points; from then on the private copies are the deployment's source of truth. Note that `models.yaml` is validated at startup, but `prompt.md` is first opened when a model turn builds its prompt. A clean process start therefore proves nothing about the prompt; send the bot a real message as part of provisioning.
 
 The active prompt is one complete template, selected most-specific-first from a
 command, channel/thread, server, or base `prompt.md` file. Full overrides don't
@@ -81,7 +81,11 @@ CONFIG_DIR=/srv/kimi/private/config
 SKILLS_DIR=/srv/kimi/private/skills
 ```
 
-Clone or update the public and private repositories independently, review and commit private configuration changes, then deploy an approved revision of each. Prompt templates, instruction fragments, tool fragments, and instruction-skill indexes refresh from disk during normal turns. Per-guild module settings refresh with guild activation and immediately after an approved proposal. Model routing, global settings, module and plugin registration, startup module/plugin settings, secrets metadata, and executable skill registrations are startup-only, so restart the bot after changing those files.
+Clone and update the public and private repositories independently, review and commit private configuration changes, then deploy an approved revision of each. Which files need a restart:
+
+- Read fresh during normal turns, no restart: prompt templates, instruction fragments, tool fragments, and the instruction-skill index.
+- Refreshed on guild activation and after an approved proposal: per-guild module settings.
+- Startup only, restart required: model routing, `settings.md`, module and plugin registration and their startup settings, secrets metadata, and executable skill registrations.
 
 Private templates are independent copies of the public templates. Before each application upgrade, diff the release's public `prompt.md`, `persona.md`, and shared command templates against the private base files and every applicable full override. Merge required placeholders, safety rules, error handling, and tool-routing guidance before deploying the two revisions together.
 

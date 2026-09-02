@@ -22,6 +22,22 @@ _DELETE_TIMEOUT_SECONDS = 30.0
 _QUEUE_TIMEOUT_SECONDS = 30.0
 _DEFAULT_MAX_CONCURRENCY = 4
 _MAX_CONFIGURED_CONCURRENCY = 32
+_MAX_REQUEST_RETRIES = 2
+_RETRY_BASE_DELAY_SECONDS = 1.5
+_MAX_RETRY_DELAY_SECONDS = 30.0
+_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _parse_retry_after(header: str | None, default_delay: float) -> float:
+    if not header:
+        return default_delay
+    try:
+        val = float(header.strip())
+        if val > 0:
+            return min(val, _MAX_RETRY_DELAY_SECONDS)
+    except (ValueError, TypeError):
+        pass
+    return default_delay
 
 # -- Files API (resumable upload transport) ---------------------------------
 _FILES_UPLOAD_START_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
@@ -312,25 +328,46 @@ class GeminiVideoClient:
             ) from exc
         try:
             session = await self._get_session()
-            try:
-                async with session.post(
-                    _API_ROOT,
-                    headers=self._headers,
-                    json=payload,
-                ) as response:
-                    if response.status >= 400:
-                        await _drain_response(response)
-                        raise _provider_status_error(response.status)
-                    data = await _read_json_object(response)
-            except VideoInteractionError:
-                raise
-            except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+            last_error: Exception | None = None
+            for attempt in range(_MAX_REQUEST_RETRIES + 1):
+                try:
+                    async with session.post(
+                        _API_ROOT,
+                        headers=self._headers,
+                        json=payload,
+                    ) as response:
+                        if response.status in _RETRYABLE_STATUS_CODES:
+                            await _drain_response(response)
+                            if attempt < _MAX_REQUEST_RETRIES:
+                                delay = _parse_retry_after(
+                                    response.headers.get("Retry-After"),
+                                    _RETRY_BASE_DELAY_SECONDS * (2 ** attempt),
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            raise _provider_status_error(response.status)
+                        if response.status >= 400:
+                            await _drain_response(response)
+                            raise _provider_status_error(response.status)
+                        data = await _read_json_object(response)
+                        return _parse_interaction(data)
+                except VideoInteractionError:
+                    raise
+                except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+                    last_error = exc
+                    if attempt < _MAX_REQUEST_RETRIES:
+                        await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2 ** attempt))
+                        continue
+                    raise VideoInteractionError(
+                        "The video service is temporarily unavailable."
+                    ) from exc
+            if last_error:
                 raise VideoInteractionError(
                     "The video service is temporarily unavailable."
-                ) from exc
+                ) from last_error
+            raise VideoInteractionError("The video service is temporarily unavailable.")
         finally:
             self._analysis_semaphore.release()
-        return _parse_interaction(data)
 
     async def delete(self, interaction_id: str) -> None:
         if not interaction_id:
@@ -456,24 +493,45 @@ class GeminiVideoClient:
             "Content-Type": "application/json",
         }
         body = {"file": {"name": f"files/{file_id}", "display_name": display_name}}
-        try:
-            async with asyncio.timeout(_UPLOAD_START_TIMEOUT_SECONDS):
-                async with session.post(
-                    _FILES_UPLOAD_START_URL,
-                    headers=headers,
-                    json=body,
-                    allow_redirects=False,
-                ) as response:
-                    if response.status >= 400:
+        last_error: Exception | None = None
+        for attempt in range(_MAX_REQUEST_RETRIES + 1):
+            try:
+                async with asyncio.timeout(_UPLOAD_START_TIMEOUT_SECONDS):
+                    async with session.post(
+                        _FILES_UPLOAD_START_URL,
+                        headers=headers,
+                        json=body,
+                        allow_redirects=False,
+                    ) as response:
+                        if response.status in _RETRYABLE_STATUS_CODES:
+                            await _drain_response(response)
+                            if attempt < _MAX_REQUEST_RETRIES:
+                                delay = _parse_retry_after(
+                                    response.headers.get("Retry-After"),
+                                    _RETRY_BASE_DELAY_SECONDS * (2 ** attempt),
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            raise _provider_status_error(response.status)
+                        if response.status >= 400:
+                            await _drain_response(response)
+                            raise _provider_status_error(response.status)
+                        upload_url = response.headers.get("X-Goog-Upload-URL")
                         await _drain_response(response)
-                        raise _provider_status_error(response.status)
-                    upload_url = response.headers.get("X-Goog-Upload-URL")
-                    await _drain_response(response)
-        except VideoInteractionError:
-            raise
-        except (aiohttp.ClientError, TimeoutError, OSError) as exc:
-            raise VideoInteractionError("The video service is temporarily unavailable.") from exc
-        return _validate_upload_url(upload_url)
+                        return _validate_upload_url(upload_url)
+            except VideoInteractionError:
+                raise
+            except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt < _MAX_REQUEST_RETRIES:
+                    await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2 ** attempt))
+                    continue
+                raise VideoInteractionError("The video service is temporarily unavailable.") from exc
+        if last_error:
+            raise VideoInteractionError(
+                "The video service is temporarily unavailable."
+            ) from last_error
+        raise VideoInteractionError("The video service is temporarily unavailable.")
 
     async def _stream_upload(
         self,

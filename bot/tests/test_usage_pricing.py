@@ -94,3 +94,28 @@ def test_pricing_preserves_provider_attribution() -> None:
     assert priced.service_tier == "priority"
     assert priced.openrouter_charge_usd == 0.02
     assert priced.is_byok is False
+
+
+def test_video_specialist_pricing_resolves_via_pricing_model() -> None:
+    config = SimpleNamespace(
+        models={
+            "gemini-video-flash": SimpleNamespace(
+                pricing=ModelPricing(input=0.75, output=3.75, cached_read=0.075)
+            )
+        }
+    )
+    call = LLMUsageCall(
+        model="gemini-3.7-flash",
+        pricing_model="gemini-video-flash",
+        role="video_analysis",
+        usage=UsageBreakdown(
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            cached_read_tokens=500_000,
+        ),
+    )
+    priced = price_usage_call(call, config)
+    assert priced.est_cost_usd == pytest.approx(0.75 + 0.375 + 0.0375)
+    assert priced.model == "gemini-3.7-flash"
+    assert priced.pricing_model == "gemini-video-flash"
+

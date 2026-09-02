@@ -29,6 +29,7 @@ class VideoSession:
     source_byte_size: int | None
     youtube_url: str
     youtube_video_id: str
+    catalog_model: str
     model: str
     latest_interaction_id: str
     interaction_count: int
@@ -69,6 +70,7 @@ class VideoSessionStore:
         youtube_url: str,
         youtube_video_id: str,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         now: float,
         expires_at: float,
@@ -86,6 +88,7 @@ class VideoSessionStore:
                 source_byte_size=None,
                 youtube_url=youtube_url,
                 youtube_video_id=youtube_video_id,
+                catalog_model=catalog_model or model,
                 model=model,
                 interaction_id=interaction_id,
                 now=now,
@@ -137,6 +140,7 @@ class VideoSessionStore:
         source_locator: str,
         source_byte_size: int,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         file_name: str,
         now: float,
@@ -161,6 +165,7 @@ class VideoSessionStore:
                 source_byte_size=source_byte_size,
                 youtube_url="",
                 youtube_video_id="",
+                catalog_model=catalog_model or model,
                 model=model,
                 interaction_id=interaction_id,
                 now=now,
@@ -490,6 +495,7 @@ async def _insert_session(
     source_byte_size: int | None,
     youtube_url: str,
     youtube_video_id: str,
+    catalog_model: str,
     model: str,
     interaction_id: str,
     now: float,
@@ -500,9 +506,9 @@ async def _insert_session(
         INSERT INTO video_sessions (
             handle, conversation_id, actor_user_id, guild_id,
             source_kind, source_display_name, source_locator, source_byte_size,
-            youtube_url, youtube_video_id, model, latest_interaction_id,
+            youtube_url, youtube_video_id, catalog_model, model, latest_interaction_id,
             interaction_count, created_at, last_active_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
         (
             handle,
@@ -515,6 +521,7 @@ async def _insert_session(
             source_byte_size,
             youtube_url,
             youtube_video_id,
+            catalog_model,
             model,
             interaction_id,
             now,
@@ -566,6 +573,12 @@ def _pending_query(
 
 
 def _session_from_row(row: Row) -> VideoSession:
+    keys = row.keys() if hasattr(row, "keys") else ()
+    catalog_model = (
+        str(row["catalog_model"])
+        if "catalog_model" in keys and row["catalog_model"]
+        else str(row["model"])
+    )
     return VideoSession(
         handle=str(row["handle"]),
         conversation_id=int(row["conversation_id"]),
@@ -579,6 +592,7 @@ def _session_from_row(row: Row) -> VideoSession:
         ),
         youtube_url=str(row["youtube_url"]),
         youtube_video_id=str(row["youtube_video_id"]),
+        catalog_model=catalog_model,
         model=str(row["model"]),
         latest_interaction_id=str(row["latest_interaction_id"]),
         interaction_count=int(row["interaction_count"]),

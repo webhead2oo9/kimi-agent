@@ -18,24 +18,50 @@ attachment in memory.
 
 ## Availability
 
-Registration is fail-closed and requires both settings:
+Registration is fail-closed and requires environment configuration and a configured `models.yaml` role:
+
+1. Environment settings:
 
 ```dotenv
 VIDEO_UNDERSTANDING_ENABLED=true
 GEMINI_API_KEY=...
 ```
 
-The one flag enables all three source types. If it is false, the tool is absent
-no matter what. If it is true but the key is blank, the bot still starts, logs a
-clear warning, and leaves the tool absent.
+2. Role assignment in `config/models.yaml`:
+
+```yaml
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+
+models:
+  gemini-video-flash:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    context_window: 1048576
+    capabilities: [video_input]
+    pricing:
+      input: 0.75
+      output: 3.75
+      cached_read: 0.075
+
+roles:
+  video: gemini-video-flash
+```
+
+The `VIDEO_UNDERSTANDING_ENABLED` flag enables all three source types. If it is false, the tool is absent
+no matter what. If it is true but `roles.video` is unassigned or the key is blank, the bot still starts,
+logs a clear warning or info message, and leaves the tool absent.
 
 `GEMINI_API_KEY` is an environment-only `SecretStr`. It is never accepted from a
 tool call, tool fragment, model catalog, prompt, or Discord command. The client
 connects only to fixed Google Gemini hosts. Cleanup remains available while video
 analysis is disabled, so registered provider resources remain deletable.
 
-The shipped specialist is stable `gemini-3.7-flash`, not a role in
-`config/models.yaml`, and it never substitutes for the configured chat model.
+The video specialist model and its token rate card are configured authoritatively in
+`config/models.yaml` under `roles.video`. Fallbacks are unsupported because interaction
+chains are stateful. The video specialist never substitutes for the configured chat model.
 
 ## Model-facing operations
 
@@ -157,7 +183,6 @@ Safe per-call behavior remains in `<CONFIG_DIR>/tools/video.md`:
 
 ```markdown
 ---
-model: gemini-3.7-flash
 thinking_level: low
 max_output_tokens: 8192
 max_calls_per_turn: 4
@@ -168,7 +193,6 @@ session_ttl_minutes: 1440
 
 | Field | Default | Allowed range |
 |---|---:|---|
-| `model` | `gemini-3.7-flash` | closed model choice |
 | `thinking_level` | `low` | `low`, `medium`, `high` |
 | `max_output_tokens` | `8192` | 1,024–32,768 |
 | `max_calls_per_turn` | `4` | 1–8 |
@@ -190,15 +214,16 @@ Google defines each continuation's input usage as the complete context processed
 for that call, including preceding turns, so the bot records full response usage
 rather than deltas. Cache hits are automatic but not guaranteed.
 
-The tool ships Google's scheduled paid-tier standard rates for Gemini 3.7 Flash:
-through December 31, 2026, $0.75/M ordinary input, $0.075/M cached input, and
-$3.75/M output; from January 1, 2027, $1.50/M, $0.15/M, and $7.50/M. The vendor
+Pricing is resolved authoritatively from the rate card configured in
+`config/models.yaml` for the model assigned to `roles.video`. The vendor
 dashboard remains authoritative.
 
 Up to `VIDEO_UNDERSTANDING_MAX_CONCURRENCY` questions (default 4, range 1–32)
 can be in flight at once; a call that waits more than 30 seconds for a slot
 fails with a busy error. Uploads run one at a time and are bounded to 30 minutes
 end to end, with the processing poll capped at 15 minutes inside that. Provider
+requests automatically retry transient HTTP status codes (408, 425, 429, 500, 502,
+503, 504) and transport errors, honoring vendor `Retry-After` headers. Provider
 deletion uses its own small pool with a 30-second per-request deadline. A
 create or upload whose outcome is unknown is never blindly retried.
 

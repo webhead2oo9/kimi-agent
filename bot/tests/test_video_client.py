@@ -14,6 +14,11 @@ from video_understanding.client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(video_client, "_RETRY_BASE_DELAY_SECONDS", 0.0)
+
+
 class _Content:
     def __init__(self, response: _Response, body: bytes) -> None:
         self.response = response
@@ -94,6 +99,8 @@ class _Session:
 
     def post(self, url: str, **kwargs: Any) -> _Response:
         self.posts.append({"url": url, **kwargs})
+        if len(self.responses) == 1:
+            return self.responses[0]
         return self.responses.pop(0)
 
     def get(self, url: str, **kwargs: Any) -> _Response:
@@ -276,8 +283,8 @@ async def test_interaction_json_response_is_depth_bounded(
 async def test_oversized_video_error_body_is_not_fully_buffered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    response = _Response(503, raw_body=b"x" * 128)
-    session = _Session([response])
+    responses = [_Response(503, raw_body=b"x" * 128) for _ in range(3)]
+    session = _Session(list(responses))
     client = GeminiVideoClient("secret")
     monkeypatch.setattr(video_client, "_MAX_ERROR_RESPONSE_BYTES", 16)
 
@@ -294,8 +301,9 @@ async def test_oversized_video_error_body_is_not_fully_buffered(
             max_output_tokens=1024,
         )
 
-    assert response.bytes_read <= 17
-    assert response.closed is True
+    for response in responses:
+        assert response.bytes_read <= 17
+        assert response.closed is True
     await client.close()
 
 
@@ -636,3 +644,120 @@ def test_parse_interaction_rejects_noncompleted_or_unstructured_response() -> No
     assert malformed.value.usage is not None
     assert malformed.value.usage.input_tokens == 25
     assert malformed.value.usage_present is True
+
+
+@pytest.mark.asyncio
+async def test_create_retries_on_transient_http_error_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resp_429 = _Response(429, headers={"Retry-After": "1"})
+    resp_200 = _Response(200, payload=_response("success"))
+    session = _Session([resp_429, resp_200])
+    client = GeminiVideoClient("secret")
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    result = await client.start(
+        url="https://www.youtube.com/watch?v=abcdefghijk",
+        question="Question",
+        model="custom-video-model",
+        thinking_level="low",
+        max_output_tokens=1024,
+    )
+    assert result.interaction_id == "success"
+    assert len(session.posts) == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_fails_immediately_on_400_without_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resp_400 = _Response(400)
+    session = _Session([resp_400])
+    client = GeminiVideoClient("secret")
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    with pytest.raises(VideoInteractionError, match="could not access or analyze"):
+        await client.start(
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            question="Question",
+            model="custom-video-model",
+            thinking_level="low",
+            max_output_tokens=1024,
+        )
+    assert len(session.posts) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_retries_on_transport_error_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aiohttp
+
+    resp_error = _Response(500, enter_error=aiohttp.ClientError("network failure"))
+    resp_200 = _Response(200, payload=_response("recovered"))
+    session = _Session([resp_error, resp_200])
+    client = GeminiVideoClient("secret")
+
+    async def get_session() -> Any:
+        return session
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    result = await client.start(
+        url="https://www.youtube.com/watch?v=abcdefghijk",
+        question="Question",
+        model="custom-video-model",
+        thinking_level="low",
+        max_output_tokens=1024,
+    )
+    assert result.interaction_id == "recovered"
+    assert len(session.posts) == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_start_upload_retries_on_503_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upload_url = "https://generativelanguage.googleapis.com/upload/v1beta/files/session"
+    resp_503 = _Response(503)
+    resp_200 = _Response(200, headers={"X-Goog-Upload-URL": upload_url})
+    session = _Session([resp_503, resp_200])
+    client = GeminiVideoClient("secret")
+
+    url = await client._start_upload(
+        session,  # type: ignore[arg-type]
+        file_id="test-file",
+        display_name="test.mp4",
+        mime_type="video/mp4",
+        declared_size=100,
+    )
+    assert url == upload_url
+    assert len(session.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_start_upload_fails_immediately_on_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resp_400 = _Response(400)
+    session = _Session([resp_400])
+    client = GeminiVideoClient("secret")
+
+    with pytest.raises(VideoInteractionError, match="could not access or analyze"):
+        await client._start_upload(
+            session,  # type: ignore[arg-type]
+            file_id="test-file",
+            display_name="test.mp4",
+            mime_type="video/mp4",
+            declared_size=100,
+        )
+    assert len(session.posts) == 1
+

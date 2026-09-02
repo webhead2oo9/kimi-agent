@@ -27,6 +27,7 @@ class Session:
     youtube_video_id: str
     latest_interaction_id: str
     model: str = "gemini-3.7-flash"
+    catalog_model: str = ""
     interaction_count: int = 1
     expires_at: float = 99999999999
     source_kind: str = "youtube"

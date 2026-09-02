@@ -10,7 +10,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -268,6 +268,7 @@ CREATE TABLE IF NOT EXISTS video_sessions (
     created_at            REAL NOT NULL,
     last_active_at        REAL NOT NULL,
     expires_at            REAL NOT NULL,
+    catalog_model         TEXT NOT NULL DEFAULT '',
     CHECK (
         (source_kind = 'youtube' AND youtube_url != '' AND youtube_video_id != '')
         OR (source_kind != 'youtube' AND youtube_url = '' AND youtube_video_id = '')
@@ -793,11 +794,24 @@ async def _migrate_v4_to_v5(conn: aiosqlite.Connection) -> None:
         await conn.execute(statement)
 
 
+async def _migrate_v5_to_v6(conn: aiosqlite.Connection) -> None:
+    async with conn.execute("PRAGMA table_info(video_sessions)") as cur:
+        columns = {row[1] for row in await cur.fetchall()}
+    if "catalog_model" not in columns:
+        await conn.execute(
+            "ALTER TABLE video_sessions ADD COLUMN catalog_model TEXT NOT NULL DEFAULT ''"
+        )
+    await conn.execute(
+        "UPDATE video_sessions SET catalog_model = model WHERE catalog_model = ''"
+    )
+
+
 _MIGRATIONS: dict[int, Migration] = {
     2: ("coding_task_context_inputs", _migrate_v1_to_v2),
     3: ("video_understanding_sessions", _migrate_v2_to_v3),
     4: ("provider_circuit_breakers", _migrate_v3_to_v4),
     5: ("core_runtime_tables", _migrate_v4_to_v5),
+    6: ("video_session_catalog_model", _migrate_v5_to_v6),
 }
 
 

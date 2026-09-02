@@ -40,7 +40,7 @@ def compose_tools(
         memory_manager,
         get_blocked_user_store=lambda: blocked_user_store,
         # Thread handoff is on by default in production. `move_to_thread` only
-        # sets ctx.thread_request, and lifecycle tools fail closed outside a
+        # sets ctx.outbox.thread_request, and lifecycle tools fail closed outside a
         # managed thread, so a null manager registers the surface without
         # simulating a live thread.
         get_thread_handoff=lambda: None,
@@ -133,11 +133,7 @@ class EvalRegistry:
 
 async def build_eval_registry(settings: Settings, *, gateway: Any) -> EvalRegistry:
     """Compose production tools over temporary eval-owned writable state."""
-    registry = InstrumentedRegistry(
-        internet_search_max_backend_calls_per_turn=(
-            settings.internet_search_max_backend_calls_per_turn
-        )
-    )
+    registry = InstrumentedRegistry()
     db_dir = Path(tempfile.mkdtemp(prefix="eval-state-"))
     eval_settings = settings.model_copy(
         update={

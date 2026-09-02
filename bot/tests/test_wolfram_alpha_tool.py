@@ -9,7 +9,7 @@ from pydantic import SecretStr, ValidationError
 from app.tools import _register_wolfram_alpha
 from config.settings import Settings
 from tools import wolfram_alpha as wolfram_alpha_module
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.wolfram_alpha import (
     MAX_INPUT_WORDS,
     TOOL_NAME,
@@ -90,7 +90,7 @@ class FakeSessionFactory:
         return FakeClientSession(self._responses.pop(0), self.calls)
 
 
-def _context(*, usage_store: Any = None) -> MessageContext:
+def _context(*, usage_store: Any = None, budget_cap: int = 3) -> MessageContext:
     return MessageContext(
         user_id="u1",
         user_name="Tester",
@@ -100,6 +100,7 @@ def _context(*, usage_store: Any = None) -> MessageContext:
         trust_tier=TrustTier.MEMBER,
         usage_store=usage_store,
         activated_tools={TOOL_NAME},
+        budget=TurnBudget(caps={BudgetName.WOLFRAM_ALPHA_CALLS: budget_cap}),
     )
 
 
@@ -186,7 +187,7 @@ async def test_success_is_bounded_untrusted_and_records_configured_cost() -> Non
             "timeout_seconds": 1.0,
         }
     ]
-    assert ctx.wolfram_alpha_calls_this_turn == 1
+    assert ctx.budget_used(BudgetName.WOLFRAM_ALPHA_CALLS) == 1
     assert [(call.provider, call.cost_usd) for call in usage.calls] == [("wolfram_alpha", 0.01)]
 
 
@@ -211,7 +212,7 @@ async def test_validation_rejects_multiline_long_and_invalid_unit_without_spendi
     assert multiline["error"] == "input must be a single-line string"
     assert too_many_words["error"] == "input must be 100 words or fewer"
     assert bad_units["error"] == "units must be one of: metric, nonmetric"
-    assert ctx.wolfram_alpha_calls_this_turn == 0
+    assert ctx.budget_used(BudgetName.WOLFRAM_ALPHA_CALLS) == 0
     assert request.calls == []
 
 
@@ -219,14 +220,14 @@ async def test_validation_rejects_multiline_long_and_invalid_unit_without_spendi
 async def test_call_budget_is_scoped_to_message_context() -> None:
     request = RecordingRequest(WolframAlphaResponse(200, "4"))
     registry = _registry(request, limit=2)
-    ctx = _context()
+    ctx = _context(budget_cap=2)
 
     for _ in range(2):
         assert "error" not in json.loads(await registry.dispatch(TOOL_NAME, {"input": "2+2"}, ctx))
     exhausted = json.loads(await registry.dispatch(TOOL_NAME, {"input": "2+2"}, ctx))
     assert exhausted["error"] == "Wolfram|Alpha call limit reached for this turn."
 
-    fresh = _context()
+    fresh = _context(budget_cap=2)
     assert "error" not in json.loads(await registry.dispatch(TOOL_NAME, {"input": "2+2"}, fresh))
 
 

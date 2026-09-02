@@ -12,7 +12,7 @@ import pytest
 
 import web_browser.visual_service as visual_service
 from agent.turn import _stage_response_files_sync
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.visuals import (
     CHART_TOOL_NAME,
     DIAGRAM_TOOL_NAME,
@@ -43,6 +43,7 @@ def _context(*, context_key: str = "g1:c1:root") -> MessageContext:
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
         context_key=context_key,
+        budget=TurnBudget(caps={BudgetName.VISUAL_RENDERS: 4}),
         activated_tools={CHART_TOOL_NAME, DIAGRAM_TOOL_NAME},
     )
 
@@ -533,10 +534,13 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
     assert service.requests[0].x_scale == "symlog"
     assert service.requests[0].y_scale == "symlog"
     assert service.requests[0].overlap_mode == "count"
-    assert ctx.visual_renders_this_turn == 1
-    assert len(ctx.output_files) == 1
-    assert Path(ctx.output_files[0]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert ctx.output_file_descriptions[ctx.output_files[0]] == "Three points trend upward."
+    assert ctx.budget_used(BudgetName.VISUAL_RENDERS) == 1
+    assert len(ctx.outbox.output_files) == 1
+    assert Path(ctx.outbox.output_files[0]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert (
+        ctx.outbox.output_file_descriptions[ctx.outbox.output_files[0]]
+        == "Three points trend upward."
+    )
 
     diagram = json.loads(
         await registry.dispatch(
@@ -553,7 +557,7 @@ async def test_visual_tool_renders_verifies_and_queues_png(tmp_path: Path) -> No
     assert diagram["kind"] == "mermaid"
     assert "chart_type" not in diagram
     assert len(service.requests) == 2
-    assert len(ctx.output_files) == 2
+    assert len(ctx.outbox.output_files) == 2
 
 
 def test_png_verification_rejects_corrupt_and_incomplete_images(tmp_path: Path) -> None:
@@ -630,6 +634,6 @@ async def test_visual_tool_checks_context_and_attachment_cap_before_rendering(
     )
 
     capped = _context()
-    capped.output_files.append(str(tmp_path / "existing.png"))
+    capped.update_outbox(output_files=(str(tmp_path / "existing.png"),))
     assert "attachment limit" in await registry.dispatch(DIAGRAM_TOOL_NAME, args, capped)
     assert service.calls == 0

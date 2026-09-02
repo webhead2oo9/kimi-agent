@@ -297,7 +297,7 @@ class ForegroundTurnRunner:
             receipt = await deliver_with_workspace_guard(
                 workspace_locks=self._workspace_locks,
                 workspace_key=turn_result.workspace_key,
-                output_files=turn_result.output_files,
+                output_files=turn_result.outbox.output_files,
                 deliver=lambda: adapter.deliver(turn_result, conversation_id=conversation_id),
             )
             result = receipt.delivered_result or turn_result

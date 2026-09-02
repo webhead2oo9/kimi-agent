@@ -1,15 +1,23 @@
 import json
+from dataclasses import FrozenInstanceError
 from typing import Any, cast
 
 import pytest
 
 from storage.usage import PaidUsageCall
 from tools.config_spec import KIND_INT, ToolConfigField
+from tools.embeds import EmbedSpec
 from tools.registry import (
     UNTRUSTED_CONTEXT_NOTE,
+    BudgetName,
     MessageContext,
+    ToolBudgetSpec,
     ToolRegistry,
+    TurnBudget,
+    TurnHandoff,
+    TurnOutbox,
 )
+from tools.threads import ThreadRequest
 from trust.tiers import TrustTier
 
 
@@ -49,6 +57,107 @@ def _make_ctx(tier: TrustTier = TrustTier.MEMBER, activated: set | None = None) 
         trust_tier=tier,
         activated_tools=activated or set(),
     )
+
+
+@pytest.mark.parametrize("name", tuple(BudgetName))
+def test_turn_budget_consumes_each_registered_resource_without_overrun(
+    name: BudgetName,
+) -> None:
+    cap = 2
+    ctx = _make_ctx()
+    ctx.budget = TurnBudget(caps={name: cap})
+
+    assert all(ctx.consume_budget(name) for _ in range(cap))
+    assert not ctx.consume_budget(name)
+    assert ctx.budget_used(name) == cap
+    assert ctx.budget_remaining(name) == 0
+
+
+def test_registry_resolves_configured_budget_cap_once_per_turn() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        "metered",
+        "metered tool",
+        {},
+        _noop_handler,
+        config_spec=(
+            ToolConfigField(
+                field="limit",
+                label="Limit",
+                kind=KIND_INT,
+                default=3,
+                minimum=1,
+                maximum=8,
+                help="Test limit.",
+            ),
+        ),
+        budget_specs=(ToolBudgetSpec(BudgetName.VIDEO_CALLS, 3, config_field="limit"),),
+    )
+
+    budget = registry.resolve_turn_budget({"metered": {"limit": 2}})
+    assert budget.caps == {BudgetName.VIDEO_CALLS: 2}
+
+    # Later config mutations cannot change the allowance already captured.
+    live_config = {"metered": {"limit": 5}}
+    captured = registry.resolve_turn_budget(live_config)
+    live_config["metered"]["limit"] = 8
+    assert captured.caps == {BudgetName.VIDEO_CALLS: 5}
+
+
+def test_turn_outbox_is_a_defensive_frozen_snapshot() -> None:
+    descriptions = {"report.txt": "Original description"}
+    remove_ids = {"attachment:1": "report.txt"}
+    outbox = TurnOutbox(
+        output_files=("report.txt",),
+        output_file_descriptions=descriptions,
+        output_file_remove_ids=remove_ids,
+        output_file_remove_id_counter=1,
+    )
+
+    descriptions["report.txt"] = "Mutated outside the snapshot"
+    remove_ids.clear()
+
+    assert outbox.output_file_descriptions == {"report.txt": "Original description"}
+    assert outbox.output_file_remove_ids == {"attachment:1": "report.txt"}
+    with pytest.raises(FrozenInstanceError):
+        cast(Any, outbox).output_files = ()
+    with pytest.raises(TypeError):
+        cast(dict[str, str], outbox.output_file_descriptions)["report.txt"] = "mutated"
+
+
+def test_message_context_replaces_outbox_without_mutating_prior_snapshot() -> None:
+    ctx = _make_ctx()
+    original = ctx.outbox
+
+    updated = ctx.update_outbox(output_files=("report.txt",))
+
+    assert original.output_files == ()
+    assert updated is ctx.outbox
+    assert updated.output_files == ("report.txt",)
+
+
+def test_turn_outbox_files_only_clears_one_response_directives() -> None:
+    outbox = TurnOutbox(
+        output_files=("report.txt",),
+        output_file_descriptions={"report.txt": "Weekly report"},
+        output_file_remove_ids={"attachment:1": "report.txt"},
+        output_file_remove_id_counter=1,
+        allowed_file_roots=("workspace",),
+        embed=EmbedSpec(title="Report"),
+        thread_request=ThreadRequest(name="Report thread"),
+        terminal_handoff=TurnHandoff(response_text="queued", reason="coding_task"),
+    )
+
+    resumed = outbox.files_only()
+
+    assert resumed.output_files == outbox.output_files
+    assert resumed.output_file_descriptions == outbox.output_file_descriptions
+    assert resumed.output_file_remove_ids == outbox.output_file_remove_ids
+    assert resumed.output_file_remove_id_counter == outbox.output_file_remove_id_counter
+    assert resumed.allowed_file_roots == outbox.allowed_file_roots
+    assert resumed.embed is None
+    assert resumed.thread_request is None
+    assert resumed.terminal_handoff is None
 
 
 def test_searchable_tool_excluded_from_core_schemas() -> None:

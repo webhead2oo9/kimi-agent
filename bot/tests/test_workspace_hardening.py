@@ -118,20 +118,20 @@ async def test_move_file_requeues_attached_files(tmp_path: Path) -> None:
     reg, mgr = _register(tmp_path)
     ctx = _make_ctx()
     await reg.dispatch("write_file", {"path": "report.md", "content": "done", "attach": True}, ctx)
-    assert len(ctx.output_files) == 1
+    assert len(ctx.outbox.output_files) == 1
 
     result = json.loads(
         await reg.dispatch("move_file", {"path": "report.md", "dest": "final/report.md"}, ctx)
     )
     assert result["attachments_updated"] == 1
     resolved = mgr.user_files_dir(WS).resolve() / "final" / "report.md"
-    assert ctx.output_files == [str(resolved)]
+    assert ctx.outbox.output_files == (str(resolved),)
 
     # Directory moves rewrite every queued entry underneath.
     moved = json.loads(await reg.dispatch("move_file", {"path": "final", "dest": "shipped"}, ctx))
     assert moved["attachments_updated"] == 1
     resolved = mgr.user_files_dir(WS).resolve() / "shipped" / "report.md"
-    assert ctx.output_files == [str(resolved)]
+    assert ctx.outbox.output_files == (str(resolved),)
 
 
 @pytest.mark.asyncio

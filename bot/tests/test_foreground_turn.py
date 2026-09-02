@@ -24,6 +24,7 @@ from app.foreground_turn import (
 from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.db import Database
 from tests.helpers import make_settings, make_turn_dependencies
+from tools.registry import TurnOutbox
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
@@ -548,7 +549,7 @@ async def test_delivery_workspace_guard_requires_key_and_files(
     result = TurnResult(
         response_text="answer",
         workspace_key=workspace_key if has_workspace_key else None,
-        output_files=output_files,
+        outbox=TurnOutbox(output_files=output_files),
     )
     adapter = FakeAdapter(events)
     runner = _runner(

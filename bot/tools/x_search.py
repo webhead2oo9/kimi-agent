@@ -7,7 +7,13 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from tools._common import tool_error
-from tools.registry import MessageContext, ToolRegistry, format_untrusted_tool_result
+from tools.registry import (
+    BudgetName,
+    MessageContext,
+    ToolBudgetSpec,
+    ToolRegistry,
+    format_untrusted_tool_result,
+)
 from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, normalize_usage
 from xai.auth import XaiAuthError
@@ -79,9 +85,8 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
             )
 
             def consume_call() -> None:
-                if ctx.x_search_calls_this_turn >= config.max_calls_per_turn:
+                if not ctx.consume_budget(BudgetName.X_SEARCH_CALLS):
                     raise XaiSearchBudgetExceeded
-                ctx.x_search_calls_this_turn += 1
 
             result = await config.client.create(payload, consume_call=consume_call)
             await _record_usage(ctx, result.payload, model=config.model)
@@ -90,7 +95,7 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
             if (
                 parsed.degraded
                 and result.credential_source == AUTH_MODE_OAUTH
-                and ctx.x_search_calls_this_turn < config.max_calls_per_turn
+                and ctx.budget_remaining(BudgetName.X_SEARCH_CALLS) > 0
                 and (fallback := config.credential_resolver.api_key_fallback()) is not None
             ):
                 log.info("x_search falling back to GROK_API_KEY after degraded OAuth response")
@@ -184,6 +189,7 @@ def init_x_search_tool(registry: ToolRegistry, config: XSearchConfig) -> None:
         searchable=True,
         category="Internet",
         untrusted=True,
+        budget_specs=(ToolBudgetSpec(BudgetName.X_SEARCH_CALLS, config.max_calls_per_turn),),
     )
 
 

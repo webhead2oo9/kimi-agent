@@ -12,7 +12,7 @@ from memory.recall import DEFAULT_USER_RECALL_MAX_TOKENS, DEFAULT_USER_RECALL_TY
 from storage.conversations import StoredMessage
 from utils.format import iso_timestamp
 from tools._common import tool_error
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from trust.tiers import TrustTier
 
 if TYPE_CHECKING:
@@ -146,6 +146,7 @@ def init_user_memory_write_tools(
             },
             handler=_remember_user_memory,
             min_tier=TrustTier.MEMBER,
+            budget_specs=(ToolBudgetSpec(BudgetName.MEMORY_WRITES, _max_writes_per_turn),),
         )
 
 
@@ -247,7 +248,7 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
         return tool_error("Context is required.")
     if ctx.conversation_id is None or not ctx.trigger_discord_message_id:
         return tool_error("Current Discord message source is unavailable.")
-    if ctx.memory_writes_this_turn >= _max_writes_per_turn:
+    if not ctx.consume_budget(BudgetName.MEMORY_WRITES):
         return json.dumps(
             {
                 "stored": False,
@@ -257,8 +258,6 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
                 ),
             }
         )
-    ctx.memory_writes_this_turn += 1
-
     anchor = await store.get_message_by_discord_id(
         ctx.conversation_id,
         ctx.trigger_discord_message_id,

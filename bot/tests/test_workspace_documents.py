@@ -66,7 +66,7 @@ async def test_extract_document_text_saves_pdf_text_for_read_file(
     }
     assert "First page introduction" in parsed["excerpt"]
     assert "Second page methods" in extracted.read_text(encoding="utf-8")
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio

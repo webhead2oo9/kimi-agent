@@ -278,7 +278,7 @@ async def run_scenario_for_model(
                 tool_calls=list(registry.sink),
                 tokens=provider.total_tokens,
                 latency_ms=provider.total_latency_ms,
-                attached_files=[str(p) for p in context.pending_output_files],
+                attached_files=[str(p) for p in context.pending_outbox.output_files],
                 usage=provider.total_usage,
                 usage_complete=provider.has_complete_usage,
                 provider_calls=len(provider.calls),

@@ -221,9 +221,9 @@ def _remove_queued_file(deps: FileToolDeps, ctx: MessageContext, path_arg: str) 
                         ).path
                     )
                 )
-    entry = entry or next((c for c in candidates if c in ctx.output_files), None)
+    entry = entry or next((c for c in candidates if c in ctx.outbox.output_files), None)
     if entry is None and not requested.is_absolute() and requested.name == path_arg:
-        matches = [q for q in ctx.output_files if Path(q).name == path_arg]
+        matches = [q for q in ctx.outbox.output_files if Path(q).name == path_arg]
         if len(matches) > 1:
             return json.dumps(
                 {
@@ -254,7 +254,7 @@ def _remove_queued_file(deps: FileToolDeps, ctx: MessageContext, path_arg: str) 
                 "error": "file is not attached",
             }
         )
-    embed = ctx.embed_attachment
+    embed = ctx.outbox.embed_attachment
     if embed is not None and str(Path(embed.path).resolve(strict=False)) == entry:
         return tool_error(
             "that file is the pending embed's image; rebuild the embed with a "

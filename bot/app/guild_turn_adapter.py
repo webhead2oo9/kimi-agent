@@ -110,14 +110,17 @@ class GuildMessageTurnAdapter:
         coding_handoff_prepared = False
         coding_handoff_finalized = False
 
-        if result.terminal_handoff is not None and result.terminal_handoff.reason == "coding_task":
-            coding_handoff_task_id = result.terminal_handoff.task_id
+        if (
+            result.outbox.terminal_handoff is not None
+            and result.outbox.terminal_handoff.reason == "coding_task"
+        ):
+            coding_handoff_task_id = result.outbox.terminal_handoff.task_id
 
         try:
             reply_reference: discord.Message | None = message
             # Model and deterministic handoffs share one creation path so live
             # policy, enrollment, and failure cleanup cannot drift.
-            thread_request = delivery_result.thread_request
+            thread_request = delivery_result.outbox.thread_request
             if (
                 delivery_result.blocked_by_moderation
                 or delivery_result.termination_reason == "attachment_error"
@@ -253,8 +256,8 @@ class GuildMessageTurnAdapter:
 
             expected_delivery = bool(
                 delivery_result.response_text.strip()
-                or delivery_result.embed is not None
-                or delivery_result.output_files
+                or delivery_result.outbox.embed is not None
+                or delivery_result.outbox.output_files
             )
             if (
                 collaborators.thread_handoff is not None
@@ -271,8 +274,8 @@ class GuildMessageTurnAdapter:
 
             replies: list[DeliveredReply] = []
             embed_summary = (
-                embed_transcript_summary(delivery_result.embed)
-                if delivery_result.embed is not None
+                embed_transcript_summary(delivery_result.outbox.embed)
+                if delivery_result.outbox.embed is not None
                 else ""
             )
             for index, sent in enumerate(sent_messages):
@@ -293,18 +296,18 @@ class GuildMessageTurnAdapter:
                 if self.personal_chat or sent_channel is None
                 else str(sent_channel.id)
             )
-            if delivery_result.thread_close_request is not None:
+            if delivery_result.outbox.thread_close_request is not None:
                 try:
                     await collaborators.threads.close_handoff_thread(
                         target_channel,
-                        delivery_result.thread_close_request,
+                        delivery_result.outbox.thread_close_request,
                     )
                 except Exception:
                     # The reply is already visible. Preserve its receipt so the
                     # transcript matches Discord even if thread cleanup fails.
                     log.exception(
                         "Could not close handoff thread %s after delivering conversation %s",
-                        delivery_result.thread_close_request.thread_id,
+                        delivery_result.outbox.thread_close_request.thread_id,
                         conversation_id,
                     )
             partial_delivery_failed = sent_messages.delivery_failed
@@ -340,10 +343,10 @@ class GuildMessageTurnAdapter:
             channel,
             result.response_text,
             reference=reference,
-            output_files=list(result.output_files),
-            output_file_descriptions=dict(result.output_file_descriptions),
-            allowed_file_roots=list(result.allowed_file_roots),
-            embed=result.embed,
+            output_files=list(result.outbox.output_files),
+            output_file_descriptions=dict(result.outbox.output_file_descriptions),
+            allowed_file_roots=list(result.outbox.allowed_file_roots),
+            embed=result.outbox.embed,
             mention_author=True,
         )
 

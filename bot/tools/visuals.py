@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from tools._common import tool_error
 from tools.output_queue import AttachmentLimitError, enqueue_output_file
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from tools.workspace.common import UserLocks, workspace_activity
 from trust.tiers import TrustTier
 from web_browser.visual_service import (
@@ -454,17 +454,17 @@ def init_visual_tool(
             return tool_error(str(exc))
         if not ctx.context_key:
             return tool_error("visuals can only be rendered in a conversation context")
-        if ctx.visual_renders_this_turn >= MAX_RENDERS_PER_TURN:
+        if ctx.budget_remaining(BudgetName.VISUAL_RENDERS) <= 0:
             return tool_error(f"visual render limit reached ({MAX_RENDERS_PER_TURN})")
-        if len(ctx.output_files) >= config.max_attachments:
+        if len(ctx.outbox.output_files) >= config.max_attachments:
             return tool_error(f"attachment limit reached ({config.max_attachments})")
 
         job_dir: Path | None = None
         keep_job = False
         async with workspace_activity(workspace_locks, ctx):
-            if ctx.visual_renders_this_turn >= MAX_RENDERS_PER_TURN:
+            if ctx.budget_remaining(BudgetName.VISUAL_RENDERS) <= 0:
                 return tool_error(f"visual render limit reached ({MAX_RENDERS_PER_TURN})")
-            if len(ctx.output_files) >= config.max_attachments:
+            if len(ctx.outbox.output_files) >= config.max_attachments:
                 return tool_error(f"attachment limit reached ({config.max_attachments})")
             try:
                 job_dir = await asyncio.to_thread(
@@ -473,7 +473,8 @@ def init_visual_tool(
                     f"visual-{uuid4().hex}",
                     owner_user_id=ctx.user_id,
                 )
-                ctx.visual_renders_this_turn += 1
+                if not ctx.consume_budget(BudgetName.VISUAL_RENDERS):
+                    return tool_error(f"visual render limit reached ({MAX_RENDERS_PER_TURN})")
                 result = await service.render(request, job_dir)
                 expected_output = job_dir / "render.png"
                 if result.output_path != expected_output:
@@ -483,7 +484,7 @@ def init_visual_tool(
                 )
                 if (result.width, result.height) != (width, height):
                     raise ValueError("renderer result dimensions did not match the PNG")
-                output_path = job_dir / f"visual-{ctx.visual_renders_this_turn}.png"
+                output_path = job_dir / f"visual-{ctx.budget_used(BudgetName.VISUAL_RENDERS)}.png"
                 await asyncio.to_thread(os.replace, result.output_path, output_path)
                 enqueue_output_file(
                     ctx,
@@ -648,6 +649,7 @@ def init_visual_tool(
         min_tier=TrustTier.MEMBER,
         searchable=True,
         category="Visuals",
+        budget_specs=(ToolBudgetSpec(BudgetName.VISUAL_RENDERS, MAX_RENDERS_PER_TURN),),
     )
     registry.register(
         name=DIAGRAM_TOOL_NAME,
@@ -680,4 +682,5 @@ def init_visual_tool(
         min_tier=TrustTier.MEMBER,
         searchable=True,
         category="Visuals",
+        budget_specs=(ToolBudgetSpec(BudgetName.VISUAL_RENDERS, MAX_RENDERS_PER_TURN),),
     )

@@ -183,14 +183,16 @@ def init_coding_control_tools(registry: ToolRegistry, controls: CodingTaskContro
             )
         task_id = str(result.get("task_id", "")).strip()
         if result.get("accepted") is True and task_id:
-            ctx.terminal_handoff = TurnHandoff(
-                response_text=(
-                    f"Coding task `{task_id[:8]}` was queued. "
-                    "Progress and the final result will appear here."
-                ),
-                reason="coding_task",
-                task_id=task_id,
-                allowed_followup_tools=frozenset({"move_to_thread"}),
+            ctx.update_outbox(
+                terminal_handoff=TurnHandoff(
+                    response_text=(
+                        f"Coding task `{task_id[:8]}` was queued. "
+                        "Progress and the final result will appear here."
+                    ),
+                    reason="coding_task",
+                    task_id=task_id,
+                    allowed_followup_tools=frozenset({"move_to_thread"}),
+                )
             )
         return json.dumps(result)
 

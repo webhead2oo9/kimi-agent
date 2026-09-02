@@ -35,7 +35,7 @@ from storage.db import Database
 from providers.types import ContentPartType, ProviderCapability
 from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
-from tools.registry import MessageContext
+from tools.registry import MessageContext, TurnOutbox
 from workspace import user_app_workspace_key
 from tests.helpers import (
     LifecycleProbe,
@@ -1073,8 +1073,10 @@ async def test_file_only_chat_persists_delivered_attachment_notice(
     async def run_turn(*_args: object, **_kwargs: object) -> TurnResult:
         return TurnResult(
             response_text="",
-            output_files=(str(output),),
-            allowed_file_roots=(tmp_path,),
+            outbox=TurnOutbox(
+                output_files=(str(output),),
+                allowed_file_roots=(tmp_path,),
+            ),
             workspace_key=workspace_key,
         )
 
@@ -1117,7 +1119,7 @@ async def test_chat_file_delivery_uses_workspace_activity_lock(
         turn_finished.set()
         return TurnResult(
             response_text="reply",
-            output_files=output_files,
+            outbox=TurnOutbox(output_files=output_files),
             workspace_key=workspace_key,
         )
 

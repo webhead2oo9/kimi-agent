@@ -23,7 +23,7 @@ from search.types import (
 from storage.usage import PaidUsageCall
 from tools._common import get_int, tool_error
 from tools.config_spec import KIND_CHOICE, ToolConfigField
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from trust.tiers import TrustTier
 
 log = logging.getLogger(__name__)
@@ -69,9 +69,8 @@ def init_internet_search_tool(registry: ToolRegistry, config: InternetSearchConf
             )
 
             def consume_call() -> None:
-                if ctx.internet_search_backend_calls_this_turn >= config.max_backend_calls_per_turn:
+                if not ctx.consume_budget(BudgetName.INTERNET_SEARCH_BACKEND_CALLS):
                     raise SearchBudgetExceeded
-                ctx.internet_search_backend_calls_this_turn += 1
 
             async with asyncio.timeout(config.timeout_seconds):
                 if request_mode == "search":
@@ -162,6 +161,12 @@ def init_internet_search_tool(registry: ToolRegistry, config: InternetSearchConf
         category="Internet",
         config_spec=_CONFIG_SPEC,
         untrusted=True,
+        budget_specs=(
+            ToolBudgetSpec(
+                BudgetName.INTERNET_SEARCH_BACKEND_CALLS,
+                config.max_backend_calls_per_turn,
+            ),
+        ),
     )
 
 

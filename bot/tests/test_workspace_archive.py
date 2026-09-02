@@ -48,7 +48,7 @@ async def test_zip_round_trip(tmp_path: Path) -> None:
     assert body["entry_count"] == 2
     assert body["attached"] is False
     assert "queue_file" in body["attachment_hint"]
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
     queued = json.loads(await reg.dispatch("queue_file", {"path": "out.zip"}, ctx))
     assert queued["queued"] is True
     with zipfile.ZipFile(root / "out.zip") as zf:
@@ -144,7 +144,7 @@ async def test_extract_archive_happy_path(tmp_path: Path) -> None:
     assert payload["stripped_top_level"] == "repo-abc"
     assert (files / "repo-main" / "README.md").read_bytes() == b"hello"
     assert (files / "repo-main" / "src" / "app.py").read_bytes() == b"print(1)"
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio

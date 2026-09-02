@@ -26,7 +26,7 @@ from app.conversation_routing import ResolvedConversation, resolve_conversation_
 from config.fragments.tool_policy import THREAD_STATE_TOOLS
 from app.threads import ThreadHandoffManager
 from agent.turn import TurnResult, handle_turn
-from tools.registry import TurnHandoff
+from tools.registry import TurnHandoff, TurnOutbox
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from config.model_config import ModelConfig
 from config.settings import Settings
@@ -1874,8 +1874,8 @@ async def test_thread_request_moves_reply_into_new_thread(monkeypatch, routing_d
     thread.name = "Quest help"
 
     async def fake_run_conversation(**kwargs):
-        _conversation_call_kwargs(kwargs)["context"].pending_thread_request = ThreadRequest(
-            name="Quest help"
+        _conversation_call_kwargs(kwargs)["context"].pending_outbox = TurnOutbox(
+            thread_request=ThreadRequest(name="Quest help")
         )
         return ConversationRunResult(text="moved!")
 
@@ -1927,8 +1927,8 @@ async def test_thread_request_retries_creation_once(monkeypatch, routing_databas
     thread.name = "Quest help"
 
     async def fake_run_conversation(**kwargs):
-        _conversation_call_kwargs(kwargs)["context"].pending_thread_request = ThreadRequest(
-            name="Quest help"
+        _conversation_call_kwargs(kwargs)["context"].pending_outbox = TurnOutbox(
+            thread_request=ThreadRequest(name="Quest help")
         )
         return ConversationRunResult(text="moved!")
 
@@ -1982,8 +1982,8 @@ async def test_thread_request_falls_back_to_channel_when_creation_fails(
     _enable_thread_handoff(app, store)
 
     async def fake_run_conversation(**kwargs):
-        _conversation_call_kwargs(kwargs)["context"].pending_thread_request = ThreadRequest(
-            name="Quest help"
+        _conversation_call_kwargs(kwargs)["context"].pending_outbox = TurnOutbox(
+            thread_request=ThreadRequest(name="Quest help")
         )
         return ConversationRunResult(text="moved!")
 
@@ -2035,8 +2035,8 @@ async def test_thread_request_does_not_retry_when_creation_is_forbidden(
     _enable_thread_handoff(app, store)
 
     async def fake_run_conversation(**kwargs):
-        _conversation_call_kwargs(kwargs)["context"].pending_thread_request = ThreadRequest(
-            name="Quest help"
+        _conversation_call_kwargs(kwargs)["context"].pending_outbox = TurnOutbox(
+            thread_request=ThreadRequest(name="Quest help")
         )
         return ConversationRunResult(text="moved!")
 
@@ -2096,7 +2096,9 @@ async def _cross_channel_turn(
     async def fake_handle_turn(*args, **kwargs):
         return TurnResult(
             response_text="moved!",
-            thread_request=ThreadRequest(name="Quest help", target_channel_id=target_channel_id),
+            outbox=TurnOutbox(
+                thread_request=ThreadRequest(name="Quest help", target_channel_id=target_channel_id)
+            ),
             blocked_by_moderation=blocked,
             termination_reason=termination_reason,
         )
@@ -2239,8 +2241,10 @@ async def test_coding_handoff_is_bound_to_new_thread_before_acknowledgement(
     async def fake_handle_turn(*args, **kwargs):
         return TurnResult(
             response_text=handoff.response_text,
-            thread_request=ThreadRequest(name="Coding work", target_channel_id=200),
-            terminal_handoff=handoff,
+            outbox=TurnOutbox(
+                thread_request=ThreadRequest(name="Coding work", target_channel_id=200),
+                terminal_handoff=handoff,
+            ),
         )
 
     install_foreground_turn_handler(app, fake_handle_turn)
@@ -2334,8 +2338,10 @@ async def test_cross_channel_thread_is_discarded_when_the_reply_never_lands(
     async def fake_handle_turn(*args, **kwargs):
         return TurnResult(
             response_text=text,
-            output_files=output_files,
-            thread_request=ThreadRequest(name="Quest help", target_channel_id=200),
+            outbox=TurnOutbox(
+                output_files=output_files,
+                thread_request=ThreadRequest(name="Quest help", target_channel_id=200),
+            ),
         )
 
     install_foreground_turn_handler(app, fake_handle_turn)
@@ -2593,9 +2599,9 @@ async def test_leave_thread_locks_and_archives_managed_thread(
     thread_channel.edit = AsyncMock()
 
     async def fake_run_conversation(**kwargs):
-        _conversation_call_kwargs(kwargs)[
-            "context"
-        ].pending_thread_close_request = ThreadCloseRequest(thread_id=321)
+        _conversation_call_kwargs(kwargs)["context"].pending_outbox = TurnOutbox(
+            thread_close_request=ThreadCloseRequest(thread_id=321)
+        )
         return ConversationRunResult(text="closing!")
 
     monkeypatch.setattr(message_runtime, "run_conversation", fake_run_conversation)

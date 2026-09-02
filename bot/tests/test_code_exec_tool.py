@@ -301,7 +301,7 @@ async def test_run_code_reports_created_artifacts_without_queueing(
     ]
     assert body["attached_files"] == []
     assert "queue_file" in body["attachment_hint"]
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 def test_workspace_snapshot_prunes_environment_descendants(
@@ -958,7 +958,7 @@ async def test_run_code_large_change_set_never_auto_attaches(
     body = json.loads(result)
     assert body["changed_file_count"] == count
     assert body["attached_files"] == []
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
     assert "queue_file" in body["attachment_hint"]
     assert all(item["queued"] is False for item in body["changed_files"])
 
@@ -989,8 +989,10 @@ async def test_run_code_preserves_previously_queued_changed_file(
 
     monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
     ctx = _ctx()
-    ctx.output_files.append(str(existing.resolve()))
-    ctx.allowed_file_roots.append(str(root.resolve()))
+    ctx.update_outbox(
+        output_files=(str(existing.resolve()),),
+        allowed_file_roots=(str(root.resolve()),),
+    )
 
     result = await reg.dispatch("run_code", {"path": "make.py"}, ctx)
 
@@ -1002,7 +1004,7 @@ async def test_run_code_preserves_previously_queued_changed_file(
     assert by_path["new.txt"]["queued"] is False
     assert body["attached_files"] == ["existing.txt"]
     assert "queue_file" in body["attachment_hint"]
-    assert ctx.output_files == [str(existing.resolve())]
+    assert ctx.outbox.output_files == (str(existing.resolve()),)
 
 
 @pytest.mark.parametrize("operation", ["delete", "rename"])
@@ -1036,12 +1038,14 @@ async def test_run_code_unqueues_workspace_file_made_unavailable(
 
     monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
     ctx = _ctx()
-    ctx.output_files.append(str(queued.resolve()))
-    ctx.allowed_file_roots.append(str(root.resolve()))
+    ctx.update_outbox(
+        output_files=(str(queued.resolve()),),
+        allowed_file_roots=(str(root.resolve()),),
+    )
 
     body = json.loads(await reg.dispatch("run_code", {"path": "make.py"}, ctx))
 
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
     if operation == "rename":
         assert body["changed_files"] == [
             {
@@ -1084,8 +1088,10 @@ async def test_run_code_truncated_changes_still_include_attachment_hint(
 
     monkeypatch.setattr("tools.code_exec.run_python_in_sandbox", fake_run)
     ctx = _ctx()
-    ctx.output_files.extend(str(path.resolve()) for path in existing)
-    ctx.allowed_file_roots.append(str(root.resolve()))
+    ctx.update_outbox(
+        output_files=tuple(str(path.resolve()) for path in existing),
+        allowed_file_roots=(str(root.resolve()),),
+    )
 
     body = json.loads(await reg.dispatch("run_code", {"path": "make.py"}, ctx))
 
@@ -1138,7 +1144,7 @@ async def test_run_code_reports_all_file_kinds_without_auto_attaching(
     assert all("queue_skip_reason" not in item for item in by_path.values())
     assert body["attached_files"] == []
     assert "queue_file" in body["attachment_hint"]
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @_requires_sandbox

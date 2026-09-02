@@ -20,7 +20,7 @@ from app.guild_turn_adapter import (
 from app.response_delivery import DiscordResponseSender
 from discord_adapter.io import SentMessages
 from tests.helpers import StubProviderManager, make_settings
-from tools.registry import TurnHandoff
+from tools.registry import TurnHandoff, TurnOutbox
 from tools.threads import ThreadCloseRequest, ThreadRequest
 
 
@@ -269,15 +269,24 @@ async def test_receipt_preserves_sent_chunks_and_actual_destination(
     )
     message = FakeMessage(channel)
     request = ThreadRequest(name="focused") if in_thread else None
+    outbox = TurnOutbox(
+        output_files=("report.txt",),
+        output_file_descriptions={"report.txt": "Weekly report"},
+        allowed_file_roots=(Path("workspace"),),
+        thread_request=request,
+    )
 
     receipt = await _adapter(app, message).deliver(
-        TurnResult(response_text="answer", thread_request=request),
+        TurnResult(response_text="answer", outbox=outbox),
         conversation_id=9,
     )
 
     destination = thread or channel
     assert app.send_calls[0][0] is destination
     assert app.send_calls[0][2]["reference"] is (None if in_thread else message)
+    assert app.send_calls[0][2]["output_files"] == ["report.txt"]
+    assert app.send_calls[0][2]["output_file_descriptions"] == {"report.txt": "Weekly report"}
+    assert app.send_calls[0][2]["allowed_file_roots"] == [Path("workspace")]
     assert "workspace_key" not in app.send_calls[0][2]
     assert receipt.context_channel_id == str(destination.id)
     assert [reply.discord_message_id for reply in receipt.replies] == ["700", "701"]
@@ -308,9 +317,11 @@ async def test_thread_and_coding_handoffs_keep_prepare_send_release_order(
     )
     result = TurnResult(
         response_text="Coding task started.",
-        thread_request=thread_request,
-        thread_close_request=close_request,
-        terminal_handoff=terminal_handoff,
+        outbox=TurnOutbox(
+            thread_request=thread_request,
+            thread_close_request=close_request,
+            terminal_handoff=terminal_handoff,
+        ),
     )
 
     receipt = await _adapter(app, message).deliver(result, conversation_id=12)
@@ -323,9 +334,9 @@ async def test_thread_and_coding_handoffs_keep_prepare_send_release_order(
     assert app.events.index("prepare") < app.events.index("send") < app.events.index("release")
     assert app.events.index("prepare") < app.events.index("acknowledge")
     assert receipt.delivered_result is None
-    assert result.thread_request is thread_request
-    assert result.thread_close_request is close_request
-    assert result.terminal_handoff is terminal_handoff
+    assert result.outbox.thread_request is thread_request
+    assert result.outbox.thread_close_request is close_request
+    assert result.outbox.terminal_handoff is terminal_handoff
 
 
 @pytest.mark.asyncio
@@ -345,7 +356,10 @@ async def test_thread_cleanup_failure_preserves_delivered_receipt(
     caplog.set_level(logging.ERROR, logger="app.guild_turn_adapter")
 
     receipt = await _adapter(app, FakeMessage(channel)).deliver(
-        TurnResult(response_text="answer", thread_close_request=close_request),
+        TurnResult(
+            response_text="answer",
+            outbox=TurnOutbox(thread_close_request=close_request),
+        ),
         conversation_id=9,
     )
 

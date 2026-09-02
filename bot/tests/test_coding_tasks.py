@@ -2409,11 +2409,11 @@ async def test_successful_coding_start_sets_terminal_handoff() -> None:
     )
 
     assert f'"task_id": "{task_id}"' in result
-    assert ctx.terminal_handoff is not None
-    assert ctx.terminal_handoff.reason == "coding_task"
-    assert ctx.terminal_handoff.task_id == task_id
-    assert ctx.terminal_handoff.allowed_followup_tools == frozenset({"move_to_thread"})
-    assert ctx.terminal_handoff.response_text == (
+    assert ctx.outbox.terminal_handoff is not None
+    assert ctx.outbox.terminal_handoff.reason == "coding_task"
+    assert ctx.outbox.terminal_handoff.task_id == task_id
+    assert ctx.outbox.terminal_handoff.allowed_followup_tools == frozenset({"move_to_thread"})
+    assert ctx.outbox.terminal_handoff.response_text == (
         "Coding task `3ff8bac7` was queued. Progress and the final result will appear here."
     )
     assert captured == {
@@ -2447,7 +2447,7 @@ async def test_rejected_coding_start_does_not_end_foreground_turn() -> None:
     result = await registry.dispatch("start_coding_task", {"task": "Fix it"}, ctx)
 
     assert '"accepted": false' in result
-    assert ctx.terminal_handoff is None
+    assert ctx.outbox.terminal_handoff is None
 
 
 @pytest.mark.asyncio
@@ -2515,4 +2515,4 @@ async def test_stopped_foreground_cancels_delegation_committed_at_boundary() -> 
 
     assert "delegated task was cancelled" in result
     assert cancelled == ["task-1"]
-    assert ctx.terminal_handoff is None
+    assert ctx.outbox.terminal_handoff is None

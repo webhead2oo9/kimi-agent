@@ -256,12 +256,12 @@ class CodingDelivery:
                 delivery.get("allowed_file_roots", []) if isinstance(delivery, dict) else []
             )
             output_files = (
-                list(context.pending_output_files)
+                list(context.pending_outbox.output_files)
                 if context is not None
                 else [str(value) for value in durable_output_files]
             )
             allowed_roots: list[str | Path] = (
-                list(context.pending_allowed_file_roots)
+                list(context.pending_outbox.allowed_file_roots)
                 if context is not None
                 else [str(value) for value in durable_allowed_roots]
             )

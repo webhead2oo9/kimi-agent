@@ -48,7 +48,7 @@ from providers.types import (
     ToolCall,
 )
 from tools._common import tool_error
-from tools.registry import MessageContext, ToolEntry, ToolRegistry, TurnHandoff
+from tools.registry import MessageContext, ToolEntry, ToolRegistry, TurnOutbox
 from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, UsageBreakdown, normalize_usage
 from workspace import WorkspaceKey
@@ -258,7 +258,7 @@ class ConversationRunResult:
     timed_out: bool = False
     turn_id: str = ""
     termination_reason: ConversationTerminationReason = "completed"
-    terminal_handoff: TurnHandoff | None = None
+    outbox: TurnOutbox = field(default_factory=TurnOutbox)
 
     def __str__(self) -> str:
         return self.text
@@ -451,15 +451,9 @@ class _ConversationRunner:
         provider_state = request.provider_state
         compactor = request.compactor
         activity_reporter = request.activity_reporter
-        if not request.resume_output_files:
-            context.pending_output_files = []
-            context.pending_output_file_descriptions = {}
-            context.pending_allowed_file_roots = []
-        context.pending_embed = None
-        context.pending_embed_attachment = None
-        context.pending_thread_request = None
-        context.pending_thread_close_request = None
-        context.pending_terminal_handoff = None
+        context.pending_outbox = (
+            context.pending_outbox.files_only() if request.resume_output_files else TurnOutbox()
+        )
         activated = set(context.activated_tools)
         blocked = frozenset(context.blocked_tools)
 
@@ -546,7 +540,7 @@ class _ConversationRunner:
         )
 
         def finish_timeout() -> ConversationRunResult:
-            if msg_ctx.terminal_handoff is not None:
+            if msg_ctx.outbox.terminal_handoff is not None:
                 return self._finish_terminal_handoff(
                     state=state,
                     context=context,
@@ -603,7 +597,7 @@ class _ConversationRunner:
             except ConversationTurnTimeoutError:
                 return finish_timeout()
             except ProviderCapabilityError as e:
-                self._sync_output_files(context, msg_ctx)
+                self._sync_outbox(context, msg_ctx)
                 return ConversationRunResult(
                     text=e.safe_message,
                     usage=_usage_total(state.llm_calls),
@@ -611,6 +605,7 @@ class _ConversationRunner:
                     iterations=state.completed_calls,
                     turn_id=turn_id,
                     termination_reason="provider_error",
+                    outbox=msg_ctx.outbox,
                 )
             except Exception as e:
                 if (
@@ -674,7 +669,7 @@ class _ConversationRunner:
                         return finish_timeout()
                     except Exception as retry_error:
                         log.exception("retry after emergency compaction failed")
-                        self._sync_output_files(context, msg_ctx)
+                        self._sync_outbox(context, msg_ctx)
                         return ConversationRunResult(
                             text=safe_provider_error_message(
                                 retry_error,
@@ -685,6 +680,7 @@ class _ConversationRunner:
                             iterations=state.completed_calls,
                             turn_id=turn_id,
                             termination_reason="provider_error",
+                            outbox=msg_ctx.outbox,
                         )
                 else:
                     # Full detail is logged server-side only. Never interpolate the raw
@@ -692,7 +688,7 @@ class _ConversationRunner:
                     # carry upstream status codes, internal URLs, account identifiers, or
                     # on-disk secret paths. Surface a scrubbed message instead.
                     log.exception("LLM API call failed")
-                    self._sync_output_files(context, msg_ctx)
+                    self._sync_outbox(context, msg_ctx)
                     return ConversationRunResult(
                         text=safe_provider_error_message(
                             e,
@@ -703,6 +699,7 @@ class _ConversationRunner:
                         iterations=state.completed_calls,
                         turn_id=turn_id,
                         termination_reason="provider_error",
+                        outbox=msg_ctx.outbox,
                     )
 
             self._record_provider_response(state, response)
@@ -744,7 +741,7 @@ class _ConversationRunner:
                     turn_id=turn_id,
                     deadline=deadline,
                 )
-                if msg_ctx.terminal_handoff is not None:
+                if msg_ctx.outbox.terminal_handoff is not None:
                     return self._finish_terminal_handoff(
                         state=state,
                         context=context,
@@ -754,7 +751,7 @@ class _ConversationRunner:
                         request_snapshot=request_snapshot,
                     )
                 if request.checkpoint_sink is not None:
-                    self._sync_output_files(context, msg_ctx)
+                    self._sync_outbox(context, msg_ctx)
                     await _await_with_deadline(
                         request.checkpoint_sink(
                             _without_thread_handoff_advisory(state.turn_messages),
@@ -817,8 +814,7 @@ class _ConversationRunner:
             activity_reporter=request.activity_reporter,
             workspace_lock_held=request.workspace_lock_held,
             background_task=request.context.background_task,
-            output_files=list(request.context.pending_output_files),
-            allowed_file_roots=list(request.context.pending_allowed_file_roots),
+            outbox=request.context.pending_outbox,
             usage_store=request.usage_store,
             usage_sink=state.llm_calls,
             record_usage_call=request.record_usage_call,
@@ -851,7 +847,7 @@ class _ConversationRunner:
             ConversationMessage(role="assistant", content=[ContentPart.from_text(fallback)])
         )
         context.add_messages(_without_thread_handoff_advisory(state.turn_messages))
-        self._sync_output_files(context, msg_ctx)
+        self._sync_outbox(context, msg_ctx)
         emit_turn(
             turn_id=turn_id,
             ctx=msg_ctx,
@@ -872,6 +868,7 @@ class _ConversationRunner:
             timed_out=timed_out,
             turn_id=turn_id,
             termination_reason="timed_out" if timed_out else "max_iterations",
+            outbox=msg_ctx.outbox,
         )
 
     async def _handle_tool_response(
@@ -908,7 +905,7 @@ class _ConversationRunner:
             plan_snapshot = msg_ctx.plan
             iteration_tool_chars = 0
             for tc in response.tool_calls:
-                handoff = msg_ctx.terminal_handoff
+                handoff = msg_ctx.outbox.terminal_handoff
                 routing_followup = handoff is not None and tc.name in handoff.allowed_followup_tools
                 if handoff is None:
                     _raise_if_deadline_expired(deadline)
@@ -988,10 +985,10 @@ class _ConversationRunner:
                         emit_plan_update(request.activity_reporter, msg_ctx.plan),
                         deadline,
                     )
-                if msg_ctx.terminal_handoff is None:
+                if msg_ctx.outbox.terminal_handoff is None:
                     _raise_if_deadline_expired(deadline)
 
-            if msg_ctx.terminal_handoff is not None:
+            if msg_ctx.outbox.terminal_handoff is not None:
                 return deadline
 
             self._maybe_append_thread_handoff_advisory(state)
@@ -1078,7 +1075,7 @@ class _ConversationRunner:
         turn_start: float,
         request_snapshot: list[dict[str, str]],
     ) -> ConversationRunResult:
-        handoff = msg_ctx.terminal_handoff
+        handoff = msg_ctx.outbox.terminal_handoff
         if handoff is None:
             raise RuntimeError("terminal handoff is unavailable")
 
@@ -1090,8 +1087,7 @@ class _ConversationRunner:
         )
         log.info("Ending foreground turn after %s handoff", handoff.reason)
         context.add_messages(_without_thread_handoff_advisory(state.turn_messages))
-        self._sync_output_files(context, msg_ctx)
-        context.pending_terminal_handoff = handoff
+        self._sync_outbox(context, msg_ctx)
         emit_turn(
             turn_id=turn_id,
             ctx=msg_ctx,
@@ -1110,7 +1106,7 @@ class _ConversationRunner:
             llm_calls=list(state.llm_calls),
             iterations=state.completed_calls,
             turn_id=turn_id,
-            terminal_handoff=handoff,
+            outbox=msg_ctx.outbox,
         )
 
     def _finish_final_response(
@@ -1136,7 +1132,7 @@ class _ConversationRunner:
         # The user-facing reply is the final answer only. Per-iteration narration
         # is streamed to the live "building" message.
         reply_text = final_text
-        self._sync_output_files(context, msg_ctx)
+        self._sync_outbox(context, msg_ctx)
         emit_turn(
             turn_id=turn_id,
             ctx=msg_ctx,
@@ -1155,6 +1151,7 @@ class _ConversationRunner:
             llm_calls=list(state.llm_calls),
             iterations=state.completed_calls,
             turn_id=turn_id,
+            outbox=msg_ctx.outbox,
         )
 
     def _record_provider_response(
@@ -1219,7 +1216,7 @@ class _ConversationRunner:
             return f"{final_text}\n\n{notice}" if final_text else notice
         if not final_text and state.generated_assets:
             return generated_assets_response_text(state.generated_assets)
-        if not final_text and msg_ctx.embed is not None:
+        if not final_text and msg_ctx.outbox.embed is not None:
             # Embed-only reply: the queued embed is the message; the caption is
             # intentionally blank, so don't synthesize fallback prose.
             return ""
@@ -1227,18 +1224,12 @@ class _ConversationRunner:
             return "I'm not sure how to respond to that."
         return final_text
 
-    def _sync_output_files(
+    def _sync_outbox(
         self,
         context: ConversationContext,
         msg_ctx: MessageContext,
     ) -> None:
-        context.pending_output_files = list(msg_ctx.output_files)
-        context.pending_output_file_descriptions = dict(msg_ctx.output_file_descriptions)
-        context.pending_allowed_file_roots = list(msg_ctx.allowed_file_roots)
-        context.pending_embed = msg_ctx.embed
-        context.pending_embed_attachment = msg_ctx.embed_attachment
-        context.pending_thread_request = msg_ctx.thread_request
-        context.pending_thread_close_request = msg_ctx.thread_close_request
+        context.pending_outbox = msg_ctx.outbox
 
     def _maybe_append_thread_handoff_advisory(
         self,

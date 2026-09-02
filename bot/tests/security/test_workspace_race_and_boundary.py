@@ -27,6 +27,7 @@ from discord_adapter.io import _validated_output_files
 from moderation.types import Direction, ModerationDecision
 from providers.types import ProviderCapability
 from storage.conversations import UserDataDeletion
+from tools.registry import TurnOutbox
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 
@@ -55,8 +56,10 @@ async def test_pending_outputs_are_staged_under_lease_before_moderation_and_deli
     source = manager.user_files_dir(workspace_key) / "report.txt"
     source.write_text("SAFE-STAGED-BYTES", encoding="utf-8")
     context = ConversationContext(key="g1:c1:main")
-    context.pending_output_files.append(str(source))
-    context.pending_allowed_file_roots.append(str(source.parent.resolve()))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(source),),
+        allowed_file_roots=(str(source.parent.resolve()),),
+    )
     run_finished = asyncio.Event()
 
     async def run_conversation(**_kwargs: Any) -> ConversationRunResult:
@@ -135,14 +138,14 @@ async def test_pending_outputs_are_staged_under_lease_before_moderation_and_deli
     assert moderation.calls[0]["text"] == "attachment ready"
     assert "SAFE-STAGED-BYTES" not in str(moderation.calls[0]["text"])
     assert "MUTATED-AFTER-STAGING" not in str(moderation.calls[0]["text"])
-    staged = Path(result.output_files[0])
+    staged = Path(result.outbox.output_files[0])
     assert staged != source
     assert staged.parent.name.startswith("delivery-")
     assert staged.read_text(encoding="utf-8") == "SAFE-STAGED-BYTES"
     assert (staged.parent / ".owner-user-id").read_text(encoding="utf-8") == "111"
     assert _validated_output_files(
-        list(result.output_files),
-        list(result.allowed_file_roots),
+        list(result.outbox.output_files),
+        list(result.outbox.allowed_file_roots),
     ) == [staged.resolve()]
     assert source.read_text(encoding="utf-8") == "MUTATED-AFTER-STAGING"
 

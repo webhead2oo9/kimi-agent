@@ -176,8 +176,7 @@ def init_embed_tool(
             return tool_error(str(exc))
         # Mutate ctx only after full success: replace both slots together so a re-call
         # never leaves a stale embed image behind.
-        ctx.embed = spec
-        ctx.embed_attachment = attachment
+        ctx.update_outbox(embed=spec, embed_attachment=attachment)
         return json.dumps({"queued": True, "image": spec.image})
 
     registry.register(
@@ -364,7 +363,7 @@ def _resolve_workspace_image(
     """
     path, root = _resolve_image_path(workspace_manager, ctx, raw_path)
     filename = path.name
-    existing = {Path(queued).name for queued in ctx.output_files}
+    existing = {Path(queued).name for queued in ctx.outbox.output_files}
     if filename in existing:
         raise ValueError(
             f"A file named '{filename}' is already attached to this reply; rename the "

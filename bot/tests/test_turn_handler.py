@@ -33,6 +33,7 @@ from tests.helpers import (
     StubProvider,
     make_turn_dependencies,
 )
+from tools.registry import TurnOutbox
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from trust.tiers import TrustTier
 
@@ -257,8 +258,10 @@ async def test_handle_turn_calls_prepare_and_execute_in_order(
     prepared = _prepared()
     executed = TurnResult(
         response_text="final response",
-        output_files=("workspaces/u/out.txt",),
-        allowed_file_roots=(Path("workspaces/u"),),
+        outbox=TurnOutbox(
+            output_files=("workspaces/u/out.txt",),
+            allowed_file_roots=(Path("workspaces/u"),),
+        ),
     )
 
     async def fake_prepare_turn(*args: Any, **kwargs: Any) -> TurnRequest:
@@ -283,8 +286,8 @@ async def test_handle_turn_calls_prepare_and_execute_in_order(
     assert calls == ["prepare", "execute"]
     assert result is not None
     assert result.response_text == "final response"
-    assert result.output_files == ("workspaces/u/out.txt",)
-    assert result.allowed_file_roots == (Path("workspaces/u"),)
+    assert result.outbox.output_files == ("workspaces/u/out.txt",)
+    assert result.outbox.allowed_file_roots == (Path("workspaces/u"),)
 
 
 @pytest.mark.asyncio
@@ -297,7 +300,7 @@ async def test_handle_turn_passes_thread_request_through(
         return _prepared()
 
     async def fake_execute_turn(*args: Any, **kwargs: Any) -> TurnResult:
-        return TurnResult(response_text="ok", thread_request=request)
+        return TurnResult(response_text="ok", outbox=TurnOutbox(thread_request=request))
 
     monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
     monkeypatch.setattr(turn_module, "execute_turn", fake_execute_turn)
@@ -311,7 +314,7 @@ async def test_handle_turn_passes_thread_request_through(
 
     assert result is not None
     assert result.response_text == "ok"
-    assert result.thread_request is request
+    assert result.outbox.thread_request is request
 
 
 @pytest.mark.asyncio
@@ -324,7 +327,7 @@ async def test_handle_turn_passes_thread_close_request_through(
         return _prepared()
 
     async def fake_execute_turn(*args: Any, **kwargs: Any) -> TurnResult:
-        return TurnResult(response_text="ok", thread_close_request=request)
+        return TurnResult(response_text="ok", outbox=TurnOutbox(thread_close_request=request))
 
     monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
     monkeypatch.setattr(turn_module, "execute_turn", fake_execute_turn)
@@ -338,7 +341,7 @@ async def test_handle_turn_passes_thread_close_request_through(
 
     assert result is not None
     assert result.response_text == "ok"
-    assert result.thread_close_request is request
+    assert result.outbox.thread_close_request is request
 
 
 @pytest.mark.asyncio

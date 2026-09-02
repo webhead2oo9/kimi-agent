@@ -10,7 +10,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Literal, cast
 from pathlib import Path
@@ -38,7 +38,7 @@ from tools.coding_tasks import (
     build_coding_registry,
 )
 from tools.config_spec import ToolConfigField
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import MessageContext, ToolRegistry, TurnOutbox
 from tools.workspace.common import UserLocks, workspace_activity
 from tools.workspace.config import WorkspaceToolConfig
 from tools.workspace.files import (
@@ -1033,8 +1033,8 @@ class CodingTaskService:
                     "event_cursor": event_cursor,
                     "trust_tier": self._trust_tier_from_checkpoint(task).value,
                     "delivery": {
-                        "output_files": list(context.pending_output_files),
-                        "allowed_file_roots": list(context.pending_allowed_file_roots),
+                        "output_files": list(context.pending_outbox.output_files),
+                        "allowed_file_roots": list(context.pending_outbox.allowed_file_roots),
                     },
                 },
             )
@@ -1127,15 +1127,18 @@ class CodingTaskService:
                     asyncio.to_thread(
                         self._snapshot_delivery_outputs,
                         task,
-                        list(context.pending_output_files),
-                        list(context.pending_allowed_file_roots),
+                        list(context.pending_outbox.output_files),
+                        [str(root) for root in context.pending_outbox.allowed_file_roots],
                     ),
                     name=f"coding_delivery_snapshot:{task.id}",
                 )
                 try:
                     snapshot_files, snapshot_roots = await asyncio.shield(snapshot_task)
-                    context.pending_output_files = snapshot_files
-                    context.pending_allowed_file_roots = snapshot_roots
+                    context.pending_outbox = replace(
+                        context.pending_outbox,
+                        output_files=tuple(snapshot_files),
+                        allowed_file_roots=tuple(snapshot_roots),
+                    )
                 except asyncio.CancelledError as cancellation:
                     while not snapshot_task.done():
                         try:
@@ -1151,13 +1154,16 @@ class CodingTaskService:
                         task.id,
                         exc_info=True,
                     )
-                    context.pending_output_files = []
-                    context.pending_allowed_file_roots = []
+                    context.pending_outbox = replace(
+                        context.pending_outbox,
+                        output_files=(),
+                        allowed_file_roots=(),
+                    )
             latest = await self._store.get_task(task.id)
             delivery_checkpoint = dict(latest.checkpoint if latest is not None else {})
             delivery_checkpoint["delivery"] = {
-                "output_files": list(context.pending_output_files),
-                "allowed_file_roots": list(context.pending_allowed_file_roots),
+                "output_files": list(context.pending_outbox.output_files),
+                "allowed_file_roots": list(context.pending_outbox.allowed_file_roots),
             }
             await self._store.set_checkpoint(task.id, delivery_checkpoint)
             current = await self._store.get_task(task.id)
@@ -1478,13 +1484,21 @@ class CodingTaskService:
             output_files = delivery.get("output_files")
             allowed_roots = delivery.get("allowed_file_roots")
             if isinstance(output_files, list):
-                context.pending_output_files = [
+                restored_files = tuple(
                     str(value) for value in output_files if isinstance(value, str)
-                ]
+                )
+            else:
+                restored_files = ()
             if isinstance(allowed_roots, list):
-                context.pending_allowed_file_roots = [
+                restored_roots = tuple(
                     str(value) for value in allowed_roots if isinstance(value, str)
-                ]
+                )
+            else:
+                restored_roots = ()
+            context.pending_outbox = TurnOutbox(
+                output_files=restored_files,
+                allowed_file_roots=restored_roots,
+            )
         return context
 
     @staticmethod

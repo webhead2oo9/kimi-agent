@@ -56,7 +56,7 @@ from tests.helpers import (
     make_turn_dependencies,
 )
 from tools.embeds import EmbedAttachment, EmbedSpec
-from tools.registry import TurnHandoff
+from tools.registry import TurnHandoff, TurnOutbox
 from tools.threads import ThreadRequest
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -286,7 +286,7 @@ async def test_generated_assets_validate_before_moderation_sees_them(tmp_path: P
     # Moderation must see the replacement text: the swap happens before the
     # moderation gate, not after it.
     assert "did not survive validation" in moderation.calls[0]["text"]
-    assert result.output_files == ()
+    assert result.outbox.output_files == ()
     assert "did not survive validation" in result.response_text
 
 
@@ -362,8 +362,10 @@ async def test_partial_validation_drop_recomputes_the_synthesized_claim(tmp_path
 async def test_terminal_handoff_bypasses_deadline_sensitive_output_work(tmp_path: Path) -> None:
     context = ConversationContext(key="guild:100:main")
     request = ThreadRequest(name="Coding work")
-    context.pending_thread_request = request
-    context.pending_output_files.append("stale.txt")
+    context.pending_outbox = TurnOutbox(
+        output_files=("stale.txt",),
+        thread_request=request,
+    )
     moderation = RecordingModerationService(blocked=True)
     handoff = TurnHandoff(
         response_text="Coding task `task-123` was queued.",
@@ -379,7 +381,10 @@ async def test_terminal_handoff_bypasses_deadline_sensitive_output_work(tmp_path
             run_conversation=RecordingRunConversation(
                 ConversationRunResult(
                     text=handoff.response_text,
-                    terminal_handoff=handoff,
+                    outbox=TurnOutbox(
+                        thread_request=request,
+                        terminal_handoff=handoff,
+                    ),
                 )
             ),
         ),
@@ -387,9 +392,9 @@ async def test_terminal_handoff_bypasses_deadline_sensitive_output_work(tmp_path
     )
 
     assert result.response_text == handoff.response_text
-    assert result.terminal_handoff == handoff
-    assert result.thread_request == request
-    assert result.output_files == ()
+    assert result.outbox.terminal_handoff == handoff
+    assert result.outbox.thread_request == request
+    assert result.outbox.output_files == ()
     assert moderation.calls == []
 
 
@@ -408,8 +413,10 @@ async def test_outer_deadline_recovers_handoff_committed_by_core(tmp_path: Path)
         **_kwargs: Any,
     ) -> ConversationRunResult:
         assert request is not None
-        request.context.pending_thread_request = thread_request
-        request.context.pending_terminal_handoff = handoff
+        request.context.pending_outbox = TurnOutbox(
+            thread_request=thread_request,
+            terminal_handoff=handoff,
+        )
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -423,8 +430,8 @@ async def test_outer_deadline_recovers_handoff_committed_by_core(tmp_path: Path)
     )
 
     assert result.response_text == handoff.response_text
-    assert result.terminal_handoff == handoff
-    assert result.thread_request == thread_request
+    assert result.outbox.terminal_handoff == handoff
+    assert result.outbox.thread_request == thread_request
 
 
 @pytest.mark.asyncio
@@ -434,8 +441,13 @@ async def test_execute_turn_stages_workspace_outputs_before_delivery(tmp_path: P
     context = ConversationContext(key="guild:100:main")
     source = manager.user_files_dir(WorkspaceKey("user123__guild")) / "report.txt"
     source.write_text("moderated bytes", encoding="utf-8")
-    context.pending_output_files.append(str(source))
-    context.pending_allowed_file_roots.append(str(source.parent))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(source),),
+        output_file_descriptions={str(source): "Weekly report"},
+        output_file_remove_ids={"attachment:1": str(source)},
+        output_file_remove_id_counter=1,
+        allowed_file_roots=(str(source.parent),),
+    )
 
     result = await execute_turn(
         _turn_request(context),
@@ -448,12 +460,15 @@ async def test_execute_turn_stages_workspace_outputs_before_delivery(tmp_path: P
         config=_config(),
     )
 
-    staged = Path(result.output_files[0])
+    staged = Path(result.outbox.output_files[0])
     assert staged != source
     assert staged.read_text(encoding="utf-8") == "moderated bytes"
     assert staged.parent.name.startswith("delivery-")
     assert (staged.parent / ".owner-user-id").read_text(encoding="utf-8") == "123"
-    assert result.allowed_file_roots == (str(staged.parent.resolve()),)
+    assert result.outbox.output_file_descriptions == {str(staged): "Weekly report"}
+    assert result.outbox.output_file_remove_ids == {"attachment:1": str(staged)}
+    assert result.outbox.output_file_remove_id_counter == 1
+    assert result.outbox.allowed_file_roots == (str(staged.parent.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -1470,8 +1485,10 @@ async def test_execute_turn_writes_generated_assets_and_clears_pending_outputs(
     queued = manager.user_files_dir(WorkspaceKey("123__999")) / "tool-output.txt"
     queued.write_text("tool output", encoding="utf-8")
     context = ConversationContext(key="guild:100:main")
-    context.pending_output_files.append(str(queued))
-    context.pending_allowed_file_roots.append(str(queued.parent))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(queued),),
+        allowed_file_roots=(str(queued.parent),),
+    )
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
@@ -1502,12 +1519,12 @@ async def test_execute_turn_writes_generated_assets_and_clears_pending_outputs(
     generated_root = call["output_dir"]
     assert generated_root.parent == tmp_path / "generated" / "guild_100_main"
     assert generated_root.name.startswith("native-")
-    assert str(generated_root / "image.png") in result.output_files
+    assert str(generated_root / "image.png") in result.outbox.output_files
     # The queued tool output survives alongside the generated asset.
-    assert len(result.output_files) == 2
-    assert str(generated_root.resolve()) in result.allowed_file_roots
-    assert context.pending_output_files == []
-    assert context.pending_allowed_file_roots == []
+    assert len(result.outbox.output_files) == 2
+    assert str(generated_root.resolve()) in result.outbox.allowed_file_roots
+    assert context.pending_outbox.output_files == ()
+    assert context.pending_outbox.allowed_file_roots == ()
 
 
 @pytest.mark.asyncio
@@ -1570,8 +1587,10 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
     existing_workspace_file = tmp_path / "files" / "keep.txt"
     existing_workspace_file.parent.mkdir(parents=True)
     existing_workspace_file.write_text("keep", encoding="utf-8")
-    context.pending_output_files.append(str(existing_workspace_file))
-    context.pending_allowed_file_roots.append(str(existing_workspace_file.parent))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(existing_workspace_file),),
+        allowed_file_roots=(str(existing_workspace_file.parent),),
+    )
     asset = GeneratedAsset(
         kind="image",
         media_type="image/png",
@@ -1637,7 +1656,7 @@ async def test_timed_out_generated_asset_worker_cleans_only_its_new_files(
 async def test_execute_turn_surfaces_pending_embed(tmp_path: Path) -> None:
     context = ConversationContext(key="guild:100:main")
     spec = EmbedSpec(title="Hi")
-    context.pending_embed = spec
+    context.pending_outbox = TurnOutbox(embed=spec)
     run_conversation = RecordingRunConversation(ConversationRunResult(text=""))
 
     result = await execute_turn(
@@ -1649,9 +1668,9 @@ async def test_execute_turn_surfaces_pending_embed(tmp_path: Path) -> None:
         config=_config(),
     )
 
-    assert result.embed is spec
+    assert result.outbox.embed is spec
     assert result.response_text == ""
-    assert context.pending_embed is None
+    assert context.pending_outbox.embed is None
 
 
 @pytest.mark.asyncio
@@ -1663,9 +1682,11 @@ async def test_execute_turn_materializes_embed_attachment_onto_output_files(
     attachment = files_dir / "c.png"
     attachment.write_bytes(b"png bytes")
     context = ConversationContext(key="guild:100:main")
-    context.pending_embed = EmbedSpec(title="Hi", image="attachment://c.png")
-    context.pending_embed_attachment = EmbedAttachment(
-        path=str(attachment), root=str(files_dir), filename="c.png"
+    context.pending_outbox = TurnOutbox(
+        embed=EmbedSpec(title="Hi", image="attachment://c.png"),
+        embed_attachment=EmbedAttachment(
+            path=str(attachment), root=str(files_dir), filename="c.png"
+        ),
     )
     run_conversation = RecordingRunConversation(ConversationRunResult(text=""))
 
@@ -1682,12 +1703,12 @@ async def test_execute_turn_materializes_embed_attachment_onto_output_files(
 
     # Staging copies the attachment into a delivery dir; the embed keeps pointing
     # at it by filename, and the queued original is released.
-    (staged,) = result.output_files
+    (staged,) = result.outbox.output_files
     assert Path(staged).name == "c.png"
     assert Path(staged).read_bytes() == b"png bytes"
     # The staging root is what the delivery boundary checks attachments against.
-    assert result.allowed_file_roots == (str(Path(staged).parent),)
-    assert context.pending_embed_attachment is None
+    assert result.outbox.allowed_file_roots == (str(Path(staged).parent),)
+    assert context.pending_outbox.embed_attachment is None
 
 
 @pytest.mark.asyncio
@@ -1758,15 +1779,17 @@ async def test_execute_turn_blocks_output_before_asset_writes_and_clears_pending
     context = ConversationContext(key="guild:100:main")
     queued_image = files_dir / "tool-output.png"
     queued_image.write_bytes(b"\x89PNG\r\n\x1a\nqueued")
-    context.pending_output_files.append(str(queued_image))
-    context.pending_allowed_file_roots.append(str(files_dir))
     unsafe = files_dir / "unsafe.png"
     unsafe.write_bytes(b"\x89PNG\r\n\x1a\nunsafe")
-    context.pending_embed = EmbedSpec(title="Unsafe", image="attachment://unsafe.png")
-    context.pending_embed_attachment = EmbedAttachment(
-        path=str(unsafe),
-        root=str(files_dir),
-        filename="unsafe.png",
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(queued_image),),
+        allowed_file_roots=(str(files_dir),),
+        embed=EmbedSpec(title="Unsafe", image="attachment://unsafe.png"),
+        embed_attachment=EmbedAttachment(
+            path=str(unsafe),
+            root=str(files_dir),
+            filename="unsafe.png",
+        ),
     )
     asset = GeneratedAsset(
         kind="image",
@@ -1795,14 +1818,14 @@ async def test_execute_turn_blocks_output_before_asset_writes_and_clears_pending
 
     assert result.response_text == "output blocked"
     assert result.blocked_by_moderation is True
-    assert result.output_files == ()
-    assert result.allowed_file_roots == ()
-    assert result.embed is None
+    assert result.outbox.output_files == ()
+    assert result.outbox.allowed_file_roots == ()
+    assert result.outbox.embed is None
     assert asset_writer.calls == []
-    assert context.pending_output_files == []
-    assert context.pending_allowed_file_roots == []
-    assert context.pending_embed is None
-    assert context.pending_embed_attachment is None
+    assert context.pending_outbox.output_files == ()
+    assert context.pending_outbox.allowed_file_roots == ()
+    assert context.pending_outbox.embed is None
+    assert context.pending_outbox.embed_attachment is None
     # Generic queued images are delivery artifacts. The explicitly owned embed image
     # and native generated assets remain first-class moderation inputs.
     call = moderation.calls[0]
@@ -1877,8 +1900,10 @@ async def test_execute_turn_excludes_queued_utf8_workspace_files_from_moderation
     output_root.mkdir(parents=True)
     output_file = output_root / "tool-output.txt"
     output_file.write_text("unsafe attachment body", encoding="utf-8")
-    context.pending_output_files.append(str(output_file))
-    context.pending_allowed_file_roots.append(str(output_root))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(output_file),),
+        allowed_file_roots=(str(output_root),),
+    )
     run_conversation = RecordingRunConversation(ConversationRunResult(text="see attached"))
     moderation = RecordingModerationService(blocked_text="unsafe attachment body")
 
@@ -1894,12 +1919,14 @@ async def test_execute_turn_excludes_queued_utf8_workspace_files_from_moderation
 
     assert result.response_text == "see attached"
     assert result.blocked_by_moderation is False
-    assert len(result.output_files) == 1
-    assert Path(result.output_files[0]).name == "tool-output.txt"
-    assert Path(result.output_files[0]).read_text(encoding="utf-8") == "unsafe attachment body"
-    assert len(result.allowed_file_roots) == 1
-    assert context.pending_output_files == []
-    assert context.pending_allowed_file_roots == []
+    assert len(result.outbox.output_files) == 1
+    assert Path(result.outbox.output_files[0]).name == "tool-output.txt"
+    assert (
+        Path(result.outbox.output_files[0]).read_text(encoding="utf-8") == "unsafe attachment body"
+    )
+    assert len(result.outbox.allowed_file_roots) == 1
+    assert context.pending_outbox.output_files == ()
+    assert context.pending_outbox.allowed_file_roots == ()
     assert moderation.calls[0]["text"] == "see attached"
     assert "images" not in moderation.calls[0]
 
@@ -1912,9 +1939,11 @@ async def test_execute_turn_moderates_attachment_descriptions(tmp_path: Path) ->
     output_file = output_root / "visual.png"
     output_file.write_bytes(b"image")
     output_path = str(output_file)
-    context.pending_output_files.append(output_path)
-    context.pending_output_file_descriptions[output_path] = "unsafe attachment description"
-    context.pending_allowed_file_roots.append(str(output_root))
+    context.pending_outbox = TurnOutbox(
+        output_files=(output_path,),
+        output_file_descriptions={output_path: "unsafe attachment description"},
+        allowed_file_roots=(str(output_root),),
+    )
     run_conversation = RecordingRunConversation(ConversationRunResult(text="see attached"))
     moderation = RecordingModerationService(blocked_text="unsafe attachment description")
 
@@ -1930,9 +1959,9 @@ async def test_execute_turn_moderates_attachment_descriptions(tmp_path: Path) ->
 
     assert result.response_text == "output blocked"
     assert result.blocked_by_moderation is True
-    assert result.output_files == ()
-    assert result.output_file_descriptions == ()
-    assert context.pending_output_file_descriptions == {}
+    assert result.outbox.output_files == ()
+    assert result.outbox.output_file_descriptions == {}
+    assert context.pending_outbox.output_file_descriptions == {}
     assert "Attachment descriptions:" in moderation.calls[0]["text"]
 
 
@@ -1945,8 +1974,10 @@ async def test_execute_turn_delivers_opaque_binary_workspace_file(
     output_root.mkdir(parents=True)
     output_file = output_root / "archive.zip"
     output_file.write_bytes(b"PK\x03\x04\x00binary\x00payload")
-    context.pending_output_files.append(str(output_file))
-    context.pending_allowed_file_roots.append(str(output_root))
+    context.pending_outbox = TurnOutbox(
+        output_files=(str(output_file),),
+        allowed_file_roots=(str(output_root),),
+    )
     run_conversation = RecordingRunConversation(ConversationRunResult(text="see attached"))
     moderation = RecordingModerationService(blocked_text="binary")
 
@@ -1962,10 +1993,10 @@ async def test_execute_turn_delivers_opaque_binary_workspace_file(
 
     assert result.response_text == "see attached"
     assert result.blocked_by_moderation is False
-    assert len(result.output_files) == 1
-    assert Path(result.output_files[0]).name == "archive.zip"
-    assert Path(result.output_files[0]).read_bytes() == b"PK\x03\x04\x00binary\x00payload"
-    assert context.pending_output_files == []
+    assert len(result.outbox.output_files) == 1
+    assert Path(result.outbox.output_files[0]).name == "archive.zip"
+    assert Path(result.outbox.output_files[0]).read_bytes() == b"PK\x03\x04\x00binary\x00payload"
+    assert context.pending_outbox.output_files == ()
     assert moderation.calls[0]["text"] == "see attached"
     assert "images" not in moderation.calls[0]
 

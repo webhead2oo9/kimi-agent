@@ -86,10 +86,10 @@ class UserAppInteractionTurnAdapter:
                 result.response_text,
                 ephemeral=not self.requested_public,
                 original_ephemeral=not self.requested_public,
-                output_files=result.output_files,
-                output_file_descriptions=result.output_file_descriptions,
-                allowed_file_roots=result.allowed_file_roots,
-                embed=result.embed,
+                output_files=result.outbox.output_files,
+                output_file_descriptions=tuple(result.outbox.output_file_descriptions.items()),
+                allowed_file_roots=result.outbox.allowed_file_roots,
+                embed=result.outbox.embed,
                 on_primary_delivered=record_delivered_content,
             )
             delivery_failed = delivered_content is None
@@ -129,8 +129,8 @@ class UserAppInteractionTurnAdapter:
         replies: tuple[DeliveredReply, ...] = ()
         if delivered_content is not None:
             transcript_text = delivered_content
-            if not transcript_text and result.embed is not None:
-                transcript_text = embed_transcript_summary(result.embed)
+            if not transcript_text and result.outbox.embed is not None:
+                transcript_text = embed_transcript_summary(result.outbox.embed)
             if transcript_text:
                 replies = (
                     DeliveredReply(

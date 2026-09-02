@@ -336,7 +336,7 @@ def init_thread_tools(
             request = build_thread_request_payload(args, ctx, resolve_target)
         except ValueError as exc:
             return tool_error(str(exc))
-        ctx.thread_request = request
+        ctx.update_outbox(thread_request=request)
         if request.target_channel_id is not None:
             note = (
                 "Your reply will be posted in a new thread opened in "
@@ -366,7 +366,7 @@ def init_thread_tools(
             )
         except ValueError as exc:
             return tool_error(str(exc))
-        ctx.thread_close_request = ThreadCloseRequest(thread_id=thread_id)
+        ctx.update_outbox(thread_close_request=ThreadCloseRequest(thread_id=thread_id))
         return json.dumps(
             {
                 "queued": True,

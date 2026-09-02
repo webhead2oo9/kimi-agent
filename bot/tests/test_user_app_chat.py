@@ -306,6 +306,24 @@ def test_dual_installed_app_public_post_uses_application_permissions() -> None:
     )
 
 
+def test_partial_integration_markers_do_not_grant_user_install_permissions() -> None:
+    interaction = SimpleNamespace(
+        guild_id=777,
+        channel=object(),
+        permissions=SimpleNamespace(
+            send_messages=True,
+            use_external_apps=True,
+        ),
+        app_permissions=SimpleNamespace(send_messages=False),
+        is_user_integration=lambda: True,
+    )
+
+    assert (
+        user_app_chat_module.interaction_can_post_publicly(cast(discord.Interaction, interaction))
+        is False
+    )
+
+
 def test_user_app_public_post_is_allowed_outside_guilds() -> None:
     interaction = SimpleNamespace(guild_id=None)
 

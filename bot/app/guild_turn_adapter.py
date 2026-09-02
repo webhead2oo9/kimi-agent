@@ -195,15 +195,10 @@ class GuildMessageTurnAdapter:
             # ForegroundTurnRunner already holds the workspace activity guard.
             # Leaving the key unset here avoids reacquiring that same lock while
             # preserving the app-instance send seam used by routing tests.
-            sent_messages = await collaborators.responses.send(
+            sent_messages = await self._send_response(
                 target_channel,
-                delivery_result.response_text,
+                delivery_result,
                 reference=reply_reference,
-                output_files=list(delivery_result.output_files),
-                output_file_descriptions=dict(delivery_result.output_file_descriptions),
-                allowed_file_roots=list(delivery_result.allowed_file_roots),
-                embed=delivery_result.embed,
-                mention_author=True,
             )
 
             initial_handoff_delivery_failed = bool(
@@ -245,15 +240,10 @@ class GuildMessageTurnAdapter:
                     thread_id=fallback_thread_id,
                 )
                 if coding_handoff_prepared:
-                    sent_messages = await collaborators.responses.send(
+                    sent_messages = await self._send_response(
                         target_channel,
-                        delivery_result.response_text,
+                        delivery_result,
                         reference=reply_reference,
-                        output_files=list(delivery_result.output_files),
-                        output_file_descriptions=dict(delivery_result.output_file_descriptions),
-                        allowed_file_roots=list(delivery_result.allowed_file_roots),
-                        embed=delivery_result.embed,
-                        mention_author=True,
                     )
 
             if coding_handoff_task_id is not None and coding_handoff_prepared:
@@ -338,6 +328,24 @@ class GuildMessageTurnAdapter:
                         "Could not release coding task %s after foreground routing failed",
                         coding_handoff_task_id,
                     )
+
+    async def _send_response(
+        self,
+        channel: discord.abc.Messageable,
+        result: TurnResult,
+        *,
+        reference: discord.Message | None,
+    ) -> list[discord.Message]:
+        return await self.collaborators.responses.send(
+            channel,
+            result.response_text,
+            reference=reference,
+            output_files=list(result.output_files),
+            output_file_descriptions=dict(result.output_file_descriptions),
+            allowed_file_roots=list(result.allowed_file_roots),
+            embed=result.embed,
+            mention_author=True,
+        )
 
     async def finish(self, outcome: TurnSurfaceOutcome) -> None:
         # Outcome reactions are owned by _on_message_for_user while it still

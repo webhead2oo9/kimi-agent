@@ -12,8 +12,8 @@ from app.cancellation import ActiveOperationRegistry
 from app.coding_delivery import CodingTaskController, MessageInvocationStripper
 from app.consent import PrivacyConsentGate
 from app.conversation_routing import ResolvedConversation
-from app.user_app_chat import is_user_integration, is_user_only_interaction
 from discord_adapter.gateway import DiscordGateway
+from discord_adapter.io import is_user_integration, is_user_only_integration
 from tools.registry import USER_APP_SCOPE_CHANNEL_ID
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
@@ -197,7 +197,7 @@ class WorkCancellationCoordinator:
                 f"Stopped coding task `{task.id[:8]}`. {cleanup} "
                 "Partial workspace changes were kept."
             )
-        user_only = is_user_only_interaction(interaction)
+        user_only = is_user_only_integration(interaction)
         if all_work:
             # all_operations ignores the scope filters, so one entry sweeps everything.
             summary = await self.cancel(

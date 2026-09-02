@@ -31,12 +31,7 @@ from app.turn_entry import (
 )
 from config.settings import Settings
 from providers.types import ContentPart
-from storage.conversations import (
-    CHANNEL_SHARED,
-    ChannelMessageRecord,
-    ConversationAccessScope,
-    ConversationStore,
-)
+from storage.conversations import ChannelMessageRecord, ConversationStore
 from tools.workspace.common import UserLocks
 from utils.format import sanitize_author_name
 from utils.privacy_barrier import UserPrivacyBarrier
@@ -46,21 +41,7 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class TurnConversationSpec:
-    key: str
-    channel_name: str
-    guild_id: str | None
-    channel_id: str
-    thread_id: str | None
-    root_discord_message_id: str
-    owner_user_id: str | None = None
-    access_scope: ConversationAccessScope = CHANNEL_SHARED
-    existing_conversation_id: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class ForegroundTurnInvocation:
-    conversation: TurnConversationSpec
     source: TurnPreparationInput
     prepared_user_discord_message_id: str
     prepared_user_source_created_at: float | None
@@ -68,6 +49,7 @@ class ForegroundTurnInvocation:
     collect_reply_context: CollectReplyContext
     strip_mention: StripMention
     stop_event: asyncio.Event
+    existing_conversation_id: int | None = None
     hooks: TurnEntryHooks = field(default_factory=TurnEntryHooks)
     collect_turn_attachments: CollectTurnAttachments | None = None
     count_user_prior_messages: CountUserPriorMessages | None = None
@@ -210,7 +192,10 @@ class ForegroundTurnRunner:
         *,
         adapter: ForegroundTurnAdapter,
     ) -> TurnResult | None:
-        conversation_id = await self._touch_or_recreate_conversation(invocation.conversation)
+        conversation_id = await self._touch_or_recreate_conversation(
+            invocation.source,
+            existing_conversation_id=invocation.existing_conversation_id,
+        )
         mapped_message_ids: set[str] = set()
 
         async def map_committed_message(message_id: int) -> None:
@@ -385,7 +370,7 @@ class ForegroundTurnRunner:
         async def child_activity(activity_user_id: str) -> AsyncIterator[None]:
             async with self._active_operations.register(
                 user_id=activity_user_id,
-                root_key=invocation.conversation.key,
+                root_key=invocation.source.conversation_key,
                 channel_id=invocation.prepared_user_context_channel_id,
                 cancel_on_stop=False,
                 stop_event=invocation.stop_event,
@@ -399,8 +384,13 @@ class ForegroundTurnRunner:
             stop_event=invocation.stop_event,
         )
 
-    async def _touch_or_recreate_conversation(self, spec: TurnConversationSpec) -> int:
-        conversation_id = spec.existing_conversation_id
+    async def _touch_or_recreate_conversation(
+        self,
+        source: TurnPreparationInput,
+        *,
+        existing_conversation_id: int | None,
+    ) -> int:
+        conversation_id = existing_conversation_id
         if conversation_id is not None and not await self._conversation_store.touch(
             conversation_id
         ):
@@ -410,14 +400,14 @@ class ForegroundTurnRunner:
         if conversation_id is not None:
             return conversation_id
         return await self._conversation_store.get_or_create(
-            spec.key,
-            spec.channel_name,
-            guild_id=spec.guild_id,
-            channel_id=spec.channel_id,
-            thread_id=spec.thread_id,
-            root_discord_message_id=spec.root_discord_message_id,
-            owner_user_id=spec.owner_user_id,
-            access_scope=spec.access_scope,
+            source.conversation_key,
+            source.channel_name,
+            guild_id=source.guild_id,
+            channel_id=source.channel_id,
+            thread_id=source.thread_id,
+            root_discord_message_id=source.trigger_discord_message_id,
+            owner_user_id=source.conversation_owner_user_id,
+            access_scope=source.conversation_access_scope,
         )
 
     async def _persist_assistant_replies(

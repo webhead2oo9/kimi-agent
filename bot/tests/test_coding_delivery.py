@@ -460,6 +460,55 @@ async def test_delete_coding_status_uses_recorded_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_final_delivery_preserves_durable_ordering() -> None:
+    events: list[str] = []
+
+    class EventStore(FakeCodingTaskStore):
+        async def mark_delivered(self, task_id: str, message_id: str) -> None:
+            assert task_id == "task-1"
+            assert message_id == "123"
+            events.append("mark-delivered")
+
+    class EventConversationStore(FakeConversationStore):
+        async def save_channel_messages(
+            self,
+            conversation_id: int,
+            records: list[Any],
+            *,
+            context_channel_id: str,
+        ) -> None:
+            assert conversation_id == 7
+            assert len(records) == 1
+            assert context_channel_id == "20"
+            events.append("persist")
+
+    async def delete_status() -> None:
+        events.append("delete-status")
+
+    task = cast(CodingTask, SimpleNamespace(id="task-1", conversation_id=7))
+    final_message = cast(
+        discord.Message,
+        SimpleNamespace(id=123, content="Done.", created_at=None),
+    )
+    status_message = cast(discord.Message, SimpleNamespace(delete=delete_status))
+    delivery = make_delivery(
+        store=EventStore(),
+        conversation_store=EventConversationStore(),
+    )
+
+    await delivery._commit_final_delivery(
+        task,
+        [final_message],
+        delivery_channel_id="20",
+        status_channel=cast(discord.TextChannel | discord.Thread, SimpleNamespace()),
+        status_marker="Coding task `task-1`",
+        status_message=status_message,
+    )
+
+    assert events == ["persist", "mark-delivered", "delete-status"]
+
+
+@pytest.mark.asyncio
 async def test_coding_output_moderation_honors_exempt_task_tier() -> None:
     check = AsyncCall()
     service = SimpleNamespace(

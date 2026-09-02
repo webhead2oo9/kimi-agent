@@ -4,7 +4,6 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -42,16 +41,7 @@ _MAX_PATH_CHARS = 1_024
 _MAX_ATTACHMENT_NAME_CHARS = 512
 _MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 _SOURCE_READ_CHUNK_BYTES = 1024 * 1024
-_GEMINI_37_PRICE_CHANGE = datetime(2027, 1, 1, tzinfo=UTC)
 _CONFIG_SPEC = (
-    ToolConfigField(
-        field="model",
-        label="Video model",
-        kind=KIND_CHOICE,
-        default="gemini-3.7-flash",
-        choices=("gemini-3.7-flash",),
-        help="Gemini model used for YouTube and uploaded-video analysis.",
-    ),
     ToolConfigField(
         field="thinking_level",
         label="Thinking level",
@@ -173,6 +163,8 @@ def init_video_tool(
     *,
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
+    catalog_model: str = "",
+    model: str = "",
 ) -> bool:
     if not service.available:
         return False
@@ -226,7 +218,7 @@ def init_video_tool(
                     raise ValueError("url, attachment, and path are accepted only for start")
                 session = get_string(args, "session", max_chars=_MAX_SESSION_CHARS) or None
 
-            config = _session_config(ctx)
+            config = _session_config(ctx, catalog_model=catalog_model, model=model)
             if ctx.video_calls_this_turn >= _configured_int(ctx, "max_calls_per_turn", default=4):
                 raise ValueError("Video-call limit reached for this turn")
         except (OSError, ValueError) as exc:
@@ -274,7 +266,7 @@ def init_video_tool(
                         ctx,
                         exc.result.model,
                         exc.result.usage,
-                        pricing_model=config.model,
+                        pricing_model=config.catalog_model,
                         usage_present=exc.result.usage_present,
                     )
                 )
@@ -286,7 +278,7 @@ def init_video_tool(
                     ctx,
                     exc.result.model,
                     exc.result.usage,
-                    pricing_model=config.model,
+                    pricing_model=config.catalog_model,
                     usage_present=exc.result.usage_present,
                 )
             return tool_error(str(exc))
@@ -296,11 +288,11 @@ def init_video_tool(
                     ctx,
                     exc.model or config.model,
                     exc.usage,
-                    pricing_model=config.model,
+                    pricing_model=config.catalog_model,
                     usage_present=exc.usage_present,
                 )
             return tool_error(str(exc))
-        await _record_usage(ctx, analysis, pricing_model=config.model)
+        await _record_usage(ctx, analysis, pricing_model=analysis.catalog_model)
         return _render_analysis(analysis)
 
     registry.register(
@@ -478,10 +470,16 @@ def canonicalize_youtube_url(raw_url: str) -> tuple[str, str]:
     return f"https://www.youtube.com/watch?v={video_id}", video_id
 
 
-def _session_config(ctx: MessageContext) -> VideoSessionConfig:
+def _session_config(
+    ctx: MessageContext,
+    *,
+    catalog_model: str,
+    model: str,
+) -> VideoSessionConfig:
     config = ctx.tool_configs.get(TOOL_NAME) or {}
     return VideoSessionConfig(
-        model=str(config.get("model") or "gemini-3.7-flash"),
+        catalog_model=catalog_model,
+        model=model,
         thinking_level=str(config.get("thinking_level") or "low"),
         max_output_tokens=_configured_int(ctx, "max_output_tokens", default=8192),
         max_session_interactions=_configured_int(ctx, "max_session_interactions", default=20),
@@ -535,26 +533,12 @@ async def _record_result_usage(
         pricing_model=pricing_model,
         usage=breakdown,
         usage_present=usage_present,
-        est_cost_usd=(_estimate_video_cost(pricing_model, breakdown) if usage_present else None),
+        est_cost_usd=None,
     )
     if ctx.record_usage_call is not None:
         await ctx.record_usage_call(call)
     elif ctx.usage_sink is not None:
         ctx.usage_sink.append(call)
-
-
-def _estimate_video_cost(model: str, usage: UsageBreakdown) -> float | None:
-    if model != "gemini-3.7-flash":
-        return None
-    if datetime.now(UTC) < _GEMINI_37_PRICE_CHANGE:
-        input_rate, cached_rate, output_rate = 0.75, 0.075, 3.75
-    else:
-        input_rate, cached_rate, output_rate = 1.50, 0.15, 7.50
-    return (
-        usage.input_tokens * input_rate
-        + usage.cached_read_tokens * cached_rate
-        + usage.output_tokens * output_rate
-    ) / 1_000_000
 
 
 def _render_analysis(analysis: VideoAnalysis) -> str:

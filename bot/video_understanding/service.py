@@ -107,7 +107,11 @@ class VideoSessionRecord(Protocol):
     def youtube_url(self) -> str: ...
 
     @property
+    @property
     def youtube_video_id(self) -> str: ...
+
+    @property
+    def catalog_model(self) -> str: ...
 
     @property
     def model(self) -> str: ...
@@ -149,6 +153,7 @@ class VideoSessionRepository(Protocol):
         youtube_url: str,
         youtube_video_id: str,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         now: float,
         expires_at: float,
@@ -178,6 +183,7 @@ class VideoSessionRepository(Protocol):
         source_locator: str,
         source_byte_size: int,
         model: str,
+        catalog_model: str = "",
         interaction_id: str,
         file_name: str,
         now: float,
@@ -264,6 +270,7 @@ class VideoSessionConfig:
     max_output_tokens: int
     max_session_interactions: int
     session_ttl_minutes: int
+    catalog_model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +295,7 @@ class VideoAnalysis:
     limitations: tuple[str, ...]
     model: str
     usage: VideoUsage
+    catalog_model: str = ""
     usage_present: bool = True
 
 
@@ -342,6 +350,7 @@ class VideoUnderstandingService:
                 guild_id=guild_id,
                 youtube_url=youtube_url,
                 youtube_video_id=youtube_video_id,
+                catalog_model=config.catalog_model,
                 model=config.model,
                 interaction_id=result.interaction_id,
                 now=now,
@@ -363,6 +372,7 @@ class VideoUnderstandingService:
             source_locator=youtube_url,
             youtube_url=youtube_url,
             result=result,
+            catalog_model=config.catalog_model,
         )
 
     async def start_uploaded(
@@ -440,6 +450,7 @@ class VideoUnderstandingService:
                 source_display_name=source.display_name,
                 source_locator=source.locator,
                 source_byte_size=source.byte_size,
+                catalog_model=config.catalog_model,
                 model=config.model,
                 interaction_id=result.interaction_id,
                 file_name=file_name,
@@ -468,6 +479,7 @@ class VideoUnderstandingService:
             source_locator=source.locator,
             youtube_url="",
             result=result,
+            catalog_model=config.catalog_model,
         )
 
     async def ask(
@@ -549,6 +561,7 @@ class VideoUnderstandingService:
             source_locator=current.source_locator,
             youtube_url=current.youtube_url,
             result=result,
+            catalog_model=getattr(current, "catalog_model", "") or current.model,
         )
 
     async def delete_user_data(self, user_id: str) -> tuple[int, bool]:
@@ -752,6 +765,7 @@ def _analysis(
     source_locator: str,
     youtube_url: str,
     result: VideoInteractionResult,
+    catalog_model: str = "",
 ) -> VideoAnalysis:
     return VideoAnalysis(
         session=handle,
@@ -764,5 +778,6 @@ def _analysis(
         limitations=result.limitations,
         model=result.model,
         usage=result.usage,
+        catalog_model=catalog_model or result.model,
         usage_present=result.usage_present,
     )

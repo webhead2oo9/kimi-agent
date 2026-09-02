@@ -36,6 +36,12 @@ providers:
   #   auth_mode: oauth
   #   reasoning_effort: high
 
+  # Optional Google Gemini Interactions profile backing the video specialist tool.
+  # Requires GEMINI_API_KEY in .env and VIDEO_UNDERSTANDING_ENABLED=true.
+  # gemini-video:
+  #   type: gemini_interactions
+  #   api_key_env: GEMINI_API_KEY
+
 models:
   # REQUIRED: replace each context window and capability list with conservative
   # values for the selected model. The template stays text-only so copying it
@@ -60,6 +66,18 @@ models:
   #   context_window: 500000
   #   capabilities: [text, tool_calling, image_input]
 
+  # Optional Gemini video understanding specialist entry.
+  # Rate cards reflect model pricing; video input tokens billed as input.
+  # gemini-video-flash:
+  #   provider: gemini-video
+  #   model: gemini-3.7-flash
+  #   context_window: 1048576
+  #   capabilities: [video_input]
+  #   pricing:
+  #     input: 0.75
+  #     output: 3.75
+  #     cached_read: 0.075
+
 roles:
   chat: primary-chat
   chat_fallbacks: []
@@ -74,6 +92,11 @@ roles:
   # the role out to keep those tools unregistered. See docs/persona.md.
   # persona: compact-chat
   # persona_fallbacks: []
+  # Optional stateful video understanding specialist backing the video tool.
+  # Requires VIDEO_UNDERSTANDING_ENABLED=true, GEMINI_API_KEY, and a model using
+  # the gemini_interactions provider type. Fallbacks are unsupported because
+  # interaction chains are stateful. See docs/video-understanding.md.
+  # video: gemini-video-flash
 
 # Owner-visible candidates in /models. Maximum 120; each must support text and
 # tool calling. Keep real catalog choices in the ignored models.yaml only.

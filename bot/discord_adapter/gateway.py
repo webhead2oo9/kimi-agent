@@ -16,6 +16,7 @@ from agent.discord_references import ResolvedDiscordReferenceHint
 from discord_adapter.reference_hints import resolve_discord_reference_hints
 from discord_adapter.io import (
     AttachmentDeliveryPlan,
+    SentMessages,
     prepare_attachment_delivery,
     send_prepared_response as send_prepared_discord_response,
     send_response as send_discord_response,
@@ -557,7 +558,7 @@ class DiscordGateway:
         allowed_file_roots: list[str | Path] | None = None,
         embed: EmbedSpec | None = None,
         mention_author: bool = False,
-    ) -> list[discord.Message]:
+    ) -> SentMessages:
         return await send_discord_response(
             channel,
             content,
@@ -596,7 +597,7 @@ class DiscordGateway:
         *,
         reference: discord.Message | None = None,
         mention_author: bool = False,
-    ) -> list[discord.Message]:
+    ) -> SentMessages:
         return await send_prepared_discord_response(
             channel,
             content,

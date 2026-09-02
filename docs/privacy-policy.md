@@ -16,10 +16,10 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 
 ## TL;DR
 
-- Kimi only starts an AI conversation when you call on it: a mention, a pinged
-  reply, `hey/hi Kimi`, `Kimi help`, an unmentioned message in one of its
-  auto-responding threads, the optional user-installed `/chat` command, or—when
-  enabled for your account—a direct message. Normal bot DMs are ignored by
+- Kimi only starts an AI conversation when you call on it: a mention, a reply
+  with the ping on, `hey Kimi` / `hi Kimi`, `Kimi help`, a message in one of its
+  auto-responding threads, the optional `/chat` command, or (when enabled for
+  your account) a direct message. Ordinary DMs to the bot are ignored by
   default. Personal DMs join the same private conversation as `/chat`.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
   services receive the input needed for the feature you request. Browser tasks
@@ -37,9 +37,10 @@ have. If you want the technical details, see [`privacy.md`](privacy.md).
 ## When Kimi is listening
 
 Kimi only starts a conversation when you call on it: by @mentioning it,
-replying with the ping on, saying `hey/hi Kimi` or `Kimi help`, or posting in an
-auto-responding thread it started. Paused threads require an explicit
-invocation. It does **not** store ordinary channel conversation as chat history.
+replying with the ping on, starting a message with `hey Kimi`, `hi Kimi`, or
+`Kimi help`, or posting in an auto-responding thread it started. In a paused
+thread you have to call on it the same way as in a channel. It does **not**
+store ordinary channel conversation as chat history.
 
 While it works on something you asked for, Kimi may read recent messages from
 the current channel or search other channels that you and the bot can both read,

@@ -42,3 +42,11 @@ Version 1.2 adds typed modal forms and a narrow Components V2 layout model. Once
 that layout model, Discord requires every later edit of the same message to remain a layout.
 Modules using them should depend on `kimi-agent-module-api>=1.2,<2` and require
 `discord.modals.v1` and/or `discord.components_v2.v1`.
+
+## Testing the SDK
+
+From this package directory, run its tests without installing the Kimi application:
+
+```console
+uv run --isolated --group test python -m pytest -q
+```

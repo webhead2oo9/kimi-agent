@@ -1,13 +1,13 @@
 # Configuration reference
 
-> This page documents every `Settings` field the bot reads, the `.env.example`
-> keys read elsewhere, and the model catalog in `config/models.yaml`. The model
-> catalog is deployment-specific; create it by copying
-> [`bot/config/models.example.yaml`](../bot/config/models.example.yaml).
-> Typed settings are defined in
-> [`bot/config/settings.py`](../bot/config/settings.py). Update this page and
-> `.env.example` whenever those settings change. The defaults below are the
-> **code defaults**; a deployment's `.env` may override them.
+This page lists every `Settings` field the bot reads, the few `.env.example`
+keys read elsewhere, and the model catalog in `config/models.yaml`. The model
+catalog is specific to your deployment; create it by copying
+[`bot/config/models.example.yaml`](../bot/config/models.example.yaml). The
+typed settings are defined in [`bot/config/settings.py`](../bot/config/settings.py).
+The defaults shown here are the code defaults; your `.env` may override them.
+If you change a setting in code, update this page and `.env.example` in the
+same change.
 
 ## Quick start
 
@@ -40,10 +40,12 @@ Most settings in this reference are optional or gated off by default. The first 
   - [Per-model pricing (cost tracking)](#per-model-pricing-cost-tracking)
   - [Durable coding tasks](#durable-coding-tasks)
   - [Codex operational settings](#codex-operational-settings)
+  - [xAI OAuth operational setting](#xai-oauth-operational-setting)
 - [Context compaction](#context-compaction)
 - [Content moderation (gated)](#content-moderation-gated)
 - [Discord text search (gated)](#discord-text-search-gated)
 - [Internet search (gated)](#internet-search-gated)
+- [X search (gated)](#x-search-gated)
 - [Wolfram|Alpha (gated)](#wolframalpha-gated)
 - [Video understanding (gated)](#video-understanding-gated)
 - [Image generation (gated)](#image-generation-gated)
@@ -68,11 +70,11 @@ Most settings in this reference are optional or gated off by default. The first 
 
 ## How configuration loading works
 
-Kimi loads configuration from multiple layers so operators can keep secrets and deployment-specific values out of the repository while still having safe, auditable overrides. The core `Settings` model comes from the environment (or a chosen `.env` file). An optional operator settings file can then layer on top of it. Per-tool config, guild and channel fragments, and the model routing file are read at different times and have different lifecycles.
+Kimi reads configuration from several layers, so you can keep secrets and machine-specific values out of the repository and still have overrides you can audit. The core `Settings` object comes from the environment (or the `.env` file you choose). An optional operator settings file layers on top of it. Per-tool config, guild and channel fragments, and the model routing file are each read at different times: some once at startup, some fresh on every message. The sections below say which is which.
 
-Each process entry point constructs the main `Settings` object explicitly and passes it into the application composition root. Importing `config.settings` does not instantiate the model or load setting values from the environment or a dotenv file. Plugins and application modules may define their own separate settings models.
+Each entry point (`bot.py`, the scripts) builds the `Settings` object itself and passes it to `build_app`. Merely importing `config.settings` does not read the environment or any dotenv file. Plugins and application modules may define their own separate settings models.
 
-Values are read from OS environment variables first, then from the dotenv file named by `ENV_FILE` (default `.env`). Core, plugin, and module settings all use the same selector, so a development process can't accidentally mix files. Unknown environment keys are ignored (`extra = "ignore"`).
+A real environment variable wins over the same key in the dotenv file. The dotenv file is the one named by `ENV_FILE` (default `.env`), and core, plugin, and module settings all read the same file, so a development process cannot accidentally mix two. Environment keys the bot does not recognise are ignored.
 
 Environment variable names match the setting names in upper case (for example `react_max_tokens` maps to `REACT_MAX_TOKENS`). The mapping is case-insensitive.
 
@@ -233,10 +235,11 @@ The tool-owned behavior that exists today:
 The path is relative to `bot/`, the default `CONFIG_DIR`, and the fragment is
 active only while the tool is registered.
 
-**Fail direction: open, the opposite of the denylist.**
-`config/tools.md` raises rather than risk silently *granting* a tool. A tool
-config fragment, by contrast, only tunes behavior you already opted into, and
-the defaults are the shipped behavior, so nothing here ever raises:
+**A bad tool config never stops the bot.** This is the opposite of the
+`config/tools.md` denylist, which aborts on a malformed file because a parse
+error there could silently *grant* a tool. A tool config fragment only tunes
+behavior you already opted into, and its defaults are the shipped behavior, so
+a problem here falls back rather than failing:
 
 | On disk | Result |
 |---|---|
@@ -888,12 +891,11 @@ The opening reply resolves the ordinary channel scope, and thread-scoped
 instructions take effect from the first follow-up onward, so write them for a
 conversation that is already in progress.
 
-It's worth reviewing channel instructions with threads in mind. A channel
-fragment that says "keep replies short, this channel is busy" follows the
-conversation into a handoff thread that exists precisely to hold the long
-reply. If that reads wrong, put the threaded behavior in
-`channel_threads/<channel_id>.md`, which replaces the channel body inside
-threads.
+Review channel instructions with threads in mind. A channel fragment that says
+"keep replies short, this channel is busy" follows the conversation into a
+handoff thread that exists precisely to hold the long reply. If that is not
+what you want, put the threaded behavior in `channel_threads/<channel_id>.md`,
+which replaces the channel body inside threads.
 
 You edit these fragment files directly.
 

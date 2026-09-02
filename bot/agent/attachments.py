@@ -51,6 +51,12 @@ def _attachment_image_media_type(attachment: Any) -> str | None:
     return None
 
 
+def is_image_attachment_candidate(attachment: Any) -> bool:
+    """Whether attachment metadata routes the file through image validation."""
+
+    return _attachment_image_media_type(attachment) is not None
+
+
 @dataclass
 class TurnImages:
     vision_parts: list[ContentPart]
@@ -58,6 +64,10 @@ class TurnImages:
     cleanup_paths: list[Path] = field(default_factory=list)
     vision_hashes: frozenset[str] = frozenset()
     reply_images: tuple[CollectedImage, ...] = ()
+    # Object identities for current-message attachments successfully admitted
+    # as vision images. Turn preparation uses these to remove the same upload
+    # from the generic import_attachment surface after byte validation.
+    current_attachment_source_ids: frozenset[int] = frozenset()
     # The trigger carried image-like metadata, but none of its candidates could
     # be read, staged, or validated. Turn orchestration surfaces this to the user
     # instead of silently sending a text-only request to the selected vision model.
@@ -274,6 +284,7 @@ class _ImageScan:
     # candidate skipped on declared size never counts: the bot could not have
     # used it, so the turn proceeds text-only instead of refusing the message.
     attempted: bool = False
+    collected_source_ids: set[int] = field(default_factory=set)
 
 
 async def _images_from_message(
@@ -368,6 +379,8 @@ async def _images_from_message(
                     cleanup_path=expected_path,
                 )
             )
+            if scan is not None:
+                scan.collected_source_ids.add(id(attachment))
             budget.remaining_results -= 1
     except BaseException:
         # A turn deadline can cancel a later attachment read after earlier images
@@ -685,6 +698,7 @@ async def collect_turn_images(
         cleanup_paths=cleanup_paths,
         vision_hashes=frozenset(vision_hashes),
         reply_images=tuple(reply),
+        current_attachment_source_ids=frozenset(current_scan.collected_source_ids),
         current_image_unavailable=current_scan.attempted and not current,
     )
 
@@ -959,10 +973,11 @@ class AttachmentRef:
 
 
 def collect_turn_attachments(message: Any) -> list[AttachmentRef]:
-    """Wrap the message's non-image attachments as AttachmentRefs.
+    """Wrap files outside the declared-image path as AttachmentRefs.
 
-    Image attachments are handled by the vision path (collect_turn_images) and are
-    skipped here.
+    Explicit image MIME types belong to ``collect_turn_images`` alone. A file
+    with generic/missing MIME metadata and an image suffix remains provisional
+    here until byte validation decides whether it is an image or a generic file.
     """
     refs: list[AttachmentRef] = []
     for attachment in getattr(message, "attachments", []) or []:

@@ -1,10 +1,12 @@
 # Providers
 
-Kimi talks to several LLM backends through one internal interface. Nothing
-above `providers/` knows whether a reply came from Anthropic, an
-OpenAI-compatible gateway, or a Codex WebSocket; the agent builds a
-`ProviderRequest`, gets a `ProviderResponse` back, and the differences stay
-below that line.
+Kimi routes its general chat-capable LLM backends through one internal
+interface. Nothing above `providers/` knows whether a reply came from
+Anthropic, an OpenAI-compatible gateway, or a Codex WebSocket; the agent builds
+a `ProviderRequest`, gets a `ProviderResponse` back, and the differences stay
+below that line. Lifecycle-owned specialists, currently
+`gemini_interactions` for video, use stricter feature-specific protocols and
+are documented with the lifecycle that owns them.
 
 This page covers the parts that are the same everywhere: how a turn picks a
 backend, what you can declare in `config/models.yaml`, how failover and image
@@ -16,6 +18,7 @@ needs real setup has its own page:
 - [Claude subscription via ccflare](providers-ccflare.md)
 - [Codex](providers-codex.md)
 - [OpenAI and OpenRouter](providers-openai.md)
+- [Gemini video understanding](video-understanding.md)
 
 ## How a request finds its backend
 
@@ -23,8 +26,8 @@ There are three layers. Keep them apart in your head, because they fail in
 different ways.
 
 **Roles** are the jobs the bot needs done: chatting, compacting a long
-conversation, compiling a persona, or running an optional durable coding task.
-Code never names a model directly. It asks for a role, and
+conversation, compiling a persona, analyzing video, or running an optional
+durable coding task. Code never names a model directly. It asks for a role, and
 `config/models.yaml` decides what serves it.
 
 **Model entries** are named routing targets. An entry says which upstream model
@@ -48,15 +51,17 @@ two different gateways. It also means a model's identity and a gateway's
 identity fail separately: a wrong model id is a 404 from the right endpoint, a
 wrong profile is the right model at an endpoint that will not serve it.
 
-If you want to know which transports exist, `providers/factory.py` is the
-runtime source of truth. If you want to know which ones this deployment
-actually uses, that is `config/models.yaml`.
+`config/model_config.py:SUPPORTED_PROVIDER_PROFILE_TYPES` is the source of truth
+for profile types accepted by the catalog. `providers/factory.py` constructs the
+general chat-capable transports; the video lifecycle separately constructs the
+specialized `gemini_interactions` transport. `config/models.yaml` decides which
+profiles this deployment actually uses.
 
 ## Provider types
 
-Each profile declares one `type`. The supported values are the ones listed in
-`SUPPORTED_PROVIDER_NAMES`; if a type isn't wired into the factory, it isn't
-supported:
+Each profile declares one `type`. General provider types are listed in
+`SUPPORTED_PROVIDER_NAMES`; the catalog adds its deliberately narrow specialized
+types in `SUPPORTED_PROVIDER_PROFILE_TYPES`:
 
 | `type` | Transport | Supports |
 |---|---|---|
@@ -67,6 +72,7 @@ supported:
 | `openrouter` | OpenRouter Chat Completions | text, multimodal input, tool calling, provider routing, image output |
 | `codex` | ChatGPT Codex backend over WebSocket Responses | text, image input, function tools, native image generation |
 | `xai` | Native xAI Responses API with OAuth/API auth | text, image input, function tools, reasoning |
+| `gemini_interactions` | Fixed Google Gemini Interactions and Files APIs; video lifecycle only | stateful YouTube and uploaded-video analysis |
 
 A gateway that speaks more than one of these can appear as more than one
 profile sharing a single credential. Declare the transport each model actually
@@ -177,6 +183,9 @@ providers:
   oauth-backend:
     type: codex
     reasoning_effort: low
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
 
 models:
   primary-chat:
@@ -200,6 +209,13 @@ models:
       high: [read_file, list_workspace, grep_workspace, glob_workspace,
              edit_file, multi_edit, write_file, move_file, delete_file,
              zip, extract_archive]
+  gemini-video-flash:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    context_window: 1048576
+    capabilities: [video_input]
+    # Example only: verify the current vendor rate card before deployment.
+    pricing: { input: 0.75, output: 3.75, cached_read: 0.075 }
 
 roles:
   chat: primary-chat
@@ -213,6 +229,8 @@ roles:
   # Optional background worker; requires text + tool_calling.
   coding: oauth-chat
   coding_fallbacks: []
+  # Optional specialist; no video_fallbacks field is supported.
+  video: gemini-video-flash
 
 # Candidate models offered to the bot owner by /models (maximum 120).
 selectable_chat_models: [primary-chat, oauth-chat]
@@ -229,8 +247,9 @@ variable name, and the values themselves stay in `.env`.
 
 ### Provider profile fields
 
-Unknown fields are rejected outright, so unsupported configuration cannot look
-effective while doing nothing.
+Unknown fields are rejected outright, and specialized profile contracts reject
+general-provider fields they do not consume, so unsupported configuration
+cannot look effective while doing nothing.
 
 | Field | Default | Applies to | Meaning |
 |---|---|---|---|
@@ -246,14 +265,14 @@ effective while doing nothing.
 | `app_url` | `""` | `openrouter` | `HTTP-Referer` attribution header. |
 | `service_tier` | `""` | OpenAI, OpenRouter | OpenAI service tier, or OpenRouter `flex` or `priority`. Sent only on the OpenAI gateway and on OpenRouter; dropped on other compatibility gateways. Empty on OpenRouter leaves the upstream default in place. |
 | `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses`, `openrouter`, `xai` | SDK transport timeout. |
-| `max_output_tokens` | unset | all | Hard output-token ceiling for every model on this gateway. |
+| `max_output_tokens` | unset | general providers | Hard output-token ceiling for every model on this gateway. |
 | `request_id_header` | `""` | OpenAI-compatible | Per-request tracing header name. |
 | `reasoning_effort` | `""` | `codex`, `openai_responses`, `anthropic_compat`, `openai_compat`, `xai` | Default effort for models routed through this profile. Responses providers send `reasoning.effort`; OpenAI-compatible Chat Completions profiles send `reasoning_effort`. |
 
 `max_output_tokens` lives on the profile rather than the model entry on
-purpose. It expresses a limit the *gateway* imposes, so it applies to
-everything routed through that gateway without lowering the global limit for
-anyone else.
+purpose. For general providers, it expresses a limit the *gateway* imposes, so
+it applies to everything routed through that gateway without lowering the
+global limit for anyone else.
 
 For `openai_compat` and `openai_responses`, `service_tier` is sent only when
 the profile's `base_url` is `https://api.openai.com` or is unset (the SDK
@@ -274,6 +293,13 @@ discovering as a 401 mid-conversation.
 OpenRouter is deliberately stricter: it requires `api_key_env`, rejects
 `keyless`, and rejects `base_url`, since the endpoint is code-owned.
 
+`gemini_interactions` is narrower still. Its profile accepts only `type` and
+`api_key_env: GEMINI_API_KEY`; general-provider transport, attribution, retry,
+and circuit fields are rejected because its Google endpoints and lifecycle are
+code-owned. It may back only `roles.video`; it cannot appear in a
+chat/compaction/coding/persona role, fallback, scope override, or
+`selectable_chat_models`.
+
 #### Supported `api_key_env` values
 
 The set is closed (`SUPPORTED_API_KEY_ENVS`), so a typo shows up as a startup
@@ -281,13 +307,15 @@ error rather than as an empty key at request time:
 
 `MODEL_API_KEY`, `ANTHROPIC_API_KEY`, `OPENCODE_GO_API_KEY`,
 `RUNINFRA_GATEWAY_KEY`, `COMPACTION_API_KEY`, `GROK_API_KEY`,
-`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`.
+`FIREWORKS_API_KEY`, `ZAI_API_KEY`, `KIMI_CODING_API_KEY`,
+`GEMINI_API_KEY`.
 
 `MODEL_API_KEY` is the neutral one for any other OpenAI-compatible profile.
 Codex profiles authenticate from `CODEX_TOKEN_FILE` and leave `api_key_env`
 blank. Native xAI profiles follow the stricter `auth_mode` contract documented
 in [xAI Grok](providers-grok.md); OAuth uses `XAI_OAUTH_TOKEN_FILE`, while API
-and `auto` fallback use only `GROK_API_KEY`.
+and `auto` fallback use only `GROK_API_KEY`. `GEMINI_API_KEY` is accepted only
+by the specialized `gemini_interactions` profile contract.
 
 ### Model entry fields
 
@@ -296,7 +324,7 @@ and `auto` fallback use only `GROK_API_KEY`.
 | `provider` | required | Name of the profile in `providers:` that serves this model. |
 | `model` | required | The upstream model id, sent verbatim. |
 | `context_window` | `0` | Conservative token capacity. `0` disables the capacity warning for this model. |
-| `capabilities` | `[]` | Declared abilities. Four recognized strings filter the provider's capabilities (see below); an empty list means no filtering. |
+| `capabilities` | `[]` | Declared abilities. Five recognized strings affect routing or validation (see below); an empty list means no filtering. |
 | `pricing` | unset | Rates per million tokens: `input`, `output`, `cached_read`, `cache_write`. |
 | `reasoning_after_tools` | `{}` | Effort to tool names that escalate the rest of the turn. |
 
@@ -305,14 +333,14 @@ around what a model claims here, so an entry claiming `image_input` for a model
 without vision produces a provider error rather than a graceful downgrade. Be
 accurate, and when in doubt be conservative.
 
-The list is not a closed vocabulary. Four strings currently filter matching
-provider capabilities: `text`, `tool_calling`, `image_input`, and
-`image_output`. `image_input` also drives image routing and `chat_images`
+The list is not a closed vocabulary. Five strings currently affect runtime
+routing or validation: `text`, `tool_calling`, `image_input`, `image_output`,
+and `video_input`. `image_input` also drives image routing and `chat_images`
 validation, while `text` and `tool_calling` are required of anything in
 `selectable_chat_models`. `image_output` affects provider-native output for
 explicit `ProviderRequest` callers; normal Discord image creation uses the
-`generate_image` tool. Other strings document intent but do not change runtime
-behavior.
+`generate_image` tool. `video_input` is required for `roles.video`. Other
+strings document intent but do not change runtime behavior.
 
 If you omit `pricing`, turns on that model contribute no cost to `/usage`.
 That is correct for subscription-covered backends and wrong for metered ones,
@@ -330,16 +358,22 @@ that model, so an unset window is silent rather than safe.
 | `compaction` | yes | In-turn context compaction ([compaction.md](compaction.md)). |
 | `persona` | no | Compiling user persona overrides ([persona.md](persona.md)). |
 | `coding` | no | Durable background coding tasks ([coding-agent.md](coding-agent.md)); requires `text` and `tool_calling`. |
+| `video` | no | Stateful Gemini video specialist ([video-understanding.md](video-understanding.md)); requires `video_input` on `gemini_interactions`. |
 
-Every role may declare an ordered `<role>_fallbacks` list. Unknown role keys are
-rejected, so a misspelled role is a startup failure rather than a silently
-ignored line.
+General roles may declare an ordered `<role>_fallbacks` list. Video cannot:
+switching a model or provider would break its stored Interaction chain, so
+`video_fallbacks` is rejected as an unknown field. Other unknown role keys are
+also startup failures rather than silently ignored configuration.
 
 Reachable roles must have their referenced secret available, unless the provider
 is Codex or the profile declares `keyless: true`. "Reachable" is doing real work
 in that sentence, and
 [what is checked at startup](#what-is-checked-at-startup) below spells out
 exactly what it covers.
+
+The optional video role has a separate fail-closed registration gate. A missing
+`roles.video`, disabled feature flag, or blank `GEMINI_API_KEY` leaves the video
+tool absent (and logs the reason) without taking ordinary chat offline.
 
 ### Scope overrides
 
@@ -394,10 +428,11 @@ that routing depends on.
 
 ## Failover
 
-Every resolved role uses the same provider-chain wrapper, including roles with
-only one model. This gives fallback and circuit-breaker behavior one consistent
-entry point. Chains are deduped first, and image turns filter out non-vision
-fallbacks.
+Every general role resolved by `ProviderManager` uses the same provider-chain
+wrapper, including roles with only one model. This gives fallback and
+circuit-breaker behavior one consistent entry point. Chains are deduped first,
+and image turns filter out non-vision fallbacks. Lifecycle-owned specialists
+such as video do not pass through this wrapper.
 
 ```yaml
 roles:
@@ -680,10 +715,12 @@ these messages, they come from `config/model_config.py`:
 | Message | Cause |
 |---|---|
 | `config/models.yaml must contain a YAML mapping` | The file parsed to a list, a scalar, or nothing. |
-| `unknown provider type '<x>'; expected one of: ...` | A `providers:` entry names a type outside `SUPPORTED_PROVIDER_NAMES`. |
+| `unknown provider type '<x>'; expected one of: ...` | A `providers:` entry names a type outside `SUPPORTED_PROVIDER_PROFILE_TYPES`. |
 | `unsupported api_key_env '<X>'; expected one of: ...` | The profile names an env var outside `SUPPORTED_API_KEY_ENVS`, including `DEEP_RESEARCH_API_KEY`. |
 | `keyless profiles must not set api_key_env` / `keyless profiles must set base_url` | A `keyless: true` profile contradicts itself, or has no endpoint to call. |
 | `xAI ...` / `auth_mode is only supported ...` | An xAI profile has contradictory auth fields, a custom endpoint, or another provider tried to use xAI-only auth configuration. |
+| `gemini_interactions profiles ...` | A specialized video profile uses a non-Gemini key name or sets any general-provider field, including endpoint, discovery, auth, keyless, transport, attribution, retry, or circuit configuration. |
+| `GEMINI_API_KEY is only supported for provider type 'gemini_interactions'` | The dedicated video key was attached to a general provider profile. |
 | `unsupported reasoning_effort '<x>'; expected one of: ...` | An effort outside the accepted ladder, or outside Anthropic's narrower one on an `anthropic_compat` profile. |
 | `reasoning_effort is only supported for provider types: ...` | The field is set on a profile type that cannot carry it. |
 | `models.<name>.provider references unknown provider '<x>'` | A model entry names a profile absent from `providers:`. |
@@ -692,12 +729,19 @@ these messages, they come from `config/model_config.py`:
 | `unsupported reasoning_after_tools effort '<x>'` / `contains duplicate effort` / `must contain non-empty tool names` / `contains duplicate tool names` | A malformed escalation mapping. |
 | `<path> references unknown model '<name>'` | A role, a fallback chain, or a scope override names a model absent from `models:`. |
 | `<path> references model '<name>' which lacks the 'image_input' capability` | A non-vision model in `chat_images` or its fallbacks. |
+| `roles.video ... lacks required capabilities: video_input` | The video role points to a model that does not declare video input. |
+| `roles.video ... expected one of: gemini_interactions` | The video role points to a general provider rather than the specialized transport. |
+| `... uses specialized provider type ... only supported for roles.video` | A Gemini Interactions model was placed in another role, fallback, override, or selectable chat list. |
 | `selectable chat model '<name>' is missing capabilities ...` | A `/models` candidate without `text` and `tool_calling`. |
 | `selectable_chat_models entries must not be blank` / `must be unique` / `supports at most 120 entries` | A malformed candidate list. |
 | `context_window must be >= 0` / `pricing rates must be >= 0` | Negative numbers in a model entry. |
 
-The credential gate runs after parsing, and exits rather than booting onto a
-backend with no key. See [setup.md](setup.md).
+The post-parse credential gate exits when a startup-reachable general route has
+no usable credential. It covers ordinary chat routes, the compaction primary,
+and the coding primary/fallbacks when coding is enabled. Optional
+lifecycle-owned specialists are gated by their feature instead; for example, a
+blank `GEMINI_API_KEY` leaves video unregistered without aborting startup. See
+[setup.md](setup.md).
 
 Two other conditions are logged and survived rather than treated as fatal:
 
@@ -706,11 +750,15 @@ Two other conditions are logged and survived rather than treated as fatal:
 - `Chat model '<name>' is not operator-selectable`: `/models` named a model
   outside `selectable_chat_models`. The invoker sees the error and the bot is
   fine.
+- `Video understanding ... tool not registered`: the optional feature flag,
+  `roles.video`, or `GEMINI_API_KEY` registration gate is incomplete. Chat
+  continues normally. Provider cleanup still runs when the key is configured;
+  with a blank key, deletions remain queued until credentials are restored.
 
-## Adding a provider
+## Adding a general provider
 
-If you need a transport that isn't in the table above, here is the shape of the
-work:
+If you need a chat-capable transport that isn't in the table above, here is the
+shape of the work:
 
 1. Add a provider class under `providers/` implementing
    `LLMProvider.run_turn(ProviderRequest) -> ProviderResponse`.
@@ -726,3 +774,9 @@ work:
 6. Update this page, add a backend guide beside it if the provider needs real
    setup, and add focused tests for request shape, response parsing, provider
    state, tool calls, and provider-specific errors.
+
+A lifecycle-owned specialized profile follows a different path: add it to
+`SPECIALIZED_PROVIDER_NAMES`, give it a strict model/role/field contract in
+`config/model_config.py`, and construct it only inside the lifecycle that owns
+its protocol. Do not add it to `providers/factory.py` or imply that it supports
+the general fallback and circuit-breaker machinery unless it actually does.

@@ -13,6 +13,7 @@ from app.memory import MemoryManager
 from app.modules import ModuleManager
 from app.plugins import PluginLoadState, build_plugin_context, load_plugins_with_settings
 from app.providers import ProviderManager
+from config.model_config import ModelConfig
 from config.plugin_settings import PluginSettingsRegistry
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
@@ -195,6 +196,7 @@ def build_runtime_tools(
         get_video_session_store or (lambda: None),
         workspace_manager=workspace_manager,
         workspace_locks=workspace_locks,
+        model_config=provider_manager.model_config,
     )
     browser_service = _register_browser(
         settings,
@@ -347,7 +349,7 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "video understanding",
         ("video",),
-        "VIDEO_UNDERSTANDING_ENABLED + GEMINI_API_KEY",
+        "VIDEO_UNDERSTANDING_ENABLED + roles.video + GEMINI_API_KEY",
     ),
     ("code execution", ("run_code",), "CODE_EXEC_ENABLED + Linux sandbox support"),
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
@@ -590,6 +592,7 @@ def _register_video(
     *,
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
+    model_config: ModelConfig | None = None,
 ) -> VideoUnderstandingService:
     key = settings.gemini_api_key.get_secret_value().strip()
     service = VideoUnderstandingService(
@@ -606,18 +609,40 @@ def _register_video(
     if not settings.video_understanding_enabled:
         log.info("Video understanding disabled; VIDEO_UNDERSTANDING_ENABLED is false")
         return service
+    if model_config is None or model_config.roles.video is None:
+        log.warning("Video understanding role not configured in models.yaml; tool not registered")
+        return service
+    catalog_model = model_config.roles.video
+    model_entry = model_config.models.get(catalog_model)
+    if model_entry is None:
+        log.warning("Video role references unknown model %r; tool not registered", catalog_model)
+        return service
+    provider_profile = model_config.providers.get(model_entry.provider)
+    if provider_profile is None or provider_profile.type != "gemini_interactions":
+        log.warning(
+            "Video role model %r does not use gemini_interactions provider; tool not registered",
+            catalog_model,
+        )
+        return service
     if not key:
         log.warning(
             "Video understanding requested but GEMINI_API_KEY is not set; tool not registered"
         )
         return service
+    upstream_model = model_entry.model
     init_video_tool(
         registry,
         service,
         workspace_manager=workspace_manager,
         workspace_locks=workspace_locks,
+        catalog_model=catalog_model,
+        model=upstream_model,
     )
-    log.info("Video understanding enabled with Gemini 3.7 Flash")
+    log.info(
+        "Video understanding enabled with %s (catalog %s)",
+        upstream_model,
+        catalog_model,
+    )
     return service
 
 

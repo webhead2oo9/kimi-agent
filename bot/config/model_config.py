@@ -32,10 +32,13 @@ _API_KEY_SETTINGS_FIELDS = {
     "ZAI_API_KEY": "zai_api_key",
     "KIMI_CODING_API_KEY": "kimi_coding_api_key",
     "COMPACTION_API_KEY": "compaction_api_key",
+    "GEMINI_API_KEY": "gemini_api_key",
 }
 # Derive parser support from the settings-field map so every accepted environment
 # name resolves to a Settings secret field.
 SUPPORTED_API_KEY_ENVS = frozenset(_API_KEY_SETTINGS_FIELDS)
+SPECIALIZED_PROVIDER_NAMES = frozenset({"gemini_interactions"})
+SUPPORTED_PROVIDER_PROFILE_TYPES = SUPPORTED_PROVIDER_NAMES | SPECIALIZED_PROVIDER_NAMES
 _REASONING_EFFORT_PROVIDER_TYPES = frozenset(
     {"codex", "anthropic_compat", "openai_responses", "xai"}
 )
@@ -263,8 +266,8 @@ class ProviderProfile(BaseModel):
     @field_validator("type")
     @classmethod
     def _known_provider_type(cls, value: str) -> str:
-        if value not in SUPPORTED_PROVIDER_NAMES:
-            supported = ", ".join(sorted(SUPPORTED_PROVIDER_NAMES))
+        if value not in SUPPORTED_PROVIDER_PROFILE_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_PROVIDER_PROFILE_TYPES))
             raise ValueError(f"unknown provider type {value!r}; expected one of: {supported}")
         return value
 
@@ -380,6 +383,37 @@ class ProviderProfile(BaseModel):
             raise ValueError("OpenRouter service_tier must be 'flex' or 'priority'")
         return self
 
+    @model_validator(mode="after")
+    def _gemini_interactions_profile_contract(self) -> ProviderProfile:
+        if self.type != "gemini_interactions":
+            if self.api_key_env == "GEMINI_API_KEY":
+                raise ValueError(
+                    "GEMINI_API_KEY is only supported for provider type 'gemini_interactions'"
+                )
+            return self
+        explicitly_set = self.model_fields_set
+        if "keyless" in explicitly_set:
+            raise ValueError("gemini_interactions profiles do not support keyless mode")
+        if "base_url" in explicitly_set:
+            raise ValueError("gemini_interactions profiles use the fixed Google API endpoint")
+        if "models_endpoint" in explicitly_set:
+            raise ValueError(
+                "gemini_interactions profiles do not support models_endpoint discovery"
+            )
+        if "auth_mode" in explicitly_set:
+            raise ValueError("gemini_interactions profiles do not support auth_mode")
+        unsupported_fields = sorted(explicitly_set - {"type", "api_key_env"})
+        if unsupported_fields:
+            fields = ", ".join(unsupported_fields)
+            raise ValueError(
+                f"gemini_interactions profiles do not support profile fields: {fields}"
+            )
+        if not self.api_key_env:
+            raise ValueError("gemini_interactions profiles must set api_key_env")
+        if self.api_key_env != "GEMINI_API_KEY":
+            raise ValueError("gemini_interactions profiles must set api_key_env: GEMINI_API_KEY")
+        return self
+
 
 class ModelPricing(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -445,9 +479,10 @@ class ModelEntry(BaseModel):
 class RoleAssignments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Each role's `<role>_fallbacks` is an ordered list of alternate model names
-    # tried, in order, only when the primary raises a transient availability error
-    # (connection drop, timeout, 429, 5xx). See docs/providers.md "Failover".
+    # Each general role's `<role>_fallbacks` is an ordered list of alternate
+    # model names tried, in order, only when the primary raises a transient
+    # availability error (connection drop, timeout, 429, 5xx). Stateful video
+    # deliberately has no fallback field. See docs/providers.md "Failover".
     chat: str
     chat_fallbacks: list[str] = Field(default_factory=list)
     # Optional: route image turns to a dedicated vision model when ``chat``
@@ -467,6 +502,10 @@ class RoleAssignments(BaseModel):
     # unchanged and leaves every coding-task control unregistered.
     coding: str | None = None
     coding_fallbacks: list[str] = Field(default_factory=list)
+    # Optional stateful video understanding specialist. Unset leaves the video tool
+    # unregistered even when VIDEO_UNDERSTANDING_ENABLED is true. Fallbacks are not
+    # supported because stored Interaction chains are stateful at Google.
+    video: str | None = None
 
     # The fields above are the role schema: each is either `<role>` or
     # `<role>_fallbacks`, and `extra="forbid"` turns an unknown role key into a
@@ -575,9 +614,32 @@ class ModelConfig(BaseModel):
             self._require_image_capability("roles.chat_images", self.roles.chat_images)
         if self.roles.coding is not None:
             self._require_capabilities("roles.coding", self.roles.coding, {"text", "tool_calling"})
+        if self.roles.video is not None:
+            self._require_capabilities("roles.video", self.roles.video, {"video_input"})
+            provider_type = self.providers[self.models[self.roles.video].provider].type
+            if provider_type not in SPECIALIZED_PROVIDER_NAMES:
+                supported = ", ".join(sorted(SPECIALIZED_PROVIDER_NAMES))
+                raise ValueError(
+                    f"roles.video model {self.roles.video!r} uses provider type {provider_type!r}; "
+                    f"expected one of: {supported}"
+                )
+        for role_name, model_name in self.roles.assigned_roles().items():
+            if role_name != "video":
+                provider_type = self.providers[self.models[model_name].provider].type
+                if provider_type in SPECIALIZED_PROVIDER_NAMES:
+                    raise ValueError(
+                        f"roles.{role_name} model {model_name!r} uses specialized provider type "
+                        f"{provider_type!r}, which is only supported for roles.video"
+                    )
         for role_name in self.roles.role_names():
             for index, model_name in enumerate(self.roles.fallbacks_for(role_name)):
                 self._require_model(f"roles.{role_name}_fallbacks[{index}]", model_name)
+                provider_type = self.providers[self.models[model_name].provider].type
+                if provider_type in SPECIALIZED_PROVIDER_NAMES:
+                    raise ValueError(
+                        f"roles.{role_name}_fallbacks[{index}] model {model_name!r} uses specialized "
+                        f"provider type {provider_type!r}"
+                    )
         if self.roles.chat_images is not None:
             for index, model_name in enumerate(self.roles.chat_images_fallbacks):
                 self._require_image_capability(f"roles.chat_images_fallbacks[{index}]", model_name)
@@ -590,6 +652,11 @@ class ModelConfig(BaseModel):
                 )
         for model_name in self.selectable_chat_models:
             self._require_model("selectable_chat_models", model_name)
+            provider_type = self.providers[self.models[model_name].provider].type
+            if provider_type in SPECIALIZED_PROVIDER_NAMES:
+                raise ValueError(
+                    f"selectable chat model {model_name!r} uses specialized provider type {provider_type!r}"
+                )
             capabilities = set(self.models[model_name].capabilities)
             missing = {"text", "tool_calling"} - capabilities
             if missing:
@@ -605,6 +672,12 @@ class ModelConfig(BaseModel):
         ):
             for scope_key, override in group.items():
                 self._require_model(f"overrides.{group_name}.{scope_key}.chat", override.chat)
+                provider_type = self.providers[self.models[override.chat].provider].type
+                if provider_type in SPECIALIZED_PROVIDER_NAMES:
+                    raise ValueError(
+                        f"overrides.{group_name}.{scope_key}.chat model {override.chat!r} uses "
+                        f"specialized provider type {provider_type!r}"
+                    )
         return self
 
     def _require_model(self, path: str, model_name: str) -> None:

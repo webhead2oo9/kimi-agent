@@ -1994,6 +1994,7 @@ def test_role_names_match_declared_fields() -> None:
         "compaction",
         "persona",
         "coding",
+        "video",
     )
 
 
@@ -2130,3 +2131,173 @@ def test_persona_chain_wraps_in_failover(tmp_path: Path, monkeypatch: pytest.Mon
     assert [p.model for p in persona._providers] == ["Kimi-K2.6", "backup-model"]
     # Cached like every other role, so repeat turns reuse one provider.
     assert manager.ensure_persona() is persona
+
+
+def test_gemini_interactions_provider_profile_contract(tmp_path: Path) -> None:
+    valid_text = """
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  video-model:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [video_input]
+roles:
+  chat: primary
+  compaction: primary
+  video: video-model
+"""
+    config = load_model_config(_write_config(tmp_path / "models.yaml", valid_text))
+    assert config.roles.video == "video-model"
+    assert config.models["video-model"].model == "gemini-3.7-flash"
+
+    for unsupported_field in (
+        "prompt_caching: false",
+        "provider_routing: {}",
+        "app_name: video-client",
+        "app_url: https://example.test",
+        'service_tier: ""',
+        "timeout_seconds: 30",
+        "max_output_tokens: 2048",
+        "request_id_header: X-Request-ID",
+        'reasoning_effort: ""',
+        "failure_adapter: generic",
+        "circuit_breaker: {}",
+    ):
+        with pytest.raises(ValueError, match="do not support profile fields"):
+            load_model_config(
+                _write_config(
+                    tmp_path / "models.yaml",
+                    valid_text.replace(
+                        "api_key_env: GEMINI_API_KEY",
+                        f"api_key_env: GEMINI_API_KEY\n    {unsupported_field}",
+                    ),
+                )
+            )
+
+    # Reject keyless
+    with pytest.raises(ValueError, match="keyless"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text.replace(
+                    "api_key_env: GEMINI_API_KEY",
+                    "api_key_env: GEMINI_API_KEY\n    keyless: false",
+                ),
+            )
+        )
+
+    # Reject base_url
+    with pytest.raises(ValueError, match="Google API endpoint"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text.replace(
+                    "api_key_env: GEMINI_API_KEY",
+                    'api_key_env: GEMINI_API_KEY\n    base_url: ""',
+                ),
+            )
+        )
+
+    for unsupported_field in ('models_endpoint: ""', 'auth_mode: ""'):
+        with pytest.raises(ValueError, match=unsupported_field.partition(":")[0]):
+            load_model_config(
+                _write_config(
+                    tmp_path / "models.yaml",
+                    valid_text.replace(
+                        "api_key_env: GEMINI_API_KEY",
+                        f"api_key_env: GEMINI_API_KEY\n    {unsupported_field}",
+                    ),
+                )
+            )
+
+    # Reject wrong api_key_env
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text.replace("api_key_env: GEMINI_API_KEY", "api_key_env: MODEL_API_KEY"),
+            )
+        )
+
+    # Reject the dedicated Gemini key on a general provider profile.
+    with pytest.raises(ValueError, match="only supported for provider type"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text.replace(
+                    "base_url: https://example.test/v1\n    keyless: true",
+                    "base_url: https://example.test/v1\n    api_key_env: GEMINI_API_KEY",
+                ),
+            )
+        )
+
+    # Reject video_fallbacks
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        load_model_config(
+            _write_config(
+                tmp_path / "models.yaml",
+                valid_text + "  video_fallbacks: [video-model]\n",
+            )
+        )
+
+
+def test_video_role_validation(tmp_path: Path) -> None:
+    base_text = """
+providers:
+  gemini-video:
+    type: gemini_interactions
+    api_key_env: GEMINI_API_KEY
+  main:
+    type: openai_compat
+    base_url: https://example.test/v1
+    keyless: true
+models:
+  primary:
+    provider: main
+    model: test-chat
+    capabilities: [text, tool_calling]
+  video-missing-cap:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [text]
+  video-good:
+    provider: gemini-video
+    model: gemini-3.7-flash
+    capabilities: [video_input]
+  video-wrong-provider:
+    provider: main
+    model: other-video-model
+    capabilities: [video_input]
+roles:
+  chat: primary
+  compaction: primary
+  video: video-missing-cap
+"""
+    # Lacks video_input capability
+    with pytest.raises(ValueError, match="video_input"):
+        load_model_config(_write_config(tmp_path / "models.yaml", base_text))
+
+    # Video role using non-gemini_interactions provider
+    wrong_provider_text = base_text.replace(
+        "video: video-missing-cap", "video: video-wrong-provider"
+    )
+    with pytest.raises(ValueError, match="expected one of: gemini_interactions"):
+        load_model_config(_write_config(tmp_path / "models.yaml", wrong_provider_text))
+
+    # Chat role using gemini_interactions provider
+    chat_using_video = base_text.replace("chat: primary", "chat: video-good").replace(
+        "video: video-missing-cap", "video: video-good"
+    )
+    with pytest.raises(ValueError, match="specialized provider type"):
+        load_model_config(_write_config(tmp_path / "models.yaml", chat_using_video))

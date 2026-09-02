@@ -168,7 +168,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "core_runtime_tables"
+        assert version_row["name"] == "video_session_catalog_model"
         assert version_row["applied_at"]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -463,7 +463,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
         (5, "core_runtime_tables"),
-        (6, "add_note"),
+        (6, "video_session_catalog_model"),
+        (7, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -475,7 +476,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 6
+        assert row[0] == 7
     finally:
         await reopened.close()
 
@@ -508,7 +509,8 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
         (5, "core_runtime_tables"),
-        (6, "add_note"),
+        (6, "video_session_catalog_model"),
+        (7, "add_note"),
     ]
 
 
@@ -543,6 +545,7 @@ async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(
         (3, "video_understanding_sessions"),
         (4, "provider_circuit_breakers"),
         (5, "core_runtime_tables"),
+        (6, "video_session_catalog_model"),
     ]
     assert all(row["applied_at"] for row in history)
 
@@ -551,7 +554,7 @@ async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(
     await reopened.close()
     conn = sqlite3.connect(upgraded_path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (5,)
+        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (6,)
     finally:
         conn.close()
 
@@ -609,7 +612,7 @@ async def test_failed_schema_migration_rolls_back(tmp_path, monkeypatch) -> None
         conn.close()
 
     assert columns == {"id", "value"}
-    assert version == (5,)
+    assert version == (6,)
     assert preserved == ("keep me",)
 
 

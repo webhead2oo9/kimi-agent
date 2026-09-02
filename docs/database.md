@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v5. If you upgrade to a newer release, the bot runs the right migrations at startup. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
+The current schema version is v6. If you upgrade to a newer release, the bot runs the right migrations at startup. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -90,6 +90,7 @@ The current registry:
 | v2 → v3 | `video_understanding_sessions` | Video session bookkeeping, interactions, provider files, and deletion outboxes. |
 | v3 → v4 | `provider_circuit_breakers` | Persistent provider circuit breaker. |
 | v4 → v5 | `core_runtime_tables` | Canonical config-proposal, module scheduler, command-scope, and module-ledger tables. |
+| v5 → v6 | `video_session_catalog_model` | Catalog model identity for existing and new video sessions, backfilled from the stored upstream model. |
 
 Each version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema and version stamp unchanged.
 
@@ -127,7 +128,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`auto_retain_watermarks`** records the highest `messages.id` flushed to Hindsight per (conversation, user). Advancing a watermark without retaining is how opt-out, trivial-content, and forget-me slices are permanently skipped.
 - **`privacy_deletion_requests`** holds the durable authorization for a confirmed `/privacy` deletion: one coalesced row per user with the widest requested scope, a generation counter, and a unique token. The token stops a worker holding stale authorization from completing a superseded request after a crash or race. It contains no message content.
 - **`user_memory_bank_states`** is conservative local knowledge that a user's remote Hindsight bank may exist. The flag is written *before* any create or retain attempt and cleared only after a confirmed delete, so disabling the backend can't hide a bank from the privacy workflow.
-- **`video_sessions`** holds one actor/root/guild-scoped specialist session: opaque local handle, source kind, safe display filename/relative locator and byte size for uploads (or canonical YouTube URL/video id), model, latest Gemini Interaction id, count, and expiry. It stores no video bytes, provider capability URLs, questions, or answers.
+- **`video_sessions`** holds one actor/root/guild-scoped specialist session: opaque local handle, source kind, safe display filename/relative locator and byte size for uploads (or canonical YouTube URL/video id), the pricing identity (`models.yaml` catalog name for new sessions or the legacy upstream ID backfilled during a v6 migration), the resolved upstream model ID used to continue the chain, latest Gemini Interaction id, count, and expiry. It stores no video bytes, provider capability URLs, questions, or answers.
 - **`video_interactions`** records every Gemini Interaction id in each session, so deleting only the latest turn can't strand provider state.
 - **`video_provider_files`** reserves each client-chosen Gemini Files API name before upload and later associates it with one session. Unattached rows let startup and periodic cleanup recover from a crash between upload and session creation; the cleanup interval is `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` (one hour by default).
 - **`video_interaction_deletions`** and **`video_provider_file_deletions`** are content-free provider deletion outboxes. Triggers fill them before local session and cascade deletion; Interaction deletion gates the backing File delete. Failed attempts use a capped one-minute-to-six-hour exponential delay. Retry-ready rows sort ahead of delayed failures, and the attempt count never discards privacy cleanup metadata.
@@ -157,7 +158,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 
 Every completed model request writes one row to `usage_ledger`. A single Discord interaction may make several model requests: the reply, compaction summaries, image descriptions, persona compilation. They share a `turn_id` so they can be reported as one interaction.
 
-Each row records the user, channel, server, model, purpose, token counts, timestamp, and an optional estimated cost. It does not store prompts or model responses. Cost estimates use the `pricing` rates for the model in `config/models.yaml`; if those rates aren't configured, the usage stays unpriced. The fixed Gemini video specialist is the exception: its tool attaches Google's published, date-scheduled Gemini 3.7 Flash estimate directly, without adding that specialist to chat routing.
+Each row records the user, channel, server, serving model, pricing-model name, purpose, token counts, timestamp, and an optional estimated cost. It does not store prompts or model responses. Cost estimates use the `pricing` rates for the exact catalog name in `config/models.yaml`, or an unambiguous matching upstream model ID; if those rates aren't configured, the usage stays unpriced. Video Interactions use this same pipeline with either the new session's catalog identity or a migrated session's upstream-ID fallback pinned to the session.
 
 Rows save as each model request finishes, so if a later request fails or the interaction times out, usage from the completed requests is still recorded. The `/usage` command summarizes this data over time.
 

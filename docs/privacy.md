@@ -44,7 +44,7 @@ This is the primary store: SQLite in WAL mode, with the schema owned by
 | `message_contexts` | Maps Discord message ids → conversation roots so reply routing survives a reboot. |
 | `conversation_activated_tools`, `thread_conversations` | Per-root tool activation and thread-handoff enrollment, including the initiating user id used to authorize close/pause/resume. |
 | `image_distillations` | Conversation-scoped, model-produced descriptions of transcript images, including OCR, approximate normalized bounding boxes, and uncertainty. No additional image bytes. Rows cascade with deleted conversations and are invalidated when one participant's messages are scrubbed from a surviving shared conversation. This table is only a cache; the durable copy is the description stored on the `messages` row it describes, which a per-user scrub removes along with that user's rows. |
-| `video_sessions`, `video_interactions` | Actor/root/guild-scoped specialist metadata: source kind, safe display filename/relative locator and byte size (or canonical YouTube URL/video id), model, opaque local and Gemini Interaction ids, counts, and timestamps. No uploaded bytes, Discord CDN URLs, questions, or answers. |
+| `video_sessions`, `video_interactions` | Actor/root/guild-scoped specialist metadata: source kind, safe display filename/relative locator and byte size (or canonical YouTube URL/video id), catalog and upstream model identifiers, opaque local and Gemini Interaction ids, counts, and timestamps. No uploaded bytes, Discord CDN URLs, questions, or answers. |
 | `video_provider_files` | Client-chosen Gemini File resource name, actor/root/guild scope, MIME, byte size, session association, and timestamps. No File capability URI or bytes. |
 | `video_interaction_deletions`, `video_provider_file_deletions` | Content-free retry rows for provider-side Interaction/File deletion: opaque provider id, user/session grouping, timestamps, attempt count, and bounded last error. No source content, question, or answer. |
 | `user_preferences` | `user_id`, `memory_enabled`, `privacy_consent`(+`_at`), `persona_prompt`(+`_updated_at`). Settings, not message content. |
@@ -117,8 +117,9 @@ browser](browser.md).
 
 ### Gemini video interactions (optional)
 
-When `VIDEO_UNDERSTANDING_ENABLED` and `GEMINI_API_KEY` register the searchable
-`video` tool, `start` sends either a public YouTube URL or streamed bytes from an
+When `VIDEO_UNDERSTANDING_ENABLED`, `GEMINI_API_KEY`, and a valid `roles.video`
+catalog assignment register the searchable `video` tool, `start` sends either a
+public YouTube URL or streamed bytes from an
 exact current-message Discord attachment/safe workspace video plus the user's
 question to Google's paid Gemini API. Uploads use Files API (500 MiB and one-hour
 hard ceilings); Google documents File retention up to 48 hours. Interactions use
@@ -329,7 +330,7 @@ supplied public HTTPS target and sends no stored transcript or memory.
 | xAI X search | The search query, optional date and account-handle filters, and the model's instructions to the hosted search; sent under the operator's xAI OAuth token or `GROK_API_KEY` | `X_SEARCH_ENABLED` + OAuth token file or `GROK_API_KEY` | off |
 | OpenAI image generation | The image prompt, requested output settings, and any selected PNG/JPEG/WebP workspace reference bytes | `IMAGE_GEN_ENABLED` + Codex OAuth or `IMAGE_GEN_API_KEY` | off |
 | Wolfram\|Alpha | A bounded single-line computation query and optional units choice | `WOLFRAM_ALPHA_APP_ID` | off |
-| Google Gemini video understanding | A public YouTube URL or streamed Discord/workspace video bytes plus the user's questions; Google temporarily stores uploaded Files and the Interaction chain for stateful continuation | `VIDEO_UNDERSTANDING_ENABLED` + `GEMINI_API_KEY` | off |
+| Google Gemini video understanding | A public YouTube URL or streamed Discord/workspace video bytes plus the user's questions; Google temporarily stores uploaded Files and the Interaction chain for stateful continuation | `VIDEO_UNDERSTANDING_ENABLED` + `GEMINI_API_KEY` + a valid `roles.video` model | off |
 | Workspace URL fetch | The normal HTTPS request for a user/model-supplied public URL; private, LAN, loopback, and unsafe redirects are blocked | core workspace tool | on |
 | Persistent browser | Requested sites receive normal browser traffic, values entered during the task, and cookies or site storage kept in the user's profile. Host mode uses the service host's routes; netns mode uses the operator-provisioned network boundary. | `BROWSER_ENABLED` | off |
 | Network-enabled `run_code` and coding jobs | Generated code can send task inputs and readable workspace data to destinations it chooses. Host mode can reach anything allowed by the service host's routes; netns mode uses the operator-provisioned network boundary. | `CODE_EXEC_ENABLED` + `CODE_EXEC_NETWORK_MODE` set to `host` or `netns` | off |

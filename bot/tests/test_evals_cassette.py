@@ -14,11 +14,11 @@ from evals.cassette import (
     load_cassette,
     tape_provenance,
 )
-from tools.registry import MessageContext
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, TurnBudget
 from trust.tiers import TrustTier
 
 
-def _ctx():
+def _ctx(*, internet_search_cap: int = 10):
     return MessageContext(
         user_id="u",
         user_name="n",
@@ -26,6 +26,7 @@ def _ctx():
         channel_id="c",
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
+        budget=TurnBudget(caps={BudgetName.INTERNET_SEARCH_BACKEND_CALLS: internet_search_cap}),
     )
 
 
@@ -51,18 +52,17 @@ def _registry_with_search_probe(*, limit: int = 3, backend_calls: int = 2):
 
     async def handler(args, ctx):
         calls["live"] += 1
-        ctx.internet_search_backend_calls_this_turn += backend_calls
+        assert ctx.consume_budget(BudgetName.INTERNET_SEARCH_BACKEND_CALLS, backend_calls)
         return json.dumps({"query": args.get("query"), "live": calls["live"]})
 
-    registry = InstrumentedRegistry(
-        internet_search_max_backend_calls_per_turn=limit,
-    )
+    registry = InstrumentedRegistry()
     registry.register(
         name="internet_search",
         description="d",
         parameters={"type": "object", "properties": {}},
         handler=handler,
         min_tier=TrustTier.MEMBER,
+        budget_specs=(ToolBudgetSpec(BudgetName.INTERNET_SEARCH_BACKEND_CALLS, limit),),
     )
     return registry, calls
 
@@ -228,9 +228,9 @@ def test_internet_search_replay_preserves_and_enforces_backend_budget(tmp_path):
     registry.configure_cassette(cassette, "record")
     args = {"query": "bounded"}
 
-    live_ctx = _ctx()
+    live_ctx = _ctx(internet_search_cap=3)
     live_result = asyncio.run(registry.dispatch("internet_search", args, live_ctx))
-    assert live_ctx.internet_search_backend_calls_this_turn == 2
+    assert live_ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS) == 2
     assert calls["live"] == 1
     cassette.save()
 
@@ -240,14 +240,14 @@ def test_internet_search_replay_preserves_and_enforces_backend_budget(tmp_path):
 
     replay = Cassette.load(path)
     registry.configure_cassette(replay, "replay")
-    replay_ctx = _ctx()
+    replay_ctx = _ctx(internet_search_cap=3)
     assert asyncio.run(registry.dispatch("internet_search", args, replay_ctx)) == live_result
-    assert replay_ctx.internet_search_backend_calls_this_turn == 2
+    assert replay_ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS) == 2
     assert calls["live"] == 1
 
     exhausted = json.loads(asyncio.run(registry.dispatch("internet_search", args, replay_ctx)))
     assert exhausted["error"] == "Internet search call limit reached for this turn."
-    assert replay_ctx.internet_search_backend_calls_this_turn == 2
+    assert replay_ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS) == 2
     assert calls["live"] == 1
     assert registry.sink[-1].source == "replay"
 

@@ -7,6 +7,8 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from agent.activity import ActivityReporter
@@ -67,6 +69,85 @@ class TurnHandoff:
     allowed_followup_tools: frozenset[str] = frozenset()
 
 
+class BudgetName(StrEnum):
+    """Stable names for resources metered across one outer agent turn."""
+
+    MEMORY_WRITES = "memory_writes"
+    INTERNET_SEARCH_BACKEND_CALLS = "internet_search_backend_calls"
+    X_SEARCH_CALLS = "x_search_calls"
+    WOLFRAM_ALPHA_CALLS = "wolfram_alpha_calls"
+    VIDEO_CALLS = "video_calls"
+    BROWSER_CALLS = "browser_calls"
+    BROWSER_SCREENSHOTS = "browser_screenshots"
+    VISUAL_RENDERS = "visual_renders"
+    IMAGE_GEN_CALLS = "image_gen_calls"
+    VIEW_IMAGES = "view_images"
+
+
+@dataclass
+class TurnBudget:
+    """A turn-local cap table and its single mutable used-count ledger."""
+
+    caps: Mapping[BudgetName, int] = field(default_factory=dict)
+    used: dict[BudgetName, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized: dict[BudgetName, int] = {}
+        for raw_name, raw_cap in self.caps.items():
+            name = BudgetName(raw_name)
+            if isinstance(raw_cap, bool) or not isinstance(raw_cap, int) or raw_cap < 0:
+                raise ValueError(f"Budget cap for {name.value!r} must be a non-negative integer")
+            normalized[name] = raw_cap
+        self.caps = MappingProxyType(normalized)
+
+        normalized_used: dict[BudgetName, int] = {}
+        for raw_name, raw_count in self.used.items():
+            name = BudgetName(raw_name)
+            if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+                raise ValueError(f"Budget use for {name.value!r} must be a non-negative integer")
+            normalized_used[name] = raw_count
+        self.used = normalized_used
+
+    def consume(self, name: BudgetName, amount: int = 1) -> bool:
+        """Consume ``amount`` when available, leaving the ledger unchanged on refusal."""
+
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
+            raise ValueError("Budget consumption amount must be a positive integer")
+        name = BudgetName(name)
+        used = self.used.get(name, 0)
+        if used + amount > self.caps.get(name, 0):
+            return False
+        self.used[name] = used + amount
+        return True
+
+    def used_count(self, name: BudgetName) -> int:
+        return self.used.get(BudgetName(name), 0)
+
+    def remaining(self, name: BudgetName) -> int:
+        name = BudgetName(name)
+        return max(0, self.caps.get(name, 0) - self.used.get(name, 0))
+
+
+@dataclass(frozen=True)
+class ToolBudgetSpec:
+    """Registration-time recipe for one cap in the turn budget table."""
+
+    name: BudgetName
+    default_cap: int
+    config_field: str | None = None
+    maximum: int | None = None
+
+    def resolve(self, tool_name: str, tool_configs: Mapping[str, Mapping[str, Any]]) -> int:
+        cap = self.default_cap
+        if self.config_field is not None:
+            configured = (tool_configs.get(tool_name) or {}).get(self.config_field, cap)
+            if isinstance(configured, int) and not isinstance(configured, bool):
+                cap = configured
+        if self.maximum is not None:
+            cap = min(cap, self.maximum)
+        return cap
+
+
 @dataclass
 class MessageContext:
     user_id: str
@@ -90,18 +171,10 @@ class MessageContext:
     trigger_discord_message_id: str = ""
     context_key: str = ""
     tool_event_turn_id: str = ""
-    memory_writes_this_turn: int = 0
-    # Logical provider operations (not model tool invocations or internal HTTP
-    # retries) spent by internet_search in this user turn. Blend consumes one
-    # per configured provider; a new MessageContext resets the allowance.
-    internet_search_backend_calls_this_turn: int = 0
-    x_search_calls_this_turn: int = 0
-    wolfram_alpha_calls_this_turn: int = 0
-    video_calls_this_turn: int = 0
-    browser_calls_this_turn: int = 0
-    browser_screenshots_this_turn: int = 0
-    visual_renders_this_turn: int = 0
-    image_gen_calls_this_turn: int = 0
+    # One allowance table covers every turn-metered tool operation. Production
+    # resolves caps from the registered tools and current operator fragments when
+    # the context is created. An absent cap fails closed.
+    budget: TurnBudget = field(default_factory=TurnBudget)
     # In netns mode both surfaces draw on one physical VPN namespace lease, and
     # a rooted browser call holds it until the turn's finalizer runs. Without
     # these markers a turn that mixed browser and networked code calls would sit
@@ -130,7 +203,6 @@ class MessageContext:
     # drains them into one synthetic untrusted user message after tool dispatch,
     # then clears the rail. In-turn only, never persisted.
     pending_view_images: list[ContentPart] = field(default_factory=list)
-    view_images_this_turn: int = 0
     activated_tools: set[str] = field(default_factory=set)
     # Searchable tools the model explicitly browse_tools-loaded this turn; kept
     # separate from activated_tools so loads of channel-pinned names persist.
@@ -249,6 +321,15 @@ class MessageContext:
     async def wait_for_turn_finalization(self) -> None:
         await self._turn_finalization_event.wait()
 
+    def consume_budget(self, name: BudgetName, amount: int = 1) -> bool:
+        return self.budget.consume(name, amount)
+
+    def budget_used(self, name: BudgetName) -> int:
+        return self.budget.used_count(name)
+
+    def budget_remaining(self, name: BudgetName) -> int:
+        return self.budget.remaining(name)
+
     async def record_paid_usage(self, call: PaidUsageCall) -> None:
         """Durably attribute a non-LLM provider charge to this turn.
 
@@ -322,6 +403,7 @@ class ToolEntry:
     # Results from tools that retrieve or derive external content are framed as
     # untrusted data by dispatch, independent of the individual handler path.
     untrusted: bool = False
+    budget_specs: tuple[ToolBudgetSpec, ...] = ()
 
 
 class ToolRegistry:
@@ -414,6 +496,7 @@ class ToolRegistry:
         config_spec: Sequence[ToolConfigField] = (),
         available: Callable[[str | None], bool] | None = None,
         untrusted: bool = False,
+        budget_specs: Sequence[ToolBudgetSpec] = (),
     ) -> None:
         if name in self._core_tools or name in self._search_tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -421,6 +504,19 @@ class ToolRegistry:
         # Validate at registration so a malformed declaration fails at boot,
         # where its author sees it, rather than in a turn.
         validated_config_spec = validate_config_spec(name, config_spec)
+        validated_budget_specs = tuple(budget_specs)
+        for budget_spec in validated_budget_specs:
+            if budget_spec.default_cap < 0:
+                raise ValueError(f"Tool {name!r} has a negative budget cap")
+            if budget_spec.maximum is not None and budget_spec.maximum < 0:
+                raise ValueError(f"Tool {name!r} has a negative maximum budget cap")
+            if budget_spec.config_field is not None and not any(
+                item.field == budget_spec.config_field for item in validated_config_spec
+            ):
+                raise ValueError(
+                    f"Tool {name!r} budget {budget_spec.name.value!r} references undeclared "
+                    f"config field {budget_spec.config_field!r}"
+                )
 
         entry = ToolEntry(
             name=name,
@@ -437,6 +533,7 @@ class ToolRegistry:
             config_spec=validated_config_spec,
             available=available,
             untrusted=untrusted,
+            budget_specs=validated_budget_specs,
         )
         if searchable:
             self._search_tools[name] = entry
@@ -475,6 +572,26 @@ class ToolRegistry:
             for name, entry in pool.items()
             if entry.config_spec
         }
+
+    def resolve_turn_budget(
+        self,
+        tool_configs: Mapping[str, Mapping[str, Any]],
+    ) -> TurnBudget:
+        """Resolve registered tool caps once for a freshly constructed turn."""
+
+        caps: dict[BudgetName, int] = {}
+        for pool in (self._core_tools, self._search_tools):
+            for tool_name, entry in pool.items():
+                for spec in entry.budget_specs:
+                    cap = spec.resolve(tool_name, tool_configs)
+                    previous = caps.get(spec.name)
+                    if previous is not None and previous != cap:
+                        raise ValueError(
+                            f"Conflicting caps registered for budget {spec.name.value!r}: "
+                            f"{previous} and {cap}"
+                        )
+                    caps[spec.name] = cap
+        return TurnBudget(caps=caps)
 
     def remove_tools(self, names: set[str]) -> None:
         for name in names:

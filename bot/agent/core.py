@@ -804,6 +804,7 @@ class _ConversationRunner:
             trust_tier=request.trust_tier,
             context_key=request.context.key,
             tool_event_turn_id=turn_id,
+            budget=request.registry.resolve_turn_budget(request.context.tool_configs),
             activated_tools=set(state.activated),
             blocked_tools=frozenset(request.context.blocked_tools),
             tool_configs=dict(request.context.tool_configs),

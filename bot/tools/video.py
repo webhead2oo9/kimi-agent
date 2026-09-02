@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from tools._common import get_string, tool_error
 from tools.config_spec import KIND_CHOICE, KIND_INT, ToolConfigField
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.asyncio import await_uncancellable
@@ -220,12 +220,11 @@ def init_video_tool(
                 session = get_string(args, "session", max_chars=_MAX_SESSION_CHARS) or None
 
             config = _session_config(ctx, catalog_model=catalog_model, model=model)
-            if ctx.video_calls_this_turn >= _configured_int(ctx, "max_calls_per_turn", default=4):
+            if not ctx.consume_budget(BudgetName.VIDEO_CALLS):
                 raise ValueError("Video-call limit reached for this turn")
         except (OSError, ValueError) as exc:
             return tool_error(str(exc))
 
-        ctx.video_calls_this_turn += 1
         # The video-session store uses an empty string for the global scope;
         # personal user-app conversations must not inherit the physical guild
         # where Discord happened to deliver the interaction.
@@ -366,6 +365,13 @@ def init_video_tool(
         category="Media",
         config_spec=_CONFIG_SPEC,
         untrusted=True,
+        budget_specs=(
+            ToolBudgetSpec(
+                BudgetName.VIDEO_CALLS,
+                4,
+                config_field="max_calls_per_turn",
+            ),
+        ),
     )
     return True
 

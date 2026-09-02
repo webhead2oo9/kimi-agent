@@ -8,7 +8,7 @@ from pathlib import Path
 from workspace import WorkspaceManager
 from utils.image_types import sniff_image_media_type
 from providers.types import ContentPart
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from trust.tiers import TrustTier
 
 from .common import UserLocks, scrub_user_paths, tool_error, workspace_activity
@@ -62,7 +62,7 @@ def register_image_tools(
             return tool_error("path is required")
         if not ctx.images_supported:
             return tool_error("The current model can't view images.")
-        if ctx.view_images_this_turn >= config.view_image_max_per_turn:
+        if ctx.budget_remaining(BudgetName.VIEW_IMAGES) <= 0:
             return tool_error(
                 f"You can view at most {config.view_image_max_per_turn} images per reply."
             )
@@ -82,8 +82,11 @@ def register_image_tools(
                 media_type=str(outcome["media_type"]),
                 detail="auto",
             )
+            if not ctx.consume_budget(BudgetName.VIEW_IMAGES):
+                return tool_error(
+                    f"You can view at most {config.view_image_max_per_turn} images per reply."
+                )
             ctx.pending_view_images.append(part)
-            ctx.view_images_this_turn += 1
             return json.dumps(
                 {
                     "path": rel,
@@ -115,4 +118,5 @@ def register_image_tools(
         },
         handler=_view_image,
         min_tier=TrustTier.MEMBER,
+        budget_specs=(ToolBudgetSpec(BudgetName.VIEW_IMAGES, config.view_image_max_per_turn),),
     )

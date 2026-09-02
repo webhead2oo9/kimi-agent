@@ -133,11 +133,7 @@ class EvalRegistry:
 
 async def build_eval_registry(settings: Settings, *, gateway: Any) -> EvalRegistry:
     """Compose production tools over temporary eval-owned writable state."""
-    registry = InstrumentedRegistry(
-        internet_search_max_backend_calls_per_turn=(
-            settings.internet_search_max_backend_calls_per_turn
-        )
-    )
+    registry = InstrumentedRegistry()
     db_dir = Path(tempfile.mkdtemp(prefix="eval-state-"))
     eval_settings = settings.model_copy(
         update={

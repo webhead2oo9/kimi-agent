@@ -15,7 +15,7 @@ import pytest
 
 from agent.attachments import AttachmentRef
 from workspace import WorkspaceManager, workspace_owner_key
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.workspace import (
     WorkspaceToolConfig,
     init_workspace_tools,
@@ -141,7 +141,8 @@ _PNG_1X1 = base64.b64decode(
 )
 
 
-def _image_ctx() -> MessageContext:
+def _image_ctx(*, view_image_cap: int = 4) -> MessageContext:
     ctx = _make_ctx()
     ctx.images_supported = True
+    ctx.budget = TurnBudget(caps={BudgetName.VIEW_IMAGES: view_image_cap})
     return ctx

@@ -43,6 +43,9 @@ class ModuleToolRegistry(Protocol):
     ``guild_only`` (the default) it is also hidden from DMs and personal chat,
     so its handler always sees a guild. ``guild_ids`` further scopes a tool to
     specific guilds (``None`` is everywhere; an empty set is nowhere).
+    Results default to untrusted because module tools commonly return Discord,
+    network, or user-authored data. Set ``untrusted=False`` only for output that
+    is wholly controlled by the installed module.
     """
 
     def register(
@@ -57,6 +60,7 @@ class ModuleToolRegistry(Protocol):
         owner_only: bool = False,
         guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
+        untrusted: bool = True,
     ) -> None: ...
 
 

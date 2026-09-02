@@ -774,6 +774,8 @@ def test_register_all_skips_malformed_skill_keeps_valid(tmp_path: Path) -> None:
     reload_all_skill_tools(store, registry, secrets={}, settings=make_settings())  # must not raise
 
     assert registry.has_tool("good_tool")
+    entry = next(tool for tool in registry.get_all_tools() if tool.name == "good_tool")
+    assert entry.untrusted is True
     assert not registry.has_tool("bad_tool")
 
 

@@ -2288,6 +2288,8 @@ def test_coding_registry_is_a_least_privilege_allowlist() -> None:
     assert {
         schema["name"] for schema in registry.get_tool_schemas(TrustTier.MEMBER)
     } == registry.registered_names()
+    entries = {entry.name: entry for entry in registry.get_all_tools()}
+    assert entries["coding_job_status"].untrusted is True
 
 
 def test_coding_checkpoint_serialization_omits_image_payloads() -> None:

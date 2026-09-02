@@ -535,6 +535,7 @@ def build_coding_registry(
         },
         handler=job_status,
         min_tier=TrustTier.MEMBER,
+        untrusted=True,
     )
     registry.register(
         name="coding_job_cancel",

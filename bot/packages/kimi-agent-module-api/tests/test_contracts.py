@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import pytest
 from pydantic_settings import BaseSettings
@@ -15,6 +16,7 @@ from kimi_agent_module_api import (
     ModulePermissions,
     ModuleRuntimeContext,
     ModuleSpec,
+    ModuleToolContext,
     TrustTier,
     render_guild_settings,
 )
@@ -78,12 +80,17 @@ def test_load_context_exercises_public_create_helpers() -> None:
     settings = DemoSettings(greeting="hi")
     context, recorder = load_context(settings)
 
+    async def handler(_arguments: dict[str, Any], _ctx: ModuleToolContext) -> str:
+        return "ok"
+
     assert context.settings_for(DemoSettings) is settings
+    context.registry.register("demo", "Demo", {"type": "object"}, handler)
     context.register_tool_labels({"demo": "Doing a demo"})
     context.declare_surface_tools("default", ("demo",))
 
     assert recorder.labels == {"demo": "Doing a demo"}
     assert recorder.surfaces == {"default": ("demo",)}
+    assert recorder.registry.tools["demo"].untrusted is True
     assert context.capabilities.available == BASELINE_CAPABILITIES
     with pytest.raises(TypeError, match="prepared module settings"):
         context.settings_for(OtherSettings)

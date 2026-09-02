@@ -451,8 +451,8 @@ click gets an ephemeral rejection.
 
 ### Where it sits
 
-`KimiApplication.on_message` (`app/runtime.py`; the gate call itself lives in
-`_on_message_for_user`) consults the gate immediately after it
+`KimiApplication.on_message` (`app/runtime.py`, delegating to
+`DiscordMessageController._on_message_for_user` in `app/message_runtime.py`) consults the gate immediately after it
 has decided the bot would respond and **before** it acquires the response lock,
 persists the triggering message, or calls the provider:
 

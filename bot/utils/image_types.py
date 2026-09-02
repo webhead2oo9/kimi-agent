@@ -26,10 +26,15 @@ IMAGE_MEDIA_TYPE_SUFFIXES = {
     "image/webp": ".webp",
 }
 
+# The largest single frame that may be materialized: bounds peak memory.
 _MAX_VALIDATED_IMAGE_PIXELS = 4096 * 4096
-# Every frame costs at least this much of the pixel budget, so a tiny-frame
-# animation cannot force an unbounded walk while ordinary animated GIFs and
-# WebPs (hundreds of frames) still validate.
+# Pillow reports the full canvas for every frame of an animation, so the
+# cumulative budget is decode work, not memory, and gets room for ordinary
+# animated GIFs and WebPs (hundreds of canvas-sized frames) while still
+# capping the total pixels a hostile file can make the validator decode.
+_MAX_VALIDATED_ANIMATION_PIXELS = _MAX_VALIDATED_IMAGE_PIXELS * 16
+# Every frame costs at least this much of the budget, so a tiny-frame
+# animation cannot force an unbounded walk.
 _MIN_FRAME_PIXEL_CHARGE = 64 * 64
 _MAX_VALIDATED_IMAGE_FRAMES = _MAX_VALIDATED_IMAGE_PIXELS // _MIN_FRAME_PIXEL_CHARGE
 _PILLOW_FORMAT_MEDIA_TYPES = {
@@ -73,7 +78,8 @@ def decoded_image_media_type(payload: bytes) -> str | None:
                     decoded_pixels += max(width * height, _MIN_FRAME_PIXEL_CHARGE)
                     if (
                         not _reasonable_dimensions(width, height)
-                        or decoded_pixels > _MAX_VALIDATED_IMAGE_PIXELS
+                        or width * height > _MAX_VALIDATED_IMAGE_PIXELS
+                        or decoded_pixels > _MAX_VALIDATED_ANIMATION_PIXELS
                     ):
                         return None
                     image.load()

@@ -1246,6 +1246,7 @@ class RecordedTool:
     owner_only: bool
     guild_only: bool
     guild_ids: frozenset[int] | None
+    untrusted: bool
 
 
 class RecordingToolRegistry:
@@ -1266,6 +1267,7 @@ class RecordingToolRegistry:
         owner_only: bool = False,
         guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
+        untrusted: bool = True,
     ) -> None:
         self.tools[name] = RecordedTool(
             description,
@@ -1276,6 +1278,7 @@ class RecordingToolRegistry:
             owner_only,
             guild_only,
             guild_ids,
+            untrusted,
         )
 
 

@@ -253,6 +253,9 @@ def register_skill_tools(
             # None => global (every guild); a tuple (incl. the empty () from a
             # parse that failed closed) => that exact guild set, empty = nowhere.
             guild_ids=(frozenset(tool_decl.guild_ids) if tool_decl.guild_ids is not None else None),
+            # Script stdout can contain network responses, workspace contents,
+            # or other data that must never become model instructions.
+            untrusted=True,
         )
         count += 1
         log.info("Registered skill tool: %s (%s)", tool_decl.name, tool_decl.availability)

@@ -115,11 +115,12 @@ class _LoadTimeToolRegistry:
         parameters: dict[str, Any],
         handler: ModuleToolHandler,
         *,
-        min_tier: Any,
+        min_tier: TrustTier,
         searchable: bool,
         owner_only: bool,
         guild_only: bool,
         guild_ids: frozenset[int] | None,
+        untrusted: bool,
     ) -> None:
         if self._sealed:
             raise RuntimeError(
@@ -173,6 +174,7 @@ class _LoadTimeToolRegistry:
                 frozenset(str(guild) for guild in guild_ids) if guild_ids is not None else None
             ),
             available=available,
+            untrusted=untrusted,
         )
         self._module_tools.setdefault(module_name, []).append(name)
 
@@ -196,6 +198,7 @@ class _ModuleToolRegistrar:
         owner_only: bool = False,
         guild_only: bool = True,
         guild_ids: frozenset[int] | None = None,
+        untrusted: bool = True,
     ) -> None:
         self.shared.register(
             self.module_name,
@@ -208,6 +211,7 @@ class _ModuleToolRegistrar:
             owner_only=owner_only,
             guild_only=guild_only,
             guild_ids=guild_ids,
+            untrusted=untrusted,
         )
 
 

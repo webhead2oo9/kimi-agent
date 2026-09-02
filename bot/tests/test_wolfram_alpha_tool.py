@@ -130,6 +130,7 @@ def test_tool_is_searchable_member_computation_surface() -> None:
 
     assert entry.searchable is True
     assert entry.min_tier is TrustTier.MEMBER
+    assert entry.untrusted is True
     assert entry.category == "Computation"
     assert entry.parameters["required"] == ["input"]
     assert entry.parameters["properties"]["units"]["enum"] == ["metric", "nonmetric"]

@@ -80,6 +80,7 @@ def test_tool_is_core_member_surface_with_blend_default() -> None:
 
     assert entry.searchable is False
     assert entry.min_tier is TrustTier.MEMBER
+    assert entry.untrusted is True
     assert default_config(registry.config_specs()[TOOL_NAME]) == {"strategy": "blend"}
 
 
@@ -166,6 +167,7 @@ async def test_output_is_clean_and_records_reported_and_fallback_costs() -> None
         },
         {"title": "Brave result", "url": "https://other.example/b"},
     ]
+    assert payload["context_is_untrusted"] is True
     assert "provider" not in raw
     assert "cost" not in raw
     assert [call.cost_usd for call in usage.calls] == [0.012, 0.004]

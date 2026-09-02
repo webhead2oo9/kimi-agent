@@ -8,6 +8,7 @@ import discord
 
 from app.foreground_turn import deliver_with_workspace_guard
 from discord_adapter.gateway import DiscordGateway
+from discord_adapter.io import SentMessages
 from tools.workspace.common import UserLocks
 from workspace import WorkspaceKey
 
@@ -42,8 +43,8 @@ class DiscordResponseSender:
         embed: EmbedSpec | None = None,
         mention_author: bool = False,
         workspace_key: WorkspaceKey | None = None,
-    ) -> list[discord.Message]:
-        async def send() -> list[discord.Message]:
+    ) -> SentMessages:
+        async def send() -> SentMessages:
             return await self._gateway.send_response(
                 channel,
                 content,

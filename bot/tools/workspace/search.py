@@ -141,6 +141,7 @@ def register_search_tools(
         },
         handler=_grep_workspace,
         min_tier=TrustTier.MEMBER,
+        untrusted=True,
     )
 
     async def _glob_workspace(args: dict, ctx: MessageContext) -> str:

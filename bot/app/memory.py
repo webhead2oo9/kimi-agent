@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from config.settings import Settings
 from memory.banks import ensure_global_banks
@@ -35,7 +35,7 @@ MEMORY_TOOL_NAMES = frozenset(
 class MemoryManager:
     settings: Settings
     registry: ToolRegistry
-    client: Any | None = None
+    client: MemoryClient | None = None
     ready: bool = False
     tools_registered: bool = False
     # Audit sink for staff-taught community knowledge; see app/learn_log.py.
@@ -48,7 +48,7 @@ class MemoryManager:
                 api_key=self.settings.hindsight_api_key.get_secret_value() or None,
             )
 
-    def active_client(self) -> Any | None:
+    def active_client(self) -> MemoryClient | None:
         return self.client if self.ready else None
 
     async def ensure_ready(

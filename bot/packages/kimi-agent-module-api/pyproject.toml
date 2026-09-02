@@ -18,6 +18,9 @@ Repository = "https://github.com/webhead2oo9/kimi-agent"
 # kimi_agent_module_api.testing.MemoryStorage runs real SQL in unit tests.
 testing = ["aiosqlite"]
 
+[dependency-groups]
+test = ["aiosqlite", "pytest", "pytest-asyncio"]
+
 [build-system]
 requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"
@@ -27,3 +30,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 kimi_agent_module_api = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"

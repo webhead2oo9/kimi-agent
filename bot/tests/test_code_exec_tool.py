@@ -33,7 +33,7 @@ from sandbox.runner import (
 )
 from storage.usage import UsageMarker
 from tools.code_exec import init_code_exec_tool
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import UNTRUSTED_CONTEXT_NOTE, MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
 from tests.sandbox_gate import sandbox_skip_allowed
 from trust.tiers import TrustTier
@@ -97,6 +97,8 @@ def _ctx(user_id: str = OWNER, tier: TrustTier = TrustTier.STAFF) -> MessageCont
 async def test_run_code_is_member_tier(tmp_path: Path) -> None:
     reg, _mgr = _register(tmp_path)
 
+    entry = next(tool for tool in reg.get_all_tools() if tool.name == "run_code")
+    assert entry.untrusted is True
     member_schemas = reg.get_tool_schemas(TrustTier.MEMBER, set(), "someuser")
     member_names = [schema["name"] for schema in member_schemas]
     assert "run_code" in member_names
@@ -1301,7 +1303,8 @@ async def test_run_code_inline_code_uses_temp_file_and_cleans_up(
     assert not script.exists()  # cleaned up after the run
     assert result["changed_files"] == []  # temp never reported or attached
     assert result["attached_files"] == []
-    assert "note" not in result
+    assert result["context_is_untrusted"] is True
+    assert result["note"] == UNTRUSTED_CONTEXT_NOTE
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic_settings import BaseSettings
 
@@ -48,6 +48,9 @@ from config.plugin_settings import (
 )
 from config.settings import Settings
 from tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from discord_adapter.gateway import DiscordGateway
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +107,7 @@ class PluginContext:
 
     settings: Settings
     registry: ToolRegistry
-    gateway: Any
+    gateway: DiscordGateway
     register_tool_labels: Callable[[Mapping[str, str]], None]
     plugin_settings: BaseSettings | None = None
 
@@ -124,7 +127,11 @@ class PluginContext:
         return self.plugin_settings
 
 
-def build_plugin_context(settings: Settings, registry: ToolRegistry, gateway: Any) -> PluginContext:
+def build_plugin_context(
+    settings: Settings,
+    registry: ToolRegistry,
+    gateway: DiscordGateway,
+) -> PluginContext:
     return PluginContext(
         settings=settings,
         registry=registry,

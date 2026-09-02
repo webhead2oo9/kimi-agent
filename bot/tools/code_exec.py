@@ -592,6 +592,7 @@ def init_code_exec_tool(
         },
         handler=_run_code,
         min_tier=min_tier,
+        untrusted=True,
     )
 
 

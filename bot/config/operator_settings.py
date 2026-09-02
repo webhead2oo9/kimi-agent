@@ -1,15 +1,15 @@
 """Operator-editable settings, layered over the environment at startup.
 
-Scalar application preferences in :class:`config.settings.Settings` are
-generated into :data:`SETTINGS_SPEC`, each with the validation rules its value
-must satisfy. ``<CONFIG_DIR>/settings.md`` is a hand-edited, frontmatter-only
-file read once at startup.
+Selected scalar application preferences in :class:`config.settings.Settings`
+are explicitly opted into :data:`OPERATOR_EDITABLE_FIELDS` and generated into
+:data:`SETTINGS_SPEC`, each with the validation rules its value must satisfy.
+``<CONFIG_DIR>/settings.md`` is a hand-edited, frontmatter-only file read once
+at startup.
 
 Eligibility is fail-closed around deployment boundaries. Secrets and credentials,
 filesystem paths and binaries, database/encryption controls, arbitrary plugin
-imports, and service endpoint URLs stay
-environment-only. Adding an ordinary bool/int/float/text setting automatically
-puts it in the catalog instead of silently leaving a second configuration surface.
+imports, and service endpoints stay environment-only. A new setting remains
+environment-only until it is deliberately reviewed and added to the allowlist.
 
 **Precedence: the file wins over the environment.** The file is the
 operator's deliberate edit: if a value also sits in ``.env`` and the
@@ -84,25 +84,216 @@ class SettingSpec:
     nullable: bool = False
 
 
-_EXCLUDED_FIELDS = frozenset(
+OPERATOR_EDITABLE_FIELDS = frozenset(
     {
-        "plugin_modules",
-        "kimi_modules",
-        "code_exec_extra_ro_binds",
-        "code_exec_netns_resolv_conf",
-        "browser_netns_resolv_conf",
-        # Captured content can include prompts, memories, tool payloads, and
-        # secrets, so choosing how much to keep is an environment decision. The
-        # overlay can still start and stop the metadata-only writer through
-        # tool_event_log_enabled.
-        "tool_event_log_content_mode",
-        # Importable module names are code execution: letting a data file pick
-        # them would make the settings overlay an RCE surface. Plugin and
-        # application-module selection are environment-only, like the bind
-        # host, port, and auth.
+        # Discord and access
+        "staff_role_ids",
+        "regular_role_ids",
+        "staff_user_ids",
+        "allowed_channel_ids",
+        "allowed_guild_ids",
+        "bot_name",
+        "user_app_chat_enabled",
+        "user_app_member_ids",
+        "user_app_regular_ids",
+        "user_app_staff_ids",
+        "user_app_chat_timeout_seconds",
+        "user_app_dm_enabled",
+        "message_content_intent",
+        "members_intent",
+        # Conversation and providers
+        "react_max_iterations",
+        "react_max_tokens",
+        "react_turn_timeout_seconds",
+        "provider_stream_stall_timeout_seconds",
+        "new_user_onboarding_turns",
+        "llm_max_concurrency",
+        "turn_max_concurrency",
+        "turn_max_concurrency_per_user",
+        "react_temperature",
+        "codex_model",
+        "codex_reasoning_effort",
+        "codex_image_quality",
+        "codex_image_format",
+        "codex_ws_idle_timeout",
+        "codex_ws_read_timeout",
+        "codex_verbose",
+        # Moderation and retrieval
+        "moderation_enabled",
+        "moderation_model",
+        "moderation_timeout_seconds",
+        "moderation_input_images",
+        "moderation_output_images",
+        "moderation_output_exempt_tier",
+        "moderation_input_refusal",
+        "moderation_output_refusal",
+        "moderation_error_refusal",
+        "discord_text_search_enabled",
+        "discord_search_excluded_channels",
+        "discord_search_channels",
+        "discord_search_timeout_seconds",
+        "exa_search_cost_usd",
+        "exa_contents_cost_usd",
+        "brave_search_cost_usd",
+        "internet_search_backend_timeout_seconds",
+        "internet_search_timeout_seconds",
+        "internet_search_max_results",
+        "internet_search_max_backend_calls_per_turn",
+        "internet_search_max_output_chars",
+        "internet_search_safesearch",
+        "x_search_enabled",
+        "x_search_auth_mode",
+        "x_search_model",
+        "x_search_timeout_seconds",
+        "x_search_max_calls_per_turn",
+        "wolfram_alpha_timeout_seconds",
+        "wolfram_alpha_max_calls_per_turn",
+        "wolfram_alpha_max_output_chars",
+        "wolfram_alpha_call_cost_usd",
+        "video_understanding_enabled",
+        "video_understanding_max_concurrency",
+        "image_gen_enabled",
+        "image_gen_backend",
+        "image_gen_auth_mode",
+        "image_gen_max_concurrency",
+        "image_gen_timeout_seconds",
+        "owner_user_id",
+        # Code execution and durable coding
+        "code_exec_enabled",
+        "code_exec_min_tier",
+        "code_exec_network_mode",
+        "code_exec_wall_timeout_seconds",
+        "code_exec_max_cpu_seconds",
+        "code_exec_max_memory_mb",
+        "code_exec_max_tasks",
+        "code_exec_max_total_memory_mb",
+        "code_exec_cpu_quota_percent",
+        "code_exec_tmp_size_mb",
+        "code_exec_max_fsize_mb",
+        "code_exec_max_open_files",
+        "code_exec_max_workspace_files",
+        "code_exec_workspace_quota_poll_seconds",
+        "code_exec_workspace_quota_scan_retries",
+        "code_exec_max_output_bytes",
+        "code_exec_max_concurrency",
+        "code_exec_env_dir_max_mb",
+        "code_exec_env_dir_max_files",
+        "code_exec_network_weekly_limit",
+        "coding_tasks_enabled",
+        "coding_task_max_concurrency",
+        "coding_task_max_queued_per_workspace",
+        "coding_task_max_queued_per_user",
+        "coding_task_max_seconds",
+        "coding_provider_call_timeout_seconds",
+        "coding_job_max_seconds",
+        "coding_job_max_cpu_seconds",
+        "coding_worker_stall_seconds",
+        "coding_status_min_interval_seconds",
+        "coding_stop_cleanup_wait_seconds",
+        "coding_task_max_iterations",
+        # Browser behavior and limits. Runtime paths and probe endpoints remain
+        # environment-only even though they are scalar strings.
+        "browser_enabled",
+        "browser_network_mode",
+        "browser_call_timeout_seconds",
+        "browser_start_timeout_seconds",
+        "browser_idle_ttl_seconds",
+        "browser_worker_max_lifetime_seconds",
+        "browser_profile_ttl_seconds",
+        "browser_max_profile_mb",
+        "browser_max_screenshot_bytes",
+        "browser_max_total_memory_mb",
+        "browser_max_tasks",
+        "browser_cpu_quota_percent",
+        "browser_tmp_size_mb",
+        "browser_max_fsize_mb",
+        "browser_max_open_files",
+        "browser_timezone",
+        "browser_locale",
+        # Context, attachments, memory, and privacy
+        "compaction_trigger_tokens",
+        "compaction_keep_recent_iterations",
+        "compaction_keep_recent_tokens",
+        "compaction_max_tokens",
+        "compaction_max_iteration_tool_output_tokens",
+        "attachment_max_bytes",
+        "attachment_max_total_bytes",
+        "attachment_orphan_ttl_seconds",
+        "attachment_orphan_sweep_interval_seconds",
+        "attachment_orphan_sweep_max_files",
+        "image_detail",
+        "recent_image_lookback",
+        "max_turn_images",
+        "memory_recall_types",
+        "memory_recall_budget",
+        "memory_recall_max_tokens",
+        "memory_max_writes_per_turn",
+        "memory_auto_retain_enabled",
+        "memory_auto_retain_idle_minutes",
+        "memory_auto_retain_sweep_interval_seconds",
+        "memory_auto_retain_min_user_chars",
+        "memory_auto_retain_max_content_chars",
+        "memory_auto_retain_backfill_horizon_hours",
+        "memory_auto_retain_max_flushes_per_sweep",
+        "transcript_retention_days",
+        "transcript_retention_sweep_interval_seconds",
+        "privacy_consent_enabled",
+        "privacy_consent_title",
+        "privacy_consent_text",
+        "privacy_consent_timeout",
+        # Threads, modules, persona, and observability
+        "thread_handoff_enabled",
+        "thread_auto_handoff_enabled",
+        "thread_handoff_suggest_after_tool_calls",
+        "module_start_timeout_seconds",
+        "module_close_timeout_seconds",
+        "module_scheduler_max_concurrent_jobs",
+        "user_persona_max_chars",
+        "user_persona_request_max_chars",
+        "user_persona_compiler_max_tokens",
+        "tool_event_log_enabled",
+        "tool_event_log_max_field_bytes",
+        # Executable skills and workspaces
+        "script_default_timeout",
+        "script_max_timeout",
+        "script_max_concurrency",
+        "script_output_max_chars",
+        "script_output_max_files",
+        "script_output_max_file_bytes",
+        "script_output_max_scan_entries",
+        "script_sandbox_memory_max_mb",
+        "script_sandbox_cpu_seconds",
+        "script_sandbox_max_file_bytes",
+        "script_sandbox_max_open_files",
+        "script_sandbox_max_processes",
+        "script_sandbox_tmpfs_max_mb",
+        "workspace_file_ttl",
+        "workspace_max_size_mb",
+        "workspace_sweep_interval",
+        "workspace_tool_max_file_bytes",
+        "workspace_tool_max_user_bytes",
+        "workspace_tool_max_read_bytes",
+        "workspace_tool_max_pdf_pages",
+        "workspace_tool_max_text_chars",
+        "workspace_tool_max_attachments",
+        "workspace_tool_max_import_bytes",
+        "workspace_tool_max_zip_entries",
+        "workspace_tool_max_extract_total_bytes",
+        "workspace_tool_fetch_timeout_seconds",
+        "workspace_tool_max_redirects",
+        "workspace_tool_default_grep_results",
+        "workspace_tool_max_grep_results",
+        "workspace_tool_max_grep_context",
+        "workspace_tool_max_grep_line_chars",
+        "workspace_tool_max_grep_pattern_chars",
+        "workspace_tool_grep_timeout_seconds",
+        "workspace_tool_glob_max_results",
+        "workspace_tool_multi_edit_max_ops",
+        "workspace_tool_view_image_max_bytes",
+        "workspace_tool_view_image_max_per_turn",
+        "workspace_tool_max_entries",
     }
 )
-_EXCLUDED_SUFFIXES = ("_dir", "_path", "_bin", "_file", "_url", "_base")
 
 # Only vocabularies some consumer in this repo enforces or maps. A value passed
 # verbatim to a third-party API is left as free text: rejecting a value the
@@ -281,11 +472,7 @@ _MINIMUMS: dict[str, int | float] = {
 }
 
 
-def _is_eligible(field: str, annotation: Any) -> bool:
-    if field in _EXCLUDED_FIELDS or field.startswith("database_"):
-        return False
-    if field.endswith(_EXCLUDED_SUFFIXES):
-        return False
+def _is_supported_scalar(annotation: Any) -> bool:
     args = get_args(annotation)
     members = set(args) if args else {annotation}
     members.discard(NoneType)
@@ -310,12 +497,19 @@ def _kind_for(field: str, annotation: Any) -> tuple[str, bool]:
 
 
 def _build_settings_spec() -> tuple[SettingSpec, ...]:
-    """Every overlay-eligible field, in config/settings.py declaration order."""
+    """Every explicitly allowed field, in config/settings.py declaration order."""
+    unknown = OPERATOR_EDITABLE_FIELDS.difference(Settings.model_fields)
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise RuntimeError(f"Unknown operator-editable Settings fields: {names}")
+
     specs: list[SettingSpec] = []
     for field, model_field in Settings.model_fields.items():
-        annotation = model_field.annotation
-        if not _is_eligible(field, annotation):
+        if field not in OPERATOR_EDITABLE_FIELDS:
             continue
+        annotation = model_field.annotation
+        if not _is_supported_scalar(annotation):
+            raise TypeError(f"Operator-editable field {field!r} is not a supported scalar")
         kind, nullable = _kind_for(field, annotation)
         specs.append(
             SettingSpec(

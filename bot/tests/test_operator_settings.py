@@ -8,6 +8,7 @@ before it can silently widen access or partially mutate Settings.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from config.operator_settings import (
     KIND_ID_LIST,
     KIND_INT,
     KIND_TEXT,
+    OPERATOR_EDITABLE_FIELDS,
     OperatorSettingsError,
     SETTINGS_SPEC,
     apply_operator_settings,
@@ -49,6 +51,51 @@ def test_every_managed_field_exists_on_settings() -> None:
     """A typo in the spec would be a field no overlay file could ever set."""
     unknown = [spec.field for spec in SETTINGS_SPEC if spec.field not in Settings.model_fields]
     assert unknown == []
+
+
+def test_spec_contains_exactly_the_explicit_allowlist() -> None:
+    assert {spec.field for spec in SETTINGS_SPEC} == OPERATOR_EDITABLE_FIELDS
+
+
+def test_sensitive_field_name_patterns_are_not_allowlisted() -> None:
+    secret_name = re.compile(
+        r"(?:^|_)(?:key|token|secret|password|credential|credentials)(?:_|$)",
+        re.IGNORECASE,
+    )
+    boundary_suffixes = (
+        "_dir",
+        "_directory",
+        "_path",
+        "_bin",
+        "_file",
+        "_uri",
+        "_url",
+        "_base",
+        "_script",
+        "_endpoint",
+        "_host",
+        "_port",
+        "_ip",
+    )
+    suspicious = sorted(
+        field
+        for field in OPERATOR_EDITABLE_FIELDS
+        if field.startswith("database_")
+        or field.endswith(boundary_suffixes)
+        or secret_name.search(field)
+    )
+    assert suspicious == []
+
+
+def test_unlisted_plain_scalars_stay_environment_only() -> None:
+    environment_only = {
+        "browser_bridge_script",
+        "browser_network_probe_blocked_ip",
+        "code_exec_network_probe_blocked_ip",
+    }
+    assert all(Settings.model_fields[field].annotation is str for field in environment_only)
+    assert environment_only.isdisjoint(OPERATOR_EDITABLE_FIELDS)
+    assert all(spec_for(field) is None for field in environment_only)
 
 
 def test_no_secret_is_managed() -> None:
@@ -98,8 +145,8 @@ def test_no_remote_control_surface_is_managed() -> None:
 
     The file wins over the environment, so a managed ``*_enabled`` switch for a
     network-facing console would let a data file open or close that surface. No
-    such surface exists today; the invariant outlives it, because re-adding one
-    and forgetting this exclusion is the regression.
+    such surface exists today; the invariant outlives it, because adding one to
+    the allowlist would be the regression.
     """
     managed = {spec.field for spec in SETTINGS_SPEC}
     assert sorted(field for field in managed if field.startswith("webui_")) == []

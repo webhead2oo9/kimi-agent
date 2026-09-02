@@ -10,6 +10,7 @@ from providers.base import LLMProvider
 
 if TYPE_CHECKING:
     from codex.auth import CodexAuthManager
+    from xai.auth import XaiOAuthManager
 
 
 SUPPORTED_PROVIDER_NAMES = frozenset(
@@ -20,10 +21,12 @@ SUPPORTED_PROVIDER_NAMES = frozenset(
         "anthropic_compat",
         "openrouter",
         "codex",
+        "xai",
     }
 )
 
 _codex_auth_managers: dict[str, CodexAuthManager] = {}
+_xai_auth_managers: dict[str, XaiOAuthManager] = {}
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ class ProviderConfig:
     codex_ws_idle_timeout: int = 3000
     codex_ws_read_timeout: float = 120.0
     codex_verbose: bool = False
+    xai_token_file: str = "secrets/xai-oauth.json"
+    xai_auth_mode: str = "oauth"
 
 
 def create_provider(config: ProviderConfig) -> LLMProvider:
@@ -139,6 +144,26 @@ def create_provider(config: ProviderConfig) -> LLMProvider:
                 image_quality=config.codex_image_quality,
                 image_format=config.codex_image_format,
             )
+        case "xai":
+            from providers.xai import XaiProvider
+            from xai.credentials import AUTH_MODE_API_KEY, XaiCredentialResolver
+
+            xai_auth_manager = (
+                None
+                if config.xai_auth_mode == AUTH_MODE_API_KEY
+                else get_xai_auth_manager(config.xai_token_file)
+            )
+            return XaiProvider(
+                credential_resolver=XaiCredentialResolver(
+                    auth_mode=config.xai_auth_mode,
+                    oauth_manager=xai_auth_manager,
+                    api_key=config.api_key,
+                ),
+                model=config.model,
+                reasoning_effort=config.openai_reasoning_effort,
+                timeout_seconds=config.openai_timeout_seconds,
+                user_agent=config.user_agent,
+            )
         case _:
             raise ValueError(f"Unknown LLM provider: {config.provider_name}")
 
@@ -177,4 +202,16 @@ def get_codex_auth_manager(token_file: str) -> CodexAuthManager:
     if manager is None:
         manager = CodexAuthManager(token_file)
         _codex_auth_managers[key] = manager
+    return manager
+
+
+def get_xai_auth_manager(token_file: str) -> XaiOAuthManager:
+    """Return the process-wide manager for one resolved xAI token file."""
+    from xai.auth import XaiOAuthManager
+
+    key = str(Path(token_file).expanduser().resolve(strict=False))
+    manager = _xai_auth_managers.get(key)
+    if manager is None:
+        manager = XaiOAuthManager(token_file)
+        _xai_auth_managers[key] = manager
     return manager

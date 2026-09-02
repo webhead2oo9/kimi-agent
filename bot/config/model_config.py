@@ -36,7 +36,9 @@ _API_KEY_SETTINGS_FIELDS = {
 # Derive parser support from the settings-field map so every accepted environment
 # name resolves to a Settings secret field.
 SUPPORTED_API_KEY_ENVS = frozenset(_API_KEY_SETTINGS_FIELDS)
-_REASONING_EFFORT_PROVIDER_TYPES = frozenset({"codex", "anthropic_compat", "openai_responses"})
+_REASONING_EFFORT_PROVIDER_TYPES = frozenset(
+    {"codex", "anthropic_compat", "openai_responses", "xai"}
+)
 _PROFILE_REASONING_EFFORT_PROVIDER_TYPES = _REASONING_EFFORT_PROVIDER_TYPES | {"openai_compat"}
 # Anthropic's `output_config.effort` ladder. Narrower than REASONING_EFFORT_ORDER,
 # and a value outside it is a deterministic 400 that never fails over.
@@ -221,6 +223,8 @@ class ProviderProfile(BaseModel):
     type: str
     base_url: str = ""
     api_key_env: str = ""
+    # Native xAI only. Empty resolves to the conservative OAuth-only default.
+    auth_mode: str = ""
     # Optional OpenAI-compatible model catalog used to filter owner-selectable
     # models at startup. Multiple profiles may share one endpoint; discovery
     # de-duplicates those requests by endpoint and credential.
@@ -295,6 +299,11 @@ class ProviderProfile(BaseModel):
     def _normalized_service_tier(cls, value: str) -> str:
         return value.strip().lower()
 
+    @field_validator("auth_mode")
+    @classmethod
+    def _normalized_auth_mode(cls, value: str) -> str:
+        return value.strip().lower()
+
     @model_validator(mode="after")
     def _reasoning_effort_supported_by_type(self) -> ProviderProfile:
         if not self.reasoning_effort:
@@ -321,6 +330,30 @@ class ProviderProfile(BaseModel):
             raise ValueError("keyless profiles must not set api_key_env")
         if not self.base_url:
             raise ValueError("keyless profiles must set base_url")
+        return self
+
+    @model_validator(mode="after")
+    def _xai_profile_contract(self) -> ProviderProfile:
+        if self.type != "xai":
+            if self.auth_mode:
+                raise ValueError("auth_mode is only supported for provider type 'xai'")
+            return self
+
+        mode = self.auth_mode or "oauth"
+        if mode not in {"oauth", "api_key", "auto"}:
+            raise ValueError("xAI auth_mode must be one of: oauth, api_key, auto")
+        if self.base_url.strip():
+            raise ValueError("xAI profiles use the fixed https://api.x.ai/v1 endpoint")
+        if self.models_endpoint.strip():
+            raise ValueError("xAI profiles do not support models_endpoint discovery")
+        if self.keyless:
+            raise ValueError("xAI profiles do not support keyless mode")
+        if mode == "oauth" and self.api_key_env:
+            raise ValueError("xAI oauth profiles must not set api_key_env")
+        if mode == "api_key" and self.api_key_env != "GROK_API_KEY":
+            raise ValueError("xAI api_key profiles must set api_key_env: GROK_API_KEY")
+        if mode == "auto" and self.api_key_env not in {"", "GROK_API_KEY"}:
+            raise ValueError("xAI auto profiles may only use api_key_env: GROK_API_KEY")
         return self
 
     @model_validator(mode="after")
@@ -752,7 +785,7 @@ def resolve_provider_config(
         anthropic_effort=(profile.reasoning_effort if provider_name == "anthropic_compat" else ""),
         openai_reasoning_effort=(
             profile.reasoning_effort
-            if provider_name in {"openai_compat", "openai_responses"}
+            if provider_name in {"openai_compat", "openai_responses", "xai"}
             else ""
         ),
         openai_request_id_header=(
@@ -780,6 +813,8 @@ def resolve_provider_config(
         codex_ws_idle_timeout=settings.codex_ws_idle_timeout,
         codex_ws_read_timeout=settings.codex_ws_read_timeout,
         codex_verbose=settings.codex_verbose,
+        xai_token_file=settings.xai_oauth_token_file,
+        xai_auth_mode=(profile.auth_mode or "oauth") if provider_name == "xai" else "oauth",
     )
 
 

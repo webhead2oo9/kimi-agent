@@ -27,13 +27,15 @@ The rest is reference material.
 - [Tool catalog](tools.md): all built-in model-callable tools and their gates.
 - [Providers](providers.md): model profiles, routing, fallback, and image
   capability. Backend guides: [Z.AI GLM Coding Plan](providers-zai.md),
-  [xAI Grok](providers-grok.md), [Claude via ccflare](providers-ccflare.md),
+  [xAI Grok](providers-grok.md), [X search](x-search.md),
+  [Claude via ccflare](providers-ccflare.md),
   [Codex](providers-codex.md), and
   [OpenAI and OpenRouter](providers-openai.md).
 - [Provider resilience](provider-resilience.md): sticky fallback, persistent
   circuit breakers, cooldown policy, and owner recovery controls.
 - [Internet search](internet-search.md): Exa/Brave search and page reading,
   blending, limits, cost, and privacy.
+- [X search](x-search.md): optional xAI-hosted X search through OAuth or API key.
 - [Wolfram|Alpha](wolfram-alpha.md): optional computational queries, limits,
   credentials, and cost tracking.
 - [Memory](memory.md): Hindsight-backed user and community memory.

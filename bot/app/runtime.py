@@ -64,6 +64,7 @@ from app.providers import (
     ProviderManager,
     build_provider_manager,
     codex_startup_check,
+    xai_startup_check,
 )
 from utils.privacy_barrier import UserPrivacyBarrier
 from app.tools import RuntimeTools, build_runtime_tools
@@ -444,6 +445,10 @@ class KimiApplication:
                 warning.model_id,
             )
         codex_startup_check(
+            self.settings,
+            model_config=getattr(self.provider_manager, "model_config", None),
+        )
+        xai_startup_check(
             self.settings,
             model_config=getattr(self.provider_manager, "model_config", None),
         )

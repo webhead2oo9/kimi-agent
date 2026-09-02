@@ -17,7 +17,7 @@ from config.plugin_settings import PluginSettingsRegistry
 from config.settings import Settings
 from image_gen.factory import ImageBackendConfig, build_image_backend
 from image_gen.service import ImageGenService
-from providers.factory import get_codex_auth_manager
+from providers.factory import get_codex_auth_manager, get_xai_auth_manager
 from skills.admin import SkillAdminService
 from skills.loader import SharedSkillCatalog, scan_skills
 from skills.personal import PersonalSkillManager
@@ -61,6 +61,7 @@ from tools.wolfram_alpha import (
     WolframAlphaConfig,
     init_wolfram_alpha_tool,
 )
+from tools.x_search import XSearchConfig, init_x_search_tool
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from trust.tiers import trust_tier_from_value
 from video_understanding.client import GeminiVideoClient
@@ -162,6 +163,7 @@ def build_runtime_tools(
         init_block_user_tool(registry, get_blocked_user_store)
     _register_discord_text_search(settings, registry, gateway)
     _register_internet_search(settings, registry)
+    _register_x_search(settings, registry)
     _register_wolfram_alpha(settings, registry)
     workspace_config = _workspace_tool_config(settings)
     workspace_locks = init_workspace_tools(
@@ -320,6 +322,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
         ("internet_search",),
         "TINYFISH_API_KEY or EXA_API_KEY or BRAVE_API_KEY",
     ),
+    (
+        "X search",
+        ("x_search",),
+        "X_SEARCH_ENABLED + xAI OAuth or GROK_API_KEY",
+    ),
     ("Wolfram|Alpha", ("wolfram_alpha",), "WOLFRAM_ALPHA_APP_ID"),
     (
         "image generation",
@@ -449,6 +456,57 @@ def _register_internet_search(settings: Settings, registry: ToolRegistry) -> Non
         ),
     )
     log.info("Internet search enabled with providers: %s", ", ".join(b.name for b in backends))
+
+
+def _register_x_search(settings: Settings, registry: ToolRegistry) -> None:
+    if not settings.x_search_enabled:
+        log.info("X search disabled; X_SEARCH_ENABLED is false")
+        return
+
+    from xai.auth import XaiAuthError
+    from xai.credentials import AUTH_MODE_API_KEY, XaiCredentialResolver
+    from xai.responses import XaiResponsesClient
+
+    try:
+        manager = (
+            None
+            if settings.x_search_auth_mode == AUTH_MODE_API_KEY
+            else get_xai_auth_manager(settings.xai_oauth_token_file)
+        )
+        resolver = XaiCredentialResolver(
+            auth_mode=settings.x_search_auth_mode,
+            oauth_manager=manager,
+            api_key=settings.grok_api_key.get_secret_value(),
+        )
+        available = resolver.is_available()
+    except XaiAuthError as exc:
+        log.warning("X search OAuth credentials could not be loaded (%s); tool not registered", exc)
+        return
+    if not available:
+        log.warning(
+            "X search requested but no credential allowed by X_SEARCH_AUTH_MODE is available; "
+            "tool not registered"
+        )
+        return
+    client = XaiResponsesClient(
+        resolver,
+        timeout_seconds=settings.x_search_timeout_seconds,
+        max_retries=2,
+        user_agent=settings.bot_name,
+    )
+    init_x_search_tool(
+        registry,
+        XSearchConfig(
+            client=client,
+            credential_resolver=resolver,
+            model=settings.x_search_model,
+            max_calls_per_turn=settings.x_search_max_calls_per_turn,
+        ),
+    )
+    log.info(
+        "X search enabled with %s auth (OAuth-first in auto mode)",
+        settings.x_search_auth_mode,
+    )
 
 
 def _register_wolfram_alpha(settings: Settings, registry: ToolRegistry) -> None:

@@ -482,11 +482,17 @@ class ThreadHandoffBoundary:
             self._thread_creation_locks[key] = lock
         return lock
 
-    async def _adopt_managed_handoff_thread(
+    async def adopt_managed_handoff_thread(
         self,
         message: discord.Message,
     ) -> discord.Thread | None:
-        """Adopt a thread another delivery path already created for this message."""
+        """Adopt a thread another delivery path already created for this message.
+
+        This is the public coordination seam used by deliveries that may race
+        to hand off the same trigger message. It only returns threads already
+        enrolled by this boundary; callers cannot use it to adopt arbitrary
+        Discord threads.
+        """
 
         manager = self.thread_handoff
         if manager is None or isinstance(message.channel, discord.Thread):

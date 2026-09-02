@@ -4,11 +4,11 @@
 
 The default access level is `member`. Set `CODE_EXEC_MIN_TIER=regular` or `CODE_EXEC_MIN_TIER=staff` if you want to restrict it. Changing the tier requires a restart.
 
-Turning on `CODE_EXEC_ENABLED` is only a request. Before registering the tool, Kimi runs a real startup test through the sandbox and network mode you configured. If that test fails, `run_code` stays unavailable. Kimi never exposes a half-working sandbox.
+Turning on `CODE_EXEC_ENABLED` is only a request. Before the tool appears, Kimi runs a real test program through the sandbox and network mode you configured. If that test fails, `run_code` stays unavailable, the startup log warns that the probe failed, and `scripts.sandbox_probe` (see [Check your deployment](#check-your-deployment)) tells you which check broke. Kimi never exposes a half-working sandbox.
 
-Runs use `auto`, `python`, `shell`, or `direct` mode. In a networked mode, a run can install approved public package names into a `.venv` that stays in the workspace for later runs. Files also stay in the workspace. The model must name each file it wants to attach with `queue_file`.
+Each run is Python, a shell script, or a workspace file run directly (`auto` picks from the file extension). In a networked mode, a run can `pip install` public packages into a `.venv` that stays in the workspace for later runs. Files the run creates also stay in the workspace; the model must name each one it wants to attach with `queue_file`.
 
-The optional [durable coding agent](coding-agent.md) uses the same sandbox for longer jobs. It may get more wall and CPU time, but it does not get extra files, network access, syscalls, quota, or credentials. Both ordinary runs and coding jobs also give systemd a manager-side `RuntimeMaxSec`.
+The optional [durable coding agent](coding-agent.md) uses the same sandbox for longer jobs. A coding job may get more wall-clock and CPU time, but no extra files, network access, syscalls, quota, or credentials. For both ordinary runs and coding jobs, systemd also gets its own deadline (`RuntimeMaxSec`), so a run that somehow outlives Kimi's timer is still killed.
 
 ## Pick a network mode
 
@@ -49,7 +49,7 @@ The filesystem, process, syscall, resource, and credential protections still app
 
 Use `netns` when code needs internet access but must not use the server's normal routes. You provide a persistent network namespace with a VPN or another restricted uplink. Kimi does not depend on a particular VPN provider.
 
-The real privileged launch path must prove all of these before the tool registers:
+Before the tool appears, Kimi launches a test through the real privileged path and checks that:
 
 1. seccomp is installed and a blocked syscall returns `EPERM`;
 2. the namespace has a route;
@@ -61,10 +61,10 @@ The namespace should block loopback, private, link-local, metadata, and unnecess
 
 ## The sandbox boundary
 
-Every network mode uses the same main protections:
+Every network mode gets the same core protections:
 
 - a transient `systemd-run --user` cgroup limits tasks, memory, swap, and CPU for the whole process tree;
-- Bubblewrap creates user, pid, IPC, UTS, and cgroup namespaces, then Kimi verifies nested user namespaces are unavailable;
+- Bubblewrap creates user, pid, IPC, UTS, and cgroup namespaces, and Kimi checks that code inside cannot create further user namespaces;
 - libseccomp blocks high-risk kernel features such as `bpf`, io_uring, userfaultfd, perf, ptrace/process-vm, keyrings, mounts, namespaces, module loading, NUMA policy, and personality calls;
 - `prlimit` caps address space, CPU time, file size, open files, and core dumps;
 - `/tmp` is a private size-limited tmpfs;
@@ -85,7 +85,7 @@ Use a plain file pattern instead. Ubuntu's Apport commonly installs the piped ha
 
 ## Why netns launches differently
 
-`none` and `host` use `systemd-run --user --scope`. That does not work for netns when the main bot service has `NoNewPrivileges=yes`, because descendants cannot use `sudo`.
+`none` and `host` use `systemd-run --user --scope`. That does not work for netns when the main bot service has `NoNewPrivileges=yes`, because no child process of the service can use `sudo`, and entering the namespace needs root.
 
 Netns uses a transient user service started by the user's systemd manager:
 
@@ -100,7 +100,7 @@ The manager opens the seccomp program as file descriptor 3. `sudo -C 4` keeps it
 
 The namespace name is not a bot setting or a sudo argument. It is fixed inside the helper, which keeps the privileged interface and sudoers rule narrow. See the [generic provisioning templates](../bot/deploy/code-exec-netns/README.md).
 
-Only one netns run can hold the process-wide lease. Cleanup stops the transient unit and checks that it is inactive before releasing the lease. If Kimi cannot prove cleanup finished, it poisons the lease and rejects every later netns call until restart. That is safer than assuming no process remains in the namespace.
+Only one netns run can be active at a time. When it finishes, Kimi stops the transient unit and confirms it is inactive before letting the next run start. If Kimi cannot confirm cleanup finished, it stops accepting netns runs until the bot restarts. That is safer than assuming no process is left in the namespace.
 
 ## Packages and build files
 
@@ -116,7 +116,7 @@ These directories have their own byte and file-count quotas. They stay out of no
 
 Kimi scans the whole workspace before launch, every `CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` during the run, and once more before returning output. The default interval is five seconds. A job may go over a limit briefly, but the final scan stops unchecked output from being returned.
 
-Files can disappear while package managers and test runners are working. `ENOENT` and `ESTALE` races are retried up to `CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES` total attempts, four by default and ten at most. Permission errors and other non-temporary failures stop immediately. A temporary error that survives every retry also fails closed. Logs include the area, errno, relative path, and attempt count without exposing the full workspace path.
+Files can disappear mid-scan while package managers and test runners are working. When a scan hits a file that vanished (`ENOENT` or `ESTALE`), it retries up to `CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES` attempts in total, four by default and ten at most. Permission errors and other non-temporary failures stop the run immediately, and so does a temporary error that survives every retry. The log line names the area, errno, relative path, and attempt count, but never the full workspace path.
 
 ### Shared read-only packages
 
@@ -144,9 +144,9 @@ Keep the shared venv separate from Kimi's own environment. Never put credentials
 
 A run holds the same per-workspace lock used by `write_file`, `edit_file`, imports, archive extraction, and other writing tools. Those tools cannot replace a path with a symlink while code is running.
 
-Kimi watches normal workspace bytes and entries plus environment bytes and entries. Crossing a limit kills the whole process tree. Files created by the run are pruned afterward. Existing documents are left alone because rolling them back without a snapshot could destroy user work. Regenerable environment folders may be removed even if they existed before the run. Cleanup uses fd-relative, no-follow directory access and checks directory identity so symlink and rename races cannot escape the workspace.
+Kimi watches the size and file count of the normal workspace and of the environment folders (`.venv`, `.pio`) separately. Crossing a limit kills the whole process tree. Files the run created are then deleted. Files that existed before the run are left alone, because rolling them back without a snapshot could destroy the user's work. Environment folders can be regenerated, so those may be removed even if they existed before the run. Cleanup opens directories relative to a held file descriptor, never follows symlinks, and re-checks each directory's identity, so a symlink or rename swapped in during cleanup cannot point it outside the workspace.
 
-The workspace limits are monitoring and cleanup limits, not hard disk allocation limits. Polling is not instant, and the file-size limit applies per file rather than to the total. A hostile program can allocate beyond the configured total before the monitor kills it.
+The workspace limits are monitoring and cleanup limits, not hard disk quotas. Polling is not instant, and the file-size limit applies per file rather than to the total, so a hostile program can write more than the configured total before the monitor kills it.
 
 For untrusted users, put `WORKSPACE_DIR` on its own size-limited filesystem or apply an OS filesystem/project quota. Size that hard limit for your allowed concurrency, and keep it separate from the repository, database, logs, and root filesystem. Without that host-level boundary, do not expose code execution to a hostile public population.
 
@@ -154,11 +154,11 @@ After a run, Kimi reports up to 50 changed file names. Files remain in the works
 
 ## Weekly network limit
 
-Each `host` or `netns` run reserves one per-user marker after argument and path validation but before sandbox work begins. `CODE_EXEC_NETWORK_WEEKLY_LIMIT` defaults to 100 over a rolling seven-day window. Set it to `0` to disable the limit. `STAFF` is exempt.
+Each `host` or `netns` run counts one against the user's weekly allowance. The count is taken after Kimi has validated the arguments and paths but before any sandbox work starts. `CODE_EXEC_NETWORK_WEEKLY_LIMIT` defaults to 100 over a rolling seven-day window. Set it to `0` to disable the limit. `STAFF` is exempt.
 
-A reserved run counts even when installation or execution later fails because it used network and build capacity. Offline `none` runs do not count. These markers are separate from model and paid-tool costs.
+A run still counts if installation or execution fails afterwards, because it used network and build capacity. Offline `none` runs never count. This allowance is separate from model and paid-tool costs.
 
-When both code execution and the [persistent browser](browser.md) use `netns`, they share the same physical namespace lease. A browser turn keeps the lease until its finalizer runs. If one surface already holds the lease within a turn, the other refuses instead of waiting on its own turn. `CODE_EXEC_NETWORK_MODE=none` does not use the lease and is the expected setup when only browser traffic needs the VPN.
+When both code execution and the [persistent browser](browser.md) use `netns`, they share the same VPN namespace and take turns holding it. A browser turn keeps it until the turn finishes. If one of them already holds it within a turn, the other refuses rather than deadlocking the turn by waiting on itself. `CODE_EXEC_NETWORK_MODE=none` never touches the namespace, and is the expected setup when only browser traffic needs the VPN.
 
 ## Host requirements
 
@@ -176,7 +176,7 @@ Without it `bwrap` fails with `loopback: Failed RTM_NEWADDR: Operation not permi
 
 The user bus that `systemd-run --user` connects through comes from `dbus-user-session`; minimal server images may not have it installed.
 
-Kimi must run as a normal Unix user. UID 0 is rejected during startup and again before every run. Container root does not count as unprivileged.
+Kimi must run as a normal Unix user. Root (UID 0) is rejected at startup and again before every run. Root inside a container still counts as root.
 
 The account also needs lingering so its systemd user manager stays available. Replace `kimi` with the real account:
 
@@ -191,7 +191,7 @@ sudo -u "$bot_user" env \
   systemctl --user is-system-running
 ```
 
-The last command should report `running` or `degraded` with a reachable user bus. Kimi can work out the two environment variables, but it cannot start a user manager that does not exist.
+The last command should report `running` or `degraded`; either means the user bus is reachable. Kimi can work out those two environment variables on its own, but it cannot start a user manager that does not exist.
 
 A networked mode needs an interpreter that can create a venv with pip. That is `CODE_EXEC_VENV_DIR/bin/python3` when a shared environment is configured, otherwise `CODE_EXEC_PYTHON_BIN`. On Debian and Ubuntu you usually need the matching `python3-venv` package. The startup test builds a disposable venv and leaves `run_code` unavailable if it fails.
 
@@ -212,7 +212,7 @@ All settings and defaults live in [`.env.example`](../bot/.env.example). The mai
 - `CODE_EXEC_NETWORK_WEEKLY_LIMIT`; and
 - for netns: `CODE_EXEC_SUDO_BIN`, `CODE_EXEC_NETNS_HELPER_BIN`, `CODE_EXEC_NETNS_RESOLV_CONF`, and `CODE_EXEC_NETWORK_PROBE_BLOCKED_IP`.
 
-An incomplete netns configuration fails settings validation. A complete setup whose live test fails leaves `run_code` unavailable, writes a startup warning naming the failed mode, and marks the tool unavailable in the capability summary.
+A netns configuration with a missing value fails settings validation, so the bot does not start. A complete setup whose live test fails still lets the bot start, but leaves `run_code` unavailable, logs a startup warning naming the failed mode, and marks the tool unavailable in the capability summary.
 
 ## Check your deployment
 
@@ -262,4 +262,4 @@ If registration fails, the usual causes are:
 - DNS or TLS is broken; or
 - a private target has become reachable.
 
-Fix the failed boundary and restart. Do not bypass the startup test. It is telling you that the sandbox you configured is not the sandbox Kimi would be exposing.
+Fix the failed check and restart. Do not work around the startup test. It is telling you that the sandbox you configured is not the sandbox Kimi would actually be running code in.

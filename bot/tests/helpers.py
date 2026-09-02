@@ -13,7 +13,7 @@ import base64
 import re
 import tempfile
 import zlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import lru_cache
@@ -101,41 +101,58 @@ class LifecycleProbe:
             auto_retain_watermarks=auto_retain_watermarks
         )
 
+    # These reach into ApplicationLifecycle's private state on purpose: the
+    # states are unreachable without starting Discord or blocking shutdown, and
+    # keeping the pokes here keeps test-only mutators off the production class.
+    @property
+    def _lifecycle(self) -> Any:
+        return self._app.lifecycle
+
     def set_closed(self, value: bool = True) -> None:
-        self._app.lifecycle.set_closed_for_test(value)
+        self._lifecycle._closed = value
 
     def set_startup_error(self, error: Exception | None) -> None:
-        self._app.lifecycle.set_startup_error_for_test(error)
+        self._lifecycle._startup_error = error
 
     def set_db_initialized(self, value: bool = True) -> None:
-        self._app.lifecycle.set_db_initialized_for_test(value)
+        self._lifecycle._db_initialized = value
 
     def set_gateway_ready(self, value: bool = True) -> None:
-        self._app.lifecycle.set_gateway_ready_for_test(value)
+        self._lifecycle._gateway_ready = value
 
     def set_workspace_sweeper_started(self, value: bool = True) -> None:
-        self._app.lifecycle.set_workspace_sweeper_started_for_test(value)
+        self._lifecycle._workspace_sweeper_started = value
 
     def set_video_session_sweeper_started(self, value: bool = True) -> None:
-        self._app.lifecycle.set_video_session_sweeper_started_for_test(value)
+        self._lifecycle._video_session_sweeper_started = value
 
     def set_guild_activation_refresh_task(self, task: Any | None) -> None:
-        self._app.lifecycle.set_guild_activation_refresh_task_for_test(task)
+        self._lifecycle.resources.guild_activation._refresh_task = task
 
     def set_video_session_sweeper_task(self, task: Any | None) -> None:
-        self._app.lifecycle.set_video_session_sweeper_task_for_test(task)
+        self._lifecycle._video_session_sweeper_task = task
 
     def set_module_event_publisher(self, publisher: Any | None) -> None:
-        self._app.lifecycle.set_module_event_publisher_for_test(publisher)
+        self._lifecycle._module_event_publisher = publisher
 
     def set_module_interaction_runtime(self, runtime: Any | None) -> None:
-        self._app.lifecycle.set_module_interaction_runtime_for_test(runtime)
+        self._lifecycle._module_interaction_runtime = runtime
+
+    def set_thread_handoff(self, handoff: Any | None) -> None:
+        self._lifecycle._thread_handoff = handoff
+
+
+def set_command_sync_retired_tasks(command_sync: Any, tasks: Iterable[Any]) -> None:
+    """Replace retired tasks for the stable-snapshot concurrency invariant test."""
+
+    command_sync._retired_global_sync_tasks.clear()
+    command_sync._retired_global_sync_tasks.update(tasks)
 
 
 def replace_app_repositories(app: Any, **changes: Any) -> None:
     """Substitute stores in the frozen ``app.lifecycle.AppRepositories`` bundle."""
 
-    app.lifecycle.replace_repositories_for_test(replace(app.repositories, **changes))
+    replace_lifecycle_resources(app, repositories=replace(app.repositories, **changes))
 
 
 def replace_app_database(app: Any, database: Database) -> None:
@@ -153,14 +170,14 @@ def replace_app_database(app: Any, database: Database) -> None:
         privacy_deletion_store=PrivacyDeletionRequestStore(database),
         user_memory_bank_state_store=UserMemoryBankStateStore(database),
     )
-    replace_lifecycle_resources(app, database=database)
-    app.lifecycle.replace_repositories_for_test(repositories)
+    replace_lifecycle_resources(app, database=database, repositories=repositories)
 
 
 def replace_lifecycle_resources(app: Any, **changes: Any) -> None:
     """Substitute collaborators in the frozen ``app.lifecycle.LifecycleResources`` bundle."""
 
-    app.lifecycle.replace_resources_for_test(**changes)
+    lifecycle = app.lifecycle
+    lifecycle._resources = replace(lifecycle.resources, **changes)
 
 
 class CommandSyncProbe:

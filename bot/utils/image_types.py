@@ -158,7 +158,9 @@ def _valid_png_container(payload: bytes) -> bool:
         elif chunk_type == b"IDAT":
             saw_data = True
         elif chunk_type == b"IEND":
-            return length == 0 and saw_data and chunk_end == len(payload)
+            # Bytes after the terminator are ignored, as every decoder does;
+            # requiring an exact end rejected padded provider output.
+            return length == 0 and saw_data
         offset = chunk_end
     return False
 
@@ -198,7 +200,7 @@ def _valid_jpeg_container(payload: bytes) -> bool:
                 return False
             continue
         if marker == 0xD9:
-            return saw_frame and saw_scan and offset == len(payload)
+            return saw_frame and saw_scan
         if marker in range(0xD0, 0xD8) or marker == 0x01:
             continue
         if marker == 0xD8 or offset + 2 > len(payload):
@@ -249,7 +251,7 @@ def _valid_gif_container(payload: bytes) -> bool:
         block_type = payload[offset]
         offset += 1
         if block_type == 0x3B:
-            return saw_image and offset == len(payload)
+            return saw_image
         if block_type == 0x21:
             if offset >= len(payload):
                 return False
@@ -287,21 +289,20 @@ def _valid_gif_container(payload: bytes) -> bool:
 
 
 def _valid_webp_container(payload: bytes) -> bool:
-    if (
-        len(payload) < 20
-        or payload[:4] != b"RIFF"
-        or payload[8:12] != b"WEBP"
-        or int.from_bytes(payload[4:8], "little") != len(payload) - 8
-    ):
+    if len(payload) < 20 or payload[:4] != b"RIFF" or payload[8:12] != b"WEBP":
+        return False
+    # The RIFF size bounds the container; bytes past it are trailing padding.
+    end = 8 + int.from_bytes(payload[4:8], "little")
+    if end < 20 or end > len(payload):
         return False
     offset = 12
     saw_image = False
-    while offset + 8 <= len(payload):
+    while offset + 8 <= end:
         chunk_type = payload[offset : offset + 4]
         chunk_size = int.from_bytes(payload[offset + 4 : offset + 8], "little")
         data_start = offset + 8
         data_end = data_start + chunk_size
-        if data_end > len(payload):
+        if data_end > end:
             return False
         if chunk_type == b"VP8X":
             # The extended header, when present, must lead the chunk sequence.
@@ -314,7 +315,7 @@ def _valid_webp_container(payload: bytes) -> bool:
                 return False
             saw_image = True
         offset = data_end + (chunk_size & 1)
-    return saw_image and offset == len(payload)
+    return saw_image and offset == end
 
 
 def _valid_webp_extended_header(data: bytes) -> bool:

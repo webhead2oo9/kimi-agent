@@ -1559,3 +1559,28 @@ async def test_on_ready_starts_sweepers_when_the_gateway_moves_during_command_sy
 
     assert "video_session_sweeper" in background_coroutines
     assert LifecycleProbe(app).snapshot().video_session_sweeper_started is True
+
+
+@pytest.mark.asyncio
+async def test_bot_close_still_disconnects_discord_when_the_drain_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    events: list[str] = []
+
+    async def failing_drain() -> None:
+        raise RuntimeError("drain exploded")
+
+    async def close_application() -> None:
+        events.append("application")
+
+    async def close_discord(_bot: object) -> None:
+        events.append("discord")
+
+    monkeypatch.setattr(app, "drain_interactions", failing_drain)
+    monkeypatch.setattr(app, "close", close_application)
+    monkeypatch.setattr(app_runtime.commands.Bot, "close", close_discord)
+
+    await app.bot.close()
+
+    assert events == ["discord", "application"]

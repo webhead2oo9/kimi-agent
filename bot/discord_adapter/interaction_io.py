@@ -119,7 +119,10 @@ async def send_interaction_result(
             delivered_chunks.append(chunk)
     except discord.HTTPException as exc:
         if on_primary_delivered is not None:
-            await on_primary_delivered("\n".join(delivered_chunks))
+            # With an overflow file the first message already carried the whole
+            # response; the visible chunk is only the placeholder pointing at it.
+            delivered_text = prepared if overflow_file is not None else "\n".join(delivered_chunks)
+            await on_primary_delivered(delivered_text)
         if not ephemeral:
             raise PartialPublicDeliveryError from exc
         raise

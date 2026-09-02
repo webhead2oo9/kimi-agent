@@ -146,7 +146,10 @@ class KimiBot(commands.Bot):
                 # tasks it dispatches interactions in, so a module handler must
                 # be given its bounded chance to reply while the HTTP session
                 # is still open. Teardown order below is otherwise unchanged.
-                await self._agent_application.drain_interactions()
+                try:
+                    await self._agent_application.drain_interactions()
+                except Exception:
+                    log.exception("Error draining interactions before disconnect")
             await super().close()
         finally:
             if self._agent_application is not None:

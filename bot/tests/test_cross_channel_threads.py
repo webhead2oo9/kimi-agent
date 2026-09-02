@@ -25,7 +25,7 @@ import pytest
 import app.runtime as app_runtime
 import app.thread_handoff_boundary as thread_boundary
 from config.settings import Settings
-from tests.helpers import StubProviderManager
+from tests.helpers import LifecycleProbe, StubProviderManager
 from tools.registry import MessageContext
 from tools.threads import ThreadRequest
 from trust.tiers import TrustTier
@@ -413,7 +413,7 @@ def _enable(app, monkeypatch) -> Any:
     handoff = MagicMock()
     handoff.enroll = AsyncMock()
     handoff.is_managed.return_value = False
-    app.lifecycle.set_thread_handoff_for_test(handoff)
+    LifecycleProbe(app).set_thread_handoff(handoff)
     monkeypatch.setattr(app.threads, "thread_handoff_creation_allowed", lambda message: True)
     monkeypatch.setattr(app.threads, "_thread_auto_respond_default", lambda message: True)
     return handoff

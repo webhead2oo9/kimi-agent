@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -937,44 +937,3 @@ class ApplicationLifecycle:
                 len(affected),
                 ", ".join(affected),
             )
-
-    # Explicit test seams for lifecycle states that cannot be reached without
-    # starting Discord or intentionally blocking shutdown.
-    def set_closed_for_test(self, value: bool) -> None:
-        self._closed = value
-
-    def set_startup_error_for_test(self, error: Exception | None) -> None:
-        self._startup_error = error
-
-    def set_db_initialized_for_test(self, value: bool) -> None:
-        self._db_initialized = value
-
-    def set_gateway_ready_for_test(self, value: bool) -> None:
-        self._gateway_ready = value
-
-    def set_workspace_sweeper_started_for_test(self, value: bool) -> None:
-        self._workspace_sweeper_started = value
-
-    def set_video_session_sweeper_started_for_test(self, value: bool) -> None:
-        self._video_session_sweeper_started = value
-
-    def set_video_session_sweeper_task_for_test(self, task: asyncio.Task[Any] | None) -> None:
-        self._video_session_sweeper_task = task
-
-    def set_guild_activation_refresh_task_for_test(self, task: asyncio.Task[None] | None) -> None:
-        self._resources.guild_activation._refresh_task = task
-
-    def set_module_event_publisher_for_test(self, publisher: ModuleEventPublisher | None) -> None:
-        self._module_event_publisher = publisher
-
-    def set_module_interaction_runtime_for_test(self, runtime: InteractionRuntime | None) -> None:
-        self._module_interaction_runtime = runtime
-
-    def set_thread_handoff_for_test(self, handoff: Any | None) -> None:
-        self._thread_handoff = handoff
-
-    def replace_repositories_for_test(self, repositories: AppRepositories) -> None:
-        self._resources = replace(self._resources, repositories=repositories)
-
-    def replace_resources_for_test(self, **changes: Any) -> None:
-        self._resources = replace(self._resources, **changes)

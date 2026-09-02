@@ -57,20 +57,33 @@ class UserAppConsentView(discord.ui.View):
         self.stop()
         try:
             await self._store.set_consent(str(self._author_id), True)
+        except Exception:
+            log.exception("User-app privacy consent write failed for user %s", self._author_id)
+            await self._replace_prompt(
+                interaction, "I couldn't save your privacy choice. Please try again."
+            )
+            return
+        try:
             # thinking=True creates a fresh deferred command-style response for the
             # component interaction. Its visibility carries through live activity,
             # the final result, and any post-defer failure.
             await interaction.response.defer(ephemeral=not self._public_response, thinking=True)
         except Exception:
-            log.exception("User-app privacy consent acceptance failed for user %s", self._author_id)
-            with suppress(discord.HTTPException):
-                await interaction.response.edit_message(
-                    content="I couldn't save your privacy choice. Please try again.",
-                    embed=None,
-                    view=None,
-                )
+            # The choice is already persisted; saying otherwise would send the
+            # user back through a prompt that will no longer appear.
+            log.exception("User-app privacy consent defer failed for user %s", self._author_id)
+            await self._replace_prompt(
+                interaction,
+                "Your privacy choice was saved, but I couldn't continue. Run the command again.",
+            )
             return
         await self._on_accept(interaction)
+
+    async def _replace_prompt(self, interaction: discord.Interaction, content: str) -> None:
+        # A partially completed defer has already consumed the response; discord.py
+        # reports that as InteractionResponded, which is not an HTTPException.
+        with suppress(discord.HTTPException, discord.InteractionResponded):
+            await interaction.response.edit_message(content=content, embed=None, view=None)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary)
     async def decline(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:

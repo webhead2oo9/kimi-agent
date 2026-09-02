@@ -8,6 +8,7 @@ import pytest
 from discord import app_commands
 
 from app.command_sync import CommandSyncConfig, DiscordCommandSync
+from tests.helpers import set_command_sync_retired_tasks
 
 
 class FakeTree:
@@ -198,11 +199,11 @@ async def test_cancellation_preserves_tasks_retired_after_its_snapshot() -> None
     old = asyncio.create_task(stubborn_old())
     newly_retired = asyncio.create_task(wait_for_new_release())
     await old_started.wait()
-    command_sync.set_retired_tasks_for_test((old,))
+    set_command_sync_retired_tasks(command_sync, (old,))
 
     cancelling = asyncio.create_task(command_sync.cancel_all())
     await asyncio.sleep(0)
-    command_sync.set_retired_tasks_for_test((old, newly_retired))
+    set_command_sync_retired_tasks(command_sync, (old, newly_retired))
     await cancelling
 
     retired = command_sync.snapshot().retired_global_sync_tasks
@@ -212,7 +213,7 @@ async def test_cancellation_preserves_tasks_retired_after_its_snapshot() -> None
     release_old.set()
     release_new.set()
     await asyncio.gather(old, newly_retired)
-    command_sync.set_retired_tasks_for_test(())
+    set_command_sync_retired_tasks(command_sync, ())
 
 
 @pytest.mark.asyncio

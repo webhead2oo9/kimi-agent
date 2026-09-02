@@ -1784,7 +1784,7 @@ async def test_processing_reaction_cleanup_is_bounded(
 
 
 def _enable_thread_handoff(app, store: ConversationStore) -> ThreadHandoffManager:
-    app.lifecycle.set_thread_handoff_for_test(ThreadHandoffManager(store))
+    LifecycleProbe(app).set_thread_handoff(ThreadHandoffManager(store))
     return app.thread_handoff
 
 

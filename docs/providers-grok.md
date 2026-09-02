@@ -36,8 +36,8 @@ providers:
 models:
   grok-chat:
     provider: grok-subscription
-    model: <grok-model-id>
-    context_window: <verified-context-window>
+    model: grok-4.6
+    context_window: 500000
     capabilities: [text, tool_calling, image_input]
 ```
 
@@ -86,7 +86,9 @@ Kimi's local tool registry instead of receiving special native injection into a
 Grok chat request, so policy, budgets, fallback, and evidence checks stay
 identical across providers.
 
-Model ids, context windows, prices, reasoning defaults, and account eligibility
-change independently of this transport. Keep deployment-verified values in the
-ignored `config/models.yaml`; the tracked template intentionally avoids
-authoritative-looking live model ids and prices.
+The example uses xAI's current `grok-4.6` model, which supports text, image
+input, function calling, and a 500,000-token context window. Verify those live
+details and account eligibility against the
+[official model page](https://docs.x.ai/developers/models/grok-4.6) before a
+production rollout; model availability and commercial terms can change
+independently of this transport.

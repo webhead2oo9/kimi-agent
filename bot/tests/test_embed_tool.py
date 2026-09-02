@@ -14,7 +14,7 @@ from tools.embeds import (
     embed_transcript_summary,
     init_embed_tool,
 )
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import MessageContext, ToolRegistry, TurnOutbox
 from trust.tiers import TrustTier
 
 
@@ -37,7 +37,7 @@ def _ctx(
         context_key="g1:c1:main",
         trigger_discord_message_id="m1",
         activated_tools=activated or set(),
-        output_files=output_files or [],
+        outbox=TurnOutbox(output_files=tuple(output_files or ())),
     )
 
 
@@ -233,7 +233,7 @@ def test_basename_collision_with_queued_file_rejected(tmp_path: Path) -> None:
     ctx = _ctx()
     _write_user_image(tmp_path, ctx, "chart.png")
     queued = _wm(tmp_path).user_files_dir(ctx.workspace_key) / "other" / "chart.png"
-    ctx.output_files.append(str(queued))
+    ctx.update_outbox(output_files=(str(queued),))
     with pytest.raises(ValueError, match="rename"):
         build_embed_payload(
             {"title": "x", "image_workspace_path": "chart.png"},
@@ -258,9 +258,9 @@ def test_handler_sets_ctx_embed_and_returns_ack(tmp_path: Path) -> None:
     ack = _dispatch(registry, {"title": "Hello", "color": "#000000"}, ctx)
 
     assert ack == {"queued": True, "image": None}
-    assert ctx.embed is not None
-    assert ctx.embed.title == "Hello"
-    assert ctx.embed_attachment is None
+    assert ctx.outbox.embed is not None
+    assert ctx.outbox.embed.title == "Hello"
+    assert ctx.outbox.embed_attachment is None
 
 
 def test_handler_ack_reports_attachment_image(tmp_path: Path) -> None:
@@ -272,7 +272,7 @@ def test_handler_ack_reports_attachment_image(tmp_path: Path) -> None:
     ack = _dispatch(registry, {"image_workspace_path": "chart.png"}, ctx)
 
     assert ack == {"queued": True, "image": "attachment://chart.png"}
-    assert ctx.embed_attachment is not None
+    assert ctx.outbox.embed_attachment is not None
 
 
 def test_second_call_replaces_embed_and_attachment(tmp_path: Path) -> None:
@@ -282,12 +282,12 @@ def test_second_call_replaces_embed_and_attachment(tmp_path: Path) -> None:
     _write_user_image(tmp_path, ctx, "chart.png")
 
     _dispatch(registry, {"image_workspace_path": "chart.png"}, ctx)
-    assert ctx.embed_attachment is not None
+    assert ctx.outbox.embed_attachment is not None
 
     _dispatch(registry, {"title": "Plain"}, ctx)
-    assert ctx.embed is not None
-    assert ctx.embed.title == "Plain"
-    assert ctx.embed_attachment is None
+    assert ctx.outbox.embed is not None
+    assert ctx.outbox.embed.title == "Plain"
+    assert ctx.outbox.embed_attachment is None
 
 
 def test_validation_failure_leaves_ctx_untouched(tmp_path: Path) -> None:
@@ -296,12 +296,12 @@ def test_validation_failure_leaves_ctx_untouched(tmp_path: Path) -> None:
     ctx = _ctx(activated={"build_discord_embed"})
 
     _dispatch(registry, {"title": "Good"}, ctx)
-    prior = ctx.embed
+    prior = ctx.outbox.embed
 
     err = _dispatch(registry, {"title": "x" * 300}, ctx)
     assert "error" in err
-    assert ctx.embed is prior
-    assert ctx.output_files == []
+    assert ctx.outbox.embed is prior
+    assert ctx.outbox.output_files == ()
 
 
 # ── transcript summary (for embed-only replies) ──────────────────────────────

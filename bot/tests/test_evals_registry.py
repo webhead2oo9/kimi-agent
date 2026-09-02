@@ -152,7 +152,7 @@ def test_coding_start_dispatches_into_the_stub_not_a_real_scheduler(eval_setting
     )
     assert result["task_id"] == "eval-task-1"
     assert result["status"] == "queued"
-    assert ctx.terminal_handoff is not None
+    assert ctx.outbox.terminal_handoff is not None
 
 
 def test_stub_coding_controls_partition_state_by_eval_user():
@@ -237,7 +237,7 @@ def test_move_to_thread_works_without_a_live_handoff_manager(eval_settings):
         activated_tools={"move_to_thread"},
     )
     asyncio.run(registry.dispatch("move_to_thread", {"name": "launcher rollback"}, ctx))
-    assert ctx.thread_request is not None
+    assert ctx.outbox.thread_request is not None
 
 
 def test_eval_registry_isolates_hashed_users_and_removes_writable_state(eval_settings):

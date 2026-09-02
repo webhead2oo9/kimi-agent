@@ -14,7 +14,7 @@ from providers.base import LLMProvider
 from providers.types import ProviderCapability, ProviderRequest, ProviderResponse
 from tools._common import tool_error
 from tools.internet_search import BUDGET_EXCEEDED_MESSAGE
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry
 from usage.normalization import UsageBreakdown, normalize_usage
 
 # Approximate result tokens for relative eval cost reporting.
@@ -169,16 +169,13 @@ class InstrumentedRegistry(ToolRegistry):
     The production gate runs before replay, faults, or live execution.
     """
 
-    def __init__(self, *, internet_search_max_backend_calls_per_turn: int = 10) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.sink: list[ToolCallRecord] = []
         self._cassette: Cassette | None = None
         self._cassette_mode: str = "off"
         self._fault_budget: dict[str, list[Fault]] = {}
         self._provider_calls: Callable[[], int] = lambda: 0
-        self._internet_search_max_backend_calls_per_turn = (
-            internet_search_max_backend_calls_per_turn
-        )
 
     def set_provider_call_counter(self, counter: Callable[[], int]) -> None:
         """Set the completed-call counter used for tool cost attribution."""
@@ -222,17 +219,16 @@ class InstrumentedRegistry(ToolRegistry):
                 if name == "internet_search":
                     backend_calls = recorded.internet_search_backend_calls
                     assert backend_calls is not None
-                    if (
-                        ctx.internet_search_backend_calls_this_turn + backend_calls
-                        > self._internet_search_max_backend_calls_per_turn
+                    if not ctx.consume_budget(
+                        BudgetName.INTERNET_SEARCH_BACKEND_CALLS,
+                        backend_calls,
                     ):
                         return tool_error(BUDGET_EXCEEDED_MESSAGE), "replay"
-                    ctx.internet_search_backend_calls_this_turn += backend_calls
                 return recorded.result, "replay"
             if mode == "strict":
                 message = f"cassette miss for {name!r}; re-record with --cassette record"
                 return json.dumps({"error": message}), "miss"
-        backend_calls_before = ctx.internet_search_backend_calls_this_turn
+        backend_calls_before = ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS)
         result = await super().dispatch(name, args, ctx)
         if cassette is not None and mode in ("record", "replay"):
             cassette.record(
@@ -240,7 +236,7 @@ class InstrumentedRegistry(ToolRegistry):
                 args if isinstance(args, dict) else {"_raw": args},
                 result,
                 internet_search_backend_calls=(
-                    ctx.internet_search_backend_calls_this_turn - backend_calls_before
+                    ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS) - backend_calls_before
                     if name == "internet_search"
                     else None
                 ),

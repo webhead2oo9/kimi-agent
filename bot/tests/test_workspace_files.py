@@ -46,8 +46,8 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
         "attached": True,
     }
     assert saved.read_text(encoding="utf-8") == "Hello\nWorld"
-    assert ctx.output_files == [str(saved.resolve())]
-    assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
+    assert ctx.outbox.allowed_file_roots == (str(mgr.user_files_dir(WS).resolve()),)
 
     read_result = await reg.dispatch("read_file", {"path": "notes/hello.txt"}, ctx)
     assert json.loads(read_result) == {
@@ -81,7 +81,7 @@ async def test_workspace_tools_write_read_list_grep_and_delete(tmp_path: Path) -
         "unattached": True,
     }
     assert not saved.exists()
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 def test_heavier_workspace_tools_are_search_only(tmp_path: Path) -> None:
@@ -473,7 +473,7 @@ async def test_import_attachment_saves_by_filename(tmp_path: Path) -> None:
     assert body["size_bytes"] == len(b"payload-bytes")
     assert (mgr.user_files_dir(WS) / "imports" / "data.bin").read_bytes() == b"payload-bytes"
     # import does not auto-attach
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -753,14 +753,14 @@ async def test_write_file_defaults_to_unattached_and_queue_file_recovers(
 
     assert result["attached"] is False
     assert "queue_file" in result["attachment_hint"]
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
     saved = mgr.user_files_dir(WS) / "scratch.py"
     assert saved.read_text(encoding="utf-8") == "print('x')"
 
     # queue_file can attach the saved file later.
     queued = json.loads(await reg.dispatch("queue_file", {"path": "scratch.py"}, ctx))
     assert queued["queued"] is True
-    assert ctx.output_files == [str(saved.resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -795,7 +795,7 @@ async def test_edit_and_multi_edit_default_to_unattached(tmp_path: Path) -> None
     )
     assert multi["attached"] is False
     assert "queue_file" in multi["attachment_hint"]
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -829,7 +829,7 @@ async def test_edit_and_multi_edit_attach_true_queue_file(tmp_path: Path) -> Non
     )
     assert multi["attached"] is True
     assert "attachment_hint" not in multi
-    assert ctx.output_files == [str(path.resolve())]
+    assert ctx.outbox.output_files == (str(path.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -940,7 +940,7 @@ async def test_attached_field_reports_rail_state_not_this_call(tmp_path: Path) -
         )
     )
     assert third["attached"] is True
-    assert len(ctx.output_files) == 1
+    assert len(ctx.outbox.output_files) == 1
 
 
 @pytest.mark.asyncio

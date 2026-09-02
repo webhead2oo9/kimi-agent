@@ -36,8 +36,8 @@ async def test_queue_file_attaches_existing_user_workspace_file(tmp_path: Path) 
         "queued": True,
         "queued_files": ["notes/result.txt"],
     }
-    assert ctx.output_files == [str(saved.resolve())]
-    assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
+    assert ctx.outbox.allowed_file_roots == (str(mgr.user_files_dir(WS).resolve()),)
 
 
 @pytest.mark.asyncio
@@ -59,8 +59,10 @@ async def test_queue_file_attaches_existing_generated_file(tmp_path: Path) -> No
         "queued": True,
         "queued_files": [relative_path],
     }
-    assert ctx.output_files == [str(generated.resolve())]
-    assert ctx.allowed_file_roots == [str(mgr.allowed_output_roots(context_key=ctx.context_key)[0])]
+    assert ctx.outbox.output_files == (str(generated.resolve()),)
+    assert ctx.outbox.allowed_file_roots == (
+        str(mgr.allowed_output_roots(context_key=ctx.context_key)[0]),
+    )
 
 
 @pytest.mark.asyncio
@@ -81,8 +83,8 @@ async def test_queue_file_rejects_generated_file_without_context(
 
     parsed = json.loads(result)
     assert "conversation context" in parsed["error"].lower()
-    assert ctx.output_files == []
-    assert ctx.allowed_file_roots == []
+    assert ctx.outbox.output_files == ()
+    assert ctx.outbox.allowed_file_roots == ()
 
 
 @pytest.mark.asyncio
@@ -102,8 +104,8 @@ async def test_queue_file_prefers_user_workspace_generated_named_file(
         "queued": True,
         "queued_files": ["generated/note.txt"],
     }
-    assert ctx.output_files == [str(saved.resolve())]
-    assert ctx.allowed_file_roots == [str(mgr.user_files_dir(WS).resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
+    assert ctx.outbox.allowed_file_roots == (str(mgr.user_files_dir(WS).resolve()),)
 
 
 @pytest.mark.asyncio
@@ -124,7 +126,7 @@ async def test_queue_file_respects_attachment_cap(tmp_path: Path) -> None:
     assert parsed["queued"] is False
     assert parsed["queued_files"] == ["a.txt"]
     assert "attachment limit" in parsed["error"].lower()
-    assert ctx.output_files == [str(first.resolve())]
+    assert ctx.outbox.output_files == (str(first.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -145,7 +147,7 @@ async def test_queue_file_is_idempotent_for_already_queued_file(
         "queued": True,
         "queued_files": ["a.txt"],
     }
-    assert ctx.output_files == [str(saved.resolve())]
+    assert ctx.outbox.output_files == (str(saved.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -169,7 +171,7 @@ async def test_queue_file_remove_frees_slot_for_new_attachment(tmp_path: Path) -
         "queued_files": [],
     }
     assert json.loads(queued)["queued"] is True
-    assert ctx.output_files == [str(second.resolve())]
+    assert ctx.outbox.output_files == (str(second.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -201,7 +203,7 @@ async def test_queue_file_remove_bare_filename_requires_unique_match(
         "removed": True,
         "queued_files": [],
     }
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -216,7 +218,7 @@ async def test_queue_file_remove_handles_entry_deleted_from_disk(tmp_path: Path)
     removed = await reg.dispatch("queue_file", {"path": "gone.txt", "action": "remove"}, ctx)
 
     assert json.loads(removed)["removed"] is True
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -235,7 +237,7 @@ async def test_queue_file_remove_generated_artifact(tmp_path: Path) -> None:
         "removed": True,
         "queued_files": [],
     }
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -248,14 +250,14 @@ async def test_queue_file_remove_by_absolute_path_for_skill_output(
     job_dir.mkdir(parents=True, exist_ok=True)
     chart = job_dir / "matplotlib-chart.png"
     chart.write_bytes(b"png")
-    ctx.output_files.append(str(chart.resolve()))
+    ctx.update_outbox(output_files=(str(chart.resolve()),))
 
     removed = await reg.dispatch(
         "queue_file", {"path": str(chart.resolve()), "action": "remove"}, ctx
     )
 
     assert json.loads(removed)["removed"] is True
-    assert ctx.output_files == []
+    assert ctx.outbox.output_files == ()
 
 
 @pytest.mark.asyncio
@@ -294,7 +296,7 @@ async def test_queue_file_remove_id_disambiguates_duplicate_skill_outputs(
         "removed": True,
         "queued_files": ["chart.png"],
     }
-    assert ctx.output_files == [str(first.resolve())]
+    assert ctx.outbox.output_files == (str(first.resolve()),)
     assert str(job_dir) not in json.dumps(ambiguous)
 
 
@@ -316,7 +318,7 @@ async def test_queue_file_remove_unattached_file_reports_queue(tmp_path: Path) -
         "queued_files": ["kept.txt"],
         "error": "file is not attached",
     }
-    assert ctx.output_files == [str(queued.resolve())]
+    assert ctx.outbox.output_files == (str(queued.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -326,16 +328,18 @@ async def test_queue_file_remove_refuses_pending_embed_image(tmp_path: Path) -> 
     image = mgr.user_files_dir(WS) / "img.png"
     image.write_bytes(b"png")
     await reg.dispatch("queue_file", {"path": "img.png"}, ctx)
-    ctx.embed_attachment = EmbedAttachment(
-        path=str(image.resolve()),
-        root=str(mgr.user_files_dir(WS).resolve()),
-        filename="img.png",
+    ctx.update_outbox(
+        embed_attachment=EmbedAttachment(
+            path=str(image.resolve()),
+            root=str(mgr.user_files_dir(WS).resolve()),
+            filename="img.png",
+        )
     )
 
     result = await reg.dispatch("queue_file", {"path": "img.png", "action": "remove"}, ctx)
 
     assert "pending embed" in json.loads(result)["error"]
-    assert ctx.output_files == [str(image.resolve())]
+    assert ctx.outbox.output_files == (str(image.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -362,7 +366,7 @@ async def test_queue_file_noop_when_skill_output_already_attached(
     job_dir.mkdir(parents=True, exist_ok=True)
     chart = job_dir / "matplotlib-chart.png"
     chart.write_bytes(b"png")
-    ctx.output_files.append(str(chart.resolve()))
+    ctx.update_outbox(output_files=(str(chart.resolve()),))
 
     by_abs = await reg.dispatch("queue_file", {"path": str(chart.resolve())}, ctx)
     by_name = await reg.dispatch("queue_file", {"path": "matplotlib-chart.png"}, ctx)
@@ -402,7 +406,7 @@ async def test_queue_file_noop_when_skill_output_already_attached(
     assert "already_attached" not in parsed
 
     # No duplicate attachment from any of the redundant queue_file calls.
-    assert ctx.output_files == [str(chart.resolve())]
+    assert ctx.outbox.output_files == (str(chart.resolve()),)
 
 
 @pytest.mark.asyncio
@@ -423,8 +427,8 @@ async def test_queue_file_rejects_generated_file_from_other_context(
     parsed = json.loads(result)
     assert "error" in parsed
     assert "conversation context" in parsed["error"].lower()
-    assert ctx.output_files == []
-    assert ctx.allowed_file_roots == []
+    assert ctx.outbox.output_files == ()
+    assert ctx.outbox.allowed_file_roots == ()
 
 
 @pytest.mark.asyncio
@@ -460,5 +464,5 @@ async def test_queue_file_rejects_invalid_generated_paths_without_appending(
     assert "error" in json.loads(missing)
     assert "not a file" in json.loads(directory)["error"].lower()
     assert "symlink" in json.loads(linked)["error"].lower()
-    assert ctx.output_files == []
-    assert ctx.allowed_file_roots == []
+    assert ctx.outbox.output_files == ()
+    assert ctx.outbox.allowed_file_roots == ()

@@ -87,10 +87,15 @@ def enqueue_output_file(
 
     root_text = str(root_resolved)
     resolved_text = str(resolved)
-    if resolved_text in ctx.output_files:
-        _add_allowed_root(ctx, root_text)
+    outbox = ctx.outbox
+    if resolved_text in outbox.output_files:
+        descriptions = dict(outbox.output_file_descriptions)
         if description:
-            ctx.output_file_descriptions[resolved_text] = description
+            descriptions[resolved_text] = description
+        ctx.update_outbox(
+            output_file_descriptions=descriptions,
+            allowed_file_roots=_with_allowed_root(outbox.allowed_file_roots, root_text),
+        )
         return QueuedOutput(
             path=resolved,
             root=root_resolved,
@@ -102,7 +107,7 @@ def enqueue_output_file(
     # Reject a *different* file that would collide with that basename, so the
     # embed image cannot resolve to the wrong attachment. The same-file case is
     # already handled by the idempotency return above.
-    embed_attachment = ctx.embed_attachment
+    embed_attachment = outbox.embed_attachment
     if embed_attachment is not None:
         embed_path = str(Path(embed_attachment.path).resolve(strict=False))
         if resolved.name == embed_attachment.filename and resolved_text != embed_path:
@@ -111,13 +116,17 @@ def enqueue_output_file(
                 "embed; rename this file so its filename is unique."
             )
 
-    if max_attachments is not None and len(ctx.output_files) >= max_attachments:
+    if max_attachments is not None and len(outbox.output_files) >= max_attachments:
         raise AttachmentLimitError(f"attachment limit reached ({max_attachments})")
 
-    ctx.output_files.append(resolved_text)
+    descriptions = dict(outbox.output_file_descriptions)
     if description:
-        ctx.output_file_descriptions[resolved_text] = description
-    _add_allowed_root(ctx, root_text)
+        descriptions[resolved_text] = description
+    ctx.update_outbox(
+        output_files=(*outbox.output_files, resolved_text),
+        output_file_descriptions=descriptions,
+        allowed_file_roots=_with_allowed_root(outbox.allowed_file_roots, root_text),
+    )
     return QueuedOutput(
         path=resolved,
         root=root_resolved,
@@ -129,37 +138,56 @@ def enqueue_output_file(
 def output_file_remove_id(ctx: MessageContext, output: str) -> str:
     """Return the stable, opaque per-turn removal selector for one queued path."""
 
-    for remove_id, queued in ctx.output_file_remove_ids.items():
+    outbox = ctx.outbox
+    for remove_id, queued in outbox.output_file_remove_ids.items():
         if queued == output:
             return remove_id
-    ctx.output_file_remove_id_counter += 1
-    remove_id = f"attachment:{ctx.output_file_remove_id_counter}"
-    ctx.output_file_remove_ids[remove_id] = output
+    counter = outbox.output_file_remove_id_counter + 1
+    remove_id = f"attachment:{counter}"
+    remove_ids = dict(outbox.output_file_remove_ids)
+    remove_ids[remove_id] = output
+    ctx.update_outbox(
+        output_file_remove_ids=remove_ids,
+        output_file_remove_id_counter=counter,
+    )
     return remove_id
 
 
 def match_output_file_remove_id(ctx: MessageContext, remove_id: str) -> str | None:
     """Resolve an exposed removal selector without revealing its backing path."""
 
-    output = ctx.output_file_remove_ids.get(remove_id)
+    outbox = ctx.outbox
+    output = outbox.output_file_remove_ids.get(remove_id)
     if output is None:
         return None
-    if output in ctx.output_files:
+    if output in outbox.output_files:
         return output
-    # Tolerate direct mutations of output_files without letting a stale
-    # selector target a path that might later be re-queued.
-    del ctx.output_file_remove_ids[remove_id]
+    # Tolerate a caller reconstructing file state without its selectors, while
+    # preventing a stale selector from targeting a path that is later re-queued.
+    remove_ids = dict(outbox.output_file_remove_ids)
+    del remove_ids[remove_id]
+    ctx.update_outbox(output_file_remove_ids=remove_ids)
     return None
 
 
 def unqueue_output_file(ctx: MessageContext, output: str) -> None:
     """Remove one reply attachment and retire any selector that pointed to it."""
 
-    ctx.output_files.remove(output)
-    ctx.output_file_descriptions.pop(output, None)
-    for remove_id, queued in list(ctx.output_file_remove_ids.items()):
-        if queued == output:
-            del ctx.output_file_remove_ids[remove_id]
+    outbox = ctx.outbox
+    output_files = list(outbox.output_files)
+    output_files.remove(output)
+    descriptions = dict(outbox.output_file_descriptions)
+    descriptions.pop(output, None)
+    remove_ids = {
+        remove_id: queued
+        for remove_id, queued in outbox.output_file_remove_ids.items()
+        if queued != output
+    }
+    ctx.update_outbox(
+        output_files=output_files,
+        output_file_descriptions=descriptions,
+        output_file_remove_ids=remove_ids,
+    )
 
 
 def requeue_moved_output(ctx: MessageContext, old_path: Path, new_path: Path) -> int:
@@ -172,22 +200,32 @@ def requeue_moved_output(ctx: MessageContext, old_path: Path, new_path: Path) ->
     old_text = str(old_path)
     new_text = str(new_path)
     old_prefix = old_text + os.sep
+    outbox = ctx.outbox
+    output_files = list(outbox.output_files)
+    descriptions = dict(outbox.output_file_descriptions)
+    remove_ids = dict(outbox.output_file_remove_ids)
     changed = 0
-    for index, entry in enumerate(ctx.output_files):
+    for index, entry in enumerate(output_files):
         if entry == old_text:
             updated = new_text
         elif entry.startswith(old_prefix):
             updated = new_text + entry[len(old_text) :]
         else:
             continue
-        ctx.output_files[index] = updated
-        description = ctx.output_file_descriptions.pop(entry, None)
+        output_files[index] = updated
+        description = descriptions.pop(entry, None)
         if description is not None:
-            ctx.output_file_descriptions[updated] = description
+            descriptions[updated] = description
         changed += 1
-        for remove_id, queued in ctx.output_file_remove_ids.items():
+        for remove_id, queued in remove_ids.items():
             if queued == entry:
-                ctx.output_file_remove_ids[remove_id] = updated
+                remove_ids[remove_id] = updated
+    if changed:
+        ctx.update_outbox(
+            output_files=output_files,
+            output_file_descriptions=descriptions,
+            output_file_remove_ids=remove_ids,
+        )
     return changed
 
 
@@ -195,7 +233,7 @@ def unqueue_removed_outputs(ctx: MessageContext, removed_path: Path) -> int:
     """Drop queued entries for a deleted file (or anything under a deleted dir)."""
     removed_text = str(removed_path)
     prefix = removed_text + os.sep
-    stale = [e for e in ctx.output_files if e == removed_text or e.startswith(prefix)]
+    stale = [e for e in ctx.outbox.output_files if e == removed_text or e.startswith(prefix)]
     for entry in stale:
         unqueue_output_file(ctx, entry)
     return len(stale)
@@ -212,10 +250,10 @@ def match_already_queued(ctx: MessageContext, path_arg: str) -> str | None:
     requested = Path(path_arg)
     if requested.is_absolute():
         abs_text = str(requested)
-        return next((q for q in ctx.output_files if q == abs_text), None)
+        return next((q for q in ctx.outbox.output_files if q == abs_text), None)
     if requested.name == path_arg:
         return next(
-            (q for q in ctx.output_files if Path(q).name == requested.name),
+            (q for q in ctx.outbox.output_files if Path(q).name == requested.name),
             None,
         )
     return None
@@ -227,7 +265,7 @@ def queued_file_paths(
     workspace_key: WorkspaceKey,
 ) -> list[str]:
     queued: list[str] = []
-    for output in ctx.output_files:
+    for output in ctx.outbox.output_files:
         path = Path(output)
         try:
             queued.append(workspace_manager.relative_user_file_path(workspace_key, path))
@@ -243,6 +281,5 @@ def queued_file_paths(
     return queued
 
 
-def _add_allowed_root(ctx: MessageContext, root: str) -> None:
-    if root not in ctx.allowed_file_roots:
-        ctx.allowed_file_roots.append(root)
+def _with_allowed_root(roots: tuple[str | Path, ...], root: str) -> tuple[str | Path, ...]:
+    return roots if root in roots else (*roots, root)

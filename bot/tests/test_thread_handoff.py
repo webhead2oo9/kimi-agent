@@ -319,10 +319,10 @@ async def test_move_handler_queues_single_slot_request():
 
     result = json.loads(await move({"name": "First"}, ctx))
     assert result["queued"] is True
-    assert ctx.thread_request == ThreadRequest(name="First")
+    assert ctx.outbox.thread_request == ThreadRequest(name="First")
 
     await move({"name": "Second"}, ctx)
-    assert ctx.thread_request == ThreadRequest(name="Second")
+    assert ctx.outbox.thread_request == ThreadRequest(name="Second")
 
 
 @pytest.mark.asyncio
@@ -334,7 +334,7 @@ async def test_move_handler_rejection_keeps_prior_request():
     rejected = await move({"name": "   "}, ctx)
 
     assert "error" in json.loads(rejected)
-    assert ctx.thread_request == ThreadRequest(name="Keep me")
+    assert ctx.outbox.thread_request == ThreadRequest(name="Keep me")
 
 
 @pytest.mark.asyncio
@@ -344,7 +344,7 @@ async def test_move_handler_carries_auto_reply_through():
 
     await move({"name": "Quiet thread", "auto_reply": False}, ctx)
 
-    assert ctx.thread_request == ThreadRequest(name="Quiet thread", auto_respond=False)
+    assert ctx.outbox.thread_request == ThreadRequest(name="Quiet thread", auto_respond=False)
 
 
 # --- leave_thread handler ---
@@ -387,7 +387,7 @@ async def test_lifecycle_handlers_reject_an_ordinary_non_creator(tool):
     result = json.loads(await handler({}, ctx))
 
     assert "Only the person who started" in result["error"]
-    assert ctx.thread_close_request is None
+    assert ctx.outbox.thread_close_request is None
     assert manager.is_auto_responding(321)
 
 

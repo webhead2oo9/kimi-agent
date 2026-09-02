@@ -13,7 +13,7 @@ from app.tools import _register_internet_search
 from config.settings import Settings
 from tools.config_spec import default_config
 from tools.internet_search import TOOL_NAME, InternetSearchConfig, init_internet_search_tool
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from trust.tiers import TrustTier
 
 
@@ -43,7 +43,12 @@ class RecordingUsageStore:
         self.calls.extend(kwargs["calls"])
 
 
-def _context(*, usage_store: Any = None, strategy: str = "blend") -> MessageContext:
+def _context(
+    *,
+    usage_store: Any = None,
+    strategy: str = "blend",
+    budget_cap: int = 10,
+) -> MessageContext:
     return MessageContext(
         user_id="u1",
         user_name="Tester",
@@ -53,6 +58,7 @@ def _context(*, usage_store: Any = None, strategy: str = "blend") -> MessageCont
         trust_tier=TrustTier.MEMBER,
         usage_store=usage_store,
         tool_configs={TOOL_NAME: {"strategy": strategy}},
+        budget=TurnBudget(caps={BudgetName.INTERNET_SEARCH_BACKEND_CALLS: budget_cap}),
     )
 
 
@@ -171,7 +177,7 @@ async def test_output_is_clean_and_records_reported_and_fallback_costs() -> None
     assert "provider" not in raw
     assert "cost" not in raw
     assert [call.cost_usd for call in usage.calls] == [0.012, 0.004]
-    assert ctx.internet_search_backend_calls_this_turn == 2
+    assert ctx.budget_used(BudgetName.INTERNET_SEARCH_BACKEND_CALLS) == 2
 
 
 @pytest.mark.asyncio

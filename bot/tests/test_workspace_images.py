@@ -10,6 +10,7 @@ import pytest
 from tools.workspace import (
     WorkspaceToolConfig,
 )
+from tools.registry import BudgetName
 
 from tests.workspace_tool_helpers import (
     WS,
@@ -40,7 +41,7 @@ async def test_view_image_queues_image_part(tmp_path: Path) -> None:
     assert part.media_type == "image/png"
     assert part.image_url is not None
     assert part.image_url.startswith("data:image/png;base64,")
-    assert ctx.view_images_this_turn == 1
+    assert ctx.budget_used(BudgetName.VIEW_IMAGES) == 1
 
 
 @pytest.mark.asyncio
@@ -80,7 +81,7 @@ async def test_view_image_rejects_oversize(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_view_image_enforces_per_turn_cap(tmp_path: Path) -> None:
     reg, mgr = _register(tmp_path, WorkspaceToolConfig(view_image_max_per_turn=1))
-    ctx = _image_ctx()
+    ctx = _image_ctx(view_image_cap=1)
     (mgr.user_files_dir(WS) / "a.png").write_bytes(_PNG_1X1)
     (mgr.user_files_dir(WS) / "b.png").write_bytes(_PNG_1X1)
 

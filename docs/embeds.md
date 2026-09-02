@@ -114,23 +114,33 @@ Validation has no side effects. Cheap rules run first and the workspace image is
 
 ## How it reaches Discord
 
-The embed follows the same rails as the `output_files` queue:
+The embed travels in the same frozen `TurnOutbox` as queued files and thread
+directives:
 
 ```
 build_discord_embed handler (tools/embeds.py)
   → build_embed_payload: validate → EmbedSpec (+ optional EmbedAttachment), no ctx mutation
-  → on success: MessageContext.embed / MessageContext.embed_attachment
-ConversationContext.pending_embed / pending_embed_attachment   (synced in agent/core.py)
-TurnResult.embed                                               (agent/turn.py:execute_turn)
-discord_adapter.io.send_response(..., embed=spec)              (via discord_gateway + runtime)
+  → on success: MessageContext.update_outbox(embed=..., embed_attachment=...)
+MessageContext.outbox → ConversationContext.pending_outbox     (synced in agent/core.py)
+ConversationRunResult.outbox → TurnResult.outbox               (agent/turn.py:execute_turn)
+guild/user-app adapter reads result.outbox.embed
+  → discord_adapter.io.send_response(..., embed=spec)
   → chunk 0 only: build_embed(spec) → channel.send(content, embeds=[e], files=[...])
 ```
 
-`EmbedSpec` and `EmbedAttachment` are frozen dataclasses that import nothing from `discord`. The one `discord.Embed` is assembled at the very end, in `discord_adapter/io.py:build_embed`, which keeps `agent/core.py` Discord-agnostic like the rest of the loop.
+`TurnOutbox`, `EmbedSpec`, and `EmbedAttachment` are frozen dataclasses. Each
+successful tool call replaces the outbox snapshot, so a prior snapshot cannot
+be changed through an aliased list or mapping. The one `discord.Embed` is
+assembled at the very end, in `discord_adapter/io.py:build_embed`, which keeps
+`agent/core.py` Discord-agnostic like the rest of the loop.
 
 At that same send boundary, standalone `http://` and `https://` links in the reply text are wrapped as Discord autolinks before chunking. That prevents automatic page-preview cards without setting the message-wide suppress-embeds flag. Uploaded image previews, explicit `EmbedSpec` cards, Markdown links, existing autolinks, and URLs inside code are left as they are.
 
-The embed's image is not added to `MessageContext.output_files` when the tool runs. It travels as an `EmbedAttachment` and is added to the outgoing file list once, in `execute_turn`. That single late step is what makes "the second call replaces the first" safe: a discarded embed's image was never in the file list.
+The embed's image is not added to `MessageContext.outbox.output_files` when the
+tool runs. It travels in `outbox.embed_attachment` and is added to the outgoing
+file tuple once, in `execute_turn`. That single late step is what makes "the
+second call replaces the first" safe: a discarded embed's image was never in
+the file list.
 
 ## Staying in the transcript
 

@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from tools.browser import BrowserToolConfig, init_browser_tool
-from tools.registry import UNTRUSTED_CONTEXT_NOTE, MessageContext, ToolRegistry
+from tools.registry import (
+    UNTRUSTED_CONTEXT_NOTE,
+    BudgetName,
+    MessageContext,
+    ToolRegistry,
+    TurnBudget,
+)
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from workspace import WorkspaceManager
@@ -50,6 +56,12 @@ async def test_dispatch_bounds_browser_result_after_untrusted_framing(tmp_path: 
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
         tool_configs={"browser": {"max_output_chars": 128}},
+        budget=TurnBudget(
+            caps={
+                BudgetName.BROWSER_CALLS: 16,
+                BudgetName.BROWSER_SCREENSHOTS: 4,
+            }
+        ),
     )
 
     raw = await registry.dispatch("browser", {"code": "return document.title"}, ctx)

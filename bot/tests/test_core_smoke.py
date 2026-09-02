@@ -828,8 +828,8 @@ def test_embed_only_reply_keeps_empty_final_text_and_syncs_pending_embed(
 
     # Embed-only reply: no "I'm not sure how to respond" fallback.
     assert result.text == ""
-    assert context.pending_embed is not None
-    assert context.pending_embed.title == "Hello"
+    assert context.pending_outbox.embed is not None
+    assert context.pending_outbox.embed.title == "Hello"
 
 
 def test_run_conversation_emits_activity_for_thinking_and_tool_calls() -> None:
@@ -1771,7 +1771,7 @@ def test_committed_coding_handoff_wins_deadline_and_accepts_routing_followup(
 
     async def move(_args: dict, ctx: MessageContext) -> str:
         dispatched.append("move_to_thread")
-        ctx.thread_request = ThreadRequest(name="Coding work")
+        ctx.update_outbox(thread_request=ThreadRequest(name="Coding work"))
         return json.dumps({"queued": True})
 
     async def after(_args: dict, _ctx: MessageContext) -> str:
@@ -1829,14 +1829,14 @@ def test_committed_coding_handoff_wins_deadline_and_accepts_routing_followup(
     )
 
     assert result.timed_out is False
-    assert result.terminal_handoff is not None
-    assert result.terminal_handoff.task_id == task_id
+    assert result.outbox.terminal_handoff is not None
+    assert result.outbox.terminal_handoff.task_id == task_id
     assert dispatched == (
         ["start_coding_task", "move_to_thread"]
         if start_first
         else ["move_to_thread", "start_coding_task"]
     )
-    assert context.pending_thread_request == ThreadRequest(name="Coding work")
+    assert context.pending_outbox.thread_request == ThreadRequest(name="Coding work")
     skipped = json.loads(context.get_history()[-2].content[0].text or "{}")
     assert "skipped" in skipped["error"].lower()
 

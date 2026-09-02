@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from app.tools import CAPABILITY_PROBES, _register_video
 from config.settings import Settings
 from tools.config_spec import default_config
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.video import TOOL_NAME, canonicalize_youtube_url, init_video_tool
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -213,7 +213,7 @@ def _analysis(
     )
 
 
-def _context(**overrides: Any) -> MessageContext:
+def _context(*, video_call_cap: int = 2, **overrides: Any) -> MessageContext:
     values: dict[str, Any] = {
         "user_id": "user",
         "user_name": "Tester",
@@ -224,6 +224,7 @@ def _context(**overrides: Any) -> MessageContext:
         "conversation_id": 42,
         "activated_tools": {TOOL_NAME},
         "usage_sink": [],
+        "budget": TurnBudget(caps={BudgetName.VIDEO_CALLS: video_call_cap}),
         "tool_configs": {
             TOOL_NAME: {
                 "thinking_level": "low",
@@ -349,7 +350,7 @@ async def test_start_returns_untrusted_timestamped_result_and_records_usage() ->
     assert payload["context_is_untrusted"] is True
     assert payload["evidence"][0]["timestamp"] == "01:02–01:15"
     assert payload["evidence"][0]["youtube_url"].endswith("&t=62s")
-    assert ctx.video_calls_this_turn == 1
+    assert ctx.budget_used(BudgetName.VIDEO_CALLS) == 1
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.cached_read_tokens == 80
     assert ctx.usage_sink[0].pricing_model == "gemini-video-flash"
@@ -485,7 +486,7 @@ async def test_start_requires_exactly_one_video_source() -> None:
     )
 
     assert payload["error"] == "start requires exactly one of url, attachment, or path"
-    assert ctx.video_calls_this_turn == 0
+    assert ctx.budget_used(BudgetName.VIDEO_CALLS) == 0
 
 
 @pytest.mark.asyncio
@@ -523,9 +524,18 @@ async def test_ask_resolves_active_session_and_enforces_per_turn_limit() -> None
 @pytest.mark.asyncio
 async def test_each_stateful_interaction_records_its_full_reported_usage() -> None:
     service = FakeVideoService()
-    ctx = _context()
-    configs = cast(dict[str, dict[str, Any]], ctx.tool_configs)
-    configs[TOOL_NAME]["max_calls_per_turn"] = 4
+    ctx = _context(
+        video_call_cap=4,
+        tool_configs={
+            TOOL_NAME: {
+                "thinking_level": "low",
+                "max_output_tokens": 4096,
+                "max_calls_per_turn": 4,
+                "max_session_interactions": 10,
+                "session_ttl_minutes": 60,
+            }
+        },
+    )
     registry = _registry(service)
 
     for question in ("First?", "Second?", "Third?"):
@@ -588,7 +598,7 @@ async def test_local_validation_does_not_consume_call_allowance() -> None:
     )
 
     assert "YouTube" in rejected["error"]
-    assert ctx.video_calls_this_turn == 0
+    assert ctx.budget_used(BudgetName.VIDEO_CALLS) == 0
     assert not service.starts
 
 

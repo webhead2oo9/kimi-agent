@@ -835,8 +835,8 @@ async def test_script_output_files_respect_attachment_cap_and_report_drops(
     assert payload["attached_file_refs"] == [{"file": "a.png", "remove_id": "attachment:1"}]
     assert [d["file"] for d in payload["files_not_attached"]] == ["b.png"]
     assert "attachment limit" in payload["files_not_attached"][0]["reason"]
-    assert len(ctx.output_files) == 1
-    assert ctx.output_files[0].endswith("a.png")
+    assert len(ctx.outbox.output_files) == 1
+    assert ctx.outbox.output_files[0].endswith("a.png")
 
 
 @pytest.mark.asyncio

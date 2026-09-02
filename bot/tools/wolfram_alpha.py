@@ -11,7 +11,7 @@ import aiohttp
 
 from storage.usage import PaidUsageCall
 from tools._common import get_string, tool_error
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from trust.tiers import TrustTier
 
 log = logging.getLogger(__name__)
@@ -106,9 +106,8 @@ def init_wolfram_alpha_tool(registry: ToolRegistry, config: WolframAlphaConfig) 
         try:
             input_text = _input_text(args)
             units = _units(args.get("units"))
-            if ctx.wolfram_alpha_calls_this_turn >= config.max_calls_per_turn:
+            if not ctx.consume_budget(BudgetName.WOLFRAM_ALPHA_CALLS):
                 return tool_error("Wolfram|Alpha call limit reached for this turn.")
-            ctx.wolfram_alpha_calls_this_turn += 1
             try:
                 async with asyncio.timeout(config.timeout_seconds):
                     result = await config.client.query(
@@ -165,6 +164,7 @@ def init_wolfram_alpha_tool(registry: ToolRegistry, config: WolframAlphaConfig) 
         searchable=True,
         category="Computation",
         untrusted=True,
+        budget_specs=(ToolBudgetSpec(BudgetName.WOLFRAM_ALPHA_CALLS, config.max_calls_per_turn),),
     )
 
 

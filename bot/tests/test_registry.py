@@ -7,8 +7,11 @@ from storage.usage import PaidUsageCall
 from tools.config_spec import KIND_INT, ToolConfigField
 from tools.registry import (
     UNTRUSTED_CONTEXT_NOTE,
+    BudgetName,
     MessageContext,
+    ToolBudgetSpec,
     ToolRegistry,
+    TurnBudget,
 )
 from trust.tiers import TrustTier
 
@@ -49,6 +52,51 @@ def _make_ctx(tier: TrustTier = TrustTier.MEMBER, activated: set | None = None) 
         trust_tier=tier,
         activated_tools=activated or set(),
     )
+
+
+@pytest.mark.parametrize("name", tuple(BudgetName))
+def test_turn_budget_consumes_each_registered_resource_without_overrun(
+    name: BudgetName,
+) -> None:
+    cap = 2
+    ctx = _make_ctx()
+    ctx.budget = TurnBudget(caps={name: cap})
+
+    assert all(ctx.consume_budget(name) for _ in range(cap))
+    assert not ctx.consume_budget(name)
+    assert ctx.budget_used(name) == cap
+    assert ctx.budget_remaining(name) == 0
+
+
+def test_registry_resolves_configured_budget_cap_once_per_turn() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        "metered",
+        "metered tool",
+        {},
+        _noop_handler,
+        config_spec=(
+            ToolConfigField(
+                field="limit",
+                label="Limit",
+                kind=KIND_INT,
+                default=3,
+                minimum=1,
+                maximum=8,
+                help="Test limit.",
+            ),
+        ),
+        budget_specs=(ToolBudgetSpec(BudgetName.VIDEO_CALLS, 3, config_field="limit"),),
+    )
+
+    budget = registry.resolve_turn_budget({"metered": {"limit": 2}})
+    assert budget.caps == {BudgetName.VIDEO_CALLS: 2}
+
+    # Later config mutations cannot change the allowance already captured.
+    live_config = {"metered": {"limit": 5}}
+    captured = registry.resolve_turn_budget(live_config)
+    live_config["metered"]["limit"] = 8
+    assert captured.caps == {BudgetName.VIDEO_CALLS: 5}
 
 
 def test_searchable_tool_excluded_from_core_schemas() -> None:

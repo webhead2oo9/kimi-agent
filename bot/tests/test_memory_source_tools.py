@@ -12,7 +12,7 @@ from memory.privacy import forget_user_memory
 from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.db import Database
 from storage.preferences import PreferenceStore
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from trust.tiers import TrustTier
 
 
@@ -35,7 +35,12 @@ class RecordingMemory:
         return True
 
 
-def _ctx(conversation_id: int, trigger_id: str = "333") -> MessageContext:
+def _ctx(
+    conversation_id: int,
+    trigger_id: str = "333",
+    *,
+    memory_write_cap: int = 3,
+) -> MessageContext:
     return MessageContext(
         user_id="123",
         user_name="webhead",
@@ -46,6 +51,7 @@ def _ctx(conversation_id: int, trigger_id: str = "333") -> MessageContext:
         conversation_id=conversation_id,
         channel_name="vr-help",
         trigger_discord_message_id=trigger_id,
+        budget=TurnBudget(caps={BudgetName.MEMORY_WRITES: memory_write_cap}),
     )
 
 
@@ -369,7 +375,7 @@ async def test_remember_user_memory_caps_writes_per_turn(tmp_path, monkeypatch) 
     monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
     monkeypatch.setattr(user_memory, "_max_writes_per_turn", 2)
 
-    ctx = _ctx(conversation_id)  # one MessageContext == one turn
+    ctx = _ctx(conversation_id, memory_write_cap=2)  # one MessageContext == one turn
     try:
         first = await user_memory._remember_user_memory({"context": "fact one"}, ctx)
         second = await user_memory._remember_user_memory({"context": "fact two"}, ctx)

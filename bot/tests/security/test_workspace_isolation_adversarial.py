@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from workspace import WorkspaceManager, workspace_owner_key
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.workspace import WorkspaceToolConfig, init_workspace_tools
 from trust.tiers import TrustTier
 
@@ -52,6 +52,7 @@ def make_context(*, guild_id: str | None = "g1") -> MessageContext:
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
         context_key="g1:c1:main",
+        budget=TurnBudget(caps={BudgetName.VIEW_IMAGES: 4}),
     )
 
 

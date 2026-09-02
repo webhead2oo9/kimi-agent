@@ -601,22 +601,25 @@ def make_message_context(
     *,
     user_id: str = "123",
     user_name: str = "Gamer",
-    guild_id: str = "999",
+    guild_id: str | None = "999",
     channel_id: str = "100",
     context_key: str = "guild:100:main",
     trigger_discord_message_id: str = "555",
     trust_tier: TrustTier = TrustTier.MEMBER,
+    **overrides: Any,
 ) -> MessageContext:
-    """MessageContext for source-tool dispatch tests."""
+    """MessageContext with compact defaults and explicit per-test overrides."""
 
-    return MessageContext(
-        user_id=user_id,
-        user_name=user_name,
-        guild_id=guild_id,
-        channel_id=channel_id,
-        thread_id=None,
-        trust_tier=trust_tier,
-        context_key=context_key,
-        trigger_discord_message_id=trigger_discord_message_id,
-        activated_tools=activated or set(),
-    )
+    values: dict[str, Any] = {
+        "user_id": user_id,
+        "user_name": user_name,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "thread_id": None,
+        "trust_tier": trust_tier,
+        "context_key": context_key,
+        "trigger_discord_message_id": trigger_discord_message_id,
+        "activated_tools": set(activated or ()),
+    }
+    values.update(overrides)
+    return MessageContext(**values)

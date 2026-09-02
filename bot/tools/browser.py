@@ -19,7 +19,13 @@ from providers.types import ContentPart
 from tools._common import tool_error
 from tools.config_spec import KIND_INT, ToolConfigField
 from tools.output_queue import AttachmentLimitError, enqueue_output_file
-from tools.registry import MessageContext, ToolRegistry, format_untrusted_tool_result
+from tools.registry import (
+    BudgetName,
+    MessageContext,
+    ToolBudgetSpec,
+    ToolRegistry,
+    format_untrusted_tool_result,
+)
 from tools.workspace.common import UserLocks, workspace_activity
 from trust.tiers import TrustTier
 from utils.asyncio import await_uncancellable
@@ -227,7 +233,7 @@ async def _import_screenshots(
     generated_root: Path | None = None
     imported: list[dict[str, Any]] = []
     replacements: dict[str, str] = {}
-    remaining = max(0, config.max_screenshots_per_turn - ctx.browser_screenshots_this_turn)
+    remaining = ctx.budget_remaining(BudgetName.BROWSER_SCREENSHOTS)
     for index, artifact in enumerate(artifacts):
         if remaining <= 0 or not isinstance(artifact, dict):
             break
@@ -251,6 +257,8 @@ async def _import_screenshots(
         )
         if loaded is None:
             continue
+        if not ctx.consume_budget(BudgetName.BROWSER_SCREENSHOTS):
+            break
         payload, media_type = loaded
         kind = str(artifact.get("kind", "artifact"))[:40] or "artifact"
         shown = False
@@ -276,7 +284,6 @@ async def _import_screenshots(
                 attached = True
             except AttachmentLimitError:
                 pass
-        ctx.browser_screenshots_this_turn += 1
         remaining -= 1
         replacements[raw_path] = destination.name
         replacements[f"MEDIA:{raw_path}"] = destination.name
@@ -345,7 +352,7 @@ def init_browser_tool(
             return tool_error("code must be a non-empty string")
         if len(code) > effective.max_code_chars:
             return tool_error(f"code exceeds the {effective.max_code_chars} character limit")
-        if ctx.browser_calls_this_turn >= effective.max_calls_per_turn:
+        if ctx.budget_remaining(BudgetName.BROWSER_CALLS) <= 0:
             return tool_error(f"browser call limit reached ({effective.max_calls_per_turn})")
 
         turn_id, release_after_call = _turn_id(ctx)
@@ -379,7 +386,8 @@ def init_browser_tool(
                         await service.release_turn(ctx.user_id, turn_id)
                     rooted_active = False
                     return tool_error("browser call cancelled because its turn ended")
-            ctx.browser_calls_this_turn += 1
+            if not ctx.consume_budget(BudgetName.BROWSER_CALLS):
+                return tool_error(f"browser call limit reached ({effective.max_calls_per_turn})")
             result = await service.run(
                 owner_id=ctx.user_id,
                 turn_id=turn_id,
@@ -444,4 +452,18 @@ def init_browser_tool(
         min_tier=TrustTier.MEMBER,
         config_spec=_CONFIG_SPEC,
         untrusted=True,
+        budget_specs=(
+            ToolBudgetSpec(
+                BudgetName.BROWSER_CALLS,
+                DEFAULT_MAX_CALLS_PER_TURN,
+                config_field="max_calls_per_turn",
+                maximum=DEFAULT_MAX_CALLS_PER_TURN,
+            ),
+            ToolBudgetSpec(
+                BudgetName.BROWSER_SCREENSHOTS,
+                DEFAULT_MAX_SCREENSHOTS_PER_TURN,
+                config_field="max_screenshots_per_turn",
+                maximum=DEFAULT_MAX_SCREENSHOTS_PER_TURN,
+            ),
+        ),
     )

@@ -24,7 +24,7 @@ from image_gen.types import (
 from tools._common import tool_error
 from tools.config_spec import KIND_CHOICE, KIND_INT, ToolConfigField
 from tools.output_queue import AttachmentLimitError, enqueue_workspace_file
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from tools.workspace.common import (
     UserLocks,
     ensure_quota,
@@ -132,14 +132,14 @@ def init_image_gen_tool(
             return tool_error("images can only be generated in a conversation context")
         max_calls = _configured_int(ctx, "max_calls_per_turn", default=2)
         max_attachments = _configured_int(ctx, "max_attachments", default=5)
-        if ctx.image_gen_calls_this_turn >= max_calls:
+        if ctx.budget_remaining(BudgetName.IMAGE_GEN_CALLS) <= 0:
             return tool_error(f"image generation limit reached ({max_calls} calls per turn)")
         if len(ctx.output_files) >= max_attachments:
             return tool_error(f"attachment limit reached ({max_attachments})")
 
         async with workspace_activity(workspace_locks, ctx):
             # Re-check mutable per-turn rails after acquiring the workspace lock.
-            if ctx.image_gen_calls_this_turn >= max_calls:
+            if ctx.budget_remaining(BudgetName.IMAGE_GEN_CALLS) <= 0:
                 return tool_error(f"image generation limit reached ({max_calls} calls per turn)")
             if len(ctx.output_files) >= max_attachments:
                 return tool_error(f"attachment limit reached ({max_attachments})")
@@ -151,7 +151,10 @@ def init_image_gen_tool(
                     reference_paths,
                 )
                 request_fields = _request_fields(ctx)
-                ctx.image_gen_calls_this_turn += 1
+                if not ctx.consume_budget(BudgetName.IMAGE_GEN_CALLS):
+                    return tool_error(
+                        f"image generation limit reached ({max_calls} calls per turn)"
+                    )
                 if reference_urls:
                     result = await service.edit(
                         ImageEditRequest(
@@ -253,6 +256,13 @@ def init_image_gen_tool(
         searchable=False,
         category="Media",
         config_spec=_CONFIG_SPEC,
+        budget_specs=(
+            ToolBudgetSpec(
+                BudgetName.IMAGE_GEN_CALLS,
+                2,
+                config_field="max_calls_per_turn",
+            ),
+        ),
     )
 
 

@@ -8,7 +8,7 @@ from pydantic import SecretStr
 
 from app.tools import _register_x_search
 from config.settings import Settings
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.x_search import TOOL_NAME, XSearchConfig, init_x_search_tool
 from trust.tiers import TrustTier
 from xai.credentials import XaiCredential, XaiCredentialResolver
@@ -62,7 +62,7 @@ def _resolver(mode: str = "auto") -> XaiCredentialResolver:
     )
 
 
-def _context() -> MessageContext:
+def _context(*, budget_cap: int = 10) -> MessageContext:
     return MessageContext(
         user_id="u1",
         user_name="Tester",
@@ -72,6 +72,7 @@ def _context() -> MessageContext:
         trust_tier=TrustTier.MEMBER,
         activated_tools={TOOL_NAME},
         usage_sink=[],
+        budget=TurnBudget(caps={BudgetName.X_SEARCH_CALLS: budget_cap}),
     )
 
 
@@ -188,7 +189,7 @@ async def test_auto_uses_api_key_after_degraded_oauth_and_records_both_calls() -
     assert len(client.calls) == 2
     assert client.calls[1]["credential"].source == "api_key"
     assert client.calls[1]["allow_auth_fallback"] is False
-    assert ctx.x_search_calls_this_turn == 2
+    assert ctx.budget_used(BudgetName.X_SEARCH_CALLS) == 2
     assert ctx.usage_sink is not None and len(ctx.usage_sink) == 2
     assert all(call.role == "x_search" for call in ctx.usage_sink)
 
@@ -282,7 +283,7 @@ async def test_completed_x_search_output_item_is_live_search_evidence() -> None:
 @pytest.mark.asyncio
 async def test_budget_counts_upstream_requests_across_tool_invocations() -> None:
     registry, client = _registry([_result(), _result()], max_calls=1)
-    ctx = _context()
+    ctx = _context(budget_cap=1)
 
     first = json.loads(await registry.dispatch(TOOL_NAME, {"query": "first"}, ctx))
     second = json.loads(await registry.dispatch(TOOL_NAME, {"query": "second"}, ctx))

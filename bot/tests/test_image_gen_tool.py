@@ -21,7 +21,7 @@ from image_gen.types import (
     ImageResult,
 )
 from tools.image_gen import TOOL_NAME, init_image_gen_tool
-from tools.registry import MessageContext, ToolRegistry
+from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.workspace.common import UserLocks
 from tools.workspace.config import WorkspaceToolConfig
 from trust.tiers import TrustTier
@@ -67,6 +67,9 @@ def _context(
     context_key: str = "guild:channel:root",
     tool_config: dict[str, object] | None = None,
 ) -> MessageContext:
+    configured = tool_config or {}
+    max_calls = configured.get("max_calls_per_turn", 2)
+    budget_cap = max_calls if isinstance(max_calls, int) and not isinstance(max_calls, bool) else 2
     return MessageContext(
         user_id="user-1",
         user_name="Regular",
@@ -75,7 +78,8 @@ def _context(
         thread_id=None,
         trust_tier=tier,
         context_key=context_key,
-        tool_configs={TOOL_NAME: tool_config or {}},
+        tool_configs={TOOL_NAME: configured},
+        budget=TurnBudget(caps={BudgetName.IMAGE_GEN_CALLS: budget_cap}),
     )
 
 
@@ -159,7 +163,7 @@ async def test_generation_saves_reusable_workspace_png_and_queues_it(tmp_path: P
     assert result["path"].endswith(".png")
     assert result["bytes"] == len(PNG_BYTES)
     assert result["attached_to_reply"] is True
-    assert ctx.image_gen_calls_this_turn == 1
+    assert ctx.budget_used(BudgetName.IMAGE_GEN_CALLS) == 1
     assert len(service.generate_requests) == 1
     assert service.generate_requests[0] == ImageGenRequest(
         prompt="A moonlit cabin in a pine forest",
@@ -300,7 +304,7 @@ async def test_invalid_reference_image_fails_before_billable_call(tmp_path: Path
     )
 
     assert "PNG, JPEG, or WebP" in result["error"]
-    assert ctx.image_gen_calls_this_turn == 0
+    assert ctx.budget_used(BudgetName.IMAGE_GEN_CALLS) == 0
     assert not service.generate_requests
     assert not service.edit_requests
 
@@ -364,7 +368,7 @@ async def test_per_turn_call_limit_blocks_second_call(tmp_path: Path) -> None:
     assert first["ok"] is True
     assert "1 calls per turn" in second["error"]
     assert len(service.generate_requests) == 1
-    assert ctx.image_gen_calls_this_turn == 1
+    assert ctx.budget_used(BudgetName.IMAGE_GEN_CALLS) == 1
 
 
 @pytest.mark.asyncio
@@ -378,7 +382,7 @@ async def test_quota_error_is_safe_and_includes_reset_time(tmp_path: Path) -> No
     assert result == {
         "error": "image generation limit reached; resets at Unix timestamp 1778836800"
     }
-    assert ctx.image_gen_calls_this_turn == 1
+    assert ctx.budget_used(BudgetName.IMAGE_GEN_CALLS) == 1
 
 
 @pytest.mark.asyncio

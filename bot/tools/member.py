@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Protocol
 import json
+from typing import Protocol
 
 from discord_adapter.gateway import DiscordGatewayError, MemberLookup
-from tools._common import tool_error
+from tools._common import get_string, tool_error
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
@@ -21,8 +21,11 @@ class MemberLookupGateway(Protocol):
 
 def init_member_lookup_tool(registry: ToolRegistry, gateway: MemberLookupGateway) -> None:
     async def _lookup_member(args: dict, ctx: MessageContext) -> str:
-        user_id = _clean(args.get("user_id"))
-        query = _clean(args.get("query"))
+        try:
+            user_id = get_string(args, "user_id") or None
+            query = get_string(args, "query") or None
+        except ValueError as exc:
+            return tool_error(str(exc))
         if not user_id and not query:
             return tool_error("Provide a user_id or a query.")
 
@@ -100,10 +103,3 @@ def init_member_lookup_tool(registry: ToolRegistry, gateway: MemberLookupGateway
         category="Discord",
         untrusted=True,
     )
-
-
-def _clean(raw: object) -> str | None:
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    return text or None

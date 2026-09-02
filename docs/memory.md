@@ -1,14 +1,10 @@
 # Memory
 
-Hindsight-backed memory is optional at runtime. The database-backed `/memory` controls are registered either way. When `HINDSIGHT_URL` is set and the startup probe succeeds, the bot also wires up recall for the current user, explicit current-user memory writes, and community memory tools. Background auto-retention additionally requires `MEMORY_AUTO_RETAIN_ENABLED`.
+Long-term memory is optional and backed by [Hindsight](https://github.com/vectorize-io/hindsight). The `/memory` slash command is registered whether or not a backend is configured, since its opt-in/opt-out state lives in SQLite. When `HINDSIGHT_URL` is set and the startup probe succeeds, the bot also wires up automatic recall for the current user, an explicit "remember this" tool, and the community memory tools. Background auto-retention needs `MEMORY_AUTO_RETAIN_ENABLED` on top of that.
 
 ## Runtime wiring
 
-Memory is owned by `app.memory.MemoryManager`. `app.runtime.build_app(settings)` always creates the manager; its `__post_init__` creates a `MemoryClient` only when `settings.hindsight_url` is truthy. Startup bank initialization then decides whether the Hindsight-backed tools are available:
-
-- `MemoryClient` wraps the Hindsight SDK.
-
-The database-backed components come later, in `KimiApplication.on_ready`:
+Memory is owned by `app/memory.py:MemoryManager`. `build_app` always creates the manager, and the manager creates a `MemoryClient` (a wrapper around the Hindsight SDK) only when `HINDSIGHT_URL` is set. Whether the Hindsight-backed tools become available is decided during READY initialization in `app/lifecycle.py`, once the database is open:
 
 - `PreferenceStore` reads and writes the `user_preferences` SQLite table.
 - `register_memory_command(...)` registers the `/memory` slash-command group.
@@ -17,7 +13,7 @@ The database-backed components come later, in `KimiApplication.on_ready`:
 - `init_community_tools(registry, memory_client)` registers `recall_community`, `reflect_community`, and the staff-only `teach` tool, and only after those shared banks are confirmed.
 - `init_user_memory_tools(registry, memory_client, recall_types=settings.user_memory_recall_types)` registers `recall_user` and `reflect_user`, again only after those shared banks are confirmed.
 - `init_user_memory_write_tools(registry, ...)` registers `remember_user_memory` once the SQLite conversation store exists.
-- When `MEMORY_AUTO_RETAIN_ENABLED` is set, `on_ready` also starts the auto-retain sweeper task (see Automatic Retention below), and `close()` cancels it before tearing down memory and database resources.
+- When `MEMORY_AUTO_RETAIN_ENABLED` is set, READY initialization also starts the auto-retain sweeper task (see Automatic Retention below), and shutdown cancels it before tearing down memory and database resources.
 
 If `HINDSIGHT_URL` is empty, or if startup cannot initialize the shared Hindsight banks, the bot runs without Hindsight-backed tools, automatic recall, explicit retention, or bank deletion. The `/privacy` memory-delete path can still disable future memory in SQLite when no Hindsight client exists. If the durable local bank-state flag says that the user's bank may already exist, however, the confirmed deletion stays pending until Hindsight is available to confirm the bank is gone.
 
@@ -145,7 +141,7 @@ Set `HINDSIGHT_URL` to the reachable Hindsight service; there is no built-in end
 
 ## Failure behavior
 
-Here are the symptoms you will see first, with the exact startup lines:
+These are the startup log lines you will see, and what each one means:
 
 | What you see | What it means |
 |---|---|
@@ -153,7 +149,7 @@ Here are the symptoms you will see first, with the exact startup lines:
 | `Hindsight memory unavailable at <url> - running without memory tools` | The URL is set, but `ensure_global_banks` could not create or confirm the shared `bot-skills` bank. Readiness stays false, and registered memory tools are removed. |
 | `Hindsight memory connected at <url>` | Ready. Community and user memory tools are registered. |
 
-A per-guild community bank that cannot be created fails more quietly: `ensure_community_bank` returns `None` and the calling tool degrades, so one guild can be without community memory while the rest of the deployment has it.
+A per-guild community bank that cannot be created fails more quietly: `ensure_community_bank` returns `None` and the calling tool reports that community memory is unavailable, so one guild can be without community memory while the rest of the deployment has it.
 
 Beyond startup, the failure modes are:
 

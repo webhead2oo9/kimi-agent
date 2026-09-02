@@ -1,8 +1,8 @@
 # Personal skills
 
-Personal skills are durable, per-user instruction documents. They let a member save a reusable procedure or preference that the bot can load on that member's future turns when its name and description show that it is relevant.
+Personal skills are per-user instruction documents that persist across conversations. A member can save a reusable procedure or preference ("when I ask for a summary, use bullet points and keep it under 200 words"), and the bot can load it on that member's future turns when the skill's name and description look relevant.
 
-Character and persona overrides are a separate feature: they are managed by the regular+ persona tools and stored in SQLite, and no `SKILL.md` document is involved.
+Character and persona overrides are a separate feature: they are managed by the REGULAR-tier persona tools ([persona.md](persona.md)) and stored in SQLite, and no `SKILL.md` document is involved.
 
 ## Storage
 
@@ -12,7 +12,7 @@ Personal skills live under:
 data/personal_skills/<user_id>/<skill-name>/SKILL.md
 ```
 
-`<user_id>` must be a numeric Discord snowflake. Read paths never create user directories; the user's root is created lazily on the first successful create.
+`<user_id>` must be a numeric Discord snowflake. Reading never creates directories; a user's folder appears the first time they successfully create a skill.
 
 The directory is configured by `PERSONAL_SKILLS_DIR` and sits outside `WORKSPACE_DIR`, so the workspace TTL and quota sweeper never touches personal skills.
 
@@ -41,4 +41,4 @@ The preamble line is fixed prose owned by `config/fragments/prompt.py`, and the 
 
 ## No executable tools
 
-Personal skills are instruction-only. The personal store is never passed to `register_all_skill_tools` or `reload_all_skill_tools`, so a hand-written `tools:` frontmatter block under `data/personal_skills/` does nothing. The supported create and edit paths also reject embedded executable-tool metadata in the markdown body, reusing the global skill manager's content validation to do it.
+Personal skills are instruction-only. The personal store is never handed to the executable-skill registration code (`register_all_skill_tools`, `reload_all_skill_tools`), so a hand-written `tools:` frontmatter block under `data/personal_skills/` does nothing. The create and edit tools also reject executable-tool metadata in the markdown body, using the same content validation as the shared skill manager.

@@ -1,8 +1,8 @@
 # Observability: the tool event stream
 
-The bot can emit structured JSON lines for tool calls, turn summaries, context compaction, moderation matches, and application-module health. By default those lines carry metadata only: timings, ids, tool names, and outcomes. Getting the actual arguments, results, prompts, and replies into the file takes a deliberate environment setting. The stream is plain JSONL, so `tail -f logs/events.jsonl | jq .` works directly.
+The bot can write one JSON line per tool call, turn, context compaction, moderation match, and application-module health change. By default those lines carry metadata only: timings, ids, tool names, and outcomes. Getting the actual arguments, results, prompts, and replies into the file takes a deliberate environment setting. The file is plain JSONL, so `tail -f logs/events.jsonl | jq .` works directly.
 
-The stream is **off by default**. While it is disabled, no writer is started and `emit_*` calls return without writing anything. The file is the whole output contract; the bot does not depend on anything consuming it.
+The stream is **off by default**. While it is disabled, no writer is started and the `emit_*` calls in the code return without writing anything. The file is the whole interface: the bot does not depend on anything reading it, so you can ship it to a log system or just leave it on disk.
 
 `module_health` events are best-effort reports of application-module health transitions: `module`, `state` (`starting`/`healthy`/`degraded`/`failed`), a length-bounded `detail`, and bounded numeric `metrics`. Detail text is supplied by trusted module code and is not redacted, so modules must keep user content and secrets out of it.
 
@@ -21,7 +21,7 @@ These settings live in `config/settings.py` and are mirrored in `.env.example`:
 TOOL_EVENT_LOG_ENABLED=true .venv/bin/python bot.py
 ```
 
-The three content modes trade detail for safety. `metadata` keeps tool payloads, prompts, memories, user messages, and assistant replies out of the file entirely. `redacted` writes them, but first strips values under credential-looking keys and any secret it already knows from `Settings`. `full` is the verbatim stream, unchanged; it warns at startup, because what lands in the file can include both secrets and private conversation. `logs/` is git-ignored.
+The three content modes trade detail for safety. `metadata` keeps tool payloads, prompts, memories, user messages, and assistant replies out of the file entirely. `redacted` writes them, but first replaces values under credential-looking keys and any secret it already knows from `Settings`. `full` writes everything verbatim and warns at startup, because the file can then contain both secrets and private conversation. `logs/` is git-ignored.
 
 ## Data flow
 
@@ -217,4 +217,4 @@ The `moderation` event is emitted by `moderation/service.py` (through `emit_mode
 
 ## Rotation
 
-Rotation is size-based. When the live file would exceed ~50 MB the writer rolls it to `events.jsonl.1` (a single backup) and starts a fresh file. Both are ordinary JSONL files, and on POSIX both stay at mode `0600`.
+Rotation is by size. When the live file would exceed 50 MiB the writer renames it to `events.jsonl.1` (there is only ever one backup; an older one is overwritten) and starts a fresh file. Both are ordinary JSONL files, and on POSIX both stay at mode `0600`.

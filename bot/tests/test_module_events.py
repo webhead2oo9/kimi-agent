@@ -346,6 +346,7 @@ async def test_publisher_normalizes_gateway_events_and_uninstalls() -> None:
     ]
     delete = published[1][1]
     assert isinstance(delete, ev.MessageDeleteEvent) and delete.cached_content == "gone"
+    assert delete.author_is_bot is False
     edit = published[2][1]
     assert isinstance(edit, ev.MessageEditEvent) and (edit.before_content, edit.after_content) == (
         "old",
@@ -391,6 +392,37 @@ async def test_publisher_deduplicates_cached_and_raw_single_delete() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publisher_preserves_cached_bot_classification_for_deletes() -> None:
+    published: list[tuple[str, Any]] = []
+    publisher = ModuleEventPublisher(
+        cast(Any, _Bot()), lambda topic, payload: published.append((topic, payload))
+    )
+    bot_author = SimpleNamespace(id=4, bot=True)
+    bot_message = _message(id=40, author=bot_author)
+    human_message = _message(id=41)
+
+    await publisher.on_message_delete(bot_message)
+    await publisher.on_raw_bulk_message_delete(
+        cast(
+            RawBulkMessageDeleteEvent,
+            SimpleNamespace(
+                guild_id=1,
+                channel_id=2,
+                message_ids={40, 41},
+                cached_messages=[bot_message, human_message],
+            ),
+        )
+    )
+
+    single = published[0][1]
+    bulk = published[1][1]
+    assert isinstance(single, ev.MessageDeleteEvent)
+    assert single.author_is_bot is True
+    assert isinstance(bulk, ev.MessageBulkDeleteEvent)
+    assert bulk.bot_message_ids == (40,)
+
+
+@pytest.mark.asyncio
 async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
     published: list[tuple[str, Any]] = []
     bot = _Bot()
@@ -422,8 +454,10 @@ async def test_publisher_normalizes_uncached_single_and_bulk_deletes() -> None:
     bulk = published[1][1]
     assert isinstance(single, ev.MessageDeleteEvent) and single.ref.message_id == 30
     assert single.cached_content is None
+    assert single.author_is_bot is None
     assert isinstance(bulk, ev.MessageBulkDeleteEvent)
     assert {ref.message_id for ref in bulk.refs} == {31, 32}
+    assert bulk.bot_message_ids == ()
 
 
 @pytest.mark.asyncio

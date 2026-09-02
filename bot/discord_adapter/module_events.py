@@ -312,6 +312,7 @@ class ModuleEventPublisher:
                 author_id=int(message.author.id) if message.author is not None else None,
                 cached_content=message.content or None,
                 cached_attachments=tuple(attachment_snapshot(a) for a in message.attachments),
+                author_is_bot=(bool(message.author.bot) if message.author is not None else None),
             ),
         )
 
@@ -332,6 +333,7 @@ class ModuleEventPublisher:
                 author_id=None,
                 cached_content=None,
                 cached_attachments=(),
+                author_is_bot=None,
             ),
         )
 
@@ -351,7 +353,14 @@ class ModuleEventPublisher:
                         )
                     )
                     for message_id in sorted(payload.message_ids)
-                )
+                ),
+                bot_message_ids=tuple(
+                    sorted(
+                        message_id
+                        for message_id, message in cached.items()
+                        if bool(message.author.bot)
+                    )
+                ),
             ),
         )
 

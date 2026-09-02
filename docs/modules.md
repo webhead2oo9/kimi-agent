@@ -176,7 +176,7 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `1.2.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `1.3.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
 Before the first tag, reserve the `kimi-agent-module-api` project through PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi`. A name lookup isn't a reservation, so confirm availability again immediately before the first release.
 
@@ -256,7 +256,10 @@ the ports are a contract and an audit surface, not a sandbox.
   for channels where the bot has **Manage Channels**, so those events may be
   incomplete without that permission. Uncached raw edit payloads may omit the
   author or new content; subscribers that need the live message declare and
-  call `fetch_message`. `publish` returns immediately; each
+  call `fetch_message`. Cached single-delete events include `author_is_bot`, and
+  cached bot IDs in bulk deletes appear in `bot_message_ids`; those values are
+  unknown for messages absent from Discord's cache. `publish` returns
+  immediately; each
   subscriber module has a bounded queue and a small worker pool with a
   per-handler timeout, failures are logged and counted in that module's
   health metrics, and a full queue drops its oldest pending event. Events

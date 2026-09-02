@@ -123,6 +123,10 @@ jobs:
           uv run mypy --config-file modules/example/pyproject.toml \
             modules/example/src modules/example/tests
 
+      - name: Test module API package standalone
+        working-directory: bot/packages/kimi-agent-module-api
+        run: uv run --isolated --locked --group test python -m pytest -q
+
       - name: Tests
         id: tests
         run: >-

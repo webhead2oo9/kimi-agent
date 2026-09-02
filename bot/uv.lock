@@ -686,12 +686,26 @@ testing = [
     { name = "aiosqlite" },
 ]
 
+[package.dev-dependencies]
+test = [
+    { name = "aiosqlite" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'testing'" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
 ]
 provides-extras = ["testing"]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "aiosqlite" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
 
 [[package]]
 name = "librt"

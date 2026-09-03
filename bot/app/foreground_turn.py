@@ -24,6 +24,7 @@ from agent.turn import (
     handle_turn,
 )
 from app.cancellation import ActiveOperationRegistry
+from app.live_reply_routes import unregister_live_reply
 from app.turn_entry import (
     TurnDependencyFactory,
     TurnEntryHooks,
@@ -416,24 +417,29 @@ class ForegroundTurnRunner:
         result: TurnResult,
         receipt: TurnDeliveryReceipt,
     ) -> None:
-        if (
-            not receipt.replies
-            or result.blocked_by_moderation
-            or result.termination_reason == "attachment_error"
-        ):
+        if not receipt.replies:
             return
-        await self._conversation_store.save_channel_messages(
-            conversation_id,
-            [
-                ChannelMessageRecord(
-                    discord_message_id=reply.discord_message_id,
-                    role="assistant",
-                    author_id=None,
-                    author_name=None,
-                    content=reply.content,
-                    source_created_at=reply.source_created_at,
-                )
-                for reply in receipt.replies
-            ],
-            context_channel_id=receipt.context_channel_id,
-        )
+        try:
+            if result.blocked_by_moderation or result.termination_reason == "attachment_error":
+                return
+            await self._conversation_store.save_channel_messages(
+                conversation_id,
+                [
+                    ChannelMessageRecord(
+                        discord_message_id=reply.discord_message_id,
+                        role="assistant",
+                        author_id=None,
+                        author_name=None,
+                        content=reply.content,
+                        source_created_at=reply.source_created_at,
+                    )
+                    for reply in receipt.replies
+                ],
+                context_channel_id=receipt.context_channel_id,
+            )
+        finally:
+            # The live bridge window ends here whether the durable write
+            # landed or not, so a stale route can never override durable
+            # truth (including post-privacy-deletion) afterward.
+            for reply in receipt.replies:
+                unregister_live_reply(reply.discord_message_id)

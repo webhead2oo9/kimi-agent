@@ -509,6 +509,7 @@ class BrowserService:
         self._active_turns: dict[str, str] = {}
         self._inflight = 0
         self._switching = False
+        self._sweeping = False
         self._closed = False
         self._fatal_teardown = False
         self._idle_task: asyncio.Task[None] | None = None
@@ -627,9 +628,13 @@ class BrowserService:
                 if existing != owner_id:
                     raise BrowserServiceError("The browser turn lease is invalid.")
                 return False
-            while self._switching or (
-                self._active_owner not in (None, owner_id)
-                and (self._active_turns or self._inflight)
+            while (
+                self._switching
+                or self._sweeping
+                or (
+                    self._active_owner not in (None, owner_id)
+                    and (self._active_turns or self._inflight)
+                )
             ):
                 await self._condition.wait()
             old_worker = None
@@ -797,13 +802,15 @@ class BrowserService:
         """Close ``owner_id``'s idle worker and drop the physical lease now."""
 
         async with self._condition:
-            if (
-                self._closed
-                or self._switching
-                or self._active_owner != owner_id
-                or self._active_turns
-                or self._inflight
-            ):
+            if self._closed or self._switching or self._active_owner != owner_id:
+                return False
+            while self._sweeping:
+                # A sweep holds no locks while deleting; wait for it instead of
+                # giving up, otherwise the idle worker/lease is never retried.
+                await self._condition.wait()
+                if self._closed or self._switching or self._active_owner != owner_id:
+                    return False
+            if self._active_turns or self._inflight:
                 return False
             self._switching = True
             worker = self._worker
@@ -839,8 +846,10 @@ class BrowserService:
 
     async def delete_user_data(self, user_id: str) -> int:
         async with self._condition:
-            while self._switching or (
-                self._active_owner == user_id and (self._active_turns or self._inflight)
+            while (
+                self._switching
+                or self._sweeping
+                or (self._active_owner == user_id and (self._active_turns or self._inflight))
             ):
                 await self._condition.wait()
             worker = self._worker if self._active_owner == user_id else None
@@ -858,10 +867,37 @@ class BrowserService:
         return int(removed)
 
     async def sweep_expired(self) -> int:
+        """Remove TTL-expired profiles, serialized against owner switches.
+
+        The sweep flag is set under the condition *before* taking the worker
+        lock, so an owner switch (which sets ``_switching`` under the
+        condition and then waits for the worker lock) can never deadlock
+        against it: at most one of the two proceeds to the worker lock while
+        the other waits on the condition. Holding the worker lock across
+        deletion then keeps profile creation from reactivating a candidate
+        mid-sweep.
+        """
         async with self._condition:
-            active = self.profile_home(self._active_owner) if self._active_owner else None
-        cutoff = time.time() - self.config.profile_ttl_seconds
-        return await asyncio.to_thread(_sweep_profiles, self.config.profiles_dir, cutoff, active)
+            if self._closed:
+                return 0
+            while self._switching:
+                await self._condition.wait()
+                if self._closed:
+                    return 0
+            self._sweeping = True
+            self._condition.notify_all()
+        try:
+            async with self._worker_lock:
+                async with self._condition:
+                    active = self.profile_home(self._active_owner) if self._active_owner else None
+                cutoff = time.time() - self.config.profile_ttl_seconds
+                return await asyncio.to_thread(
+                    _sweep_profiles, self.config.profiles_dir, cutoff, active
+                )
+        finally:
+            async with self._condition:
+                self._sweeping = False
+                self._condition.notify_all()
 
     async def close(self) -> None:
         async with self._condition:
@@ -877,6 +913,7 @@ class BrowserService:
         async with self._condition:
             self._active_owner = None
             self._switching = False
+            self._sweeping = False
             await self._release_physical_lease()
             self._condition.notify_all()
 

@@ -461,3 +461,108 @@ async def test_build_app_populates_guild_turn_collaborators_after_init(
         assert callable(collaborators.strip_invocation)
     finally:
         await app.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_delivery_unregisters_mid_send_live_routes() -> None:
+    """A send that raises after chunk one must not leave a stale bridge entry."""
+    from app.live_reply_routes import clear_live_replies, lookup_live_reply
+
+    clear_live_replies()
+    try:
+        channel = FakeChannel(100)
+
+        class ExplodingCollaborators(FakeCollaborators):
+            async def send(self, channel: object, content: str, **kwargs: object) -> SentMessages:
+                callback = cast(Any, kwargs.get("on_message_sent"))
+                assert callback is not None
+                callback(FakeSentMessage(701, "first", cast(FakeChannel, channel)))
+                raise RuntimeError("send exploded mid-response")
+
+        app = ExplodingCollaborators(channel, sent_contents=("first",))
+        message = FakeMessage(channel)
+        adapter = GuildMessageTurnAdapter(
+            collaborators=app.bundle(),
+            message=cast(discord.Message, message),
+            context_channel_id="100",
+            personal_chat=False,
+            conversation_key="root-1",
+            db_conversation_id=9,
+            conversation_owner_user_id="1",
+        )
+        with pytest.raises(RuntimeError, match="send exploded"):
+            await adapter.deliver(
+                TurnResult(response_text="answer"),
+                conversation_id=9,
+            )
+        assert lookup_live_reply("701") is None
+    finally:
+        clear_live_replies()
+
+
+@pytest.mark.asyncio
+async def test_fallback_send_drops_superseded_partial_live_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial thread send replaced by fallback must not leak bridge entries."""
+    from app.live_reply_routes import clear_live_replies, lookup_live_reply
+
+    monkeypatch.setattr(guild_turn_adapter.discord, "Thread", FakeThread)
+    clear_live_replies()
+    try:
+        channel = FakeChannel(100)
+        thread = FakeThread(200, parent_id=100)
+
+        class FallbackCollaborators(FakeCollaborators):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+                self.calls = 0
+
+            async def send(self, channel: object, content: str, **kwargs: object) -> SentMessages:
+                self.calls += 1
+                message_id = 700 + self.calls
+                result = SentMessages(
+                    cast(
+                        list[discord.Message],
+                        [
+                            FakeSentMessage(
+                                message_id, f"chunk-{self.calls}", cast(FakeChannel, channel)
+                            )
+                        ],
+                    )
+                )
+                result.delivery_failed = self.calls == 1
+                callback = kwargs.get("on_message_sent")
+                if callback is not None:
+                    for sent in result:
+                        cast(Any, callback)(sent)
+                return result
+
+        app = FallbackCollaborators(channel, created_thread=thread)
+        message = FakeMessage(channel)
+        result = TurnResult(
+            response_text="Coding task started.",
+            outbox=TurnOutbox(
+                thread_request=ThreadRequest(name="coding"),
+                terminal_handoff=TurnHandoff(
+                    response_text="Coding task started.",
+                    reason="coding_task",
+                    task_id="task-123456",
+                ),
+            ),
+        )
+        adapter = GuildMessageTurnAdapter(
+            collaborators=app.bundle(),
+            message=cast(discord.Message, message),
+            context_channel_id="100",
+            personal_chat=False,
+            conversation_key="root-1",
+            db_conversation_id=12,
+            conversation_owner_user_id="1",
+        )
+        receipt = await adapter.deliver(result, conversation_id=12)
+        assert [reply.discord_message_id for reply in receipt.replies] == ["702"]
+        assert lookup_live_reply("701") is None
+        assert lookup_live_reply("702") is not None
+    finally:
+        clear_live_replies()

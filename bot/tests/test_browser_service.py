@@ -592,3 +592,87 @@ def test_app_registers_visual_only_after_browser_and_visual_runtime_probe(
     assert chart is not None
     assert diagram is not None
     assert chart.category == diagram.category == "Visuals"
+
+
+@pytest.mark.asyncio
+async def test_sweep_blocks_owner_acquire_until_deletion_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sweep/switch serialization: no owner transition overlaps candidate deletion."""
+    import asyncio
+
+    service = BrowserService(_config(tmp_path))
+    stale = service.profile_home("victim")
+    stale.mkdir(parents=True)
+    marker = stale / ".last_used"
+    marker.touch()
+    old = time.time() - service.config.profile_ttl_seconds - 5
+    os.utime(marker, (old, old))
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_sweep = browser_service._sweep_profiles
+
+    def gated_sweep(root: Path, cutoff: float, active_home: Path | None) -> int:
+        entered.set()
+        # Block the worker thread until the test lets deletion proceed, so the
+        # acquire below must wait on the sweep flag rather than racing it.
+        import time as _time
+
+        deadline = _time.monotonic() + 5.0
+        while not release.is_set():
+            if _time.monotonic() > deadline:
+                raise TimeoutError("sweep release not signaled")
+            _time.sleep(0.01)
+        return real_sweep(root, cutoff, active_home)
+
+    monkeypatch.setattr(browser_service, "_sweep_profiles", gated_sweep)
+    sweep_task = asyncio.create_task(service.sweep_expired())
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
+    assert service._sweeping is True
+
+    acquire_task = asyncio.create_task(service.acquire_turn("victim", "turn-1"))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not acquire_task.done()
+
+    release.set()
+    assert await asyncio.wait_for(sweep_task, timeout=10.0) == 1
+    assert await asyncio.wait_for(acquire_task, timeout=10.0) is True
+    assert service._sweeping is False
+    await service.release_turn("victim", "turn-1")
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_claims_flag_before_worker_lock(tmp_path: Path) -> None:
+    """Lock-ordering guard: the sweep flag must be visible while it waits.
+
+    Otherwise an owner switch (condition-held ``_switching`` + worker-lock
+    wait) can deadlock against a sweep holding the worker lock while waiting
+    for the switch to clear.
+    """
+    import asyncio
+
+    service = BrowserService(_config(tmp_path))
+    await service._worker_lock.acquire()
+    try:
+        sweep_task = asyncio.create_task(service.sweep_expired())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert service._sweeping is True
+        assert not sweep_task.done()
+        # An owner acquire must observe the flag instead of racing deletion.
+        acquire_task = asyncio.create_task(service.acquire_turn("newcomer", "t"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not acquire_task.done()
+        service._worker_lock.release()
+        assert await asyncio.wait_for(sweep_task, timeout=10.0) == 0
+        assert service._sweeping is False
+        assert await asyncio.wait_for(acquire_task, timeout=10.0) is True
+        await service.release_turn("newcomer", "t")
+    finally:
+        if service._worker_lock.locked():
+            service._worker_lock.release()
+    await service.close()

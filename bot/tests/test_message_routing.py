@@ -2740,3 +2740,38 @@ async def test_on_message_attachment_error_adds_failure_reaction(
     added = [call.args[0] for call in message.add_reaction.await_args_list]
     assert "❌" in added
     assert "✅" not in added
+
+
+@pytest.mark.asyncio
+async def test_reply_to_live_chunk_resolves_original_root_before_durable_map() -> None:
+    """A reply to the first visible chunk must not fork a fresh root mid-send."""
+    from app.live_reply_routes import (
+        LiveReplyRoute,
+        clear_live_replies,
+        register_live_reply,
+    )
+
+    clear_live_replies()
+    try:
+        register_live_reply(
+            "1001",
+            LiveReplyRoute(key="root-abc", db_conversation_id=42, owner_user_id="1"),
+        )
+        reply = _trigger_message(
+            content="following up",
+            author_id=2,
+            author_name="UserB",
+            message_id=1002,
+            reference_message_id=1001,
+        )
+        resolved = await resolve_conversation_for_message(
+            reply,
+            allow_new_root=True,
+            conversation_store=None,
+            thread_handoff=None,
+        )
+        assert resolved is not None
+        assert resolved.key == "root-abc"
+        assert resolved.db_conversation_id == 42
+    finally:
+        clear_live_replies()

@@ -252,8 +252,23 @@ async def test_timeout_envelope_includes_the_root_lock_wait() -> None:
     )
     interaction = _Interaction()
 
-    async with roots.hold("userchat:42"):
+    # Contention must come from a different task, as in production: the root
+    # pool is reentrant for the owning task, so holding inline would no-op.
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder() -> None:
+        async with roots.hold("userchat:42"):
+            held.set()
+            await release.wait()
+
+    holder_task = asyncio.create_task(holder())
+    await held.wait()
+    try:
         assert await _run(controller, interaction) is None
+    finally:
+        release.set()
+        await holder_task
 
     assert interaction.edits == ["That personal chat turn timed out. Run `/chat` again to retry."]
 

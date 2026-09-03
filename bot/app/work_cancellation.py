@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import discord
 from discord.ext import commands
@@ -17,6 +17,9 @@ from discord_adapter.io import is_user_integration, is_user_only_integration
 from tools.registry import USER_APP_SCOPE_CHANNEL_ID
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
+
+if TYPE_CHECKING:
+    from storage.conversations import ConversationStore
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +124,7 @@ class WorkCancellationCoordinator:
         strip_message_invocation: MessageInvocationStripper,
         cleanup_wait_seconds: float,
         global_staff_ids: frozenset[str],
+        conversation_store: ConversationStore | None = None,
     ) -> None:
         self._bot = bot
         self._consent_gate = consent_gate
@@ -134,6 +138,7 @@ class WorkCancellationCoordinator:
         self._strip_message_invocation = strip_message_invocation
         self._cleanup_wait_seconds = cleanup_wait_seconds
         self._global_staff_ids = global_staff_ids
+        self._conversation_store = conversation_store
 
     def is_stop_message(self, message: discord.Message) -> bool:
         return is_stop_message(
@@ -284,6 +289,17 @@ class WorkCancellationCoordinator:
             scopes=(WorkScope(channel_id="", root_key=None),),
             all_work=True,
         )
+        # Deleting this user's rooted conversations would otherwise cascade
+        # through the conversation FK and silently erase another user's live
+        # coding-task row mid-worker. Drain those tasks first regardless of
+        # task owner; the transcript delete that follows then only removes
+        # already-settled rows. Drain failures propagate: proceeding to delete
+        # with live cross-owner tasks would silently erase them, so the
+        # caller must fail closed instead.
+        if self._conversation_store is not None and self._coding_tasks.running:
+            rooted_ids = await self._conversation_store.rooted_conversation_ids(user_id)
+            if rooted_ids:
+                await self._coding_tasks.cancel_for_conversations(rooted_ids)
 
     async def _invalidate_retained_requests(self, user_id: str) -> None:
         # Pending consent callbacks are not active asyncio tasks. Invalidate

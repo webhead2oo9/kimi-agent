@@ -1310,3 +1310,77 @@ def test_privacy_confirmation_plainly_states_scope_and_limits() -> None:
     memory_prompt = privacy_cmd_module._CONFIRM_PROMPTS["memory"]
     assert "personal long-term memory and persona" in memory_prompt
     assert "Community knowledge and skills are also untouched" in memory_prompt
+
+
+@pytest.mark.asyncio
+async def test_drain_failure_blocks_deletion_and_arms_the_barrier() -> None:
+    """A failed work drain must delete nothing and keep activity paused."""
+    from utils.privacy_barrier import UserPrivacyBarrier
+
+    events: list[str] = []
+    barrier = UserPrivacyBarrier()
+    conversations = _FakeConversationStore()
+
+    class _RequestStore:
+        async def request(self, **kwargs: object) -> PrivacyDeletionRequest:
+            return PrivacyDeletionRequest(
+                user_id="42",
+                scope="all",
+                generation=1,
+                request_token="request-token",
+                memory_backend_required=False,
+                requested_at=1.0,
+                updated_at=1.0,
+            )
+
+        async def complete(self, request: PrivacyDeletionRequest) -> bool:
+            events.append("request-complete")
+            return True
+
+    async def failing_drain(user_id: str) -> None:
+        raise RuntimeError("drain exploded")
+
+    class _InteractionResponse:
+        async def defer(self) -> None:
+            events.append("discord-defer")
+
+        async def edit_message(self, **kwargs: object) -> None:
+            raise AssertionError("authorization unexpectedly failed")
+
+    edits: list[object] = []
+
+    async def edit_original_response(**kwargs: object) -> None:
+        edits.append(kwargs.get("embed"))
+
+    view = privacy_cmd_module._DeleteConfirmView(
+        author_id=42,
+        scope="all",
+        workspace_manager=_UNUSED_WORKSPACE.manager,
+        workspace_locks=_UNUSED_WORKSPACE.locks,
+        conversation_store=cast(Any, conversations),
+        preference_store=cast(Any, _FakePreferenceStore()),
+        memory_client=None,
+        auto_retain_watermarks=None,
+        deletion_request_store=cast(Any, _RequestStore()),
+        privacy_barrier=barrier,
+        cancel_user_work=failing_drain,
+        is_available=lambda: True,
+    )
+    interaction = cast(
+        Any,
+        SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            response=_InteractionResponse(),
+            edit_original_response=edit_original_response,
+        ),
+    )
+    button = cast(
+        Any,
+        next(child for child in view.children if getattr(child, "label", None) == "Yes, delete"),
+    )
+    await button.callback(interaction)
+
+    assert conversations.delete_calls == []
+    assert "request-complete" not in events
+    assert len(edits) == 1
+    assert barrier._states["42"].pending_deletion is True

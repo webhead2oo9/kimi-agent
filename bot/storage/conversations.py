@@ -638,6 +638,20 @@ class ConversationStore:
             rows = await cursor.fetchall()
         return [str(row["key"]) for row in rows]
 
+    async def rooted_conversation_ids(self, user_id: str) -> list[int]:
+        """Conversation ids rooted by this user (deletion/cancellation scope)."""
+        async with self._db.conn.execute(
+            "SELECT c.id FROM conversations c "
+            "WHERE c.owner_user_id = ? OR EXISTS ("
+            "SELECT 1 FROM messages m "
+            "WHERE m.conversation_id = c.id "
+            "AND m.discord_message_id = c.root_discord_message_id "
+            "AND m.user_id = ?"
+            ")",
+            (user_id, user_id),
+        ) as cur:
+            return [int(row["id"]) for row in await cur.fetchall()]
+
     async def delete_user_data(self, user_id: str) -> UserDataDeletion:
         """Immediately delete one user's transcript data, on demand (docs/privacy.md).
 

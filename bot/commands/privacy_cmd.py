@@ -610,7 +610,35 @@ class _DeleteConfirmView(_AuthorGuardedView):
             request: PrivacyDeletionRequest | None,
         ) -> PrivacyDeletionOutcome:
             if self._cancel_user_work is not None:
-                await self._cancel_user_work(user_id)
+                # Arm the pending barrier before draining: the durable request
+                # below already exists at this point, and a drain failure must
+                # leave ordinary activity paused so a later replay cannot erase
+                # state created after this authorization.
+                if (
+                    request is not None
+                    and self._deletion_request_store is not None
+                    and self._privacy_barrier is not None
+                ):
+                    await self._privacy_barrier.mark_deletion_pending(user_id)
+                try:
+                    await self._cancel_user_work(user_id)
+                except Exception:
+                    # Fail closed: background work (including another user's
+                    # coding task on a shared root) could not be drained, so
+                    # deleting now might silently erase it. Nothing was deleted;
+                    # the pending barrier stays armed for the retry.
+                    log.exception("Privacy deletion: work drain failed for %s", user_id)
+                    return PrivacyDeletionOutcome(
+                        ok=False,
+                        lines=[
+                            (
+                                "Active background work could not be stopped safely, "
+                                "so nothing was deleted. Please try again or ask staff."
+                            )
+                        ],
+                        durable_request_completed=False,
+                        effective_scope=self._scope,
+                    )
             return await run_privacy_deletion(
                 scope=self._scope,
                 user_id=user_id,

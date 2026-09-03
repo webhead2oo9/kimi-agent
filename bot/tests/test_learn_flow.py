@@ -149,6 +149,21 @@ def test_learn_tools_stay_within_the_knowledge_sinks() -> None:
     } == LEARN_TOOLS
 
 
+@pytest.mark.asyncio
+async def test_operator_blocked_knowledge_tool_is_hidden_and_never_invoked() -> None:
+    """A blocked teach/skill_create must not survive the narrowed learn surface."""
+    registry = _registry_with("teach", "skill_create", "recall_community", "edit_file")
+    extra = frozenset({"teach", "skill_create"})
+    blocked = learn_turn_blocked_tools(registry, extra)
+    assert "teach" in blocked
+    assert "skill_create" in blocked
+    learn_registry = build_learn_registry(registry, extra)
+    assert "teach" not in learn_registry.registered_names()
+    assert "skill_create" not in learn_registry.registered_names()
+    assert "Unknown tool" in await learn_registry.dispatch("teach", {}, _learn_ctx())
+    assert "Unknown tool" in await learn_registry.dispatch("skill_create", {}, _learn_ctx())
+
+
 # ---- untrusted framing --------------------------------------------------
 
 

@@ -616,3 +616,37 @@ async def test_excluded_turn_results_do_not_persist_assistant(
     await runner.run(_invocation(), adapter=adapter)
 
     assert await _transcript_rows(foreground_database) == [("user", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_live_reply_bridge_closes_once_replies_persist(
+    foreground_database: Database, tmp_path: Path
+) -> None:
+    """The send-to-persist bridge must not outlive the durable write."""
+    from app.live_reply_routes import (
+        LiveReplyRoute,
+        clear_live_replies,
+        lookup_live_reply,
+        register_live_reply,
+    )
+
+    clear_live_replies()
+    try:
+        register_live_reply(
+            "assistant-1",
+            LiveReplyRoute(key="root-1", db_conversation_id=1, owner_user_id="1"),
+        )
+        events: list[str] = []
+        store = RecordingConversationStore(foreground_database, events)
+        locks = UserLocks()
+        adapter = FakeAdapter(events)
+        runner = _runner(
+            store,
+            FakeDependencyFactory(events, tmp_path, locks),
+            locks,
+            _successful_handle_turn(events),
+        )
+        await runner.run(_invocation(), adapter=adapter)
+        assert lookup_live_reply("assistant-1") is None
+    finally:
+        clear_live_replies()

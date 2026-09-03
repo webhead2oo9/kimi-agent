@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -19,12 +19,18 @@ from app.foreground_turn import (
     TurnSurfaceOutcome,
 )
 from app.coding_delivery import CodingHandoffControl, MessageInvocationStripper
+from app.live_reply_routes import (
+    LiveReplyRoute,
+    register_live_reply,
+    unregister_live_reply,
+)
 from app.response_delivery import DiscordResponseSender
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
 from app.threads import ThreadHandoffManager
 from config.fragments.channel_pins import load_channel_auto_thread
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import DiscordActivityReporter, SentMessages
+from storage.conversations import CHANNEL_SHARED, ConversationAccessScope
 from tools.embeds import embed_transcript_summary
 
 log = logging.getLogger(__name__)
@@ -61,6 +67,27 @@ class GuildMessageTurnAdapter:
     message: discord.Message
     context_channel_id: str
     personal_chat: bool
+    conversation_key: str = ""
+    db_conversation_id: int | None = None
+    conversation_owner_user_id: str | None = None
+    conversation_access_scope: ConversationAccessScope = CHANNEL_SHARED
+
+    def _live_route_callback(self) -> Callable[[discord.Message], None] | None:
+        if not self.conversation_key:
+            return None
+
+        def _register(sent: discord.Message) -> None:
+            register_live_reply(
+                str(sent.id),
+                LiveReplyRoute(
+                    key=self.conversation_key,
+                    db_conversation_id=self.db_conversation_id,
+                    owner_user_id=self.conversation_owner_user_id,
+                    access_scope=self.conversation_access_scope,
+                ),
+            )
+
+        return _register
 
     @property
     def activity_must_finish_before_delivery(self) -> bool:
@@ -109,6 +136,13 @@ class GuildMessageTurnAdapter:
         coding_handoff_task_id: str | None = None
         coding_handoff_prepared = False
         coding_handoff_finalized = False
+        # Bridge entries this delivery registers. The runner unregisters them
+        # once a receipt is returned and persistence is attempted; if this
+        # method raises first, the except below cleans up instead.
+        registered_during_delivery: list[str] = []
+
+        def _track_sent(sent: discord.Message) -> None:
+            registered_during_delivery.append(str(sent.id))
 
         if (
             result.outbox.terminal_handoff is not None
@@ -202,6 +236,7 @@ class GuildMessageTurnAdapter:
                 target_channel,
                 delivery_result,
                 reference=reply_reference,
+                on_message_sent=_track_sent,
             )
 
             initial_handoff_delivery_failed = bool(
@@ -243,10 +278,18 @@ class GuildMessageTurnAdapter:
                     thread_id=fallback_thread_id,
                 )
                 if coding_handoff_prepared:
+                    # The partial thread send is superseded: its messages stay
+                    # visible but no receipt will ever reference them (only the
+                    # fallback's messages become replies), so drop their bridge
+                    # entries now. Later cleanup is idempotent if delivery
+                    # still fails afterwards.
+                    for partial in sent_messages:
+                        unregister_live_reply(str(partial.id))
                     sent_messages = await self._send_response(
                         target_channel,
                         delivery_result,
                         reference=reply_reference,
+                        on_message_sent=_track_sent,
                     )
 
             if coding_handoff_task_id is not None and coding_handoff_prepared:
@@ -322,6 +365,14 @@ class GuildMessageTurnAdapter:
                 delivery_failed=delivery_failed,
                 delivered_result=(delivery_result if delivery_result is not result else None),
             )
+        except BaseException:
+            # No receipt leaves this method, so the runner can never unregister
+            # what was registered mid-send (a cancelled later chunk, a post-send
+            # handoff failure). Clean up this delivery's own bridge entries
+            # here; the runner owns them once a receipt is returned.
+            for message_id in registered_during_delivery:
+                unregister_live_reply(message_id)
+            raise
         finally:
             if coding_handoff_task_id is not None and not coding_handoff_finalized:
                 try:
@@ -338,7 +389,19 @@ class GuildMessageTurnAdapter:
         result: TurnResult,
         *,
         reference: discord.Message | None,
+        on_message_sent: Callable[[discord.Message], None] | None = None,
     ) -> SentMessages:
+        live_callback = self._live_route_callback()
+        if on_message_sent is None:
+            combined = live_callback
+        elif live_callback is None:
+            combined = on_message_sent
+        else:
+
+            def combined(sent: discord.Message) -> None:
+                live_callback(sent)
+                on_message_sent(sent)
+
         return await self.collaborators.responses.send(
             channel,
             result.response_text,
@@ -348,6 +411,7 @@ class GuildMessageTurnAdapter:
             allowed_file_roots=list(result.outbox.allowed_file_roots),
             embed=result.outbox.embed,
             mention_author=True,
+            on_message_sent=combined,
         )
 
     async def finish(self, outcome: TurnSurfaceOutcome) -> None:

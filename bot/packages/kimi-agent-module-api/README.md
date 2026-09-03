@@ -43,6 +43,10 @@ that layout model, Discord requires every later edit of the same message to rema
 Modules using them should depend on `kimi-agent-module-api>=1.2,<2` and require
 `discord.modals.v1` and/or `discord.components_v2.v1`.
 
+Version 1.3 adds cached author classification to message-deletion events:
+`MessageDeleteEvent.author_is_bot` and `MessageBulkDeleteEvent.bot_message_ids`.
+The values remain unknown for messages that were absent from Discord's cache.
+
 ## Testing the SDK
 
 From this package directory, run its tests without installing the Kimi application:

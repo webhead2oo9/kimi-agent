@@ -69,11 +69,13 @@ class MessageDeleteEvent:
     author_id: int | None
     cached_content: str | None
     cached_attachments: tuple[AttachmentSnapshot, ...]
+    author_is_bot: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MessageBulkDeleteEvent:
     refs: tuple[MessageRef, ...]
+    bot_message_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

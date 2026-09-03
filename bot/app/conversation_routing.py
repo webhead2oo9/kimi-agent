@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from app.live_reply_routes import lookup_live_reply
 from storage.conversations import (
     CHANNEL_SHARED,
     OWNER_ONLY,
@@ -35,6 +36,22 @@ async def resolve_conversation_for_message(
     context_channel_id = str(message.channel.id)
     reply_message_id = referenced_message_id(message)
     allow_bot_authored_reply_context = False
+    if reply_message_id is not None:
+        # A just-sent chunk is registered here the moment channel.send()
+        # returns, before the durable message_contexts rows land. Prefer the
+        # live route so a reply mid-send stays on the original root.
+        live = lookup_live_reply(reply_message_id)
+        if live is not None:
+            requester_user_id = str(message.author.id)
+            if live.access_scope != OWNER_ONLY or (
+                bool(live.owner_user_id) and live.owner_user_id == requester_user_id
+            ):
+                return ResolvedConversation(
+                    key=live.key,
+                    db_conversation_id=live.db_conversation_id,
+                    owner_user_id=live.owner_user_id,
+                    access_scope=live.access_scope,
+                )
     if conversation_store is not None and reply_message_id is not None:
         # No-mention continuation only when replying to one of the bot's own
         # messages. Replying to a human message must require a fresh @mention.

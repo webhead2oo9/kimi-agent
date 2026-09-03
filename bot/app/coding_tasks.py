@@ -8,7 +8,14 @@ import re
 import shutil
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from functools import partial
@@ -566,15 +573,35 @@ class CodingTaskService:
         task = await self._store.get_task(task_id)
         if task is None or not task.handoff_pending:
             return False
-        # Runtime calls this only after the foreground acknowledgement has been
-        # attempted. Paint the editable queued status now, while the task is
-        # still held, so it cannot be claimed and edited to "running" above a
-        # newer "was queued" acknowledgement.
-        await self._notify(task)
+        # Notify off this caller's lock stack: _notify can synchronously
+        # publish a terminal row, which waits on this task's root lock, while
+        # callers such as the foreground handoff acknowledgement hold a
+        # conversation root. Awaiting it here deadlocks delivery against the
+        # held root, so schedule it instead: it runs once the caller yields,
+        # still ahead of the claim loop woken below. Painting still precedes
+        # the release+wake, so a claim cannot slip a "running" edit above
+        # the queued acknowledgement in any interleaving the loop can produce.
+        # (Same-task reentry is additionally safe via the reentrant root pool.)
+        self._spawn_notify(task)
         released = await self._store.release_handoff(task_id)
         if released:
             self._wake.set()
         return released
+
+    def _spawn_notify(self, task: CodingTask) -> None:
+        """Schedule a status notify that outlives the caller's lock stack."""
+
+        async def _run() -> None:
+            try:
+                await self._notify(task)
+            except Exception:
+                logger.warning("Coding notify task for %s failed", task.id, exc_info=True)
+
+        publisher = asyncio.create_task(_run(), name=f"coding_notify:{task.id}")
+        previous = self._publishers.pop(task.id, None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._publishers[task.id] = publisher
 
     async def status_from_tool(
         self, ctx: MessageContext, *, task_id: str | None
@@ -718,6 +745,25 @@ class CodingTaskService:
                     and (worker is None or worker.done())
                 )
         return cancelled, clean
+
+    async def cancel_for_conversations(
+        self,
+        conversation_ids: Collection[int],
+        *,
+        reason: str = "A participant deleted the shared conversation",
+    ) -> list[str]:
+        """Cancel active tasks on these conversations regardless of task owner.
+
+        Used by privacy deletion: removing the rooted conversations would
+        otherwise cascade-delete another user's live task row mid-worker.
+        The controller already guarantees the service is running.
+        """
+        tasks = await self._store.list_active_by_conversation_ids(conversation_ids)
+        cancelled: list[str] = []
+        for task in tasks:
+            if await self.cancel_task(task.id, reason=reason):
+                cancelled.append(task.id)
+        return cancelled
 
     async def cleanup_complete(self, task_id: str) -> bool:
         worker = self._workers.get(task_id)

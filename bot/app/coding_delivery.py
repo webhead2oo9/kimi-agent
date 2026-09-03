@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -152,6 +152,12 @@ class CodingDelivery:
         task: CodingTask,
         context: ConversationContext | None,
     ) -> None:
+        # Fast path: skip obviously-gone rows before any Discord IO. The
+        # authoritative re-check runs under the root lock before the final
+        # send below; between the two only cosmetic status IO can occur, and
+        # its durable writes are no-ops for a deleted row.
+        if await self._store.get_task(task.id) is None:
+            return
         target_id = task.thread_id or task.channel_id
         try:
             channel = self._bot.get_channel(int(target_id))
@@ -269,6 +275,14 @@ class CodingDelivery:
                 output_files = []
                 allowed_roots = []
             async with self._root_locks.hold(task.root_key):
+                # The row was refreshed before this lock was acquired; a privacy
+                # or retention delete can land in between and cascade the task
+                # row away. Re-check under the same lock the deleter holds so a
+                # final reply is never sent for a task whose state is gone.
+                current = await self._store.get_task(task.id)
+                if current is None:
+                    return
+                task = current
                 async with AsyncExitStack() as delivery_stack:
                     if output_files:
                         await delivery_stack.enter_async_context(
@@ -948,3 +962,9 @@ class CodingTaskController:
 
     async def cleanup_complete(self, task_id: str) -> bool:
         return await self._running_service().cleanup_complete(task_id)
+
+    async def cancel_for_conversations(
+        self,
+        conversation_ids: Collection[int],
+    ) -> list[str]:
+        return await self._running_service().cancel_for_conversations(conversation_ids)

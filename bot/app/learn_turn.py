@@ -133,18 +133,25 @@ def _clip(text: str) -> str:
     return flat[:MAX_METADATA_CHARS]
 
 
-def learn_turn_blocked_tools(registry: ToolRegistry) -> frozenset[str]:
+def learn_turn_blocked_tools(
+    registry: ToolRegistry,
+    extra_blocked_tools: frozenset[str] = frozenset(),
+) -> frozenset[str]:
     """Everything currently registered except the knowledge tools.
 
     Carried on the turn's context so blocked names are also hidden from the
     model's tool list and the ``browse_tools`` catalog. This is the *secondary*
     guard: it is a snapshot, so :func:`build_learn_registry` is what actually
-    bounds the turn.
+    bounds the turn. ``extra_blocked_tools`` carries the operator denylist
+    (global ∪ guild ∪ channel) so a blocked knowledge tool stays blocked here too.
     """
-    return frozenset(registry.registered_names() - LEARN_TOOLS)
+    return frozenset(registry.registered_names() - LEARN_TOOLS) | extra_blocked_tools
 
 
-def build_learn_registry(registry: ToolRegistry) -> ToolRegistry:
+def build_learn_registry(
+    registry: ToolRegistry,
+    extra_blocked_tools: frozenset[str] = frozenset(),
+) -> ToolRegistry:
     """An independent registry exposing only the knowledge tools.
 
     ``clone_without`` copies the entry maps, so later mutations of the main
@@ -152,8 +159,14 @@ def build_learn_registry(registry: ToolRegistry) -> ToolRegistry:
     ``skill_create`` fires on success, land on the original and can never widen
     this turn's surface. Tool entries themselves are shared, so every per-entry
     gate (``min_tier``, ``owner_only``, ``guild_ids``) still applies at dispatch.
+    Operator-denied knowledge tools are also removed structurally so a blocked
+    ``teach``/``skill_create`` cannot dispatch here even though ``dispatch``
+    would otherwise allow it.
     """
-    return registry.clone_without(set(registry.registered_names() - LEARN_TOOLS))
+    blocked = set(registry.registered_names() - LEARN_TOOLS) | set(
+        extra_blocked_tools & LEARN_TOOLS
+    )
+    return registry.clone_without(blocked)
 
 
 async def run_learn_turn(
@@ -173,16 +186,17 @@ async def run_learn_turn(
     platform_member: object | None = None,
     llm_semaphore: asyncio.Semaphore | None = None,
     timeout_seconds: float | None = LEARN_TURN_TIMEOUT_SECONDS,
+    extra_blocked_tools: frozenset[str] = frozenset(),
 ) -> str:
     """Run one learn turn and return the model's report for the staff member."""
     provider = provider_manager.resolve("chat")
-    learn_registry = build_learn_registry(registry)
+    learn_registry = build_learn_registry(registry, extra_blocked_tools)
     context = ConversationContext(
         key=f"learn:{guild_id}:{channel_id}",
         user_id=user_id,
         user_name=user_name,
         channel_name=channel_name,
-        blocked_tools=learn_turn_blocked_tools(registry),
+        blocked_tools=learn_turn_blocked_tools(registry, extra_blocked_tools),
     )
     result = await run_conversation(
         ConversationRunRequest(

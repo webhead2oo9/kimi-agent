@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,7 @@ class DiscordResponseSender:
         embed: EmbedSpec | None = None,
         mention_author: bool = False,
         workspace_key: WorkspaceKey | None = None,
+        on_message_sent: Callable[[discord.Message], None] | None = None,
     ) -> SentMessages:
         async def send() -> SentMessages:
             return await self._gateway.send_response(
@@ -54,6 +56,7 @@ class DiscordResponseSender:
                 allowed_file_roots=allowed_file_roots,
                 embed=embed,
                 mention_author=mention_author,
+                on_message_sent=on_message_sent,
             )
 
         return await deliver_with_workspace_guard(

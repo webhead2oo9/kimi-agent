@@ -753,6 +753,7 @@ def build_app(settings: Settings) -> KimiApplication:
         strip_message_invocation=application.message_controller.strip_message_invocation,
         cleanup_wait_seconds=settings.coding_stop_cleanup_wait_seconds,
         global_staff_ids=frozenset(settings.staff_ids),
+        conversation_store=repositories.conversation_store,
     )
     lifecycle = ApplicationLifecycle(
         LifecycleResources(

@@ -558,6 +558,7 @@ class DiscordGateway:
         allowed_file_roots: list[str | Path] | None = None,
         embed: EmbedSpec | None = None,
         mention_author: bool = False,
+        on_message_sent: Callable[[discord.Message], None] | None = None,
     ) -> SentMessages:
         return await send_discord_response(
             channel,
@@ -568,6 +569,7 @@ class DiscordGateway:
             allowed_file_roots=allowed_file_roots,
             embed=embed,
             mention_author=mention_author,
+            on_message_sent=on_message_sent,
         )
 
     def prepare_attachment_delivery(
@@ -597,6 +599,7 @@ class DiscordGateway:
         *,
         reference: discord.Message | None = None,
         mention_author: bool = False,
+        on_message_sent: Callable[[discord.Message], None] | None = None,
     ) -> SentMessages:
         return await send_prepared_discord_response(
             channel,
@@ -604,6 +607,7 @@ class DiscordGateway:
             plan,
             reference=reference,
             mention_author=mention_author,
+            on_message_sent=on_message_sent,
         )
 
     async def add_status_reaction(self, message: Any, emoji: str) -> None:

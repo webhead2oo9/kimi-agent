@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from storage.conversations import ConversationStore
@@ -21,6 +21,7 @@ class RootLockPool:
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
         self._refcounts: dict[str, int] = {}
+        self._holders: dict[str, asyncio.Task[Any]] = {}
 
     def snapshot(self) -> RootLockSnapshot:
         return RootLockSnapshot(
@@ -36,14 +37,29 @@ class RootLockPool:
         # run synchronously before the first await (the lock acquire), so a
         # concurrent acquirer for the same root always sees the same Lock object;
         # the entry is evicted only once the last holder/waiter releases.
+        #
+        # The hold is reentrant for the owning task: delivery and notification
+        # paths run under a conversation root while publishing task state that
+        # waits on the same root, and the same task cannot race itself, so a
+        # nested hold yields immediately instead of self-deadlocking.
+        me = asyncio.current_task()
         lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             self._locks[key] = lock
+        if me is not None and self._holders.get(key) is me:
+            yield
+            return
         self._refcounts[key] = self._refcounts.get(key, 0) + 1
         try:
             async with lock:
-                yield
+                if me is not None:
+                    self._holders[key] = me
+                try:
+                    yield
+                finally:
+                    if me is not None:
+                        self._holders.pop(key, None)
         finally:
             count = self._refcounts[key] - 1
             if count <= 0:

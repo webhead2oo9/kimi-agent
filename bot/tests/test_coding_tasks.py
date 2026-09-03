@@ -564,6 +564,7 @@ async def test_service_publishes_bound_status_after_prepare_and_before_release(
         service = object.__new__(CodingTaskService)
         service._store = store
         service._wake = asyncio.Event()
+        service._publishers = {}
 
         async def notify(bound_task, _context=None):
             observed.append(
@@ -591,6 +592,10 @@ async def test_service_publishes_bound_status_after_prepare_and_before_release(
 
         assert await service.release_handoff(task.id)
 
+        # The notify runs off the caller's lock stack; drain it here.
+        pending = service._publishers.get(task.id)
+        assert pending is not None
+        await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
         assert observed == [("notify", True, "parent-2", "thread-2")]
         released = await store.get_task(task.id)
         assert released is not None and released.handoff_pending is False
@@ -2516,3 +2521,36 @@ async def test_stopped_foreground_cancels_delegation_committed_at_boundary() -> 
     assert "delegated task was cancelled" in result
     assert cancelled == ["task-1"]
     assert ctx.outbox.terminal_handoff is None
+
+
+@pytest.mark.asyncio
+async def test_release_handoff_notifies_off_the_callers_lock_stack(tmp_path) -> None:
+    """A root-held release must not synchronously wait on that same root."""
+    from app.root_locks import RootLockPool
+
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store, handoff_pending=True)
+        service = object.__new__(CodingTaskService)
+        service._store = store
+        service._wake = asyncio.Event()
+        service._publishers = {}
+        locks = RootLockPool()
+        observed: list[str] = []
+
+        async def notify(_bound_task, _context=None):
+            async with locks.hold("root-1"):
+                observed.append("notified")
+
+        cast(Any, service)._notify = notify
+
+        async with locks.hold("root-1"):
+            assert await asyncio.wait_for(service.release_handoff(task.id), timeout=2.0)
+        pending = service._publishers.get(task.id)
+        assert pending is not None
+        await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
+        assert observed == ["notified"]
+    finally:
+        await db.close()

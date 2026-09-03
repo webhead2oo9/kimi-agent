@@ -249,7 +249,11 @@ Everything else keeps its own lifecycle, by design:
     waits for already-started turns to finish, cancels foreground responses and
     coding tasks (including managed sandbox teardown), prevents later ones from
     starting, and also drains the normal root lock for every conversation the
-    user owns, spoke in, or initiated a managed thread within. That root drain
+    user owns, spoke in, or initiated a managed thread within. Coding-task
+    cancellation covers active tasks other users started on conversations the
+    requester rooted, which the transcript delete would otherwise cascade away
+    mid-worker; if that drain fails, nothing is deleted and the pending lease
+    stays armed for the retry. That root drain
     covers another participant's already-running model turn, Discord delivery,
     and assistant-transcript persistence, so a shared-root reply derived from
     the deleted rows cannot land after deletion. It then purges the SQLite

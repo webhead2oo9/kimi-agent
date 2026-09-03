@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -65,12 +66,21 @@ class _CodingTasks:
         self._results = list(results or [([], True)])
         self.running = running
         self.calls: list[dict[str, object]] = []
+        self.conversation_cancels: list[list[int]] = []
         self.store = SimpleNamespace()
 
     async def cancel_for_scope(self, **kwargs: object) -> tuple[list[str], bool]:
         self._events.append("coding")
         self.calls.append(kwargs)
         return self._results.pop(0)
+
+    async def cancel_for_conversations(
+        self, conversation_ids: Collection[int], *, reason: str = ""
+    ) -> list[str]:
+        ids = sorted(conversation_ids)
+        self._events.append(f"coding-conversations:{ids}")
+        self.conversation_cancels.append(ids)
+        return ["task-b"]
 
 
 class _Gateway:
@@ -98,6 +108,7 @@ def _coordinator(
     coding: _CodingTasks | None = None,
     personal: _PersonalRequests | None = None,
     consent: _ConsentGate | None = None,
+    conversation_store: object | None = None,
 ) -> WorkCancellationCoordinator:
     async def resolve(_message: discord.Message, *, allow_new_root: bool) -> None:
         assert allow_new_root is False
@@ -128,6 +139,7 @@ def _coordinator(
         strip_message_invocation=strip_invocation,
         cleanup_wait_seconds=0.25,
         global_staff_ids=frozenset(),
+        conversation_store=cast(Any, conversation_store),
     )
 
 
@@ -336,3 +348,37 @@ async def test_root_scope_does_not_cancel_a_different_bound_provisional_turn() -
     finally:
         second.cancel()
         await asyncio.gather(second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_privacy_cancel_drains_shared_root_tasks_regardless_of_owner() -> None:
+    """Deleting A's rooted conversations must not silently erase B's live task."""
+    events: list[str] = []
+    coding = _CodingTasks(events, [([], True)])
+
+    async def _rooted_ids(user_id: str) -> list[int]:
+        return [7, 9] if user_id == "A" else []
+
+    store = SimpleNamespace(
+        rooted_conversation_ids=_rooted_ids,
+    )
+    coordinator = _coordinator(events=events, coding=coding, conversation_store=store)
+    await coordinator.cancel_for_privacy("A")
+    assert coding.conversation_cancels == [[7, 9]]
+    assert any(str(e).startswith("coding-conversations:") for e in events)
+
+
+@pytest.mark.asyncio
+async def test_privacy_drain_failure_fails_closed() -> None:
+    """A drain error must propagate so the caller deletes nothing."""
+    events: list[str] = []
+    coding = _CodingTasks(events, [([], True)])
+
+    async def _boom(user_id: str) -> list[int]:
+        raise RuntimeError("db down")
+
+    store = SimpleNamespace(rooted_conversation_ids=_boom)
+    coordinator = _coordinator(events=events, coding=coding, conversation_store=store)
+    with pytest.raises(RuntimeError, match="db down"):
+        await coordinator.cancel_for_privacy("A")
+    assert coding.conversation_cancels == []

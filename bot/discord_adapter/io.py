@@ -1067,6 +1067,7 @@ async def send_response(
     allowed_file_roots: list[str | Path] | None = None,
     embed: EmbedSpec | None = None,
     mention_author: bool = False,
+    on_message_sent: Callable[[discord.Message], None] | None = None,
 ) -> SentMessages:
     plan = prepare_attachment_delivery(
         channel,
@@ -1082,6 +1083,7 @@ async def send_response(
         plan,
         reference=reference,
         mention_author=mention_author,
+        on_message_sent=on_message_sent,
     )
 
 
@@ -1092,6 +1094,7 @@ async def send_prepared_response(
     *,
     reference: discord.Message | None = None,
     mention_author: bool = False,
+    on_message_sent: Callable[[discord.Message], None] | None = None,
 ) -> SentMessages:
     content = suppress_link_previews(content)
     chunks = chunk_message(content)
@@ -1141,7 +1144,10 @@ async def send_prepared_response(
                 send_kwargs["files"] = files
             if embed_obj is not None:
                 send_kwargs["embeds"] = [embed_obj]
-            sent_messages.append(await channel.send(content_arg, **send_kwargs))
+            sent = await channel.send(content_arg, **send_kwargs)
+            sent_messages.append(sent)
+            if on_message_sent is not None:
+                on_message_sent(sent)
         except discord.HTTPException as e:
             log.error("Failed to send message chunk %d: %s", i, e)
             try:
@@ -1161,7 +1167,10 @@ async def send_prepared_response(
                     ]
                 if embed_obj is not None:
                     retry_kwargs["embeds"] = [embed_obj]
-                sent_messages.append(await channel.send(content_arg, **retry_kwargs))
+                sent = await channel.send(content_arg, **retry_kwargs)
+                sent_messages.append(sent)
+                if on_message_sent is not None:
+                    on_message_sent(sent)
             except (discord.HTTPException, OSError) as retry_error:
                 log.error("Failed to send message chunk %d on retry: %s", i, retry_error)
                 sent_messages.delivery_failed = True

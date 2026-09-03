@@ -132,3 +132,25 @@ async def test_user_conversation_lock_drains_an_active_shared_root() -> None:
     release_turn.set()
     await asyncio.gather(active, deletion)
     assert deletion_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_same_task_reentrant_hold_does_not_self_deadlock() -> None:
+    """Delivery/notify paths run under a root they must also wait on."""
+    locks = RootLockPool()
+    events: list[str] = []
+
+    async def nested() -> None:
+        async with locks.hold("root:1"):
+            events.append("inner")
+
+    async def outer() -> None:
+        async with locks.hold("root:1"):
+            events.append("outer")
+            await asyncio.wait_for(nested(), timeout=2.0)
+
+    await asyncio.wait_for(outer(), timeout=5.0)
+    assert events == ["outer", "inner"]
+    snapshot = locks.snapshot()
+    assert snapshot.keys == ()
+    assert snapshot.refcounts == {}

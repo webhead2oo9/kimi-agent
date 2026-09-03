@@ -67,10 +67,14 @@ class FakeCodingTaskStore:
     async def set_checkpoint(self, task_id: str, checkpoint: dict[str, Any]) -> None:
         self.checkpoints.append((task_id, checkpoint))
 
+    async def mark_status_message(self, task_id: str, message_id: str) -> None:
+        return None
+
 
 class FakeConversationStore:
     def __init__(self) -> None:
         self.saved: list[tuple[int, list[Any], str]] = []
+        self.mapped: list[tuple[str, int, str]] = []
 
     async def save_channel_messages(
         self,
@@ -80,6 +84,14 @@ class FakeConversationStore:
         context_channel_id: str,
     ) -> None:
         self.saved.append((conversation_id, records, context_channel_id))
+
+    async def map_message_context(
+        self,
+        discord_message_id: str,
+        conversation_id: int,
+        channel_id: str,
+    ) -> None:
+        self.mapped.append((discord_message_id, conversation_id, channel_id))
 
 
 class FakeGateway:
@@ -690,3 +702,53 @@ async def test_durable_delivery_notice_is_persisted_in_assistant_transcript() ->
     assert conversation_id == 7
     assert records[0].content == f"{notice}\n\nReport body."
     assert channel_id == "10"
+
+
+@pytest.mark.asyncio
+async def test_publish_skips_final_send_once_task_row_is_gone() -> None:
+    """A delete landing mid-publish must not produce a final delivery."""
+    from unittest.mock import MagicMock
+
+    task = cast(
+        CodingTask,
+        SimpleNamespace(
+            id="task-9",
+            status=CodingTaskStatus.COMPLETED,
+            plan=[],
+            objective="objective",
+            display_summary="",
+            result_text="done",
+            error_text="",
+            user_id="u1",
+            channel_id="20",
+            thread_id=None,
+            guild_id=None,
+            workspace_key="u1__20",
+            conversation_id=7,
+            status_discord_message_id=None,
+            final_discord_message_id=None,
+            checkpoint={},
+            milestone="",
+            root_key="root-1",
+        ),
+    )
+    calls = {"gets": 0}
+
+    class VanishingStore(FakeCodingTaskStore):
+        async def get_task(self, task_id: str) -> CodingTask | None:
+            calls["gets"] += 1
+            return task if calls["gets"] == 1 else None
+
+    sent_message = SimpleNamespace(id=999, content="status")
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.send = AsyncCall(sent_message)
+    channel.fetch_message = AsyncCall(None)
+    bot = FakeBot()
+    bot.channels = {20: channel}
+    delivery = make_delivery(bot=bot, store=VanishingStore(task))
+
+    await delivery._publish_locked(task, None)
+
+    # Only the pre-lock status send happened; the final delivery under the
+    # root lock was skipped once the row proved gone.
+    assert len(channel.send.calls) == 1

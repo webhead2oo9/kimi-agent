@@ -69,7 +69,7 @@ from config.fragments.guild_config import (
     load_guild_pinned_tools,
 )
 from config.fragments.tool_config import load_tool_configs
-from config.fragments.tool_policy import load_global_blocked_tools
+from config.fragments.tool_policy import load_blocked_tools, load_global_blocked_tools
 from config.model_config import Scope
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
@@ -492,6 +492,10 @@ class DiscordMessageController:
             message=message,
             context_channel_id=context_channel_id,
             personal_chat=personal_dm,
+            conversation_key=conversation_key,
+            db_conversation_id=resolved_conversation.db_conversation_id,
+            conversation_owner_user_id=resolved_conversation.owner_user_id,
+            conversation_access_scope=resolved_conversation.access_scope,
         )
 
         async with self._bindings.active_operations().register(
@@ -660,7 +664,13 @@ class DiscordMessageController:
         """Bind the bot-name-derived teaching context menu to a scoped agent turn."""
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         channel = interaction.channel
+        channel_id = str(interaction.channel_id) if interaction.channel_id else ""
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        # Ordinary turns union global ∪ guild ∪ parent-channel policy; the learn
+        # turn must honor the same operator denylist so a blocked knowledge tool
+        # stays blocked here instead of dispatching through the narrowed surface.
+        policy_channel_id = resolve_parent_channel_id(channel) or channel_id
+        effective_blocked = load_blocked_tools(guild_id, policy_channel_id)
         return await run_learn_turn(
             provider_manager=self._provider_manager,
             registry=self._tools.registry,
@@ -669,12 +679,13 @@ class DiscordMessageController:
             user_name=interaction.user.display_name,
             guild_id=guild_id,
             guild_name=interaction.guild.name if interaction.guild else "",
-            channel_id=str(interaction.channel_id) if interaction.channel_id else "",
+            channel_id=channel_id,
             channel_name=getattr(channel, "name", "") or "",
             skills_index=self._skills_index_cache.index(guild_id or None),
             bot_name=self._config.bot_name,
             platform_member=member,
             llm_semaphore=self._llm_semaphore,
+            extra_blocked_tools=effective_blocked,
         )
 
 

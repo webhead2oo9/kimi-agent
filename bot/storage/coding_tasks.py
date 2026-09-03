@@ -4,6 +4,7 @@ import json
 import time
 from dataclasses import dataclass
 from enum import StrEnum
+from collections.abc import Collection
 from typing import Any
 from uuid import uuid4
 
@@ -269,6 +270,33 @@ class CodingTaskStore:
                 params.append(value)
         async with self._db.conn.execute(
             f"SELECT * FROM coding_tasks WHERE {' AND '.join(clauses)} ORDER BY created_at DESC",
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    async def list_active_by_conversation_ids(
+        self,
+        conversation_ids: Collection[int],
+    ) -> list[CodingTask]:
+        """Active tasks referencing any of these conversations, any owner.
+
+        Privacy deletion removes every conversation rooted by the deleting user,
+        including tasks another user started on that shared root; those rows
+        would otherwise disappear through the conversation FK while their
+        worker is still alive.
+        """
+        ids = sorted({int(cid) for cid in conversation_ids})
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        status_placeholders = ",".join("?" for _ in ACTIVE_TASK_STATUSES)
+        params: list[Any] = [status.value for status in ACTIVE_TASK_STATUSES] + ids
+        async with self._db.conn.execute(
+            "SELECT * FROM coding_tasks "
+            f"WHERE status IN ({status_placeholders}) "
+            f"AND conversation_id IN ({placeholders}) "
+            "ORDER BY created_at DESC",
             params,
         ) as cursor:
             rows = await cursor.fetchall()

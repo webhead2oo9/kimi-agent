@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 
@@ -15,10 +13,6 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
-# v2.0 upgrade boundary. Remove the v6 migration/diagnostic in v2.1 after every
-# known deployment is stamped v7; fresh installs already use the v7 baseline.
-_MINIMUM_UPGRADABLE_SCHEMA_VERSION = 6
-_V1_BRIDGE_REVISION = "dfd01ce006d0553c8960de0760fcb5136300c718"
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -596,82 +590,7 @@ async def _has_existing_user_tables(conn: aiosqlite.Connection) -> bool:
 
 type Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
 
-_MESSAGE_MIGRATION_BATCH_SIZE = 500
-
-
-def _canonical_message_content(content: Any, fallback_text: Any) -> list[dict[str, Any]]:
-    if isinstance(content, str):
-        return [{"type": "text", "text": content}] if content else []
-    if isinstance(content, list):
-        canonical: list[dict[str, Any]] = []
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            part_type = part.get("type")
-            if part_type in {"text", "input_text"}:
-                text = part.get("text")
-                if isinstance(text, str) and text:
-                    canonical.append({**part, "type": "text", "text": text})
-            elif part_type in {"image", "input_image"}:
-                image_url = part.get("image_url")
-                media_type = part.get("media_type")
-                if isinstance(image_url, str) and isinstance(media_type, str):
-                    detail = part.get("detail")
-                    canonical.append(
-                        {
-                            **part,
-                            "type": "image",
-                            "image_url": image_url,
-                            "media_type": media_type,
-                            "detail": detail if isinstance(detail, str) and detail else "auto",
-                        }
-                    )
-        return canonical
-    if isinstance(fallback_text, str) and fallback_text:
-        return [{"type": "text", "text": fallback_text}]
-    return []
-
-
-async def _migrate_v6_to_v7(conn: aiosqlite.Connection) -> None:
-    last_id = 0
-    while True:
-        async with conn.execute(
-            "SELECT id, content, message_data FROM messages WHERE id > ? ORDER BY id LIMIT ?",
-            (last_id, _MESSAGE_MIGRATION_BATCH_SIZE),
-        ) as cur:
-            rows = tuple(await cur.fetchall())
-        if not rows:
-            break
-
-        updates: list[tuple[str, int]] = []
-        for row in rows:
-            row_id = int(row["id"])
-            try:
-                data = json.loads(row["message_data"])
-            except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"Cannot migrate messages row {row_id}: message_data is not valid JSON"
-                ) from exc
-            if not isinstance(data, dict):
-                raise RuntimeError(
-                    f"Cannot migrate messages row {row_id}: message_data must be a JSON object"
-                )
-            data["content"] = _canonical_message_content(data.get("content"), row["content"])
-            updates.append((json.dumps(data), row_id))
-
-        await conn.executemany("UPDATE messages SET message_data = ? WHERE id = ?", updates)
-        last_id = int(rows[-1]["id"])
-    # v6 sessions may contain an upstream model id in catalog_model. Expire them
-    # instead of letting v2 treat that value as a pricing-catalog key. Cascades
-    # invoke the child-table deletion triggers and leave provider cleanup queued.
-    await conn.execute("DELETE FROM video_sessions")
-    await conn.execute("DROP TABLE IF EXISTS control_proposal_events")
-    await conn.execute("DROP TABLE IF EXISTS control_proposals")
-
-
-_MIGRATIONS: dict[int, Migration] = {
-    7: (_BASELINE_SCHEMA_NAME, _migrate_v6_to_v7),
-}
+_MIGRATIONS: dict[int, Migration] = {}
 
 
 async def _record_schema_version(
@@ -799,11 +718,11 @@ class Database:
                 name, _ = _require_migration(version)
                 await _record_schema_version(conn, version, name)
             await conn.commit()
-        elif current < _MINIMUM_UPGRADABLE_SCHEMA_VERSION:
+        elif current < _BASELINE_SCHEMA_VERSION:
             raise RuntimeError(
-                f"Database schema v{current} is no longer supported. Upgrade it to v6 "
-                f"with the audited v1 bridge revision {_V1_BRIDGE_REVISION} first, then "
-                "install this release."
+                f"Database schema v{current} is no longer supported; "
+                f"this release requires schema v{_BASELINE_SCHEMA_VERSION} or newer. "
+                "Restore a database backup compatible with this release."
             )
         elif current < SCHEMA_VERSION:
             await _apply_migrations(conn, current)

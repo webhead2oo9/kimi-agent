@@ -264,13 +264,6 @@ def test_coding_delivery_text_uses_readable_short_task_reference() -> None:
         )
         == "Implemented the requested change."
     )
-    assert (
-        CodingDelivery.strip_delivery_marker(
-            f"Legacy result.\n-# coding-result:{task_id}\n-# coding-status:{task_id}",
-            task_ref=task_id[:8],
-        )
-        == "Legacy result."
-    )
 
 
 def test_coding_status_replaces_summary_with_worker_plan() -> None:
@@ -330,13 +323,6 @@ async def test_coding_result_recovery_matches_link_suppressed_wire_chunks() -> N
     delivery = make_delivery(bot=FakeBot(user=bot_user))
     complete = cast(discord.TextChannel | discord.Thread, HistoryChannel(expected))
     partial = cast(discord.TextChannel | discord.Thread, HistoryChannel(expected[:-1]))
-    task_id = "3ff8bac7f9e24ed19a65d267c188d7ea"
-    legacy_marker = f"coding-result:{task_id}"
-    legacy_content = f"Legacy result.\n-# {legacy_marker}"
-    legacy = cast(
-        discord.TextChannel | discord.Thread,
-        HistoryChannel([legacy_content]),
-    )
 
     recovered = await delivery.find_result_delivery(
         complete,
@@ -346,15 +332,9 @@ async def test_coding_result_recovery_matches_link_suppressed_wire_chunks() -> N
         partial,
         expected_text,
     )
-    recovered_legacy = await delivery.find_result_delivery(
-        legacy,
-        expected_text,
-        legacy_marker=legacy_marker,
-    )
 
     assert [message.content for message in recovered] == expected
     assert incomplete == []
-    assert [message.content for message in recovered_legacy] == [legacy_content]
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,6 @@ from providers.errors import (
     ProviderAvailabilityError,
     ProviderError,
     ProviderPolicyError,
-    provider_failure_disposition,
 )
 from providers.failure_policy import CooldownPolicy, FailureCategory, generic_failure_policy
 from providers.openai_responses import OpenAIResponsesProvider
@@ -276,7 +275,7 @@ def test_responses_provider_failed_status_raises_classifiable_error() -> None:
     with pytest.raises(ProviderError, match="failed response") as excinfo:
         asyncio.run(provider.run_turn(_request()))
 
-    assert provider_failure_disposition(excinfo.value) == "stop"
+    assert generic_failure_policy(excinfo.value, CooldownPolicy(), 0).disposition == "stop"
 
 
 @pytest.mark.parametrize(
@@ -328,7 +327,7 @@ def test_responses_provider_server_failure_is_retryable() -> None:
     with pytest.raises(ProviderAvailabilityError) as excinfo:
         asyncio.run(provider.run_turn(_request()))
 
-    assert provider_failure_disposition(excinfo.value) == "retry"
+    assert generic_failure_policy(excinfo.value, CooldownPolicy(), 0).disposition == "retry"
 
 
 def test_responses_provider_content_filter_discards_partial_output() -> None:

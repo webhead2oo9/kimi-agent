@@ -241,21 +241,6 @@ class CodingDelivery:
                 final_text = f"Coding task `{task.id[:8]}` ended as **{task.status.value}**."
             moderated_final = await self.moderate_text(task, final_text, status=False)
             final_text = self.result_delivery_text(task.id, moderated_final.text)
-            # V1 could send a hidden-marker result before crashing ahead of the
-            # final_discord_message_id write. Reconcile that one upgrade edge
-            # before changing channels or sending the marker-free v2 format.
-            legacy_marker = f"coding-result:{task.id}"
-            legacy_final = await self._find_delivery(channel, legacy_marker)
-            if legacy_final is not None:
-                await self._commit_final_delivery(
-                    task,
-                    [legacy_final],
-                    delivery_channel_id=str(channel.id),
-                    status_channel=channel,
-                    status_marker=status_marker,
-                    status_message=status_message,
-                )
-                return
             delivery_channel = await self.result_channel(task, channel, final_text)
             delivery = task.checkpoint.get("delivery")
             durable_output_files = (
@@ -305,7 +290,6 @@ class CodingDelivery:
                     recovered_final = await self.find_result_delivery(
                         delivery_channel,
                         prepared_text,
-                        legacy_marker=legacy_marker,
                     )
                     if recovered_final:
                         await self._commit_final_delivery(
@@ -523,8 +507,6 @@ class CodingDelivery:
         self,
         channel: discord.TextChannel | discord.Thread,
         expected_text: str,
-        *,
-        legacy_marker: str | None = None,
     ) -> list[discord.Message]:
         """Recover only a complete multi-message result after a process crash."""
 
@@ -558,10 +540,6 @@ class CodingDelivery:
             if expected_index == len(expected_chunks):
                 return matched
 
-        if legacy_marker is not None:
-            for message in newest_first:
-                if message.author.id == bot_user.id and legacy_marker in message.content:
-                    return [message]
         return []
 
     async def delete_status_message(
@@ -646,13 +624,7 @@ class CodingDelivery:
     @staticmethod
     def strip_delivery_marker(text: str, *, task_ref: str) -> str:
         visible_result_marker = f"**Coding result `{task_ref}`**"
-        lines = [
-            line
-            for line in text.splitlines()
-            if not line.startswith("-# coding-result:")
-            and not line.startswith("-# coding-status:")
-            and line != visible_result_marker
-        ]
+        lines = [line for line in text.splitlines() if line != visible_result_marker]
         return "\n".join(lines)
 
     @staticmethod

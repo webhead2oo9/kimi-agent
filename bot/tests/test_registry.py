@@ -228,14 +228,6 @@ def test_catalog_lists_searchable_tools_by_name() -> None:
     assert [entry.name for entry in results] == ["stock_price", "weather_lookup"]
 
 
-def test_catalog_returns_all_searchable_tools_without_keyword_filter() -> None:
-    reg = ToolRegistry()
-    reg.register("weather_lookup", "Look up weather", {}, _noop_handler, searchable=True)
-
-    results = reg.catalog(tier=TrustTier.MEMBER)
-    assert [entry.name for entry in results] == ["weather_lookup"]
-
-
 def test_catalog_filters_by_trust_tier() -> None:
     reg = ToolRegistry()
     reg.register(

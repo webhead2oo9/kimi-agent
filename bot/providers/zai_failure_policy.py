@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from providers.errors import provider_status_code
 from providers.failure_policy import (
     CircuitScopeKind,
     CooldownPolicy,
@@ -9,7 +10,6 @@ from providers.failure_policy import (
     ProviderFailure,
     generic_failure_policy,
     provider_error_body,
-    provider_status_code,
     register_failure_adapter,
     retry_after_timestamp,
 )

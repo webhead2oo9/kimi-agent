@@ -503,29 +503,27 @@ def test_build_backend_explicit_api_key_without_key_returns_none() -> None:
     assert build_image_backend(ImageBackendConfig(auth_mode="api_key"), None) is None
 
 
-@pytest.mark.asyncio
-async def test_service_verifies_png_and_rejects_other_data() -> None:
-    class GifBackend:
-        name = "stub"
+class StubImageBackend:
+    name = "stub"
 
-        def available(self) -> bool:
-            return True
+    def __init__(self, payload: bytes) -> None:
+        self.result = ImageResult(image_base64=base64.b64encode(payload).decode())
 
-        async def generate(self, request: ImageGenRequest) -> ImageResult:
-            return ImageResult(image_base64=base64.b64encode(b"GIF89a" + b"0" * 8).decode())
+    def available(self) -> bool:
+        return True
 
-        async def edit(self, request: ImageEditRequest) -> ImageResult:
-            raise AssertionError("unused")
+    async def generate(self, request: ImageGenRequest) -> ImageResult:
+        return self.result
 
-    service = ImageGenService(GifBackend())
-    with pytest.raises(ImageGenError, match="not a decodable PNG"):
-        await service.generate(_request())
+    async def edit(self, request: ImageEditRequest) -> ImageResult:
+        raise AssertionError("unused")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [
+        pytest.param(b"GIF89a" + b"0" * 8, id="not-png"),
         pytest.param(PNG_SIGNATURE_ONLY + b"verified", id="signature-only"),
         pytest.param(corrupt_png_crc(VALID_PNG_BYTES), id="crc-corrupt"),
         pytest.param(VALID_PNG_BYTES[:-8], id="truncated"),
@@ -534,59 +532,20 @@ async def test_service_verifies_png_and_rejects_other_data() -> None:
 async def test_service_rejects_png_bytes_that_do_not_fully_decode(payload: bytes) -> None:
     # The shipped backend's output is written into the workspace and queued for
     # Discord, so it gets the same decode-level check as provider-native assets.
-    class BrokenPngBackend:
-        name = "stub"
-
-        def available(self) -> bool:
-            return True
-
-        async def generate(self, request: ImageGenRequest) -> ImageResult:
-            return ImageResult(image_base64=base64.b64encode(payload).decode())
-
-        async def edit(self, request: ImageEditRequest) -> ImageResult:
-            raise AssertionError("unused")
-
     with pytest.raises(ImageGenError, match="not a decodable PNG"):
-        await ImageGenService(BrokenPngBackend()).generate(_request())
+        await ImageGenService(StubImageBackend(payload)).generate(_request())
 
 
 @pytest.mark.asyncio
 async def test_service_returns_verified_bytes_for_workspace_write() -> None:
-    png = VALID_PNG_BYTES
+    result = await ImageGenService(StubImageBackend(VALID_PNG_BYTES)).generate(_request())
 
-    class PngBackend:
-        name = "stub"
-
-        def available(self) -> bool:
-            return True
-
-        async def generate(self, request: ImageGenRequest) -> ImageResult:
-            return ImageResult(image_base64=base64.b64encode(png).decode())
-
-        async def edit(self, request: ImageEditRequest) -> ImageResult:
-            raise AssertionError("unused")
-
-    result = await ImageGenService(PngBackend()).generate(_request())
-
-    assert result.image_bytes == png
+    assert result.image_bytes == VALID_PNG_BYTES
 
 
 @pytest.mark.asyncio
 async def test_service_rejects_oversized_images() -> None:
     huge = PNG_SIGNATURE_ONLY + b"0" * (DEFAULT_MAX_IMAGE_BYTES + 1)
-
-    class HugeBackend:
-        name = "stub"
-
-        def available(self) -> bool:
-            return True
-
-        async def generate(self, request: ImageGenRequest) -> ImageResult:
-            return ImageResult(image_base64=base64.b64encode(huge).decode())
-
-        async def edit(self, request: ImageEditRequest) -> ImageResult:
-            raise AssertionError("unused")
-
-    service = ImageGenService(HugeBackend())
+    service = ImageGenService(StubImageBackend(huge))
     with pytest.raises(ImageGenError, match="byte cap"):
         await service.generate(_request())

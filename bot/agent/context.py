@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from providers.types import ContentPart, ConversationMessage
+from providers.types import ConversationMessage
 from storage.conversations import (
     CHANNEL_SHARED,
     ConversationAccessScope,
     ConversationStore,
 )
 from tools.registry import TurnOutbox
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,10 +49,8 @@ class ConversationContext:
     def add_participant(self, user_id: str, user_name: str) -> None:
         self.participants[user_id] = user_name
 
-    def add_messages(self, messages: Sequence[ConversationMessage | dict[str, Any]]) -> None:
-        for raw_msg in messages:
-            msg = _coerce_conversation_message(raw_msg)
-            self.messages.append(msg)
+    def add_messages(self, messages: Sequence[ConversationMessage]) -> None:
+        self.messages.extend(messages)
         self._trim()
 
     def get_history(self) -> list[ConversationMessage]:
@@ -130,31 +125,3 @@ class ContextManager:
         return bool(discord_message_id) and any(
             message.source_discord_message_id == discord_message_id for message in context.messages
         )
-
-
-def _coerce_conversation_message(
-    message: ConversationMessage | dict[str, Any],
-) -> ConversationMessage:
-    if isinstance(message, ConversationMessage):
-        return message
-    role = message.get("role", "assistant")
-    content = message.get("content")
-    if isinstance(content, list):
-        parts = [
-            ContentPart.from_text(str(part.get("text", "")))
-            for part in content
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}
-        ]
-    else:
-        parts = [ContentPart.from_text(str(content or ""))]
-    return ConversationMessage(
-        role=role,
-        content=parts,
-        tool_call_id=message.get("tool_call_id"),
-        tool_name=message.get("name"),
-        raw_provider_data={
-            key: value
-            for key, value in message.items()
-            if key not in {"role", "content", "tool_call_id", "name"}
-        },
-    )

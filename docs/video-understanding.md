@@ -51,12 +51,6 @@ roles:
   video: gemini-video-flash
 ```
 
-> **Upgrading from v1:** add the provider, model, and `roles.video` entries
-> above, and remove the old `model:` field from `config/tools/video.md` before
-> starting v2. The v7 migration expires v1 video sessions and queues their
-> provider resources for deletion; users start a new session on v2. Follow the
-> complete [v2 upgrade runbook](upgrading-to-v2.md).
-
 The `VIDEO_UNDERSTANDING_ENABLED` flag enables all three source types. If it is
 false, the tool is absent no matter what. If it is true but `roles.video` is
 unassigned or the key is blank, the bot still starts, logs a clear warning, and

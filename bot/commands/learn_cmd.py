@@ -37,7 +37,10 @@ _BLOCKED = "You can't use this right now."
 _NO_GUILD = "I can only learn community knowledge inside a server."
 _BOT_MESSAGE = "That's one of my own messages. Teach me from what a person actually said."
 _EMPTY = "That message has nothing for me to learn from."
-_FAILED = "Something went wrong while I was learning that. Nothing was saved."
+_FAILED = (
+    "Something went wrong while I was learning that. "
+    "Some knowledge may already have been saved; check before teaching it again."
+)
 _NO_REPORT = "I finished, but had nothing to report back."
 
 LearnRunner = Callable[[LearnTarget, discord.Interaction], Awaitable[str]]

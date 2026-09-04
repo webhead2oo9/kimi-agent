@@ -1,8 +1,8 @@
 """Shared pytest setup for the `tests/` root.
 
-Only process-global state guards belong here. `app/tool_surfaces.py` keeps a
-module-level table that the composition root fills once at startup; a test that
-loads a plugin writes into it for real, so reset it per test rather than leaving
+Only process-global state guards belong here. The composition root updates the
+tool surface table and default config directory at startup. Tests that build an
+app mutate these globals for real, so isolate them per test rather than leaving
 later tests to depend on collection order.
 
 Reusable stubs and builders are *not* fixtures. They take constructor
@@ -24,6 +24,7 @@ import os
 import pytest
 
 from app import tool_surfaces
+from config import paths
 from config.settings import Settings
 
 
@@ -47,12 +48,19 @@ def _settings_env_names() -> frozenset[str]:
     return frozenset(name.upper() for name in Settings.model_fields)
 
 
-_SETTINGS_ENV_NAMES = _settings_env_names() | {"CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"}
+_SETTINGS_ENV_NAMES = _settings_env_names()
 
 
 @pytest.fixture(autouse=True)
 def _reset_tool_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tool_surfaces, "_SURFACE_TOOLS", {})
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    # build_app changes the process default. Restore it after each test so a
+    # later prompt render cannot read an earlier test's temporary config tree.
+    monkeypatch.setattr(paths, "_default_config_dir", paths.default_config_dir())
 
 
 @pytest.fixture(autouse=True)

@@ -179,6 +179,7 @@ async def test_codex_provider_parses_tools_images_and_raw_replay() -> None:
                     "call_id": "call_1",
                     "name": "lookup",
                     "arguments": json.dumps({"q": "vr"}),
+                    "metadata": {"nullable": None, "labels": ["search"]},
                 },
                 {
                     "type": "image_generation_call",
@@ -213,6 +214,12 @@ async def test_codex_provider_parses_tools_images_and_raw_replay() -> None:
         "status": "completed",
         "result": "iVBORw0K",
         "revised_prompt": "moon base",
+    }
+    assert response.raw_message["output"] == transport.response["output"]
+    transport.response["output"][0]["metadata"]["labels"].append("changed")
+    assert response.raw_message["output"][0]["metadata"] == {
+        "nullable": None,
+        "labels": ["search"],
     }
 
 

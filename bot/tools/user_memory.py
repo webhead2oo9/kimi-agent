@@ -275,7 +275,7 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
         before=_retain_context_messages,
         after=0,
     )
-    visible_messages, _ = _visible_messages(source_window, ctx)
+    visible_messages = _visible_messages(source_window, ctx)
     content = "\n".join(_format_source_line(message, ctx) for message in visible_messages)
     document_id = _document_id(ctx.user_id, ctx.trigger_discord_message_id, steer)
     metadata = _source_metadata(ctx, anchor, document_id=document_id)
@@ -320,15 +320,22 @@ def _is_current_user_anchor(message: StoredMessage, ctx: MessageContext) -> bool
 def _visible_messages(
     messages: list[StoredMessage],
     ctx: MessageContext,
-) -> tuple[list[StoredMessage], int]:
+) -> list[StoredMessage]:
+    """Keep first-party messages and replies attributable to that user.
+
+    A source window may begin mid-conversation. Replies without a preceding
+    user, or answering another participant, cannot safely enter this user's bank.
+    """
     visible: list[StoredMessage] = []
-    omitted = 0
+    last_user_id: str | None = None
     for message in messages:
-        if message.role == "assistant" or message.user_id == ctx.user_id:
+        if message.role == "user":
+            last_user_id = message.user_id
+            if message.user_id == ctx.user_id:
+                visible.append(message)
+        elif message.role == "assistant" and last_user_id == ctx.user_id:
             visible.append(message)
-        else:
-            omitted += 1
-    return visible, omitted
+    return visible
 
 
 def _format_source_line(message: StoredMessage, ctx: MessageContext) -> str:

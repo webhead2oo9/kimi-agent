@@ -15,7 +15,7 @@ class PersonalSkillManager:
         self.base_dir = Path(base_dir)
 
     def user_path(self, user_id: str) -> Path:
-        if not _USER_ID_RE.match(str(user_id or "")):
+        if not _USER_ID_RE.fullmatch(str(user_id or "")):
             raise ValueError(_INVALID_USER_ID)
         return self.base_dir / str(user_id)
 

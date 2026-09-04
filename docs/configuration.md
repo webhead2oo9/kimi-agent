@@ -1057,7 +1057,7 @@ process-count, and core-file limits. These are not aggregate cgroup accounting, 
 process-count limit is per real UID, which is why executable-skill startup rejects root.
 Run the bot under a dedicated unprivileged service account. The example systemd
 unit, [`bot/deploy/kimi.service.example`](../bot/deploy/kimi.service.example), applies
-`TasksMax=128`, `MemoryMax=4G`, and `CPUQuota=200%` to the complete service cgroup,
+`TasksMax=128`, `MemoryMax=2G`, and `CPUQuota=200%` to the complete service cgroup,
 including executable-skill descendants. Tune those aggregate ceilings for the host, use
 equivalent container limits outside systemd, and retain service-level egress controls as a
 second layer.

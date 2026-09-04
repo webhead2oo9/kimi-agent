@@ -56,14 +56,10 @@ class ServiceProxy:
 
 @dataclass(slots=True)
 class _Registration:
-    registry: ServiceRegistryImpl
-    key: tuple[str, str, int]
-    closed: bool = False
+    provided: _Provided
 
     def close(self) -> None:
-        if not self.closed:
-            self.closed = True
-            self.registry._retire(self.key)
+        self.provided.alive = False
 
 
 @dataclass(slots=True)
@@ -79,9 +75,10 @@ class ServiceRegistryImpl:
             raise ModuleContractError(
                 f"service {name}@{version} is already provided by {existing.provider!r}"
             )
-        self._provided[key] = _Provided(provider, implementation)
+        provided = _Provided(provider, implementation)
+        self._provided[key] = provided
         log.info("Kimi module %s provides service %s@%d", provider, name, version)
-        return _Registration(self, key)
+        return _Registration(provided)
 
     def get(self, provider: str, name: str, version: int) -> ServiceProxy:
         provided = self._provided.get((provider, name, version))
@@ -90,11 +87,6 @@ class ServiceRegistryImpl:
                 f"service {name}@{version} from module {provider!r} is not provided"
             )
         return ServiceProxy(provided, name, version)
-
-    def _retire(self, key: tuple[str, str, int]) -> None:
-        provided = self._provided.get(key)
-        if provided is not None:
-            provided.alive = False
 
     def retire_module(self, provider: str) -> None:
         for provided in self._provided.values():

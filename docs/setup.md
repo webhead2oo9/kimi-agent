@@ -599,12 +599,11 @@ systemctl --user is-active kimi-agent.service
 
 ## 16. Upgrading
 
-Upgrading an existing installation from v1 to v2 is a one-time breaking
-migration. Follow [Upgrading from v1 to v2](upgrading-to-v2.md) before using the
-routine steps below. In particular, an upgrade from an older database requires
-schema v6, v2 requires v2 extension packages, and it cannot be rolled back
-without restoring the pre-upgrade backup. Fresh databases and databases already
-at v7 start normally.
+These steps assume the v1-to-v2 upgrade is complete, including v2 extension
+packages and database schema v7. Fresh databases and existing v7 databases
+start normally; older database schemas are rejected. No further migration is
+needed for an already-upgraded installation. See [Database](database.md#schema-upgrades)
+for the supported schema boundary and backup requirements.
 
 ### 1. Stop the service
 ```sh

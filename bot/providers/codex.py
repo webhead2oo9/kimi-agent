@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from codex.auth import CodexAuthManager
@@ -188,7 +189,9 @@ class CodexProvider(LLMProvider):
             generated_assets=self._parse_generated_assets(output_items),
             raw_message={
                 "type": "response_output",
-                "output": self._output_items_to_data(output_items),
+                # The WebSocket transport already decoded JSON. Keep a detached
+                # replay snapshot without coercing values through SDK adapters.
+                "output": deepcopy(output_items),
             },
         )
 
@@ -261,33 +264,3 @@ class CodexProvider(LLMProvider):
         if image_format in {"jpg", "jpeg", "webp"}:
             return image_format
         return "png"
-
-    @staticmethod
-    def _output_items_to_data(output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            CodexProvider._json_safe_data(item)
-            for item in output_items
-            if isinstance(CodexProvider._json_safe_data(item), dict)
-        ]
-
-    @staticmethod
-    def _json_safe_data(value: Any) -> Any:
-        if isinstance(value, str | int | float | bool) or value is None:
-            return value
-        if isinstance(value, list | tuple):
-            return [CodexProvider._json_safe_data(item) for item in value]
-        if isinstance(value, dict):
-            return {
-                str(key): CodexProvider._json_safe_data(item)
-                for key, item in value.items()
-                if item is not None
-            }
-        if hasattr(value, "model_dump"):
-            return value.model_dump(mode="json", exclude_none=True)
-        if hasattr(value, "__dict__"):
-            return {
-                key: CodexProvider._json_safe_data(item)
-                for key, item in vars(value).items()
-                if not key.startswith("_") and item is not None
-            }
-        return str(value)

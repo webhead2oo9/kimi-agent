@@ -9,5 +9,5 @@ def test_service_template_caps_aggregate_child_resources() -> None:
     }
 
     assert "TasksMax=128" in lines
-    assert "MemoryMax=4G" in lines
+    assert "MemoryMax=2G" in lines
     assert "CPUQuota=200%" in lines

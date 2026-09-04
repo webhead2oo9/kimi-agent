@@ -15,6 +15,7 @@ from providers.errors import (
     ProviderContextOverflowError,
     ProviderError,
     ProviderPolicyError,
+    provider_status_code,
 )
 
 
@@ -103,15 +104,6 @@ def raise_for_terminal_finish_reason(finish_reason: str | None) -> None:
         raise ProviderPolicyError("The model provider rejected the request.")
 
 
-def provider_status_code(exc: BaseException) -> int | None:
-    status = getattr(exc, "status_code", None)
-    if not isinstance(status, int):
-        status = getattr(exc, "status", None)
-    if not isinstance(status, int):
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    return status if isinstance(status, int) else None
-
-
 def provider_error_body(exc: BaseException) -> dict[str, Any] | None:
     body = getattr(exc, "body", None)
     return body if isinstance(body, dict) else None
@@ -153,6 +145,7 @@ def generic_failure_policy(
     policy: CooldownPolicy,
     now: float,
 ) -> ProviderFailure:
+    """Classify failures for same-backend retry, failover, or a deterministic stop."""
     if isinstance(exc, ProviderBackendAccessError):
         return ProviderFailure(
             "failover",

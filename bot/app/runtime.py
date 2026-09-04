@@ -121,7 +121,10 @@ class KimiCommandTree(app_commands.CommandTree):
                 "Rejecting app command interaction %s while the application is not ready",
                 getattr(interaction, "id", "?"),
             )
-            await _reject_unready_interaction(interaction)
+            await _reject_interaction(
+                interaction,
+                "The bot is still starting up or temporarily unavailable. Please try again shortly.",
+            )
             return False
         active_guilds = application.active_guilds()
         if is_allowed_guild_interaction(interaction, allowed_guilds=active_guilds):
@@ -131,7 +134,7 @@ class KimiCommandTree(app_commands.CommandTree):
             getattr(interaction, "id", "?"),
             getattr(interaction, "guild_id", "?"),
         )
-        await _reject_unapproved_guild_interaction(interaction)
+        await _reject_interaction(interaction, "This bot is not available in this server.")
         return False
 
 
@@ -155,25 +158,12 @@ class KimiBot(commands.Bot):
                 await self._agent_application.close()
 
 
-async def _reject_unapproved_guild_interaction(
+async def _reject_interaction(
     interaction: discord.Interaction,
+    text: str,
 ) -> None:
     if interaction.type is discord.InteractionType.autocomplete:
         return
-    text = "This bot is not available in this server."
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(text, ephemeral=True)
-        else:
-            await interaction.response.send_message(text, ephemeral=True)
-    except discord.HTTPException:
-        pass
-
-
-async def _reject_unready_interaction(interaction: discord.Interaction) -> None:
-    if interaction.type is discord.InteractionType.autocomplete:
-        return
-    text = "The bot is still starting up or temporarily unavailable. Please try again shortly."
     try:
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)

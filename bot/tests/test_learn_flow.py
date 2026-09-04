@@ -100,11 +100,6 @@ def test_learn_turn_blocks_every_tool_outside_the_knowledge_surface() -> None:
     assert "skill_create" not in blocked
 
 
-def test_learn_registry_exposes_only_the_knowledge_tools() -> None:
-    registry = _registry_with("teach", "skill_create", "edit_file", "block_user")
-    assert build_learn_registry(registry).registered_names() == {"teach", "skill_create"}
-
-
 @pytest.mark.asyncio
 async def test_a_tool_registered_after_the_turn_starts_cannot_be_dispatched() -> None:
     """The real guard: skill_create fires a skill-tool reload mid-turn.
@@ -131,9 +126,10 @@ async def test_a_tool_registered_after_the_turn_starts_cannot_be_dispatched() ->
 
 @pytest.mark.asyncio
 async def test_the_knowledge_tools_still_dispatch_in_the_learn_registry() -> None:
-    registry = _registry_with("teach", "edit_file")
+    registry = _registry_with("teach", "skill_create", "edit_file", "block_user")
     learn_registry = build_learn_registry(registry)
 
+    assert learn_registry.registered_names() == {"teach", "skill_create"}
     assert "Unknown tool" not in await learn_registry.dispatch("teach", {}, _learn_ctx())
     assert "Unknown tool" in await learn_registry.dispatch("edit_file", {}, _learn_ctx())
 
@@ -610,14 +606,18 @@ async def test_context_menu_defers_then_reports_and_carries_the_message_id() -> 
 
 
 @pytest.mark.asyncio
-async def test_context_menu_reports_a_failed_turn_without_leaking_the_error() -> None:
+async def test_context_menu_reports_failure_after_a_write_without_claiming_rollback() -> None:
+    saved: list[str] = []
+
     async def exploding(target: LearnTarget, interaction: object) -> str:
+        # A tool can commit knowledge before a later provider call fails.
+        saved.append(target.content)
         raise RuntimeError("provider melted")
 
     menu = _menu(exploding)
     interaction = _Interaction()
     await menu.callback(cast(Any, interaction), cast(Any, _message()))
 
-    assert interaction.response.sent
+    assert saved == [_message().content]
     assert "provider melted" not in interaction.response.sent[0]
-    assert "Nothing was saved" in interaction.response.sent[0]
+    assert "may already have been saved" in interaction.response.sent[0]

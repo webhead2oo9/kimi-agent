@@ -63,8 +63,8 @@ The automatic recall flow is:
 
 - checks `/memory opt-out` before any Hindsight write;
 - anchors the memory to the triggering Discord message persisted in SQLite;
-- retains only the current user's own source messages plus assistant context;
-- excludes other participants structurally, not by prompt text;
+- retains only the current user's own source messages plus assistant replies attributed to their preceding user turn;
+- excludes other participants and replies to them structurally, including assistant messages with no preceding user in the source window;
 - writes Hindsight document metadata containing a source handle, including the conversation id, anchor SQLite message id, Discord message id, channel id/name, and source timestamp;
 - uses stable document ids with `update_mode="replace"` so repeated writes for the same source/context replace instead of accumulating duplicate documents;
 - caps writes per model turn with `MEMORY_MAX_WRITES_PER_TURN` (default `3`) to bound proactive-write volume.

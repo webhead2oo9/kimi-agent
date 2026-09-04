@@ -12,7 +12,6 @@ from providers.circuit_breaker import CircuitRecord, CircuitTarget, ProviderCirc
 from providers.errors import (
     ProviderBackendAccessError,
     ProviderCapabilityError,
-    provider_failure_disposition,
 )
 from providers.failover import FailoverBackend, FailoverProvider
 from providers.failure_policy import CircuitScopeKind
@@ -453,37 +452,3 @@ def test_close_does_not_close_underlying_providers() -> None:
 def test_empty_chain_is_rejected() -> None:
     with pytest.raises(ValueError):
         FailoverProvider([])
-
-
-def test_availability_classifier_excludes_typed_provider_errors() -> None:
-    # Capability/overflow are deterministic; they must never trigger failover.
-    assert provider_failure_disposition(ProviderCapabilityError("x")) == "stop"
-    assert provider_failure_disposition(_StatusError("bad request", 400)) == "stop"
-    assert provider_failure_disposition(_StatusError("teapot", 418)) == "stop"
-    assert provider_failure_disposition(_StatusError("server error", 500)) == "retry"
-    assert (
-        provider_failure_disposition(CodexWebSocketRequestError("bad request", retryable=False))
-        == "stop"
-    )
-
-
-@pytest.mark.parametrize("status_code", range(500, 600))
-def test_availability_classifier_includes_every_5xx(status_code: int) -> None:
-    assert provider_failure_disposition(_StatusError("server error", status_code)) == "retry"
-
-
-def test_httpx_status_errors_only_fail_over_for_availability_statuses() -> None:
-    request = httpx.Request("POST", "https://provider.test/messages")
-    bad_request = httpx.HTTPStatusError(
-        "bad request",
-        request=request,
-        response=httpx.Response(400, request=request),
-    )
-    unavailable = httpx.HTTPStatusError(
-        "unavailable",
-        request=request,
-        response=httpx.Response(503, request=request),
-    )
-
-    assert provider_failure_disposition(bad_request) == "stop"
-    assert provider_failure_disposition(unavailable) == "retry"

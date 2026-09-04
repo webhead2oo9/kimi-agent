@@ -8,6 +8,7 @@ import pytest
 from openai import BadRequestError
 
 from providers.errors import ProviderAvailabilityError, ProviderPolicyError
+from providers.failure_policy import CooldownPolicy, generic_failure_policy
 from providers.openai_chat import OpenAIChatProvider
 from providers.openai_compat import OpenAICompatProvider
 from providers.types import (
@@ -601,8 +602,6 @@ class HangingStream:
 
 
 def test_openai_compat_aborts_stalled_stream_as_availability_error() -> None:
-    from providers.errors import provider_failure_disposition
-
     class StallCompletions:
         async def create(self, **kwargs: Any) -> Any:
             return HangingStream([_delta_chunk(content="partial ", tool_calls=None)])
@@ -635,7 +634,7 @@ def test_openai_compat_aborts_stalled_stream_as_availability_error() -> None:
 
     exc = asyncio.run(run())
     assert isinstance(exc, TimeoutError)
-    assert provider_failure_disposition(exc) == "retry"
+    assert generic_failure_policy(exc, CooldownPolicy(), 0).disposition == "retry"
 
 
 def test_openai_compat_slow_but_moving_stream_outlives_stall_timeout() -> None:

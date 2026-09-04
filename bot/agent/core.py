@@ -259,14 +259,6 @@ class ConversationRunResult:
     termination_reason: ConversationTerminationReason = "completed"
     outbox: TurnOutbox = field(default_factory=TurnOutbox)
 
-    def __str__(self) -> str:
-        return self.text
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, str):
-            return self.text == other
-        return super().__eq__(other)
-
 
 @dataclass(frozen=True)
 class ConversationRunRequest:

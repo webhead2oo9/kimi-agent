@@ -1,11 +1,15 @@
+from types import SimpleNamespace
+
+import pytest
+
 from providers.errors import (
-    ProviderBackendAccessError,
     ProviderContextOverflowError,
     ProviderError,
     is_context_overflow_error,
-    provider_failure_disposition,
+    provider_status_code,
     safe_provider_error_message,
 )
+from providers.failure_policy import CooldownPolicy, generic_failure_policy
 
 
 class _StatusError(Exception):
@@ -40,15 +44,6 @@ def test_is_context_overflow_ignores_unrelated_errors():
     assert is_context_overflow_error(TimeoutError("timed out")) is False
 
 
-def test_provider_failure_disposition_separates_retry_failover_and_stop():
-    assert provider_failure_disposition(_StatusError("busy", 429)) == "retry"
-    assert provider_failure_disposition(_StatusError("unauthorized", 401)) == "failover"
-    assert provider_failure_disposition(_StatusError("sparse", 403)) == "stop"
-    assert provider_failure_disposition(ProviderBackendAccessError("recognized")) == "failover"
-    assert provider_failure_disposition(_StatusError("bad payload", 400)) == "stop"
-    assert provider_failure_disposition(ProviderContextOverflowError("too long")) == "stop"
-
-
 def test_safe_provider_error_message_is_actionable_and_scrubbed():
     message = safe_provider_error_message(
         _StatusError("account secret at /run/secrets/provider", 403),
@@ -70,3 +65,29 @@ def test_untrusted_safe_message_attribute_is_not_exposed():
 
     assert message == "The model provider is temporarily unavailable. Please try again shortly."
     assert "secret account detail" not in message
+
+
+@pytest.mark.parametrize(
+    ("attributes", "expected"),
+    [
+        ({"status_code": 401, "status": 503}, 401),
+        ({"status_code": "invalid", "status": 503}, 503),
+        ({"status": 403}, 403),
+        ({"response": SimpleNamespace(status_code=429)}, 429),
+        ({"status_code": True, "response": SimpleNamespace(status_code=503)}, 503),
+        ({"status_code": False}, None),
+        ({}, None),
+    ],
+)
+def test_provider_status_sources_agree_for_policy_and_safe_messages(attributes, expected):
+    error = Exception("private provider detail")
+    error.__dict__.update(attributes)
+
+    assert provider_status_code(error) == expected
+    failure = generic_failure_policy(error, CooldownPolicy(), 0)
+    assert failure.status_code == expected
+    message = safe_provider_error_message(error)
+    assert "private provider detail" not in message
+    if expected == 503:
+        assert failure.disposition == "retry"
+        assert message == "The model provider is temporarily unavailable. Please try again shortly."

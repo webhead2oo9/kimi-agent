@@ -690,9 +690,10 @@ async def test_service_publishes_bound_status_after_prepare_and_before_release(
 
         # The notify runs off the caller's lock stack; drain it here.
         pending = service._publishers.get(task.id)
-        assert pending is not None
-        await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
+        if pending is not None:
+            await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
         assert observed == [("notify", True, "parent-2", "thread-2")]
+        assert service._publishers == {}
         released = await store.get_task(task.id)
         assert released is not None and released.handoff_pending is False
         assert service._wake.is_set()
@@ -1637,7 +1638,10 @@ async def test_delivery_retries_stop_after_ten_attempts(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminal_notify_records_an_incomplete_delivery_attempt(tmp_path) -> None:
+@pytest.mark.parametrize("delivery_path", ["direct", "spawned", "delayed"])
+async def test_terminal_notify_records_an_incomplete_delivery_attempt(
+    tmp_path, delivery_path
+) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
@@ -1653,22 +1657,34 @@ async def test_terminal_notify_records_an_incomplete_delivery_attempt(tmp_path) 
 
         service = object.__new__(CodingTaskService)
         service._store = store
+        notifier = AsyncMock()
         service._runtime = cast(
             Any,
             SimpleNamespace(
                 settings=SimpleNamespace(coding_status_min_interval_seconds=0),
                 user_activity=user_activity,
-                notifier=AsyncMock(),
+                notifier=notifier,
             ),
         )
-        service._last_published = {}
+        service._last_published = {task.id: 1.0}
         service._publishers = {}
 
-        await service._notify(terminal)
+        if delivery_path == "direct":
+            await service._notify(terminal)
+        elif delivery_path == "spawned":
+            service._spawn_notify(terminal)
+            await service._publishers[task.id]
+        else:
+            pending = asyncio.create_task(service._publish_after(task.id, 0))
+            service._publishers[task.id] = pending
+            await pending
 
         refreshed = await store.get_task(task.id)
         assert refreshed is not None
         assert refreshed.checkpoint["delivery_retry"]["attempts"] == 1
+        notifier.assert_awaited_once()
+        assert service._publishers == {}
+        assert service._last_published == {}
     finally:
         await db.close()
 
@@ -2805,4 +2821,60 @@ async def test_release_handoff_notifies_off_the_callers_lock_stack(tmp_path) -> 
         await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
         assert observed == ["notified"]
     finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_close_drains_delayed_terminal_publication(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    pending: asyncio.Task[None] | None = None
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+    release = asyncio.Event()
+
+    @asynccontextmanager
+    async def user_activity(_user_id: str):
+        yield
+
+    async def notify(_task: CodingTask, _context: object) -> None:
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            finished.set()
+
+    jobs = SimpleNamespace(uses_netns=False, close=AsyncMock())
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        await store.finish(task.id, CodingTaskStatus.COMPLETED, result_text="done")
+        service = CodingTaskService(
+            cast(
+                Any,
+                SimpleNamespace(
+                    store=store,
+                    source_registry=ToolRegistry(),
+                    jobs=jobs,
+                    settings=SimpleNamespace(coding_status_min_interval_seconds=0),
+                    user_activity=user_activity,
+                    notifier=notify,
+                ),
+            )
+        )
+        pending = asyncio.create_task(service._publish_after(task.id, 0))
+        service._publishers[task.id] = pending
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+        await asyncio.wait_for(service.close(), timeout=2.0)
+
+        assert finished.is_set()
+        assert pending.cancelled()
+        assert service._publishers == {}
+        jobs.close.assert_awaited_once()
+    finally:
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
         await db.close()

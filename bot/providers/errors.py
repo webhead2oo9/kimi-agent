@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 
 class ProviderError(Exception):
     safe_message = "The model provider failed."
@@ -74,36 +72,18 @@ def is_context_overflow_error(exc: BaseException) -> bool:
 # dedicated user message. Only the unambiguous subset is safe to send to another
 # backend automatically; a generic 403 may instead be a policy/safety rejection.
 _BACKEND_ACCESS_STATUS_CODES = frozenset({401, 403, 404})
-ProviderFailureDisposition = Literal["stop", "retry", "failover"]
 
 
-def _provider_status_code(exc: BaseException) -> int | None:
-    status = getattr(exc, "status_code", None)
-    if not isinstance(status, int):
-        status = getattr(exc, "status", None)
-    if not isinstance(status, int):
-        response = getattr(exc, "response", None)
-        status = getattr(response, "status_code", None)
-    return status if isinstance(status, int) else None
-
-
-def provider_failure_disposition(exc: BaseException) -> ProviderFailureDisposition:
-    """Classify whether a provider failure should stop, retry, or fail over.
-
-    ``retry`` means retry the same backend before advancing. ``failover`` means the
-    failure is backend-specific but deterministic there, so skip a pointless retry
-    and try a separately configured fallback. ``stop`` means another backend is
-    expected to reject the same request too.
-
-    ``ProviderBackendAccessError`` is the trusted opt-in to failover. Other typed
-    ``ProviderError`` instances stop because capability and context-overflow failures
-    have dedicated handling. The remaining checks intentionally avoid SDK imports so
-    OpenAI-compatible and other providers share one policy.
-    """
-    # Import lazily: failure_policy builds on the public ProviderError hierarchy.
-    from providers.failure_policy import CooldownPolicy, generic_failure_policy
-
-    return generic_failure_policy(exc, CooldownPolicy(), 0).disposition
+def provider_status_code(exc: BaseException) -> int | None:
+    """Read an HTTP status from SDK exceptions or their attached response."""
+    for status in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "status", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+    return None
 
 
 def safe_provider_error_message(
@@ -112,11 +92,14 @@ def safe_provider_error_message(
     tool_actions_completed: bool = False,
 ) -> str:
     """Return an actionable user message without exposing provider error details."""
+    # Import lazily: failure_policy builds on the public ProviderError hierarchy.
+    from providers.failure_policy import CooldownPolicy, generic_failure_policy
+
     explicit = getattr(exc, "safe_message", None) if isinstance(exc, ProviderError) else None
     if isinstance(explicit, str) and explicit.strip():
         message = explicit
     else:
-        status = _provider_status_code(exc)
+        status = provider_status_code(exc)
         if status in _BACKEND_ACCESS_STATUS_CODES:
             message = (
                 "The selected model is unavailable to this bot right now. "
@@ -124,7 +107,7 @@ def safe_provider_error_message(
             )
         elif status == 429:
             message = "The model provider is busy right now. Please try again shortly."
-        elif provider_failure_disposition(exc) == "retry":
+        elif generic_failure_policy(exc, CooldownPolicy(), 0).disposition == "retry":
             message = "The model provider is temporarily unavailable. Please try again shortly."
         else:
             message = "Sorry, I hit an internal error reaching the model. Please try again."

@@ -1,18 +1,32 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
+
+import pytest
 
 from providers.anthropic import AnthropicProvider
 from providers.types import ContentPart, ConversationMessage, ProviderRequest, ToolCall
 
 
 class FakeMessages:
-    def __init__(self, response: SimpleNamespace) -> None:
+    def __init__(self, response: SimpleNamespace | BaseException) -> None:
         self.calls: list[dict[str, Any]] = []
         self._response = response
+        self.closed = False
 
-    async def create(self, **kwargs: Any) -> SimpleNamespace:
+    @asynccontextmanager
+    async def stream(self, **kwargs: Any) -> AsyncIterator[FakeMessages]:
         self.calls.append(kwargs)
+        try:
+            yield self
+        finally:
+            self.closed = True
+
+    async def get_final_message(self) -> SimpleNamespace:
+        if isinstance(self._response, BaseException):
+            raise self._response
         return self._response
 
 
@@ -64,6 +78,31 @@ def test_anthropic_provider_sends_system_separately_and_images_as_blocks() -> No
     assert response.usage == {"input_tokens": 2, "output_tokens": 3}
     assert response.has_reported_usage is True
     assert response.model == "claude-sonnet-4-20250514-v2"
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("stream failed"), asyncio.CancelledError()])
+async def test_anthropic_stream_failure_closes_stream_without_retry(error: BaseException) -> None:
+    provider = AnthropicProvider(api_key="test", model="claude-sonnet-4-20250514")
+    fake = FakeMessages(error)
+    provider._client = cast(Any, SimpleNamespace(messages=fake))
+
+    with pytest.raises(type(error)) as caught:
+        await provider.run_turn(
+            ProviderRequest(
+                conversation_id=1,
+                system_prompt="",
+                messages=[],
+                current_user_parts=[ContentPart.from_text("hi")],
+                tools=[],
+                max_tokens=128,
+            )
+        )
+
+    assert caught.value is error
+    assert fake.closed
+    assert len(fake.calls) == 1
 
 
 def test_anthropic_provider_extracts_tool_use_blocks() -> None:

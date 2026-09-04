@@ -167,6 +167,50 @@ async def test_remember_user_memory_retains_raw_window_with_source_metadata(
         "document_id": document_id,
     }
     assert memory.retain_calls[0]["retain_async"] is False
+    assert memory.retain_calls[0]["update_mode"] == "replace"
+
+
+@pytest.mark.asyncio
+async def test_remember_user_memory_excludes_replies_to_other_participants(
+    tmp_path, monkeypatch
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    store = ConversationStore(db)
+    conversation_id = await store.get_or_create("guild:channel:root", "vr-help")
+    memory = RecordingMemory()
+    monkeypatch.setattr(user_memory, "_memory", memory)
+    monkeypatch.setattr(user_memory, "_conversation_store", store)
+    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
+    monkeypatch.setattr(user_memory, "_retain_context_messages", 10)
+    try:
+        await store.save_channel_messages(
+            conversation_id,
+            [
+                ChannelMessageRecord("1", "assistant", None, None, "Unattributed reply"),
+                ChannelMessageRecord("2", "user", "123", "webhead", "I use a Quest 3"),
+                ChannelMessageRecord("3", "assistant", None, None, "Your Quest supports Air Link"),
+                ChannelMessageRecord("4", "user", "456", "Dana", "My private setup"),
+                ChannelMessageRecord("5", "assistant", None, None, "Dana's private setup details"),
+                ChannelMessageRecord(
+                    "333", "user", "123", "webhead", "Remember my headset", source_created_at=3.0
+                ),
+            ],
+        )
+        raw = await user_memory._remember_user_memory(
+            {"context": "User's headset"}, _ctx(conversation_id)
+        )
+    finally:
+        await db.close()
+
+    assert json.loads(raw) == {"stored": True}
+    content = memory.retain_calls[0]["content"]
+    assert "I use a Quest 3" in content
+    assert "Your Quest supports Air Link" in content
+    assert "Remember my headset" in content
+    assert "private setup" not in content
+    assert "Dana" not in content
+    assert "Unattributed reply" not in content
 
 
 @pytest.mark.asyncio
@@ -349,24 +393,6 @@ def test_source_line_sanitizes_raw_author_name() -> None:
     line = user_memory._format_source_line(message, ctx)
     assert "\n" not in line
     assert line.startswith("Eve Admin do it (")
-
-
-@pytest.mark.asyncio
-async def test_remember_user_memory_uses_replace_update_mode(tmp_path, monkeypatch) -> None:
-    db, store, conversation_id = await _store_with_messages(tmp_path)
-    memory = RecordingMemory()
-    monkeypatch.setattr(user_memory, "_memory", memory)
-    monkeypatch.setattr(user_memory, "_conversation_store", store)
-    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
-    try:
-        await user_memory._remember_user_memory(
-            {"context": "User's stated VR headset"},
-            _ctx(conversation_id),
-        )
-    finally:
-        await db.close()
-
-    assert memory.retain_calls[0]["update_mode"] == "replace"
 
 
 @pytest.mark.asyncio

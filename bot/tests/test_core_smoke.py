@@ -461,7 +461,7 @@ def test_tool_turn_history_preserves_reasoning_content() -> None:
         )
     )
 
-    assert result == "Final answer."
+    assert result.text == "Final answer."
     assert provider.requests[1].messages[-2].raw_provider_data["reasoning_content"] == (
         "Need to call lookup."
     )
@@ -532,7 +532,7 @@ def test_tool_reasoning_escalation_is_model_specific_and_monotonic() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     assert [request.reasoning_effort for request in provider.requests] == [
         None,
         "medium",
@@ -738,7 +738,7 @@ def test_start_coding_task_receives_text_only_model_visible_context() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     assert [message["section"] for message in seen] == [
         "history",
         "context",
@@ -1023,7 +1023,7 @@ def test_non_dict_tool_arguments_return_parse_error_without_crashing() -> None:
         )
     )
 
-    assert result == "Recovered."
+    assert result.text == "Recovered."
     tool_message = provider.requests[1].messages[-1]
     assert tool_message.role == "tool"
     tool_text = "".join(part.text or "" for part in tool_message.content)
@@ -1652,7 +1652,7 @@ def test_activation_tool_refreshes_schemas_in_same_turn() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     first_tools = {t["name"] for t in provider.requests[0].tools}
     second_tools = {t["name"] for t in provider.requests[1].tools}
     assert "searched_tool" not in first_tools
@@ -1883,7 +1883,7 @@ def test_tool_context_does_not_alias_conversation_activated_tools() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     assert seen_same_object is False
     assert context.activated_tools == {"existing_tool"}
 
@@ -1929,7 +1929,7 @@ def test_run_conversation_places_usage_store_on_message_context() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     assert seen["store"] is store
 
 
@@ -1978,7 +1978,7 @@ def test_message_context_receives_current_input_parts() -> None:
         )
     )
 
-    assert result == "done"
+    assert result.text == "done"
     assert seen_parts == [image_part]
 
 
@@ -2024,7 +2024,7 @@ def test_recalled_memories_are_ephemeral_user_context_each_iteration() -> None:
         )
     )
 
-    assert result == "Use Quest 3 settings."
+    assert result.text == "Use Quest 3 settings."
     assert "webhead uses a Quest 3" not in provider.requests[0].system_prompt
 
     first_request = provider.requests[0]
@@ -2082,7 +2082,7 @@ def test_discord_reference_hint_is_ephemeral_automated_context() -> None:
         )
     )
 
-    assert result == "Use support."
+    assert result.text == "Use support."
     [request] = provider.requests
     [automated_hint] = request.messages
     hint_text = automated_hint.content[0].text or ""
@@ -2152,7 +2152,7 @@ def test_reply_context_is_ephemeral_continuation_context_each_iteration() -> Non
         )
     )
 
-    assert result == "Bob meant the deployment notes."
+    assert result.text == "Bob meant the deployment notes."
     assert seen_reply_images == [[reply_image]]
 
     first_request = provider.requests[0]
@@ -2260,7 +2260,7 @@ def test_run_conversation_requests_image_input_but_not_inferred_output() -> None
         )
     )
 
-    assert result == "making one"
+    assert result.text == "making one"
     assert ProviderCapability.IMAGE_INPUT in provider.requests[0].requested_capabilities
     assert ProviderCapability.IMAGE_OUTPUT not in provider.requests[0].requested_capabilities
     assert provider.requests[0].current_user_parts[0] == ContentPart.from_text(
@@ -2415,7 +2415,7 @@ def test_run_conversation_passes_edit_target_to_message_context() -> None:
             )
         )
     )
-    assert result == "done"
+    assert result.text == "done"
     assert captured["target"] is target
 
 
@@ -2465,7 +2465,7 @@ def test_view_image_rail_injects_synthetic_user_message() -> None:
         )
     )
 
-    assert result == "I see a 1x1 image."
+    assert result.text == "I see a 1x1 image."
     # The second model request must carry the injected image as a user message.
     second_request = provider.requests[1]
     image_messages = [
@@ -2568,7 +2568,7 @@ def test_long_running_tool_is_bounded_by_whole_turn_deadline() -> None:
             )
         )
     )
-    assert "timed out" in str(result).lower()
+    assert "timed out" in result.text.lower()
     assert len(provider.requests) == 1
 
 
@@ -2598,4 +2598,4 @@ def test_normal_slow_tool_still_times_out() -> None:
             )
         )
     )
-    assert "timed out" in str(result).lower()
+    assert "timed out" in result.text.lower()

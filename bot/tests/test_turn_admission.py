@@ -21,8 +21,6 @@ async def test_same_user_distinct_turns_hit_per_user_limit_without_waiting() -> 
     assert rejected.rejection is AdmissionRejection.USER_LIMIT
     assert (await admission_state(controller)).active_by_user == {"alice": 2}
 
-    assert first.lease is not None
-    assert second.lease is not None
     await first.lease.release()
     await second.lease.release()
 
@@ -68,7 +66,6 @@ async def test_lease_releases_on_cancellation_and_can_be_reused() -> None:
 
     assert (await admission_state(controller)).active_total == 0
     replacement = await controller.try_acquire("bob")
-    assert replacement.lease is not None
     assert replacement.lease is not None
     await replacement.lease.release()
     await replacement.lease.release()

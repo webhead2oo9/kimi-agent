@@ -15,6 +15,14 @@ from tools.registry import ToolRegistry
 from trust.tiers import TrustTier
 
 
+def test_create_rejects_trailing_newline_in_name(tmp_path: Path) -> None:
+    error = manager.create_skill(
+        "my-skill\n", description="Instructions", content="Body", skills_dir=tmp_path
+    )
+    assert error == "Name must be kebab-case (lowercase letters, numbers, hyphens)"
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_edit_preserves_tools_and_secrets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = Path(tmp)

@@ -5,8 +5,12 @@ from typing import Any
 
 from branding import DEFAULT_BOT_NAME
 from providers.base import LLMProvider
-from providers.errors import ProviderAvailabilityError, ProviderBackendAccessError
-from providers.failure_policy import provider_error_body, provider_status_code
+from providers.errors import (
+    ProviderAvailabilityError,
+    ProviderBackendAccessError,
+    provider_status_code,
+)
+from providers.failure_policy import provider_error_body
 from providers.openai_responses import OpenAIResponsesProvider
 from providers.types import ProviderCapability, ProviderRequest, ProviderResponse
 from xai.auth import XAI_API_BASE_URL, XaiAuthError, XaiAuthRevokedError

@@ -49,14 +49,19 @@ def _registry() -> ToolRegistry:
     return registry
 
 
-def test_result_is_str_compatible_and_always_carries_usage() -> None:
-    """Two contracts callers depend on: the result compares equal to its text
-    (a custom __eq__, not a dataclass freebie), and `.usage` is always a real
-    UsageBreakdown, so accumulation can read it without a None guard."""
+def test_result_carries_text_and_usage_as_separate_fields() -> None:
     result = ConversationRunResult(text="hi")
 
-    assert result == "hi"
+    assert result.text == "hi"
     assert result.usage == UsageBreakdown()
+
+
+def test_result_equality_includes_completion_and_usage_metadata() -> None:
+    result = ConversationRunResult(text="hi")
+
+    assert result == ConversationRunResult(text="hi")
+    assert result != ConversationRunResult(text="hi", timed_out=True)
+    assert result != ConversationRunResult(text="hi", usage=UsageBreakdown(input_tokens=1))
 
 
 @pytest.mark.asyncio

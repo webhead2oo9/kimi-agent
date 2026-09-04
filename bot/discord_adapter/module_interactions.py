@@ -734,6 +734,9 @@ class ComponentDispatcher:
                 if not self._admitting:
                     await _quiet_reply(interaction, "This control is temporarily unavailable.")
                     return True
+                if self._handlers.get((module_name, kind, key)) is not registration:
+                    await _quiet_reply(interaction, "This control is no longer active.")
+                    return True
                 await registration.handler(
                     ModuleInteractionAdapter(interaction, module_name, dispatcher=self)
                 )
@@ -1162,10 +1165,14 @@ class InteractionRouterImpl:
 
     async def _allowed(self, interaction: discord.Interaction, min_tier: TrustTierName) -> bool:
         guild_id = int(interaction.guild_id or 0)
-        if guild_id == 0 or not self._is_guild_active(guild_id):
+        if self._closed or guild_id == 0 or not self._is_guild_active(guild_id):
             return False
         tier = await self._trust.tier(guild_id, int(interaction.user.id))
-        return _TIER_ORDER[tier] >= _TIER_ORDER[min_tier]
+        return (
+            not self._closed
+            and self._is_guild_active(guild_id)
+            and _TIER_ORDER[tier] >= _TIER_ORDER[min_tier]
+        )
 
     # ---- components ---------------------------------------------------------
 

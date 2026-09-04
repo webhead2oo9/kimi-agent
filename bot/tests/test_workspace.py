@@ -60,46 +60,30 @@ def test_create_job_dir_defaults_to_uuid() -> None:
         assert job_dir.is_dir()
 
 
-@pytest.mark.parametrize("job_id", [".", "..", "../escape", r"..\escape"])
-def test_create_job_dir_rejects_traversal_ids(tmp_path: Path, job_id: str) -> None:
-    base_dir = tmp_path / "workspace"
-    mgr = WorkspaceManager(base_dir=base_dir)
-
-    with pytest.raises(ValueError, match="safe path segment"):
-        mgr.create_job_dir(WorkspaceKey("user123"), job_id=job_id)
-
-    assert not base_dir.exists()
-
-
-@pytest.mark.parametrize("job_id", ["/absolute/job", r"C:\absolute\job", r"\\host\share\job"])
-def test_create_job_dir_rejects_absolute_ids(tmp_path: Path, job_id: str) -> None:
-    base_dir = tmp_path / "workspace"
-    mgr = WorkspaceManager(base_dir=base_dir)
-
-    with pytest.raises(ValueError, match="safe path segment"):
-        mgr.create_job_dir(WorkspaceKey("user123"), job_id=job_id)
-
-    assert not base_dir.exists()
-
-
-@pytest.mark.parametrize("job_id", ["nested/job", r"nested\job"])
-def test_create_job_dir_rejects_separator_ids(tmp_path: Path, job_id: str) -> None:
-    base_dir = tmp_path / "workspace"
-    mgr = WorkspaceManager(base_dir=base_dir)
-
-    with pytest.raises(ValueError, match="safe path segment"):
-        mgr.create_job_dir(WorkspaceKey("user123"), job_id=job_id)
-
-    assert not base_dir.exists()
-
-
 @pytest.mark.parametrize(
     "job_id",
-    ["", " ", " job-abc", "job-abc ", "_job", "job_", ".job", "job.", "job:name"],
+    [
+        pytest.param(".", id="current-directory"),
+        pytest.param("..", id="parent-directory"),
+        pytest.param("../escape", id="posix-traversal"),
+        pytest.param(r"..\escape", id="windows-traversal"),
+        pytest.param("/absolute/job", id="posix-absolute"),
+        pytest.param(r"C:\absolute\job", id="windows-absolute"),
+        pytest.param(r"\\host\share\job", id="unc-absolute"),
+        pytest.param("nested/job", id="posix-separator"),
+        pytest.param(r"nested\job", id="windows-separator"),
+        pytest.param("", id="empty"),
+        pytest.param(" ", id="blank"),
+        pytest.param(" job-abc", id="leading-space"),
+        pytest.param("job-abc ", id="trailing-space"),
+        pytest.param("_job", id="leading-underscore"),
+        pytest.param("job_", id="trailing-underscore"),
+        pytest.param(".job", id="leading-dot"),
+        pytest.param("job.", id="trailing-dot"),
+        pytest.param("job:name", id="colon"),
+    ],
 )
-def test_create_job_dir_rejects_empty_stripped_or_rewritten_ids(
-    tmp_path: Path, job_id: str
-) -> None:
+def test_create_job_dir_rejects_unsafe_ids(tmp_path: Path, job_id: str) -> None:
     base_dir = tmp_path / "workspace"
     mgr = WorkspaceManager(base_dir=base_dir)
 

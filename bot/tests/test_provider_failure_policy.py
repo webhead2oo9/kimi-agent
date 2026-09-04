@@ -4,11 +4,14 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from codex.transport import CodexWebSocketRequestError
 from providers.errors import (
     ProviderAvailabilityError,
+    ProviderBackendAccessError,
+    ProviderCapabilityError,
     ProviderContextOverflowError,
     ProviderPolicyError,
 )
@@ -16,6 +19,7 @@ from providers.failure_policy import (
     CircuitScopeKind,
     CooldownPolicy,
     FailureCategory,
+    FailureDisposition,
     generic_failure_policy,
     get_failure_classifier,
     raise_for_terminal_finish_reason,
@@ -34,6 +38,46 @@ class _ProviderError(Exception):
         self.status_code = status_code
         self.response = SimpleNamespace(status_code=status_code, headers=headers or {})
         self.body = body
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (_ProviderError(429), "retry"),
+        (_ProviderError(401), "failover"),
+        (_ProviderError(404), "failover"),
+        (_ProviderError(403), "stop"),
+        (_ProviderError(400), "stop"),
+        (_ProviderError(418), "stop"),
+        (_ProviderError(499), "stop"),
+        (_ProviderError(600), "stop"),
+        (ProviderBackendAccessError("recognized"), "failover"),
+        (ProviderCapabilityError("unsupported"), "stop"),
+        (ProviderContextOverflowError("too long"), "stop"),
+        (CodexWebSocketRequestError("bad request", retryable=False), "stop"),
+    ],
+)
+def test_generic_failure_dispositions(error: BaseException, expected: FailureDisposition) -> None:
+    assert generic_failure_policy(error, CooldownPolicy(), 0).disposition == expected
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 503, 599])
+def test_generic_failure_retries_server_errors_including_range_boundaries(status_code: int) -> None:
+    failure = generic_failure_policy(_ProviderError(status_code), CooldownPolicy(), 0)
+
+    assert failure.disposition == "retry"
+
+
+@pytest.mark.parametrize(("status_code", "expected"), [(400, "stop"), (503, "retry")])
+def test_httpx_status_errors_use_response_status(status_code, expected) -> None:
+    request = httpx.Request("POST", "https://provider.test/messages")
+    error = httpx.HTTPStatusError(
+        "private provider detail",
+        request=request,
+        response=httpx.Response(status_code, request=request),
+    )
+
+    assert generic_failure_policy(error, CooldownPolicy(), 0).disposition == expected
 
 
 def test_generic_retry_after_seconds_overrides_default() -> None:

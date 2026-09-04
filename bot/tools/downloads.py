@@ -122,19 +122,10 @@ def validate_fetch_url(
     url: str,
     *,
     allowed_host_suffixes: tuple[str, ...] | None = None,
-    allow_plain_http: bool = False,
 ) -> None:
-    """Validate a URL against the SSRF policy.
-
-    ``allow_plain_http`` is an explicit opt-in for callers that never connect
-    to the URL themselves (e.g. the Jina reader proxies the target remotely);
-    anything this process downloads directly must stay https-only.
-    """
+    """Validate a direct download URL against the HTTPS-only SSRF policy."""
     parsed = urlparse(url)
-    if allow_plain_http:
-        if parsed.scheme not in {"http", "https"}:
-            raise FetchUrlError("Only http and https URLs are allowed")
-    elif parsed.scheme != "https":
+    if parsed.scheme != "https":
         raise FetchUrlError("Only https URLs are allowed")
     if not parsed.hostname:
         raise FetchUrlError("URL host is required")

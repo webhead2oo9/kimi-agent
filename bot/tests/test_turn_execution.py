@@ -969,8 +969,10 @@ async def test_execute_turn_distills_images_for_text_model_and_reuses_cache(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("description", ["Image 1: A red STOP sign.", ""])
 async def test_execute_turn_records_distillation_usage_with_router_attribution(
     tmp_path: Path,
+    description: str,
 ) -> None:
     # Distillation shares the turn's usage sink, so its row must carry the same
     # routing attribution the primary chat call records.
@@ -985,7 +987,7 @@ async def test_execute_turn_records_distillation_usage_with_router_attribution(
         async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
             del request
             return ProviderResponse(
-                content="Image 1: A red sign reading STOP [1, 2, 3, 4], confidence high.",
+                content=description,
                 model="vision-served",
                 usage={"input_tokens": 40, "output_tokens": 18},
                 usage_present=True,
@@ -1009,6 +1011,8 @@ async def test_execute_turn_records_distillation_usage_with_router_attribution(
         capabilities={ProviderCapability.TEXT},
     )
     image_provider = RoutedDistillingProvider()
+    cache = RecordingImageDistillationCache()
+    run = RecordingRunConversation(ConversationRunResult(text="ok"))
     image_part = ContentPart.from_image_url(
         url="data:image/png;base64,YWJj",
         media_type="image/png",
@@ -1021,13 +1025,13 @@ async def test_execute_turn_records_distillation_usage_with_router_attribution(
         ),
         dependencies=_dependencies(
             workspace_dir=tmp_path,
-            run_conversation=RecordingRunConversation(ConversationRunResult(text="ok")),
+            run_conversation=run,
             provider=text_provider,
             chat_provider_resolver=(
                 lambda *, images=False: image_provider if images else text_provider
             ),
             chat_model_name_resolver=lambda *, images=False: "vision" if images else "text",
-            image_distillation_store=RecordingImageDistillationCache(),
+            image_distillation_store=cache,
             usage_store=store,
         ),
         config=_config(),
@@ -1041,6 +1045,10 @@ async def test_execute_turn_records_distillation_usage_with_router_attribution(
     assert distillation[0].service_tier == "flex"
     assert distillation[0].openrouter_charge_usd == 0.004
     assert distillation[0].is_byok is True
+    assert distillation[0].usage == UsageBreakdown(input_tokens=40, output_tokens=18)
+    [call] = run.calls
+    assert call["provider"] is (text_provider if description else image_provider)
+    assert bool(cache.writes) is bool(description)
 
 
 @pytest.mark.asyncio

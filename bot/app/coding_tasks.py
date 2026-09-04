@@ -156,6 +156,7 @@ class CodingTaskService:
             publisher.cancel()
         await asyncio.gather(*self._publishers.values(), return_exceptions=True)
         self._publishers.clear()
+        self._last_published.clear()
         await self._runtime.jobs.close()
 
     async def start_from_tool(
@@ -594,6 +595,9 @@ class CodingTaskService:
                 await self._notify(task)
             except Exception:
                 logger.warning("Coding notify task for %s failed", task.id, exc_info=True)
+            finally:
+                if self._publishers.get(task.id) is asyncio.current_task():
+                    self._publishers.pop(task.id, None)
 
         publisher = asyncio.create_task(_run(), name=f"coding_notify:{task.id}")
         previous = self._publishers.pop(task.id, None)
@@ -1419,8 +1423,11 @@ class CodingTaskService:
         terminal = task.status not in ACTIVE_TASK_STATUSES
         elapsed = time.monotonic() - self._last_published.get(task.id, 0.0)
         interval = self._runtime.settings.coding_status_min_interval_seconds
-        pending = self._publishers.pop(task.id, None) if terminal else self._publishers.get(task.id)
+        pending = self._publishers.get(task.id)
+        if pending is asyncio.current_task():
+            pending = None
         if pending is not None and terminal:
+            self._publishers.pop(task.id, None)
             pending.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pending
@@ -1433,9 +1440,12 @@ class CodingTaskService:
                 self._publishers[task.id] = publisher
             return
         failure_reason = "Discord delivery did not complete"
+        if terminal:
+            self._last_published.pop(task.id, None)
         try:
             await self._publish_with_activity(task, context)
-            self._last_published[task.id] = time.monotonic()
+            if not terminal:
+                self._last_published[task.id] = time.monotonic()
         except Exception as exc:
             failure_reason = f"Coding delivery notifier raised {type(exc).__name__}"
             logger.warning("Could not publish coding task %s status", task.id, exc_info=True)
@@ -1453,14 +1463,16 @@ class CodingTaskService:
             await asyncio.sleep(max(0.0, delay))
             task = await self._store.get_task(task_id)
             if task is not None:
-                await self._publish_with_activity(task, None)
-                self._last_published[task.id] = time.monotonic()
+                await self._notify(task)
+            else:
+                self._last_published.pop(task_id, None)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("Could not publish coding task %s status", task_id, exc_info=True)
         finally:
-            self._publishers.pop(task_id, None)
+            if self._publishers.get(task_id) is asyncio.current_task():
+                self._publishers.pop(task_id, None)
 
     async def _publish_with_activity(
         self, task: CodingTask, context: ConversationContext | None

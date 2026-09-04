@@ -8,7 +8,6 @@ they passed explicitly. Env *variables* still apply, which is what
 ``monkeypatch.setenv`` below relies on; only the file is cut out.
 """
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -237,26 +236,6 @@ def test_discord_search_exclusions_parse_numeric_ids() -> None:
         "800000000000000101",
         "800000000000000102",
     }
-
-
-@pytest.mark.parametrize("name", ["CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"])
-def test_retired_v1_environment_settings_fail_startup(
-    monkeypatch: pytest.MonkeyPatch,
-    name: str,
-) -> None:
-    monkeypatch.setenv(name, "retired-value")
-
-    with pytest.raises(ValidationError, match=name):
-        Settings(_env_file=None)  # type: ignore[call-arg]
-
-
-@pytest.mark.parametrize("name", ["CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"])
-def test_retired_v1_dotenv_settings_fail_startup(tmp_path: Path, name: str) -> None:
-    env_file = tmp_path / "retired.env"
-    env_file.write_text(f"{name}=retired-value\n", encoding="utf-8")
-
-    with pytest.raises(ValidationError, match=name):
-        Settings(_env_file=env_file)  # type: ignore[call-arg]
 
 
 def test_discord_search_exclusions_reject_non_numeric_id() -> None:

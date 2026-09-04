@@ -58,11 +58,22 @@ def test_validate_rejects_non_http_schemes():
 
 
 @pytest.mark.asyncio
-async def test_fetch_url_trusted_redirects_keep_initial_allowlist(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("redirect_url", "error"),
+    [
+        ("https://cdn.example.test/file.pdf", None),
+        ("http://cdn.example.test/file.pdf", "Only https"),
+        ("https://127.0.0.1/file.pdf", "Private or internal"),
+    ],
+)
+async def test_fetch_url_trusted_redirects_keep_download_policy(
+    monkeypatch, tmp_path, redirect_url, error
+):
     seen: list[tuple[str, tuple[str, ...] | None]] = []
 
     def fake_validate(url, *, allowed_host_suffixes=None):
         seen.append((url, allowed_host_suffixes))
+        validate_fetch_url(url, allowed_host_suffixes=allowed_host_suffixes)
 
     class FakeResponse:
         def __init__(self, status, location=None):
@@ -92,7 +103,7 @@ async def test_fetch_url_trusted_redirects_keep_initial_allowlist(monkeypatch, t
         def get(self, _url, *, allow_redirects):
             self.calls += 1
             if self.calls == 1:
-                return FakeResponse(302, "https://cdn.example.test/file.pdf")
+                return FakeResponse(302, redirect_url)
             return FakeResponse(200)
 
     class FakeConnector:
@@ -103,7 +114,7 @@ async def test_fetch_url_trusted_redirects_keep_initial_allowlist(monkeypatch, t
     monkeypatch.setattr(downloads.aiohttp, "ClientSession", FakeSession)
     monkeypatch.setattr(downloads.aiohttp, "TCPConnector", FakeConnector)
 
-    await downloads.fetch_url_to_file(
+    request = downloads.fetch_url_to_file(
         "https://content.openalex.org/works/W1.pdf",
         tmp_path / "paper.pdf",
         max_bytes=100,
@@ -111,8 +122,15 @@ async def test_fetch_url_trusted_redirects_keep_initial_allowlist(monkeypatch, t
         allowed_host_suffixes=("openalex.org",),
         allow_redirects_to_any_public_host=True,
     )
+    if error is None:
+        await request
+        assert (tmp_path / "paper.pdf").read_bytes() == b"ok"
+    else:
+        with pytest.raises(FetchUrlError, match=error):
+            await request
+        assert not (tmp_path / "paper.pdf").exists()
 
     assert seen == [
         ("https://content.openalex.org/works/W1.pdf", ("openalex.org",)),
-        ("https://cdn.example.test/file.pdf", None),
+        (redirect_url, None),
     ]

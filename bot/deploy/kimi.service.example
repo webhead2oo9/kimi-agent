@@ -19,7 +19,7 @@ ExecStart=/srv/kimi/bot/.venv/bin/python bot.py
 # including executable skill process trees. Tune these values to the host and
 # lower the per-invocation SCRIPT_SANDBOX_* limits when deploying on less RAM.
 TasksMax=128
-MemoryMax=4G
+MemoryMax=2G
 CPUQuota=200%
 Restart=on-failure
 RestartSec=5

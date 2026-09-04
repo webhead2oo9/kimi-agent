@@ -1841,19 +1841,61 @@ async def test_runtime_drain_refuses_new_interactions_before_waiting() -> None:
     assert interaction.response.sent[0]["content"] == "This control is temporarily unavailable."
 
 
+class _BlockingTrust:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
+        self.started.set()
+        await self.release.wait()
+        return "staff"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["deactivate-guild", "close-router", "replace-component"])
+async def test_component_rechecks_authorization_after_trust_lookup(change: str) -> None:
+    trust = _BlockingTrust()
+    active = True
+    runtime = InteractionRuntime(_Bot())  # type: ignore[arg-type]
+    router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: active)
+    ran: list[str] = []
+
+    async def handler(_interaction: ModuleInteraction) -> None:
+        ran.append("old")
+
+    async def replacement(_interaction: ModuleInteraction) -> None:
+        ran.append("new")
+
+    registration = router.register_component("button", "confirm", handler)
+    interaction = _Interaction(data={"custom_id": router.custom_id("confirm")})
+    dispatching = asyncio.create_task(
+        runtime.dispatcher.dispatch(interaction, "button")  # type: ignore[arg-type]
+    )
+    await trust.started.wait()
+    if change == "deactivate-guild":
+        active = False
+    elif change == "close-router":
+        router.close()
+    else:
+        registration.close()
+        router.register_component("button", "confirm", replacement)
+    trust.release.set()
+    await dispatching
+
+    assert ran == []
+    assert interaction.response.sent
+    if change == "replace-component":
+        await runtime.dispatcher.dispatch(
+            _Interaction(data={"custom_id": router.custom_id("confirm")}),  # type: ignore[arg-type]
+            "button",
+        )
+        assert ran == ["new"]
+
+
 @pytest.mark.asyncio
 async def test_component_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
-    class BlockingTrust:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-
-        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
-            self.started.set()
-            await self.release.wait()
-            return "staff"
-
-    trust = BlockingTrust()
+    trust = _BlockingTrust()
     runtime = InteractionRuntime(_Bot())  # type: ignore[arg-type]
     router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)
     ran: list[str] = []
@@ -1881,17 +1923,7 @@ async def test_component_trust_lookup_is_tracked_and_cannot_enter_after_drain() 
 
 @pytest.mark.asyncio
 async def test_slash_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
-    class BlockingTrust:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-
-        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
-            self.started.set()
-            await self.release.wait()
-            return "staff"
-
-    trust = BlockingTrust()
+    trust = _BlockingTrust()
     bot = _Bot()
     runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
     router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)
@@ -1918,17 +1950,7 @@ async def test_slash_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> N
 
 @pytest.mark.asyncio
 async def test_autocomplete_trust_lookup_is_tracked_and_cannot_enter_after_drain() -> None:
-    class BlockingTrust:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-
-        async def tier(self, _guild_id: int, _user_id: int) -> TrustTierName:
-            self.started.set()
-            await self.release.wait()
-            return "staff"
-
-    trust = BlockingTrust()
+    trust = _BlockingTrust()
     bot = _Bot()
     runtime = InteractionRuntime(bot)  # type: ignore[arg-type]
     router = runtime.router_for("mod", trust=trust, is_guild_active=lambda _g: True)

@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 import sqlite3
 import stat
 
@@ -23,108 +22,6 @@ from storage.memory_banks import UserMemoryBankStateStore
 from storage.module_commands import GuildCommandScopeStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
-
-
-def _quote_identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
-
-
-def _normalize_trigger_sql(value: str | None) -> str:
-    if value is None:
-        return ""
-    normalized = " ".join(value.split())
-    optional_clause = "CREATE TRIGGER IF NOT EXISTS "
-    if normalized.upper().startswith(optional_clause):
-        return "CREATE TRIGGER " + normalized[len(optional_clause) :]
-    return normalized
-
-
-async def _schema_fingerprint(database: Database) -> list[str]:
-    async with database.conn.execute(
-        """SELECT type, name, tbl_name
-           FROM sqlite_master
-           WHERE name NOT LIKE 'sqlite_%'
-           ORDER BY type, name, tbl_name"""
-    ) as cursor:
-        identities = [tuple(row) for row in await cursor.fetchall()]
-
-    table_details: dict[str, object] = {}
-    table_names = [name for object_type, name, _ in identities if object_type == "table"]
-    for table_name in table_names:
-        quoted_table = _quote_identifier(table_name)
-        async with database.conn.execute(f"PRAGMA table_xinfo({quoted_table})") as cursor:
-            columns = [tuple(row) for row in await cursor.fetchall()]
-        async with database.conn.execute(f"PRAGMA foreign_key_list({quoted_table})") as cursor:
-            foreign_keys = [tuple(row) for row in await cursor.fetchall()]
-        async with database.conn.execute(f"PRAGMA index_list({quoted_table})") as cursor:
-            indexes = [tuple(row) for row in await cursor.fetchall()]
-
-        index_details: dict[str, list[tuple[object, ...]]] = {}
-        for index in indexes:
-            index_name = str(index[1])
-            quoted_index = _quote_identifier(index_name)
-            async with database.conn.execute(f"PRAGMA index_xinfo({quoted_index})") as cursor:
-                index_details[index_name] = [tuple(row) for row in await cursor.fetchall()]
-        table_details[table_name] = {
-            "table_xinfo": columns,
-            "foreign_key_list": foreign_keys,
-            "index_list": indexes,
-            "index_xinfo": index_details,
-        }
-
-    async with database.conn.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
-    ) as cursor:
-        triggers = {
-            str(row["name"]): _normalize_trigger_sql(row["sql"]) for row in await cursor.fetchall()
-        }
-
-    async with database.conn.execute(
-        """SELECT module_name, version, name, applied_at
-           FROM module_schema_versions
-           ORDER BY module_name, version"""
-    ) as cursor:
-        module_schema_versions = [tuple(row) for row in await cursor.fetchall()]
-    async with database.conn.execute(
-        "SELECT id, token, leased_until FROM module_scheduler_runner ORDER BY id"
-    ) as cursor:
-        module_scheduler_runner = [tuple(row) for row in await cursor.fetchall()]
-
-    fingerprint = {
-        "identities": identities,
-        "module_scheduler_runner": module_scheduler_runner,
-        "module_schema_versions": module_schema_versions,
-        "tables": table_details,
-        "triggers": triggers,
-    }
-    return json.dumps(fingerprint, indent=2, sort_keys=True).splitlines()
-
-
-def _create_v6_database(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        schema_path = Path(__file__).parent / "fixtures" / "core_schema_v6.sql"
-        conn.executescript(schema_path.read_text(encoding="utf-8"))
-        conn.executemany(
-            "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, 'now')",
-            (
-                (1, "initial_schema"),
-                (2, "coding_task_context_inputs"),
-                (3, "video_understanding_sessions"),
-                (4, "provider_circuit_breakers"),
-                (5, "core_runtime_tables"),
-                (6, "video_session_catalog_model"),
-            ),
-        )
-        conn.executescript(
-            """
-            CREATE TABLE control_proposals (proposal_id TEXT PRIMARY KEY);
-            CREATE TABLE control_proposal_events (event_id INTEGER PRIMARY KEY);
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX mode bits")
@@ -204,25 +101,6 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_database_matches_migrated_v6_schema(tmp_path) -> None:
-    fresh = Database(tmp_path / "fresh.db")
-    migrated_path = tmp_path / "migrated.db"
-    _create_v6_database(migrated_path)
-    migrated = Database(migrated_path)
-
-    await fresh.connect()
-    await migrated.connect()
-    try:
-        fresh_fingerprint = await _schema_fingerprint(fresh)
-        migrated_fingerprint = await _schema_fingerprint(migrated)
-    finally:
-        await fresh.close()
-        await migrated.close()
-
-    assert fresh_fingerprint == migrated_fingerprint
-
-
-@pytest.mark.asyncio
 async def test_guild_command_scope_store_tracks_and_forgets_guilds(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
@@ -259,284 +137,11 @@ async def _baseline_database_with_data(path) -> None:
         conn.close()
 
 
+@pytest.mark.parametrize("version", range(1, 7))
 @pytest.mark.asyncio
-async def test_v6_to_v7_canonicalizes_messages_in_batches_and_drops_control_tables(
-    tmp_path, monkeypatch
+async def test_database_older_than_baseline_is_rejected_without_changing_data(
+    tmp_path, version
 ) -> None:
-    monkeypatch.setattr(storage.db, "_MESSAGE_MIGRATION_BATCH_SIZE", 2)
-    path = tmp_path / "v6.db"
-    _create_v6_database(path)
-    conn = sqlite3.connect(path)
-    try:
-        conversation_id = conn.execute(
-            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
-            ("migration-test",),
-        ).lastrowid
-        rows = [
-            (
-                conversation_id,
-                "user",
-                "legacy string",
-                json.dumps(
-                    {
-                        "role": "user",
-                        "content": "legacy string",
-                        "raw_provider_data": {"keep": True},
-                    }
-                ),
-                1.0,
-            ),
-            (
-                conversation_id,
-                "assistant",
-                "provider parts",
-                json.dumps(
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "input_text", "text": "provider text", "cache": "keep"},
-                            {
-                                "type": "input_image",
-                                "image_url": "data:image/png;base64,abc",
-                                "media_type": "image/png",
-                                "provider_key": "keep",
-                            },
-                            {"type": "input_text", "text": ""},
-                            "invalid part",
-                        ],
-                        "reasoning_content": "keep this too",
-                    }
-                ),
-                2.0,
-            ),
-            (
-                conversation_id,
-                "assistant",
-                "fallback column",
-                json.dumps({"role": "assistant", "metadata": {"keep": 1}}),
-                3.0,
-            ),
-            (
-                conversation_id,
-                "assistant",
-                "must not become fallback",
-                json.dumps({"role": "assistant", "content": []}),
-                4.0,
-            ),
-        ]
-        conn.executemany(
-            "INSERT INTO messages "
-            "(conversation_id, role, content, message_data, created_at) VALUES (?, ?, ?, ?, ?)",
-            rows,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    db = Database(path)
-    await db.connect()
-    try:
-        async with db.conn.execute("SELECT message_data FROM messages ORDER BY id") as cursor:
-            migrated = [json.loads(row["message_data"]) for row in await cursor.fetchall()]
-        async with db.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name IN ('control_proposals', 'control_proposal_events')"
-        ) as cursor:
-            obsolete_tables = await cursor.fetchall()
-        async with db.conn.execute(
-            "SELECT version, name FROM schema_version ORDER BY version"
-        ) as cursor:
-            versions = [tuple(row) for row in await cursor.fetchall()]
-    finally:
-        await db.close()
-
-    assert migrated == [
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": "legacy string"}],
-            "raw_provider_data": {"keep": True},
-        },
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "provider text", "cache": "keep"},
-                {
-                    "type": "image",
-                    "image_url": "data:image/png;base64,abc",
-                    "media_type": "image/png",
-                    "provider_key": "keep",
-                    "detail": "auto",
-                },
-            ],
-            "reasoning_content": "keep this too",
-        },
-        {
-            "role": "assistant",
-            "metadata": {"keep": 1},
-            "content": [{"type": "text", "text": "fallback column"}],
-        },
-        {"role": "assistant", "content": []},
-    ]
-    assert obsolete_tables == []
-    assert versions == [
-        (1, "initial_schema"),
-        (2, "coding_task_context_inputs"),
-        (3, "video_understanding_sessions"),
-        (4, "provider_circuit_breakers"),
-        (5, "core_runtime_tables"),
-        (6, "video_session_catalog_model"),
-        (7, "core_v7_baseline"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_v7_upgrade_expires_v6_video_sessions_and_queues_provider_cleanup(tmp_path) -> None:
-    path = tmp_path / "v6-video.db"
-    _create_v6_database(path)
-    conn = sqlite3.connect(path)
-    try:
-        conversation_id = conn.execute(
-            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
-            ("video-migration-test",),
-        ).lastrowid
-        conn.execute(
-            """INSERT INTO video_sessions (
-                handle, conversation_id, actor_user_id, guild_id, source_kind,
-                source_display_name, source_locator, source_byte_size, model,
-                latest_interaction_id, interaction_count, created_at, last_active_at,
-                expires_at, catalog_model
-            ) VALUES (?, ?, ?, ?, 'attachment', ?, ?, ?, ?, ?, 1, 1, 1, 999, ?)""",
-            (
-                "vid-old",
-                conversation_id,
-                "user-1",
-                "guild-1",
-                "clip.mp4",
-                "clip.mp4",
-                42,
-                "gemini-upstream-id",
-                "interaction-1",
-                "gemini-upstream-id",
-            ),
-        )
-        conn.execute(
-            "INSERT INTO video_interactions "
-            "(interaction_id, session_handle, actor_user_id, created_at) VALUES (?, ?, ?, 1)",
-            ("interaction-1", "vid-old", "user-1"),
-        )
-        conn.execute(
-            """INSERT INTO video_provider_files (
-                file_name, conversation_id, actor_user_id, guild_id, mime_type,
-                byte_size, session_handle, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
-            (
-                "files/attached",
-                conversation_id,
-                "user-1",
-                "guild-1",
-                "video/mp4",
-                42,
-                "vid-old",
-            ),
-        )
-        conn.execute(
-            """INSERT INTO video_provider_files (
-                file_name, conversation_id, actor_user_id, guild_id, mime_type,
-                byte_size, session_handle, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 1)""",
-            ("files/unattached", conversation_id, "user-1", "guild-1", "video/mp4", 7),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    db = Database(path)
-    await db.connect()
-    try:
-        async with db.conn.execute("SELECT handle FROM video_sessions") as cursor:
-            assert await cursor.fetchall() == []
-        async with db.conn.execute("SELECT interaction_id FROM video_interactions") as cursor:
-            assert await cursor.fetchall() == []
-        async with db.conn.execute(
-            "SELECT file_name FROM video_provider_files ORDER BY file_name"
-        ) as cursor:
-            assert [row["file_name"] for row in await cursor.fetchall()] == ["files/unattached"]
-        async with db.conn.execute(
-            "SELECT interaction_id, actor_user_id, session_handle FROM video_interaction_deletions"
-        ) as cursor:
-            interaction_cleanup = [tuple(row) for row in await cursor.fetchall()]
-        async with db.conn.execute(
-            "SELECT file_name, actor_user_id, session_handle FROM video_provider_file_deletions"
-        ) as cursor:
-            file_cleanup = [tuple(row) for row in await cursor.fetchall()]
-    finally:
-        await db.close()
-
-    assert interaction_cleanup == [("interaction-1", "user-1", "vid-old")]
-    assert file_cleanup == [("files/attached", "user-1", "vid-old")]
-
-
-@pytest.mark.parametrize(
-    ("payload", "error"),
-    [
-        ("not-json", "not valid JSON"),
-        (b"\xff", "not valid JSON"),
-        (json.dumps(["not", "an", "object"]), "must be a JSON object"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_v7_migration_rejects_malformed_message_data_atomically(
-    tmp_path, monkeypatch, payload, error
-) -> None:
-    # The first batch is written before the malformed second row is read. The
-    # outer migration transaction must still roll that first update back.
-    monkeypatch.setattr(storage.db, "_MESSAGE_MIGRATION_BATCH_SIZE", 1)
-    path = tmp_path / "malformed-v6.db"
-    _create_v6_database(path)
-    conn = sqlite3.connect(path)
-    try:
-        conversation_id = conn.execute(
-            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
-            ("malformed-migration-test",),
-        ).lastrowid
-        conn.executemany(
-            "INSERT INTO messages "
-            "(conversation_id, role, content, message_data, created_at) VALUES (?, 'user', ?, ?, ?)",
-            [
-                (conversation_id, "first", json.dumps({"content": "first"}), 1.0),
-                (conversation_id, "broken", payload, 2.0),
-            ],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    db = Database(path)
-    try:
-        with pytest.raises(RuntimeError, match=error):
-            await db.connect()
-    finally:
-        await db.close()
-
-    conn = sqlite3.connect(path)
-    try:
-        version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
-        first_payload = conn.execute("SELECT message_data FROM messages WHERE id = 1").fetchone()
-        control_tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name IN ('control_proposals', 'control_proposal_events') ORDER BY name"
-        ).fetchall()
-    finally:
-        conn.close()
-
-    assert version == (6,)
-    assert first_payload == (json.dumps({"content": "first"}),)
-    assert control_tables == [("control_proposal_events",), ("control_proposals",)]
-
-
-@pytest.mark.parametrize("version", range(1, 6))
-@pytest.mark.asyncio
-async def test_pre_v6_database_requires_intermediate_1x_upgrade(tmp_path, version) -> None:
     path = tmp_path / f"v{version}.db"
     conn = sqlite3.connect(path)
     try:
@@ -547,16 +152,55 @@ async def test_pre_v6_database_requires_intermediate_1x_upgrade(tmp_path, versio
             "INSERT INTO schema_version (version, name, applied_at) VALUES (?, 'old', 'now')",
             (version,),
         )
+        conn.execute("CREATE TABLE operator_data (value TEXT)")
+        conn.execute("INSERT INTO operator_data VALUES ('preserve this')")
         conn.commit()
+        before = tuple(conn.iterdump())
     finally:
         conn.close()
 
     db = Database(path)
     try:
-        with pytest.raises(RuntimeError, match=r"audited v1 bridge revision [0-9a-f]{40}"):
+        with pytest.raises(RuntimeError, match="requires schema v7 or newer"):
             await db.connect()
     finally:
         await db.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        assert tuple(conn.iterdump()) == before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("has_earlier_ledger", [False, True])
+@pytest.mark.asyncio
+async def test_current_database_reopens_without_rewriting_data(tmp_path, has_earlier_ledger):
+    path = tmp_path / "current.db"
+    await _baseline_database_with_data(path)
+    conn = sqlite3.connect(path)
+    try:
+        if has_earlier_ledger:
+            conn.executemany(
+                "INSERT INTO schema_version (version, name, applied_at) VALUES (?, 'old', 'then')",
+                [(version,) for version in range(1, 7)],
+            )
+            conn.commit()
+        before = tuple(conn.iterdump())
+    finally:
+        conn.close()
+
+    db = Database(path)
+    try:
+        await db.connect()
+    finally:
+        await db.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        assert tuple(conn.iterdump()) == before
+    finally:
+        conn.close()
 
 
 async def _add_note_column(conn) -> None:

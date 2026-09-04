@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v7. A v6 database upgrades automatically at startup. Schemas v1-v5 must first be opened by the audited v1 bridge revision `dfd01ce006d0553c8960de0760fcb5136300c718`, which brings them to v6; this release then performs the v7 upgrade. That exact revision is the repository state immediately before the v2 compatibility reset, so the bridge remains obtainable without keeping its migration chain in v2. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
+The current schema version and minimum supported baseline are v7. Fresh databases are created at v7, and existing v7 databases open without a migration. Databases below v7 or above this release's supported version are rejected. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -72,7 +72,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry upgrades the supported previous version.
+- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies changes after the v7 baseline; it is currently empty.
 - Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -80,21 +80,13 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 ## Schema upgrades
 
-`Database.connect()` creates the current schema for an empty database and records the v7 baseline as a single `schema_version` row. An existing v6 database runs the v7 migration and retains its earlier ledger rows.
+`Database.connect()` creates the current schema for an empty database and records the v7 baseline as a single `schema_version` row named `core_v7_baseline`. Existing v7 databases retain their data and complete version ledger, including rows from earlier upgrades.
 
-The current registry:
-
-| Version | Migration name | What it changes |
-|---:|---|---|
-| v6 → v7 | `core_v7_baseline` | Canonical transcript content, removal of obsolete control-proposal tables, and expiration of legacy video sessions. |
-
-The v7 transcript rewrite converts legacy strings and provider-native `input_text`/`input_image` parts to the stored `text`/`image` list format. It preserves the other fields in each message payload. Invalid JSON or a non-object payload aborts and rolls back the entire upgrade with the offending message row id; restore a known-good backup or repair the corrupt row before retrying.
-
-The migration also deletes every active v6 video session. Cascading deletion queues its Gemini Interaction and attached Files API identifiers in the durable provider-cleanup outboxes, so remote cleanup still runs after startup. Users must start a new video session after the upgrade. Unattached uploads remain tracked for ordinary cleanup.
+The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old transcript-format conversion have been removed. No operator action is needed for a database already at v7. When restoring an older backup, use a release compatible with that backup; this release cannot upgrade a pre-v7 database. Do not change the schema stamp to bypass the check.
 
 Each supported version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema, transcript rows, video sessions, cleanup outboxes, and version stamp unchanged.
 
-Migrations only move forward and only run at startup. Back up before you upgrade a real instance. Rolling back means restoring that older release's database backup; an older process can't open a newer schema safely. The bot rejects a non-empty database without a schema stamp, any database stamped above its supported version, and schemas older than v6. For v1-v5, install and start the audited v1 bridge revision `dfd01ce006d0553c8960de0760fcb5136300c718` once, confirm it reaches v6, stop it, take another backup, and then install this release.
+Migrations only move forward and only run at startup. Back up before you upgrade a real instance. Rolling back means restoring that older release's database backup; an older process can't open a newer schema safely. The bot rejects a non-empty database without a schema stamp, any database stamped above its supported version, and schemas older than v7.
 
 Before moving or restoring the database, stop the bot and copy the main file with its `-wal` and `-shm` sidecars, or use SQLite's backup API. Don't edit `schema_version` by hand; the version ledger and the actual schema have to agree.
 
@@ -151,7 +143,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`module_scheduler_runner`** is the module scheduler's single lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second bot process pointed at the same file pauses its scheduler instead of running jobs twice.
 - **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt count, and last error). Core owns the table; modules reach it through `ctx.scheduler`.
 - **`module_command_guilds`** holds only the guild IDs where modules have published guild-scoped commands. After a module is disabled or removed, core uses this set to delete its stale Discord commands, and a row is removed once a sync leaves that guild with no module commands.
-- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back. The v7 migration removes the obsolete `control_proposals` and `control_proposal_events` tables.
+- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back.
 - **`module_schema_versions`** records the latest applied schema version for each module that has run migrations.
 
 ## Model, paid-tool, and bounded-tool usage

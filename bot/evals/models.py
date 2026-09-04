@@ -128,14 +128,8 @@ def _spec_from(label: str, data: dict[str, Any]) -> ModelSpec:
 
 def load_models(path: str | Path) -> ModelsConfig:
     raw = yaml.safe_load(Path(path).read_text()) or {}
-    judge_raw = raw["judge"]
-    if isinstance(judge_raw, dict) and "panel" in judge_raw:
-        raise ValueError(
-            "judge.panel was removed in v2 because the evaluator never consumed it; "
-            "delete the key and configure the single judge model directly"
-        )
     baseline = _spec_from("baseline", raw["baseline"])
-    judge = _spec_from("judge", judge_raw)
+    judge = _spec_from("judge", raw["judge"])
     candidates = {
         name: _spec_from(name, data) for name, data in (raw.get("candidates") or {}).items()
     }

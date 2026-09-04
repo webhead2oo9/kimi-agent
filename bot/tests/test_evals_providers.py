@@ -109,22 +109,6 @@ def test_load_models_parses_baseline_candidate_judge(tmp_path):
     assert models.image_captioner.model == "gpt-5.6-luna"
 
 
-def test_load_models_rejects_removed_judge_panel(tmp_path):
-    path = tmp_path / "models.yaml"
-    path.write_text(
-        "baseline:\n"
-        "  provider_name: anthropic\n"
-        "  model: baseline\n"
-        "judge:\n"
-        "  provider_name: anthropic\n"
-        "  model: judge\n"
-        "  panel: [judge-a, judge-b]\n"
-    )
-
-    with pytest.raises(ValueError, match=r"judge\.panel was removed"):
-        load_models(path)
-
-
 def test_load_models_rejects_nonvision_image_captioner(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(

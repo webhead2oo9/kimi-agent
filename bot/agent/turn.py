@@ -1695,9 +1695,6 @@ async def _describe_images(
         images,
         deadline=deadline,
     )
-    description = (response.content or "").strip()
-    if not description:
-        raise RuntimeError("image distillation returned no description")
     provider_model = response.model or image_provider.model
     await usage_recorder.record(
         LLMUsageCall(
@@ -1712,6 +1709,11 @@ async def _describe_images(
             is_byok=response.is_byok,
         )
     )
+    # A completed call remains billable even when its caption is unusable and
+    # the caller keeps image-capable routing instead.
+    description = (response.content or "").strip()
+    if not description:
+        raise RuntimeError("image distillation returned no description")
     try:
         await cache.set(
             turn.context.db_conversation_id,

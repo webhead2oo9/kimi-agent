@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import TracebackType
 
+from utils.asyncio import await_uncancellable
 
 TURN_ADMISSION_BUSY_MESSAGE = (
     "I'm handling as many requests as I can right now. Please try again in a moment."
@@ -58,23 +59,8 @@ class TurnAdmissionLease:
         await self.release()
 
     async def release(self) -> None:
-        release_task = asyncio.create_task(self._controller._release(self))
-        cancellation_seen = False
-        while not release_task.done():
-            try:
-                await asyncio.shield(release_task)
-            except asyncio.CancelledError:
-                # Capacity is a process-wide availability invariant. Complete the
-                # tiny counter update even if this turn is cancelled repeatedly.
-                cancellation_seen = True
-            except BaseException:
-                break
-        if cancellation_seen:
-            # Retrieve any child exception before preserving caller cancellation.
-            if not release_task.cancelled():
-                release_task.exception()
-            raise asyncio.CancelledError
-        await release_task
+        # Release capacity even when the owning turn is cancelled repeatedly.
+        await await_uncancellable(self._controller._release(self))
 
 
 class TurnAdmissionController:

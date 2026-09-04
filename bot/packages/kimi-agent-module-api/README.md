@@ -52,23 +52,21 @@ documents installation, declarations, lifecycle, and every runtime port. The
 [reference module](https://github.com/webhead2oo9/kimi-agent/tree/main/bot/modules/example)
 is a complete, commented example that exercises most ports; start there.
 
-Guild-scoped live command replacement was added in 1.1. Modules using
+Modules using guild-scoped live command replacement through
 `InteractionRouter.replace_guild_commands()` should require the host capability
 `discord.guild_commands.v1`.
 
-Version 1.2 adds typed modal forms and a narrow Components V2 layout model. Once a response uses
+The SDK provides typed modal forms and a narrow Components V2 layout model. Once a response uses
 that layout model, Discord requires every later edit of the same message to remain a layout.
 Modules using them should require
 `discord.modals.v1` and/or `discord.components_v2.v1`.
 
-Version 1.3 adds cached author classification to message-deletion events:
+Message-deletion events include cached author classification:
 `MessageDeleteEvent.author_is_bot` and `MessageBulkDeleteEvent.bot_message_ids`.
 The values remain unknown for messages that were absent from Discord's cache.
 
-Version 2 requires an explicit, source-pinned `ModuleSpec.api_version`, and
-removes the temporary guild-settings legacy flag and module table aliases.
-Modules must use namespaced guild documents and migrate legacy tables to the
-physical names returned by `ctx.storage.table()` before upgrading.
+Modules use namespaced guild documents and the physical table names returned
+by `ctx.storage.table()`.
 
 ## Testing the SDK
 

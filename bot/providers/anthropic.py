@@ -78,7 +78,8 @@ class AnthropicProvider(LLMProvider):
             kwargs["thinking"] = {"type": "adaptive"}
             kwargs["output_config"] = {"effort": "high"}
 
-        response = await self._create_message(kwargs)
+        async with self._client.messages.stream(**kwargs) as message_stream:
+            response = await message_stream.get_final_message()
         content = list(getattr(response, "content", []) or [])
         raw_usage = getattr(response, "usage", None)
         return ProviderResponse(
@@ -93,13 +94,6 @@ class AnthropicProvider(LLMProvider):
                 "content": self._blocks_to_data(content),
             },
         )
-
-    async def _create_message(self, kwargs: dict[str, Any]) -> Any:
-        stream = getattr(self._client.messages, "stream", None)
-        if callable(stream):
-            async with stream(**kwargs) as message_stream:
-                return await message_stream.get_final_message()
-        return await self._client.messages.create(**kwargs)
 
     @staticmethod
     def _parse_tool_calls(content: list[Any]) -> list[ToolCall]:

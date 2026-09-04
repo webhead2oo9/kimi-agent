@@ -20,10 +20,6 @@ _ALLOWED_LIVE_ENV_SETTINGS_CALLS = {
         "test_skill_sandbox.py",
         "_live_linux_sandbox_unavailable",
     ): "the collection-time sandbox probe validates the live operator limits",
-    (
-        "test_settings.py",
-        "test_retired_v1_dotenv_settings_fail_startup",
-    ): "the retired-setting guard intentionally validates an isolated temporary dotenv",
 }
 
 

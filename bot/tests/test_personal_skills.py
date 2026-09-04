@@ -100,6 +100,15 @@ def test_personal_skill_manager_isolates_users_and_rejects_invalid_user_ids(
     assert not (tmp_path / "456").exists()
 
 
+def test_personal_skill_manager_rejects_trailing_newline_in_user_id(tmp_path: Path) -> None:
+    manager = PersonalSkillManager(tmp_path / "personal")
+    error = manager.create("123\n", name="notes", description="Notes", content="Body")
+    assert error == "User id must be a Discord snowflake"
+    assert not manager.base_dir.exists()
+    with pytest.raises(ValueError, match="Discord snowflake"):
+        manager.get("123\n", "notes")
+
+
 def test_personal_skill_manager_reuses_skill_content_guards(tmp_path: Path) -> None:
     manager = PersonalSkillManager(tmp_path / "personal")
 

@@ -15,7 +15,6 @@ from utils.parsing import as_bool
 log = logging.getLogger(__name__)
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TOOL_METADATA_KEYS = {"tools", "tool_name", "script"}
 MAX_CONTENT_SIZE = 100_000
 
@@ -23,7 +22,7 @@ MAX_CONTENT_SIZE = 100_000
 def validate_name(name: str) -> str | None:
     if not name:
         return "Name is required"
-    if not _NAME_RE.match(name):
+    if not _NAME_RE.fullmatch(name):
         return "Name must be kebab-case (lowercase letters, numbers, hyphens)"
     if len(name) > 80:
         return "Name must be 80 characters or fewer"

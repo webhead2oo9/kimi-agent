@@ -69,6 +69,30 @@ def test_view_enforces_declarations_and_proxy_dies_with_provider() -> None:
     provider.provide("cases", 1, CaseService())
 
 
+def test_retired_registration_cannot_close_replacement_service() -> None:
+    registry = ServiceRegistryImpl()
+    old_registration = registry.provide("mod", "cases", 1, CaseService())
+    old_proxy = registry.get("mod", "cases", 1)
+
+    registry.retire_module("mod")
+    replacement = CaseService()
+    registration = registry.provide("mod", "cases", 1, replacement)
+    proxy = registry.get("mod", "cases", 1)
+
+    old_registration.close()
+    old_registration.close()
+    assert proxy.created is replacement.created
+    assert registry.provided_by("mod") == (("cases", 1),)
+    with pytest.raises(ServiceUnavailable):
+        _ = old_proxy.created
+
+    registration.close()
+    with pytest.raises(ServiceUnavailable):
+        _ = proxy.created
+    with pytest.raises(ServiceUnavailable):
+        registry.get("mod", "cases", 1)
+
+
 class Provider:
     scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
@@ -188,11 +212,7 @@ async def test_consumer_does_not_receive_same_service_from_wrong_provider(tmp_pa
         )
 
 
-@pytest.mark.asyncio
-async def test_typed_get_checks_the_provided_implementation(tmp_path: Path) -> None:
-    from kimi_agent_module_api.contracts import ServiceDeclaration, ServiceRequirement
-    from modules.services import ModuleServiceView, ServiceRegistryImpl
-
+def test_typed_get_checks_the_provided_implementation() -> None:
     class Board: ...
 
     registry = ServiceRegistryImpl()

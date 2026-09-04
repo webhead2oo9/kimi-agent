@@ -16,6 +16,10 @@ from modules.scheduler import (
     DurableScheduler,
 )
 from storage.db import Database
+from tests.module_scheduler_helpers import (
+    run_due_jobs,
+    scheduler_paused_for_foreign_runner,
+)
 
 
 class _Clock:
@@ -57,10 +61,10 @@ async def test_one_shot_and_periodic_jobs_persist_and_run_when_due(tmp_path: Pat
     await view.run_at("once", clock.now + 10, "tick", {"n": 1})
     await view.run_every("often", 60, "tick", jitter_seconds=5)
     try:
-        assert await scheduler.run_due() == 1  # only the periodic one is due now
+        assert await run_due_jobs(scheduler) == 1  # only the periodic one is due now
         assert ran == [("often", 1)]
         clock.now += 10
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert ran[-1] == ("once", 1)
         jobs = {job.key: job for job in await view.list()}
         assert "once" not in jobs  # one-shot deleted on success
@@ -91,18 +95,18 @@ async def test_failures_back_off_and_a_lease_prevents_overlap(tmp_path: Path) ->
     view.register("sync", flaky)
     await view.run_every("hub", 300, "sync", backoff=Backoff(base_seconds=10, max_seconds=40))
     try:
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         (job,) = await view.list()
         assert job.attempt == 1 and job.last_error is not None and "hub down" in job.last_error
         assert job.next_run_at == clock.now + 10
         clock.now += 10
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         (job,) = await view.list()
         assert job.attempt == 2 and job.next_run_at == clock.now + 20
         clock.now += 20
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         clock.now += 40
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         (job,) = await view.list()
         assert job.next_run_at == clock.now + 40  # capped
         assert attempts == [1, 2, 3, 4]
@@ -113,10 +117,10 @@ async def test_failures_back_off_and_a_lease_prevents_overlap(tmp_path: Path) ->
                 f"UPDATE {TABLE} SET run_at = ?, leased_until = ?, lease_token = 'x'",
                 (clock.now, clock.now + 30),
             )
-        assert await scheduler.run_due() == 0
+        assert await run_due_jobs(scheduler) == 0
         # ...until it expires, e.g. after a crash.
         clock.now += 31
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
     finally:
         await scheduler.close()
         await db.close()
@@ -142,11 +146,11 @@ async def test_failure_backoff_caps_before_extreme_multiplier_overflows(tmp_path
         backoff=Backoff(base_seconds=1, max_seconds=5, multiplier=1e308),
     )
     try:
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         clock.now += 1
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
         clock.now += 5
-        await scheduler.run_due()
+        await run_due_jobs(scheduler)
 
         (job,) = await view.list()
         assert attempts == [1, 2, 3]
@@ -175,7 +179,7 @@ async def test_jobs_survive_restart_and_pause_without_a_handler(tmp_path: Path) 
     second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
     try:
         # No handler registered yet: the job is paused, not lost, and health says so.
-        assert await second.run_due() == 0
+        assert await run_due_jobs(second) == 0
         assert health == [("mod", "degraded", "scheduled job 'often' has no handler")]
         (job,) = await second.list_jobs("mod")
         assert job.last_error == "no handler 'tick'"
@@ -188,7 +192,7 @@ async def test_jobs_survive_restart_and_pause_without_a_handler(tmp_path: Path) 
 
         second.view_for("mod").register("tick", handler)
         assert health[-1] == ("mod", "healthy", "")
-        assert await second.run_due() == 1
+        assert await run_due_jobs(second) == 1
         assert ran == ["often"]
     finally:
         await second.close()
@@ -211,7 +215,7 @@ async def test_orphaned_due_job_does_not_starve_runnable_due_job(tmp_path: Path)
     await view.run_at("orphan", clock.now - 1, "missing")
     await view.run_at("runnable", clock.now, "tick")
     try:
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert ran == ["runnable"]
         (orphan,) = await view.list()
         assert orphan.key == "orphan"
@@ -240,7 +244,7 @@ async def test_rescheduling_running_one_shot_survives_stale_settlement(tmp_path:
     view.register("replacement", replacement)
     await view.run_at("job", clock.now, "replace")
     try:
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         (job,) = await view.list()
         assert job.key == "job"
         assert job.handler == "replacement"
@@ -248,7 +252,7 @@ async def test_rescheduling_running_one_shot_survives_stale_settlement(tmp_path:
         assert job.attempt == 0
 
         clock.now += 60
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert [run.payload for run in replacement_runs] == [{"generation": 2}]
         assert await view.list() == []
     finally:
@@ -276,7 +280,7 @@ async def test_rescheduling_running_periodic_job_preserves_replacement_definitio
     view.register("replacement", replacement)
     await view.run_every("job", 60, "replace")
     try:
-        assert await scheduler.run_due(limit=1) == 1
+        assert await run_due_jobs(scheduler, limit=1) == 1
         (job,) = await view.list()
         assert job.handler == "replacement"
         assert job.interval_seconds == 300
@@ -285,7 +289,7 @@ async def test_rescheduling_running_periodic_job_preserves_replacement_definitio
 
         # Settlement releases the completed execution's still-owned lease, so
         # its due replacement is immediately claimable without overlap.
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert replacement_started.is_set()
         (job,) = await view.list()
         assert job.handler == "replacement"
@@ -322,7 +326,7 @@ async def test_rescheduled_job_keeps_running_execution_lease_heartbeating(
             pytest.fail("running execution did not heartbeat its replacement's lease")
         clock.now += 0.1
         # The replacement is already due, but cannot overlap this execution.
-        assert await scheduler.run_due() == 0
+        assert await run_due_jobs(scheduler) == 0
 
     async def replacement(run: JobRun) -> None:
         replacement_runs.append(run.key)
@@ -331,11 +335,11 @@ async def test_rescheduled_job_keeps_running_execution_lease_heartbeating(
     view.register("replacement", replacement)
     await view.run_at("job", clock.now, "replace")
     try:
-        assert await scheduler.run_due(limit=1) == 1
+        assert await run_due_jobs(scheduler, limit=1) == 1
         assert replacement_runs == []
         # Completion releases the old execution's lease without changing the
         # replacement definition, making it immediately claimable.
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert replacement_runs == ["job"]
     finally:
         await scheduler.close()
@@ -351,7 +355,7 @@ async def test_cancelling_the_last_paused_job_clears_scheduler_health(tmp_path: 
     view = scheduler.view_for("mod")
     try:
         await view.run_at("orphan", clock.now, "missing")
-        assert await scheduler.run_due() == 0
+        assert await run_due_jobs(scheduler) == 0
         assert health[-1][1] == "degraded"
         assert await view.cancel("orphan") is True
         assert health[-1] == ("mod", "healthy", "")
@@ -483,7 +487,7 @@ async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path
     scheduler.start()
     try:
         await asyncio.sleep(0.1)
-        assert scheduler.paused_for_foreign_runner
+        assert scheduler_paused_for_foreign_runner(scheduler)
         assert ran == []
         assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
 
@@ -494,7 +498,7 @@ async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path
             if ran:
                 break
         assert ran == ["mine"]
-        assert not scheduler.paused_for_foreign_runner
+        assert not scheduler_paused_for_foreign_runner(scheduler)
         assert health[-1] == ("mod", "healthy", "")
     finally:
         await scheduler.close()
@@ -524,55 +528,13 @@ async def test_two_runners_cannot_both_hold_the_lease(tmp_path: Path) -> None:
         await db.close()
 
 
-@pytest.mark.asyncio
-async def test_run_due_shares_one_job_per_module_with_the_runner(tmp_path: Path) -> None:
-    db = await _db(tmp_path)
-    clock = _Clock()
-    scheduler = DurableScheduler(db, clock=clock, poll_seconds=0.02)
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    overlapped = False
-    in_flight = 0
-
-    async def handler(run: JobRun) -> None:
-        nonlocal in_flight, overlapped
-        in_flight += 1
-        overlapped = overlapped or in_flight > 1
-        entered.set()
-        await release.wait()
-        in_flight -= 1
-
-    view = scheduler.view_for("mod")
-    view.register("h", handler)
-    await view.run_at("a", clock.now, "h")
-    await view.run_at("b", clock.now, "h")
-    try:
-        inline = asyncio.create_task(scheduler.run_due())
-        await asyncio.wait_for(entered.wait(), timeout=2)
-        scheduler.start()
-        await asyncio.sleep(0.1)
-        assert in_flight == 1, "the runner must not start b while run_due runs a"
-        assert len(scheduler._running) == 1 and scheduler._running_modules == {"mod"}
-        release.set()
-        await inline
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if not await view.list():
-                break
-        assert not overlapped
-        assert await view.list() == []
-    finally:
-        await scheduler.close()
-        await db.close()
-
-
 def test_max_concurrent_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(ModuleContractError):
         DurableScheduler(object(), max_concurrent=0)
 
 
 @pytest.mark.asyncio
-async def test_run_due_also_needs_the_runner_lease(tmp_path: Path) -> None:
+async def test_scheduler_tick_needs_the_runner_lease(tmp_path: Path) -> None:
     db = await _db(tmp_path)
     clock = _Clock()
     health: list[tuple[str, str, str]] = []
@@ -588,13 +550,13 @@ async def test_run_due_also_needs_the_runner_lease(tmp_path: Path) -> None:
             f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
         )
     try:
-        assert await scheduler.run_due() == 0
+        assert await run_due_jobs(scheduler) == 0
         assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
         # A module registering during the pause is told, too.
         scheduler.view_for("late").register("h", handler)
         assert health[-1] == ("late", "degraded", FOREIGN_RUNNER_DETAIL)
         clock.now += 31
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
         assert ("mod", "healthy", "") in health and ("late", "healthy", "") in health
     finally:
         await scheduler.close()
@@ -617,7 +579,7 @@ async def test_resume_restores_the_same_orphan_detail(tmp_path: Path) -> None:
     second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
     second.view_for("mod").register("other", handler)
     try:
-        assert await second.run_due() == 0
+        assert await run_due_jobs(second) == 0
         orphan_detail = health[-1]
         assert orphan_detail == ("mod", "degraded", "scheduled job 'orphan' has no handler")
         # Foreign pause and resume must restore exactly that detail.
@@ -625,9 +587,9 @@ async def test_resume_restores_the_same_orphan_detail(tmp_path: Path) -> None:
             await conn.execute(
                 f"UPDATE {RUNNER_TABLE} SET token = 'other', leased_until = ?", (clock.now + 30,)
             )
-        assert await second.run_due() == 0
+        assert await run_due_jobs(second) == 0
         clock.now += 31
-        assert await second.run_due() == 0
+        assert await run_due_jobs(second) == 0
         assert health[-1] == orphan_detail
     finally:
         await second.close()
@@ -648,8 +610,8 @@ async def test_job_heartbeat_renews_the_runner_lease(tmp_path: Path) -> None:
 
     scheduler.view_for("mod").register("slow", slow)
     await scheduler.view_for("mod").run_at("job", clock.now, "slow")
+    scheduler.start()
     try:
-        inline = asyncio.create_task(scheduler.run_due())
         await asyncio.wait_for(started.wait(), timeout=2)
         clock.now += 1.0  # well past the 0.2s lease; only heartbeats can keep it
         await asyncio.sleep(0.35)
@@ -657,7 +619,11 @@ async def test_job_heartbeat_renews_the_runner_lease(tmp_path: Path) -> None:
         row = await cursor.fetchone()
         assert row is not None and row[0] > clock.now
         release.set()
-        await inline
+        for _ in range(100):
+            if not await scheduler.list_jobs("mod"):
+                break
+            await asyncio.sleep(0.01)
+        assert await scheduler.list_jobs("mod") == []
     finally:
         await scheduler.close()
         await db.close()
@@ -686,10 +652,10 @@ async def test_failed_claim_commit_releases_the_module_reservation(tmp_path: Pat
     db.conn.commit = flaky_commit  # type: ignore[method-assign]
     try:
         with pytest.raises(RuntimeError, match="disk full"):
-            await scheduler.run_due()
+            await run_due_jobs(scheduler)
         assert scheduler._running_modules == set()
         db.conn.commit = real_commit  # type: ignore[method-assign]
-        assert await scheduler.run_due() == 1
+        assert await run_due_jobs(scheduler) == 1
     finally:
         db.conn.commit = real_commit  # type: ignore[method-assign]
         await scheduler.close()
@@ -713,7 +679,7 @@ async def test_cancelling_one_orphan_keeps_the_detail_naming_a_live_job(tmp_path
     second = _scheduler(db, clock, on_health=lambda m, s, d: health.append((m, s, d)))
     second.view_for("mod").register("other", handler)
     try:
-        assert await second.run_due() == 0
+        assert await run_due_jobs(second) == 0
         assert health[-1] == ("mod", "degraded", "scheduled job 'a' has no handler")
         assert await second.view_for("mod").cancel("a")
         # Still degraded (b is orphaned too); the detail, stored and live, now names b.

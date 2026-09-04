@@ -1,4 +1,4 @@
-"""Per-guild module settings: coercion, namespaced documents, legacy fallback, policies."""
+"""Per-guild module settings: coercion, namespaced documents, and policies."""
 
 from __future__ import annotations
 
@@ -94,7 +94,6 @@ def _service(
 
 def test_namespaced_document_wins_and_changes_notify_subscribers(tmp_path: Path) -> None:
     service, health = _service(tmp_path, mod=SCHEMA)
-    _write(tmp_path, f"servers/{GUILD}.md", "---\nbot_active: true\ncount: 9\nlabel: legacy\n---\n")
     _write(
         tmp_path,
         f"{GUILD_MODULES_DIR}/{GUILD}/mod.md",
@@ -104,7 +103,7 @@ def test_namespaced_document_wins_and_changes_notify_subscribers(tmp_path: Path)
     unsubscribe = service.subscribe("mod", seen.append)
     service.refresh([GUILD])
     snapshot = service.get(GUILD, "mod")
-    assert snapshot.valid and not snapshot.legacy
+    assert snapshot.valid
     assert snapshot.values == {
         "mod_log_channel_id": CHANNEL,
         "mod_log_events": None,
@@ -124,7 +123,7 @@ def test_namespaced_document_wins_and_changes_notify_subscribers(tmp_path: Path)
     assert health == []
 
 
-def test_legacy_server_keys_are_a_reported_fallback(tmp_path: Path) -> None:
+def test_server_document_does_not_supply_module_settings(tmp_path: Path) -> None:
     service, health = _service(tmp_path, mod=SCHEMA)
     _write(
         tmp_path,
@@ -133,13 +132,9 @@ def test_legacy_server_keys_are_a_reported_fallback(tmp_path: Path) -> None:
     )
     service.refresh([GUILD])
     snapshot = service.get(GUILD, "mod")
-    assert snapshot.valid and snapshot.legacy
-    assert snapshot.values["mod_log_channel_id"] == CHANNEL
-    assert health == [("mod", "degraded", f"legacy server keys still used by {GUILD}")]
-    _write(tmp_path, f"{GUILD_MODULES_DIR}/{GUILD}/mod.md", "---\ncount: 2\n---\n")
-    service.refresh([GUILD])
-    assert service.get(GUILD, "mod").legacy is False
-    assert health[-1] == ("mod", "healthy", "")
+    assert snapshot.valid is False
+    assert snapshot.errors == ("count is required",)
+    assert health == [("mod", "degraded", f"invalid guild settings in {GUILD}")]
 
 
 def test_invalid_documents_apply_the_declared_policy(tmp_path: Path) -> None:
@@ -166,7 +161,7 @@ def test_body_content_and_missing_documents(tmp_path: Path) -> None:
     _write(tmp_path, f"{GUILD_MODULES_DIR}/{GUILD}/mod.md", "---\nchannels: []\n---\nnot allowed\n")
     assert service.get(GUILD, "mod").errors == ("module guild settings must be frontmatter only",)
     missing = service.get(GUILD + 1, "mod")
-    assert missing.valid and missing.values == {"channels": None} and missing.legacy is False
+    assert missing.valid and missing.values == {"channels": None}
 
 
 def test_malformed_optional_only_documents_fail_closed(tmp_path: Path) -> None:
@@ -187,16 +182,17 @@ def test_malformed_optional_only_documents_fail_closed(tmp_path: Path) -> None:
     assert service.blocked_guilds() == frozenset(GUILD + offset for offset in range(3))
 
 
-def test_unreadable_legacy_document_blocks_optional_enforcement_settings(tmp_path: Path) -> None:
-    legacy_path = tmp_path / "servers" / f"{GUILD}.md"
-    legacy_path.mkdir(parents=True)
+def test_invalid_utf8_document_blocks_optional_enforcement_settings(tmp_path: Path) -> None:
+    path = tmp_path / GUILD_MODULES_DIR / str(GUILD) / "enforcer.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff")
     service, _ = _service(tmp_path, enforcer=OPTIONAL_ENFORCEMENT)
 
     service.refresh([GUILD])
 
     snapshot = service.get(GUILD, "enforcer")
     assert not snapshot.valid
-    assert snapshot.errors and snapshot.errors[0].startswith("unreadable legacy document:")
+    assert snapshot.errors and snapshot.errors[0].startswith("unreadable document:")
     assert service.blocked_guilds() == frozenset({GUILD})
 
 
@@ -237,17 +233,15 @@ def test_stale_refresh_cannot_override_newer_enforcement_snapshot(tmp_path: Path
             nonlocal guild_calls
             assert module_name == "mod"
             if guild_id == other_guild:
-                return GuildSettingsSnapshot({"channels": ()}, True, (), "other-current", False)
+                return GuildSettingsSnapshot({"channels": ()}, True, (), "other-current")
             with call_lock:
                 guild_calls += 1
                 call_number = guild_calls
             if call_number == 1:
                 first_read_started.set()
                 allow_first_read.wait()
-                return GuildSettingsSnapshot({"channels": ()}, True, (), "older-valid", False)
-            return GuildSettingsSnapshot(
-                {}, False, ("newer invalid settings",), "newer-invalid", False
-            )
+                return GuildSettingsSnapshot({"channels": ()}, True, (), "older-valid")
+            return GuildSettingsSnapshot({}, False, ("newer invalid settings",), "newer-invalid")
 
     health: list[tuple[str, str, str]] = []
     service = OutOfOrderReadService(

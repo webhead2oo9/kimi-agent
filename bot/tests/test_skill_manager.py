@@ -2,7 +2,6 @@
 guild scoping, and rejecting malformed or inline tool frontmatter.
 """
 
-import sys
 import tempfile
 from pathlib import Path
 
@@ -540,10 +539,6 @@ def test_edit_skill_rejects_zero_or_multiple_modes() -> None:
         )
 
 
-@pytest.mark.asyncio
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="executes the written script via the POSIX skills runner"
-)
 def test_parse_guild_ids_fails_closed_in_non_strict() -> None:
     # Absent => global (None).
     assert _parse_guild_ids(None, "s.t", strict_tools=False) is None

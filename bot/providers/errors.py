@@ -106,11 +106,6 @@ def provider_failure_disposition(exc: BaseException) -> ProviderFailureDispositi
     return generic_failure_policy(exc, CooldownPolicy(), 0).disposition
 
 
-def is_provider_availability_error(exc: BaseException) -> bool:
-    """True when retrying the same backend may recover the request."""
-    return provider_failure_disposition(exc) == "retry"
-
-
 def safe_provider_error_message(
     exc: BaseException,
     *,

@@ -155,6 +155,7 @@ Beyond startup, the failure modes are:
 
 - Automatic recall degrades to no recalled context if the preference lookup or the Hindsight recall fails.
 - Explicit memory tools return safe JSON errors or disabled-memory responses instead of raising into Discord.
-- The Hindsight client's list, recall, retain, and delete helpers log and return empty or false results on SDK errors.
+- `MemoryClient.recall` logs backend failures and returns no memories; retain, bank creation, and bank configuration log failures and return `False`.
+- Privacy deletion uses strict whole-bank deletion. An unconfirmed backend failure raises internally so the durable deletion request remains pending for retry; an already-absent bank is treated as a successful idempotent retry.
 - Auto-retain failures are isolated per slice. A failed retain leaves the watermark untouched (the next sweep retries the identical slice as a replace), one slice's exception never aborts the sweep, and an exception in the sweep itself is logged without killing the sweeper loop.
-- Slash-command destructive operations require exact confirmation strings before deleting documents or banks.
+- `/privacy` requires a confirmation-button click before deleting the user's whole bank. The bot does not expose document-level memory administration.

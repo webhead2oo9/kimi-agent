@@ -6,7 +6,6 @@ from app import tool_surfaces
 from app.tool_surfaces import (
     TOOL_SURFACES,
     declare_surface_tools,
-    reset_surface_tools,
     restore_surface_tools,
     snapshot_surface_tools,
     surface_tools,
@@ -60,12 +59,3 @@ def test_snapshot_is_not_a_live_view() -> None:
     declare_surface_tools("eval_stub", ["later"])
 
     assert snapshot["eval_stub"] == frozenset({"kept"})
-
-
-def test_reset_clears_every_surface() -> None:
-    declare_surface_tools("eval_stub", ["alpha"])
-    declare_surface_tools("eval_record", ["beta"])
-    reset_surface_tools()
-
-    assert surface_tools("eval_stub") == frozenset()
-    assert surface_tools("eval_record") == frozenset()

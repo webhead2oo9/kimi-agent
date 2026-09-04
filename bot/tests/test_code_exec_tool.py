@@ -25,6 +25,7 @@ from config.settings import Settings
 import tools.code_exec as code_exec
 from workspace.manager import WorkspaceKey, WorkspaceManager, workspace_owner_key
 from sandbox.netns_lease import NetnsLease, NetnsLeasePoisonedError
+from tests.netns_lease_helpers import netns_lease_is_poisoned
 from sandbox.runner import (
     SandboxConfig,
     SandboxResult,
@@ -1635,7 +1636,7 @@ async def test_unconfirmed_network_teardown_poisons_shared_netns_lease(
     )
 
     assert "network unit remained active" in result["error"]
-    assert netns_lease.poisoned
+    assert netns_lease_is_poisoned(netns_lease)
     assert not netns_lease.locked()
     with pytest.raises(NetnsLeasePoisonedError, match="unavailable until restart"):
         await netns_lease.acquire()

@@ -24,12 +24,13 @@ Deleting the package afterwards is fine too. If you delete it but leave the name
 
 ## What the plugin entry point has to expose
 
-The module you list needs to expose one plain (non-async) function, `register(ctx) -> None`. New plugins should declare the contract version too:
+The module you list needs to expose one plain (non-async) function,
+`register(ctx) -> None`, and must declare the contract version:
 
 ```python
 from app.plugins import PluginContext
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 
 
 def register(ctx: PluginContext) -> None:
@@ -49,7 +50,9 @@ What `ctx` gives you:
 | `ctx.register_tool_labels(...)` | Operator-facing activity labels for your tools. |
 | `ctx.declare_surface_tools(surface, names)` | Isolate your tools on eval surfaces. |
 
-`PLUGIN_API_VERSION` is `1` today. If you declare anything else, the loader skips the module. Leaving it out still works, for compatibility, but declare it anyway: that declaration is what turns a future incompatibility into a log line instead of a strange runtime failure.
+`PLUGIN_API_VERSION` is `2` today and is required. If it is missing or has any
+other value, the loader skips the plugin. The explicit declaration turns an
+incompatibility into a clear log line instead of a strange runtime failure.
 
 ### Name collisions resolve in the core's favor
 
@@ -154,22 +157,18 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 from app.plugins import PluginContext, PluginSetting, PluginSettingsDefinition
-from config.environment import selected_env_file
-
 from acme_search.client import AcmeClient
 from acme_search.tools import AcmeToolConfig, init_acme_tools
 
 log = logging.getLogger(__name__)
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 
 
 class AcmeSettings(BaseSettings):
-    """Private config, read from the same selected dotenv as core Settings."""
+    """Private config prepared from the core-selected environment by the loader."""
 
     model_config = {
-        "env_file": selected_env_file(),
-        "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
 
@@ -279,7 +278,7 @@ shows up. Each case comes down to one line:
 | Log line | Cause |
 |---|---|
 | (nothing) | The plugin entry point isn't in `PLUGIN_MODULES`. Code in the checkout is invisible on its own. |
-| `Skipping plugin <name>: PLUGIN_API_VERSION <v> is not the supported 1` | The plugin declares a version this core doesn't implement. |
+| `Skipping plugin <name>: PLUGIN_API_VERSION <v> is not the supported 2` | The plugin omits the version or declares one this core doesn't implement. |
 | `Skipping plugin <name>: it exposes no callable register(ctx)` | No `register`, or it isn't callable. |
 | `Skipping plugin <name> because its saved settings are invalid: <error>` | The override file can't be read or fails validation. The file is left untouched so you can repair it. |
 | `Plugin <name> failed; continuing without it`, with a traceback | The import raised, or `register()` did. A duplicate tool name lands here, since core registers first. |

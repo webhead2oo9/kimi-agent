@@ -28,10 +28,6 @@ class NetnsLease:
         self._held = False
         self._poisoned = False
 
-    @property
-    def poisoned(self) -> bool:
-        return self._poisoned
-
     def locked(self) -> bool:
         return self._held
 

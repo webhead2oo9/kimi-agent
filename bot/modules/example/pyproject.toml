@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 readme = "README.md"
 # The only runtime dependency a module needs. Pin to the major version: the
 # API's MODULE_API_VERSION changes with it.
-dependencies = ["kimi-agent-module-api>=1.0.0,<2"]
+dependencies = ["kimi-agent-module-api>=2.0.0,<3"]
 
 [project.optional-dependencies]
 # The SDK's ``testing`` extra brings MemoryStorage (real SQL in unit tests);

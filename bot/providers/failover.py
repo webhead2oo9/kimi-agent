@@ -121,8 +121,8 @@ class FailoverProvider(LLMProvider):
 
     async def run_turn(self, request: ProviderRequest) -> ProviderResponse:
         state_owner, provider_state = self._unwrap_provider_state(request.provider_state)
+        start_index = state_owner
         last_index = len(self._providers) - 1
-        start_index = state_owner if 0 <= state_owner <= last_index else 0
         last_error: BaseException | None = None
         for index in range(start_index, len(self._providers)):
             provider = self._providers[index]
@@ -207,19 +207,31 @@ class FailoverProvider(LLMProvider):
             raise last_error
         raise ProviderCircuitOpenError
 
-    @staticmethod
     def _unwrap_provider_state(
+        self,
         state: dict[str, Any],
     ) -> tuple[int, dict[str, Any]]:
+        if not state:
+            return 0, {}
+        if set(state) != {_STATE_ENVELOPE_KEY}:
+            raise ValueError(
+                f"Failover provider state must be empty or contain only {_STATE_ENVELOPE_KEY!r}"
+            )
         envelope = state.get(_STATE_ENVELOPE_KEY)
-        if not isinstance(envelope, dict):
-            # A bare state predates the envelope or was supplied directly by a
-            # caller. Preserve compatibility by treating it as primary-owned.
-            return 0, dict(state)
+        if not isinstance(envelope, dict) or set(envelope) != {
+            "provider_index",
+            "provider_state",
+        }:
+            raise ValueError("Malformed failover provider state envelope")
         owner = envelope.get("provider_index")
         provider_state = envelope.get("provider_state")
-        if not isinstance(owner, int) or not isinstance(provider_state, dict):
-            return 0, {}
+        if (
+            not isinstance(owner, int)
+            or isinstance(owner, bool)
+            or not 0 <= owner < len(self._providers)
+            or not isinstance(provider_state, dict)
+        ):
+            raise ValueError("Malformed failover provider state envelope")
         return owner, dict(provider_state)
 
     @staticmethod

@@ -1,20 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from storage.conversations import ConversationStore
-
-
-@dataclass(frozen=True, slots=True)
-class RootLockSnapshot:
-    keys: tuple[str, ...]
-    refcounts: Mapping[str, int]
 
 
 class RootLockPool:
@@ -22,12 +14,6 @@ class RootLockPool:
         self._locks: dict[str, asyncio.Lock] = {}
         self._refcounts: dict[str, int] = {}
         self._holders: dict[str, asyncio.Task[Any]] = {}
-
-    def snapshot(self) -> RootLockSnapshot:
-        return RootLockSnapshot(
-            keys=tuple(sorted(self._locks)),
-            refcounts=MappingProxyType(dict(self._refcounts)),
-        )
 
     @asynccontextmanager
     async def hold(self, key: str) -> AsyncIterator[None]:

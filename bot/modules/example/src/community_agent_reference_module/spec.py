@@ -108,6 +108,10 @@ SPEC = ModuleSpec(
     name=MODULE_NAME,
     version="1.0.0",
     create=create,
+    # Pin the contract this source implements. Do not replace this literal with
+    # MODULE_API_VERSION: rebuilding unchanged source against a future SDK must
+    # fail host preflight instead of silently claiming compatibility.
+    api_version=2,
     settings=SETTINGS,
     guild_settings=GUILD_SETTINGS,
     permissions=ModulePermissions(

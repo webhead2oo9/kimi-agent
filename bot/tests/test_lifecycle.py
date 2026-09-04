@@ -11,6 +11,7 @@ from app import lifecycle as lifecycle_module
 from app import runtime as app_runtime
 from app.lifecycle import ApplicationLifecycle
 from storage.auto_retain import AutoRetainStore
+from tests.app_state_probes import lifecycle_state
 from tests.helpers import make_settings, StubProviderManager, replace_lifecycle_resources
 from utils.privacy_barrier import PrivacyDeletionPendingError
 from workspace import WorkspaceKey
@@ -58,7 +59,7 @@ async def test_filesystem_sweepers_install_once(
     await lifecycle.start_filesystem_sweepers()
 
     assert sorted(started) == ["attachment_orphan_sweeper", "workspace_sweeper"]
-    snapshot = lifecycle.snapshot()
+    snapshot = lifecycle_state(lifecycle)
     assert snapshot.workspace_sweeper_started is True
     assert snapshot.workspace_sweeper_task is not None
     assert snapshot.attachment_sweeper_task is not None
@@ -165,6 +166,70 @@ async def test_close_resources_preserves_dependency_order(
         "video",
         "database",
     ]
+
+
+@pytest.mark.asyncio
+async def test_coding_recovery_precedes_startup_privacy_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app, lifecycle = _build_lifecycle(monkeypatch, database_path=tmp_path / "bot.db")
+    events: list[str] = []
+
+    async def recover_persisted_work() -> None:
+        events.append("coding-recovery")
+
+    async def stop_after_privacy_ordering_check(**_kwargs: Any) -> None:
+        events.append("privacy-replay")
+        raise RuntimeError("stop after ordering check")
+
+    monkeypatch.setattr(
+        lifecycle.resources.coding_tasks,
+        "recover_persisted_work",
+        recover_persisted_work,
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "resume_pending_privacy_deletions",
+        stop_after_privacy_ordering_check,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="ordering check"):
+            await lifecycle.initialize()
+        assert events == ["coding-recovery", "privacy-replay"]
+    finally:
+        await app.database.close()
+
+
+@pytest.mark.asyncio
+async def test_coding_recovery_failure_blocks_startup_privacy_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app, lifecycle = _build_lifecycle(monkeypatch, database_path=tmp_path / "bot.db")
+    privacy_called = False
+
+    async def fail_recovery() -> None:
+        raise RuntimeError("unit still active")
+
+    async def privacy_replay(**_kwargs: Any) -> None:
+        nonlocal privacy_called
+        privacy_called = True
+
+    monkeypatch.setattr(
+        lifecycle.resources.coding_tasks,
+        "recover_persisted_work",
+        fail_recovery,
+    )
+    monkeypatch.setattr(lifecycle, "resume_pending_privacy_deletions", privacy_replay)
+
+    try:
+        with pytest.raises(RuntimeError, match="unit still active"):
+            await lifecycle.initialize()
+        assert privacy_called is False
+    finally:
+        await app.database.close()
 
 
 @pytest.mark.asyncio

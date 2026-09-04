@@ -111,7 +111,6 @@ class ProviderRequest:
     provider_state: dict[str, Any] = field(default_factory=dict)
     requested_capabilities: set[ProviderCapability] = field(default_factory=set)
     recalled_memories: str = ""
-    continuation_context_messages: list[ConversationMessage] = field(default_factory=list)
     reasoning_enabled: bool = True
     # Optional per-call override selected by the provider's model-specific tool
     # escalation policy. Providers without adjustable reasoning ignore it.
@@ -136,10 +135,9 @@ class ProviderResponse:
     # Configured backend model whose rate card prices this call. This can differ
     # from ``model`` when an API reports a dated/concrete serving model.
     pricing_model: str = ""
-    # ``None`` preserves compatibility for custom providers: a non-empty usage
-    # mapping is treated as reported. Built-in adapters set this explicitly so
-    # an absent usage object remains distinguishable from reported zero counts.
-    usage_present: bool | None = None
+    # Adapters set this explicitly so an absent usage object remains
+    # distinguishable from reported zero counts.
+    usage_present: bool = False
     # OpenRouter attribution is deliberately normalized into bounded fields.
     # Raw router metadata is not continuation state and must not enter history.
     upstream_provider: str = ""
@@ -153,4 +151,4 @@ class ProviderResponse:
 
     @property
     def has_reported_usage(self) -> bool:
-        return bool(self.usage) if self.usage_present is None else self.usage_present
+        return self.usage_present

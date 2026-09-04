@@ -328,32 +328,27 @@ class CodingTaskStore:
             rows = await cursor.fetchall()
         return [self._task_from_row(row) for row in rows]
 
-    async def queued_counts(self, *, user_id: str, workspace_key: str) -> tuple[int, int]:
-        async with self._db.conn.execute(
-            """
-            SELECT
-                SUM(CASE WHEN user_id = ? AND status = 'queued' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN workspace_key = ? AND status = 'queued' THEN 1 ELSE 0 END)
-            FROM coding_tasks
-            """,
-            (user_id, workspace_key),
-        ) as cursor:
-            row = await cursor.fetchone()
-        assert row is not None
-        return int(row[0] or 0), int(row[1] or 0)
+    async def claim_next(self, *, excluded_task_ids: Collection[str] = ()) -> CodingTask | None:
+        """Atomically claim the oldest task whose workspace has no active writer.
 
-    async def claim_next(self) -> CodingTask | None:
-        """Atomically claim the oldest task whose workspace has no active writer."""
+        ``excluded_task_ids`` are tasks still owned by an in-process worker. A
+        waiting task can be steered back to ``queued`` before that worker has
+        returned; excluding its id prevents a second logical worker from being
+        created during that handoff window.
+        """
 
+        excluded = sorted(set(excluded_task_ids))
+        exclusion_sql = f"AND q.id NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
         now = time.time()
         async with self._db.write_transaction() as conn:
             async with conn.execute(
-                """
+                f"""
                 SELECT q.id
                 FROM coding_tasks q
                 WHERE q.status = 'queued'
                   AND q.cancel_requested = 0
                   AND q.handoff_pending = 0
+                  {exclusion_sql}
                   AND NOT EXISTS (
                       SELECT 1 FROM coding_tasks earlier
                       WHERE earlier.workspace_key = q.workspace_key
@@ -372,7 +367,8 @@ class CodingTaskStore:
                   )
                 ORDER BY q.created_at
                 LIMIT 1
-                """
+                """,
+                excluded,
             ) as cursor:
                 row = await cursor.fetchone()
             if row is None:
@@ -491,17 +487,6 @@ class CodingTaskStore:
                 conn, task_id, "handoff_abandoned", {"reason": reason}, now
             )
         return True
-
-    async def append_event(
-        self, task_id: str, kind: str, payload: dict[str, Any] | None = None
-    ) -> None:
-        now = time.time()
-        async with self._db.write_transaction() as conn:
-            await self._append_event_conn(conn, task_id, kind, payload or {}, now)
-            await conn.execute(
-                "UPDATE coding_tasks SET updated_at = ?, heartbeat_at = ? WHERE id = ?",
-                (now, now, task_id),
-            )
 
     async def steer_active_task(
         self,
@@ -628,24 +613,6 @@ class CodingTaskStore:
                 },
             ),
         )
-
-    async def set_status(self, task_id: str, status: CodingTaskStatus) -> bool:
-        now = time.time()
-        terminal = status in TERMINAL_TASK_STATUSES
-        async with self._db.write_transaction() as conn:
-            changed = await conn.execute(
-                """
-                UPDATE coding_tasks
-                SET status = ?, updated_at = ?, heartbeat_at = ?,
-                    finished_at = CASE WHEN ? THEN COALESCE(finished_at, ?) ELSE finished_at END
-                WHERE id = ?
-                """,
-                (status.value, now, now, int(terminal), now, task_id),
-            )
-            if changed.rowcount != 1:
-                return False
-            await self._append_event_conn(conn, task_id, "status", {"status": status.value}, now)
-        return True
 
     async def transition_active_status(
         self,
@@ -774,24 +741,29 @@ class CodingTaskStore:
         *,
         result_text: str = "",
         error_text: str = "",
-    ) -> None:
+    ) -> bool:
+        """Settle an active task once without rewriting an existing terminal result."""
+
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError("finish requires a terminal task status")
         now = time.time()
         async with self._db.write_transaction() as conn:
             async with conn.execute(
-                "SELECT cancel_requested FROM coding_tasks WHERE id = ?", (task_id,)
+                "SELECT status, cancel_requested FROM coding_tasks WHERE id = ?", (task_id,)
             ) as cursor:
                 row = await cursor.fetchone()
-            if row is None:
-                return
-            final_status = CodingTaskStatus.CANCELLED if bool(row[0]) else status
-            await conn.execute(
+            if row is None or CodingTaskStatus(str(row[0])) not in ACTIVE_TASK_STATUSES:
+                return False
+            final_status = CodingTaskStatus.CANCELLED if bool(row[1]) else status
+            changed = await conn.execute(
                 """
                 UPDATE coding_tasks
                 SET status = ?, result_text = ?, error_text = ?, finished_at = ?,
                     updated_at = ?, heartbeat_at = ?, delivery_state = 'final_pending'
-                WHERE id = ?
+                WHERE id = ? AND status IN (
+                    'queued','recovering','running','waiting_for_job',
+                    'waiting_for_input','cancelling'
+                )
                 """,
                 (
                     final_status.value,
@@ -803,6 +775,8 @@ class CodingTaskStore:
                     task_id,
                 ),
             )
+            if changed.rowcount != 1:
+                return False
             await self._append_event_conn(
                 conn,
                 task_id,
@@ -813,6 +787,7 @@ class CodingTaskStore:
                 },
                 now,
             )
+        return True
 
     async def mark_status_message(self, task_id: str, message_id: str) -> None:
         now = time.time()
@@ -1020,14 +995,6 @@ class CodingTaskStore:
                     await self._append_event_conn(
                         conn, task_id, "finished", {"status": "cancelled", "error": ""}, now
                     )
-                await conn.execute(
-                    """
-                    UPDATE coding_command_jobs
-                    SET status = 'interrupted', updated_at = ?, finished_at = ?
-                    WHERE task_id = ? AND status IN ('queued','running','unsafe')
-                    """,
-                    (now, now, task_id),
-                )
                 await self._append_event_conn(
                     conn,
                     task_id,
@@ -1040,25 +1007,20 @@ class CodingTaskStore:
                     },
                     now,
                 )
-        tasks = [await self.get_task(task_id) for task_id in recovered]
-        return [task for task in tasks if task is not None]
-
-    async def create_job(self, task_id: str, request: dict[str, Any]) -> CodingCommandJob:
-        now = time.time()
-        job_id = uuid4().hex
-        async with self._db.write_transaction() as conn:
+            # Unit teardown runs before this transaction. Normalize every active
+            # job, including an inconsistent orphan whose parent task was
+            # already terminal, so later cleanup does not treat a stopped unit
+            # as live forever.
             await conn.execute(
                 """
-                INSERT INTO coding_command_jobs (
-                    id, task_id, status, request_json, created_at, updated_at
-                ) VALUES (?, ?, 'queued', ?, ?, ?)
+                UPDATE coding_command_jobs
+                SET status = 'interrupted', updated_at = ?, finished_at = ?
+                WHERE status IN ('queued','running','unsafe')
                 """,
-                (job_id, task_id, json.dumps(request), now, now),
+                (now, now),
             )
-            await self._append_event_conn(conn, task_id, "job_created", {"job_id": job_id}, now)
-        job = await self.get_job(job_id)
-        assert job is not None
-        return job
+        tasks = [await self.get_task(task_id) for task_id in recovered]
+        return [task for task in tasks if task is not None]
 
     async def create_job_if_active(
         self, task_id: str, request: dict[str, Any]

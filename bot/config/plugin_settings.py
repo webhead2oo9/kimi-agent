@@ -276,10 +276,6 @@ def extension_settings_path(name: str, *, config_dir: Path, namespace: str) -> P
     return config_dir / namespace / f"{name}.md"
 
 
-def plugin_settings_path(name: str, *, config_dir: Path) -> Path:
-    return extension_settings_path(name, config_dir=config_dir, namespace="plugins")
-
-
 def _parse_document(text: str, path: Path) -> dict[str, Any]:
     if not text.strip():
         return {}

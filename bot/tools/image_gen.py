@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import logging
 import os
@@ -172,12 +171,13 @@ def init_image_gen_tool(
                     result,
                     model=request_fields["model"],
                 )
+                if result.image_bytes is None:
+                    raise ImageGenError("image generation service returned unverified image data")
                 output_path, relative_path, output_bytes = await _run_worker(
                     _write_output,
                     workspace_manager,
                     workspace_config,
                     ctx.workspace_key,
-                    result.image_base64,
                     result.image_bytes,
                     on_cancelled_result=_remove_cancelled_output,
                 )
@@ -429,16 +429,9 @@ def _write_output(
     workspace_manager: WorkspaceManager,
     workspace_config: WorkspaceToolConfig,
     workspace_key: WorkspaceKey,
-    image_base64: str,
-    image_bytes: bytes | None,
+    image_bytes: bytes,
 ) -> tuple[Path, str, int]:
     raw = image_bytes
-    if raw is None:
-        # Test doubles and alternate services may not return verified bytes.
-        try:
-            raw = base64.b64decode(image_base64, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("generated image is not valid base64") from exc
     relative_path = f"generated_images/image-{uuid4().hex}.png"
     destination = workspace_manager.resolve_user_file_path(workspace_key, relative_path)
     ensure_quota(

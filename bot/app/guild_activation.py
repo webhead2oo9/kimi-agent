@@ -73,10 +73,6 @@ class GuildActivationService:
         self._cache.refresh()
         self._refresh_task: asyncio.Task[None] | None = None
 
-    @property
-    def refresh_task(self) -> asyncio.Task[None] | None:
-        return self._refresh_task
-
     def active_guilds(self) -> set[int]:
         """Guilds enabled by validated setup or the deployment allowlist.
 

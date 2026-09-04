@@ -110,9 +110,12 @@ or the same fields, without the prefix, as frontmatter in
    and `ModuleSettingsDefinition.name`; it prefixes every table and the
    module's event namespace.
 3. Depend on `kimi-agent-module-api` from PyPI.
-4. Replace the behavior. Keep the split: declarations in `spec.py`, SQL in
+4. Keep `ModuleSpec.api_version` as the literal contract version this source
+   implements. Change it only after reviewing and adapting to a new API; do not
+   derive it from whichever SDK happens to be installed.
+5. Replace the behavior. Keep the split: declarations in `spec.py`, SQL in
    one place, business rules in one method shared by every entry point.
-5. Write your own privacy note. A module that stores member data (this one
+6. Write your own privacy note. A module that stores member data (this one
    stores user ids and free-text reasons) must say what it keeps and for how
    long, and the operator must link that from the deployment's privacy notice.
 

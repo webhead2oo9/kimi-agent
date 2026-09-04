@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from agent.backfill import BackfilledMessage
 from app.tool_surfaces import surface_tools
-from discord_adapter.gateway import MemberLookup, TurnSourceSnapshot
+from discord_adapter.gateway import MemberLookup
 from tools.registry import MessageContext, ToolRegistry
 
 # Tools that perform an external WRITE to a shared production surface. We replace
@@ -38,33 +38,14 @@ class StubGateway:
     """Headless stand-in for DiscordGateway: read-only fixtures, no live Discord.
 
     Implements only the surface the Discord-bound tools call:
-    read_turn_source, collect_recent_channel_context, resolve_member.
+    collect_recent_channel_context and resolve_member.
     """
 
     def __init__(self) -> None:
-        self._trigger_content = ""
-        self._trigger_author_id = "0"
         self._member: MemberLookup = MemberLookup(match="none")
 
-    def set_fixture(
-        self,
-        *,
-        trigger_content: str = "",
-        trigger_author_id: str = "0",
-        member: MemberLookup | None = None,
-    ) -> None:
-        """Trigger fields reset each call; the member fixture is sticky until re-supplied."""
-        self._trigger_content = trigger_content
-        self._trigger_author_id = trigger_author_id
-        if member is not None:
-            self._member = member
-
-    def read_turn_source(self, ctx: MessageContext) -> TurnSourceSnapshot | None:
-        return TurnSourceSnapshot(
-            content=self._trigger_content,
-            author_id=self._trigger_author_id,
-            is_bot=False,
-        )
+    def set_member_fixture(self, member: MemberLookup) -> None:
+        self._member = member
 
     async def collect_recent_channel_context(
         self, ctx: MessageContext, *, limit: int = 15

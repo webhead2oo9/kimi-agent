@@ -6,7 +6,6 @@ from evals.capture import InstrumentedProvider, InstrumentedRegistry
 from evals.harness import ScenarioRun, run_scenario_for_model
 from evals.identity import EvalIdentity
 from evals.scenario import Expect, Scenario, TurnSpec
-from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
 from providers.image_caption import format_image_caption, is_image_caption
 from providers.types import (
@@ -75,7 +74,6 @@ def test_run_scenario_captures_reply_and_tool_trace():
             scenario,
             provider=provider,
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
         )
@@ -114,7 +112,6 @@ def test_run_scenario_seeds_workspace_files_outside_model_tool_trace():
             scenario,
             provider=InstrumentedProvider(_Scripted([ProviderResponse(content="done")])),
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             identity=identity,
@@ -164,7 +161,6 @@ def test_run_scenario_captures_max_iteration_termination():
             scenario,
             provider=provider,
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
         )
@@ -191,7 +187,6 @@ def test_run_scenario_multi_turn_accumulates_records_and_carries_context():
             scenario,
             provider=provider,
             registry=InstrumentedRegistry(),
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
         )
@@ -247,7 +242,6 @@ def test_run_scenario_uses_one_identity_context_key_per_multi_turn_run():
             scenario,
             provider=first_provider,
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             identity=first,
@@ -271,7 +265,6 @@ def test_run_scenario_uses_one_identity_context_key_per_multi_turn_run():
                 )
             ),
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             identity=second,
@@ -298,7 +291,6 @@ def test_run_scenario_threads_bot_name_into_system_prompt():
             scenario,
             provider=InstrumentedProvider(scripted),
             registry=InstrumentedRegistry(),
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             bot_name="EvalBotName",
@@ -332,7 +324,6 @@ def test_run_scenario_uses_caption_instead_of_either_image_rail():
             scenario,
             provider=InstrumentedProvider(scripted),
             registry=InstrumentedRegistry(),
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             image_captions={0: caption},
@@ -343,7 +334,6 @@ def test_run_scenario_uses_caption_instead_of_either_image_rail():
     all_parts = [
         *request.current_user_parts,
         *(part for message in request.messages for part in message.content),
-        *(part for message in request.continuation_context_messages for part in message.content),
     ]
     assert all(part.type is not ContentPartType.IMAGE for part in all_parts)
     assert any(is_image_caption(part.text or "") for part in request.current_user_parts)
@@ -388,7 +378,6 @@ def test_run_scenario_threads_compactor_into_run_conversation():
             scenario,
             provider=InstrumentedProvider(scripted),
             registry=registry,
-            gateway=StubGateway(),
             memory_client=None,
             preference_store=None,
             compactor=compactor,

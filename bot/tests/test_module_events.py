@@ -23,6 +23,11 @@ from kimi_agent_module_api.contracts import (
     ModulePermissions,
 )
 from modules.events import EventBusImpl, ModuleEventView
+from tests.module_event_helpers import (
+    drain_event_bus,
+    event_bus_metrics,
+    event_bus_subscriptions,
+)
 
 
 def _view(bus: EventBusImpl, name: str, *topics: str) -> ModuleEventView:
@@ -48,7 +53,7 @@ async def test_publish_is_namespaced_and_subscriptions_need_declarations() -> No
         bus.publish_core("case_manager.record_created", {})
 
     producer.publish("case_manager.record_created", {"record_id": 7})
-    await bus.drain()
+    await drain_event_bus(bus)
     assert [(e.topic, e.payload, e.source_module) for e in seen] == [
         ("case_manager.record_created", {"record_id": 7}, "case_manager")
     ]
@@ -79,7 +84,7 @@ async def test_failures_and_timeouts_are_isolated_and_counted() -> None:
     bad.subscribe("discord.message", boom)
     slow.subscribe("discord.*", sleepy)
     bus.publish_core(ev.TOPIC_MESSAGE, {"id": 1})
-    await bus.drain()
+    await drain_event_bus(bus)
     await asyncio.sleep(0.1)
     assert got == ["ok"]
     assert metrics["good"]["events_handled"] == 1
@@ -126,7 +131,7 @@ async def test_discord_events_only_reach_modules_enabled_for_their_guild() -> No
     bus.publish_core(ev.TOPIC_INVITE_CREATE, ev.InviteCreateEvent(invite))
     bus.publish_core(ev.TOPIC_INVITE_DELETE, ev.InviteDeleteEvent(invite))
     bus.publish_core(ev.TOPIC_AUDIT_LOG_ENTRY, SimpleNamespace(guild_id=1))
-    await bus.drain()
+    await drain_event_bus(bus)
 
     assert enabled_topics == [
         ev.TOPIC_MESSAGE,
@@ -155,7 +160,7 @@ async def test_module_owned_events_ignore_discord_guild_predicate() -> None:
 
     view.subscribe("mod.changed", handler)
     view.publish("mod.changed", SimpleNamespace(guild_id=1))
-    await bus.drain()
+    await drain_event_bus(bus)
 
     assert [event.topic for event in seen] == ["mod.changed"]
     await bus.close()
@@ -202,7 +207,7 @@ async def test_queued_discord_event_rechecks_module_guild_activation() -> None:
     bus.publish_core(ev.TOPIC_MESSAGE, SimpleNamespace(guild_id=1, sequence=2))
     active = False
     release_first.set()
-    await bus.drain()
+    await drain_event_bus(bus)
 
     assert gated_seen == [1]
     assert unaffected_seen == [1, 2]
@@ -224,9 +229,9 @@ async def test_full_lane_drops_oldest_and_close_module_cancels() -> None:
     for i in range(5):
         bus.publish_core(ev.TOPIC_MESSAGE, i)
     await asyncio.sleep(0)
-    assert bus.metrics_for("m")["events_dropped"] >= 2
+    assert event_bus_metrics(bus, "m")["events_dropped"] >= 2
     await bus.close_module("m")
-    assert bus.subscriptions_for("m") == ()
+    assert event_bus_subscriptions(bus, "m") == ()
     gate.set()
     await asyncio.sleep(0)
     assert handled == []

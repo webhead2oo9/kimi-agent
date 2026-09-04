@@ -64,7 +64,7 @@ from moderation.files import (
     UnsupportedModerationFile,
     text_from_file_bytes,
 )
-from moderation.types import Direction
+from moderation.types import Direction, ModerationDecision
 from providers.base import LLMProvider
 from providers.image_caption import (
     IMAGE_CAPTION_MAX_TOKENS,
@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     from moderation.service import ModerationService
     from storage.conversations import ConversationAccessScope
     from storage.usage import UsageStore
-    from tools.embeds import EmbedAttachment
+    from tools.embeds import EmbedAttachment, EmbedSpec
 
 log = logging.getLogger(__name__)
 
@@ -311,8 +311,22 @@ class WriteGeneratedAssets(Protocol):
 
 class ModerationServiceLike(Protocol):
     enabled: bool
+    output_exempt_tier: TrustTier | None
 
-    async def check(self, **kwargs: Any) -> Any: ...
+    async def check(
+        self,
+        *,
+        text: str,
+        direction: Direction,
+        images: Sequence[ContentPart | None] = (),
+        generated_assets: Sequence[GeneratedAsset] = (),
+        embed: EmbedSpec | None = None,
+        embed_attachment: EmbedAttachment | None = None,
+        user_id: str = "",
+        channel_id: str = "",
+        thread_id: str | None = None,
+        trust_tier: str = "",
+    ) -> ModerationDecision: ...
 
     def refusal_for(self, direction: Direction, *, error: bool = False) -> str: ...
 
@@ -550,7 +564,7 @@ async def handle_turn(
                 )
             prepared_turn = _filter_turn_images_after_moderation(
                 prepared_turn,
-                checked_image_urls=getattr(decision, "checked_image_urls", None),
+                checked_image_urls=decision.checked_image_urls,
             )
             (
                 prepared_turn,
@@ -1196,7 +1210,6 @@ async def execute_turn(
             ),
             usage=usage,
             llm_calls=list(usage_sink),
-            iterations=len(usage_sink),
             timed_out=handoff is None,
             turn_id=turn_id,
             termination_reason="completed" if handoff is not None else "timed_out",
@@ -1942,15 +1955,8 @@ def _should_moderate_output(
 ) -> bool:
     if moderation_service is None or not moderation_service.enabled:
         return False
-    exempt_tier = _output_moderation_exempt_tier(moderation_service)
+    exempt_tier = moderation_service.output_exempt_tier
     return exempt_tier is None or trust_tier < exempt_tier
-
-
-def _output_moderation_exempt_tier(
-    moderation_service: ModerationService | ModerationServiceLike,
-) -> TrustTier | None:
-    value = getattr(moderation_service, "output_exempt_tier", None)
-    return value if isinstance(value, TrustTier) else None
 
 
 class _ModeratedActivityReporter:
@@ -2040,13 +2046,9 @@ def _input_moderation_images(turn: TurnRequest) -> list[ContentPart]:
     return images
 
 
-def _blocked_by_error(decision: Any) -> bool:
-    """Whether a block came from the check failing rather than a category match.
-
-    Read defensively: ModerationServiceLike.check is typed Any, so stand-in
-    services in tests and plugins need not carry the field.
-    """
-    return bool(getattr(decision, "error", False))
+def _blocked_by_error(decision: ModerationDecision) -> bool:
+    """Whether a block came from the check failing rather than a category match."""
+    return decision.error
 
 
 async def _moderate_input_attachments(

@@ -53,6 +53,7 @@ class FakeCompiler:
             await on_response(
                 ProviderResponse(
                     usage={"input_tokens": 12, "output_tokens": 3},
+                    usage_present=True,
                     model="claude-served",
                 ),
                 "claude-priced",
@@ -185,6 +186,7 @@ async def test_persona_compile_usage_carries_router_attribution() -> None:
                 await on_response(
                     ProviderResponse(
                         usage={"input_tokens": 12, "output_tokens": 3},
+                        usage_present=True,
                         model="moonshotai/kimi-k2",
                         upstream_provider="Moonshot AI",
                         service_tier="flex",

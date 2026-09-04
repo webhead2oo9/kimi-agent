@@ -466,9 +466,8 @@ async def test_build_app_populates_guild_turn_collaborators_after_init(
 @pytest.mark.asyncio
 async def test_failed_delivery_unregisters_mid_send_live_routes() -> None:
     """A send that raises after chunk one must not leave a stale bridge entry."""
-    from app.live_reply_routes import clear_live_replies, lookup_live_reply
+    from app.live_reply_routes import lookup_live_reply, unregister_live_reply
 
-    clear_live_replies()
     try:
         channel = FakeChannel(100)
 
@@ -497,7 +496,7 @@ async def test_failed_delivery_unregisters_mid_send_live_routes() -> None:
             )
         assert lookup_live_reply("701") is None
     finally:
-        clear_live_replies()
+        unregister_live_reply("701")
 
 
 @pytest.mark.asyncio
@@ -505,10 +504,9 @@ async def test_fallback_send_drops_superseded_partial_live_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A partial thread send replaced by fallback must not leak bridge entries."""
-    from app.live_reply_routes import clear_live_replies, lookup_live_reply
+    from app.live_reply_routes import lookup_live_reply, unregister_live_reply
 
     monkeypatch.setattr(guild_turn_adapter.discord, "Thread", FakeThread)
-    clear_live_replies()
     try:
         channel = FakeChannel(100)
         thread = FakeThread(200, parent_id=100)
@@ -565,4 +563,5 @@ async def test_fallback_send_drops_superseded_partial_live_routes(
         assert lookup_live_reply("701") is None
         assert lookup_live_reply("702") is not None
     finally:
-        clear_live_replies()
+        unregister_live_reply("701")
+        unregister_live_reply("702")

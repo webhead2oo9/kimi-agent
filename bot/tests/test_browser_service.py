@@ -47,7 +47,7 @@ def _load_betterwright_smoke() -> Any:
     return module
 
 
-def _run_installer_preflight(tmp_path: Path, target: str) -> subprocess.CompletedProcess[str]:
+def _run_installer_preflight(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     commands = {
@@ -66,7 +66,7 @@ def _run_installer_preflight(tmp_path: Path, target: str) -> subprocess.Complete
         "NPM_BIN": str(fake_bin / "npm"),
     }
     return subprocess.run(
-        ["sh", str(BETTERWRIGHT_INSTALLER), target],
+        ["sh", str(BETTERWRIGHT_INSTALLER), *arguments],
         check=False,
         capture_output=True,
         text=True,
@@ -193,23 +193,7 @@ def test_betterwright_installer_shell_syntax() -> None:
     not sys.platform.startswith("linux"),
     reason="BetterWright runtime installation is Linux-only",
 )
-def test_betterwright_installer_accepts_only_aliases_of_reviewed_target(tmp_path: Path) -> None:
-    lexical = _run_installer_preflight(tmp_path, "/opt/kimi/../kimi/betterwright")
-    alias = tmp_path / "runtime-alias"
-    alias.symlink_to("/opt/kimi/betterwright", target_is_directory=True)
-    symlinked = _run_installer_preflight(tmp_path, str(alias))
-
-    for result in (lexical, symlinked):
-        assert result.returncode == 2
-        assert "BetterWright requires Node >=22.18.0" in result.stderr
-        assert "refusing runtime directory" not in result.stderr
-
-
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="BetterWright runtime installation is Linux-only",
-)
-def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Path) -> None:
+def test_betterwright_installer_rejects_path_arguments_before_removal(tmp_path: Path) -> None:
     victim = tmp_path / "victim"
     victim.mkdir()
     marker = victim / "keep.txt"
@@ -220,8 +204,14 @@ def test_betterwright_installer_rejects_other_target_before_removal(tmp_path: Pa
     result = _run_installer_preflight(tmp_path, str(alias))
 
     assert result.returncode == 2
-    assert "refusing runtime directory outside /opt/kimi/betterwright" in result.stderr
+    assert result.stderr.strip().endswith("install.sh")
+    assert "BetterWright requires Node" not in result.stderr
     assert marker.read_text(encoding="utf-8") == "keep"
+
+    fixed_path = _run_installer_preflight(tmp_path)
+    assert fixed_path.returncode == 2
+    assert "BetterWright requires Node >=22.18.0" in fixed_path.stderr
+    assert "usage:" not in fixed_path.stderr
 
 
 @pytest.mark.asyncio

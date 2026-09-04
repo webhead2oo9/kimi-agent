@@ -67,7 +67,7 @@ The coding agent cannot run an arbitrary inline command. It first writes a scrip
 
 In `CODE_EXEC_NETWORK_MODE=netns`, a job needs the single VPN namespace, which the same user's browser may be holding. Starting a job asks the browser service to close that user's idle browser worker, then waits up to 30 seconds for the namespace to free up. If someone else's browser turn or a foreground networked `run_code` still holds it after that, the job fails with an error the worker can retry later. While a job is queued or running, the worker's own `browser` calls are refused so the two cannot deadlock.
 
-The bot process owns every job. Cancelling waits for the sandbox to tear down fully. If the bot restarts while a job is running, that job is marked `interrupted`, and the recovered worker is told to look at what the workspace contains now rather than replaying the job blindly.
+The bot process owns every job. Cancelling waits for the sandbox to tear down fully. After a restart, the bot uses each persisted systemd unit name to confirm that pre-crash jobs are inactive before privacy replay, retention, or coding-feature registration can remove or reuse their state. This reconciliation runs even when coding is now disabled, its model role is absent, or the sandbox probe no longer passes. If any unit cannot be confirmed inactive, startup fails closed and preserves the rows and workspaces needed for a later retry. Confirmed jobs are then marked `interrupted`, and a recovered worker is told to inspect what the workspace contains now rather than replaying the job blindly.
 
 ## Input and context
 
@@ -83,11 +83,11 @@ After every completed batch of tool calls, the worker saves a checkpoint: its co
 
 If a task's owner is blocked (see [`/moderation`](tools.md)) while the task is still queued, the scheduler finishes it as cancelled instead of running it. The stored message is neutral and does not mention the block, because it is posted to the channel the task was started in; the block itself is only logged. A task that is already running is not interrupted by a block and ends on its own.
 
-Tasks paused for requested input stay paused until a steering message resumes them. An unanswered pause expires at the task's original total deadline.
+Tasks paused for requested input stay paused until a steering message resumes them. If the original worker is still unwinding, it retains ownership long enough to consume that input; otherwise the task returns to the queue. The scheduler never starts a second worker for the same task while the original remains alive. An unanswered pause expires at the task's original total deadline, and a terminal or delivered result cannot be replaced by a late worker.
 
-Members can cancel with `/stop`, or by sending the bot a message that says exactly `stop`, `cancel`, or `abort` (any capitalisation). That check runs before the normal "should the bot reply?" gates, and it cancels both the foreground response and any coding work in the current conversation. `/stop scope:all` cancels all of that member's active work everywhere. Partial workspace changes are kept so they can be inspected or picked up later.
+Members can cancel with `/stop`, or by sending the bot a message that says exactly `stop`, `cancel`, or `abort` (any capitalisation). That check runs before the normal "should the bot reply?" gates, and it cancels both the foreground response and any coding work in the current conversation. Task-id controls are bound to the task's logical guild: the owner or a STAFF caller in that same guild may inspect, steer, retry, or cancel it, while personal chat and other guilds see it as not found. `/stop scope:all` is the explicit owner-wide exception and cancels all of that member's active work everywhere. Partial workspace changes are kept so they can be inspected or picked up later.
 
-`/privacy` → **Delete my data** uses the same teardown before deleting anything, and holds a per-user barrier so a task cannot be recovered while its owner's deletion is in progress.
+`/privacy` → **Delete my data** uses the same teardown before deleting anything, and holds a per-user barrier so a task cannot be recovered while its owner's deletion is in progress. Deletion also finds tasks owned by other participants on conversations the requester rooted; every affected worker and managed job must be confirmed inactive, not merely asked to cancel, or the durable deletion remains pending and removes nothing.
 
 ## Failure boundaries and monitoring
 

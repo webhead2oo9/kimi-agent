@@ -35,18 +35,6 @@ class AdmissionDecision:
     lease: TurnAdmissionLease | None
     rejection: AdmissionRejection | None = None
 
-    @property
-    def admitted(self) -> bool:
-        return self.lease is not None
-
-
-@dataclass(frozen=True, slots=True)
-class AdmissionSnapshot:
-    """A consistent view used by diagnostics and focused tests."""
-
-    active_total: int
-    active_by_user: dict[str, int]
-
 
 class TurnAdmissionLease:
     """One admitted turn; releasing it is safe to repeat."""
@@ -133,13 +121,6 @@ class TurnAdmissionController:
         """Permanently reject new turn admission while existing leases drain."""
         async with self._lock:
             self._closed = True
-
-    async def snapshot(self) -> AdmissionSnapshot:
-        async with self._lock:
-            return AdmissionSnapshot(
-                active_total=self._active_total,
-                active_by_user=dict(self._active_by_user),
-            )
 
     async def _release(self, lease: TurnAdmissionLease) -> None:
         async with self._lock:

@@ -131,8 +131,6 @@ class CodingTaskService:
     async def start(self) -> None:
         if self._scheduler is not None:
             return
-        await self._runtime.jobs.stop_recovered_units()
-        await self._store.recover_interrupted()
         pending_handoffs = await self._store.list_handoff_pending()
         for task in pending_handoffs:
             await self._finalize_handoff(task)
@@ -737,13 +735,8 @@ class CodingTaskService:
         for task in tasks:
             if await self.cancel_task(task.id, reason="Stopped by user"):
                 cancelled.append(task.id)
-                refreshed = await self._store.get_task(task.id)
-                worker = self._workers.get(task.id)
-                clean = clean and bool(
-                    refreshed is not None
-                    and refreshed.status not in ACTIVE_TASK_STATUSES
-                    and (worker is None or worker.done())
-                )
+                task_clean = await self.cleanup_complete(task.id)
+                clean = task_clean and clean
         return cancelled, clean
 
     async def cancel_for_conversations(
@@ -751,23 +744,28 @@ class CodingTaskService:
         conversation_ids: Collection[int],
         *,
         reason: str = "A participant deleted the shared conversation",
-    ) -> list[str]:
-        """Cancel active tasks on these conversations regardless of task owner.
+    ) -> tuple[list[str], bool]:
+        """Cancel and drain tasks on these conversations regardless of owner.
 
-        Used by privacy deletion: removing the rooted conversations would
-        otherwise cascade-delete another user's live task row mid-worker.
-        The controller already guarantees the service is running.
+        Privacy deletion must not cascade-delete another user's durable task or
+        job row until every worker and managed job attached to the shared root
+        is confirmed inactive.
         """
         tasks = await self._store.list_active_by_conversation_ids(conversation_ids)
         cancelled: list[str] = []
+        clean = True
         for task in tasks:
             if await self.cancel_task(task.id, reason=reason):
                 cancelled.append(task.id)
-        return cancelled
+                task_clean = await self.cleanup_complete(task.id)
+                clean = task_clean and clean
+        return cancelled, clean
 
     async def cleanup_complete(self, task_id: str) -> bool:
         worker = self._workers.get(task_id)
         if worker is not None and not worker.done():
+            return False
+        if await self._store.list_active_jobs(task_id=task_id):
             return False
         task = await self._store.get_task(task_id)
         return task is not None and task.status not in ACTIVE_TASK_STATUSES
@@ -898,7 +896,7 @@ class CodingTaskService:
         pending-delivery sweeper so the scheduler loop never awaits Discord.
         """
         while True:
-            task = await self._store.claim_next()
+            task = await self._store.claim_next(excluded_task_ids=self._workers)
             if task is None:
                 return None
             try:
@@ -959,11 +957,20 @@ class CodingTaskService:
             with contextlib.suppress(Exception):
                 completed.result()
 
-    def _worker_done(self, _completed: asyncio.Task[None], *, task_id: str) -> None:
-        worker = self._workers.pop(task_id, None)
-        if worker is not None and not worker.cancelled():
-            with contextlib.suppress(Exception):
-                worker.result()
+    def _worker_done(self, completed: asyncio.Task[None], *, task_id: str) -> None:
+        worker = self._workers.get(task_id)
+        if worker is completed:
+            self._workers.pop(task_id, None)
+        elif worker is not None:
+            # A stale callback must never remove a newer worker for the same
+            # durable task id. The scheduler excludes live ids, so reaching
+            # this branch is defensive reconciliation rather than normal flow.
+            logger.error("Ignoring stale coding worker callback for task %s", task_id)
+        if not completed.cancelled():
+            try:
+                completed.result()
+            except Exception:
+                logger.exception("Coding task %s worker exited unexpectedly", task_id)
         self._wake.set()
 
     async def _run_task_guarded(self, task: CodingTask) -> None:
@@ -1018,6 +1025,34 @@ class CodingTaskService:
         while True:
             await asyncio.sleep(interval)
             await self._store.heartbeat(task_id)
+
+    async def _external_task_messages(
+        self, task_id: str, event_cursor: int
+    ) -> tuple[list[str], int]:
+        new_events = await self._store.events(task_id, after_id=event_cursor)
+        if not new_events:
+            return [], event_cursor
+        messages: list[str] = []
+        saw_steering = False
+        for event in new_events:
+            message = str(event.payload.get("message", "")).strip()
+            if not message:
+                continue
+            if event.kind == "steering":
+                saw_steering = True
+                messages.append(f"Additional instruction from the user: {message}")
+            elif event.kind == "recovered":
+                messages.append(f"Recovery safety notice: {message}")
+        if saw_steering:
+            # Steering changes a paused row to queued. Once its existing worker
+            # consumes that input, return ownership to the worker before a final
+            # result is allowed; the scheduler also excludes the live task id.
+            await self._store.transition_active_status(
+                task_id,
+                CodingTaskStatus.RUNNING,
+                from_statuses=frozenset({CodingTaskStatus.QUEUED}),
+            )
+        return messages, new_events[-1].id
 
     async def _run_task(self, task: CodingTask) -> ConversationContext:
         context = self._context_from_checkpoint(
@@ -1090,18 +1125,7 @@ class CodingTaskService:
 
         async def external_messages() -> list[str]:
             nonlocal event_cursor
-            new_events = await self._store.events(task.id, after_id=event_cursor)
-            if new_events:
-                event_cursor = new_events[-1].id
-            messages: list[str] = []
-            for event in new_events:
-                message = str(event.payload.get("message", "")).strip()
-                if not message:
-                    continue
-                if event.kind == "steering":
-                    messages.append(f"Additional instruction from the user: {message}")
-                elif event.kind == "recovered":
-                    messages.append(f"Recovery safety notice: {message}")
+            messages, event_cursor = await self._external_task_messages(task.id, event_cursor)
             return messages
 
         try:
@@ -1161,7 +1185,13 @@ class CodingTaskService:
             )
             await flush_usage(result.llm_calls)
             current = await self._store.get_task(task.id)
-            if current is not None and current.status == CodingTaskStatus.WAITING_FOR_INPUT:
+            if current is not None and current.status in {
+                CodingTaskStatus.WAITING_FOR_INPUT,
+                CodingTaskStatus.QUEUED,
+            }:
+                # WAITING means no input arrived. QUEUED means input arrived
+                # after this worker's last model boundary; leave the row for a
+                # fresh claim instead of publishing a stale terminal result.
                 await self._runtime.jobs.cancel_task(task.id)
                 return context
             # Jobs are application-owned children, not part of the model call.
@@ -1306,9 +1336,28 @@ class CodingTaskService:
             candidates = await self._store.list_active(
                 user_id=ctx.user_id, channel_id=ctx.channel_id
             )
-        return candidates[0] if len(candidates) == 1 else None
+        authorized = [
+            task
+            for task in candidates
+            if self._can_control_task(
+                user_id=ctx.user_id,
+                guild_id=ctx.guild_id,
+                trust_tier=ctx.trust_tier,
+                task=task,
+            )
+        ]
+        return authorized[0] if len(authorized) == 1 else None
 
-    async def _authorized_task(self, ctx: MessageContext, task_id: str) -> CodingTask | None:
+    async def resolve_task_for_control(
+        self,
+        *,
+        user_id: str,
+        guild_id: str | None,
+        trust_tier: TrustTier,
+        task_id: str,
+    ) -> CodingTask | None:
+        """Resolve an exact or displayed task id within the caller's logical guild scope."""
+
         normalized_id = task_id.lower()
         task = await self._store.get_task(normalized_id)
         if task is None and (
@@ -1317,26 +1366,49 @@ class CodingTaskService:
         ):
             matches = await self._store.list_tasks_by_id_prefix(normalized_id)
             authorized_matches = [
-                candidate for candidate in matches if self._can_control_task(ctx, candidate)
+                candidate
+                for candidate in matches
+                if self._can_control_task(
+                    user_id=user_id,
+                    guild_id=guild_id,
+                    trust_tier=trust_tier,
+                    task=candidate,
+                )
             ]
             # A short reference is safe only while it identifies exactly one task
             # visible to this caller. Never guess if UUID prefixes collide.
             return authorized_matches[0] if len(authorized_matches) == 1 else None
-        if task is None or not self._can_control_task(ctx, task):
+        if task is None or not self._can_control_task(
+            user_id=user_id,
+            guild_id=guild_id,
+            trust_tier=trust_tier,
+            task=task,
+        ):
             return None
         return task
 
-    def _can_control_task(self, ctx: MessageContext, task: CodingTask) -> bool:
-        if task.user_id != ctx.user_id:
-            same_guild_staff = (
-                ctx.trust_tier >= TrustTier.STAFF
-                and task.guild_id is not None
-                and task.guild_id == ctx.guild_id
-            )
-            globally_configured_staff = ctx.user_id in self._runtime.settings.staff_ids
-            if not same_guild_staff and not globally_configured_staff:
-                return False
-        return True
+    async def _authorized_task(self, ctx: MessageContext, task_id: str) -> CodingTask | None:
+        return await self.resolve_task_for_control(
+            user_id=ctx.user_id,
+            guild_id=ctx.guild_id,
+            trust_tier=ctx.trust_tier,
+            task_id=task_id,
+        )
+
+    @staticmethod
+    def _can_control_task(
+        *,
+        user_id: str,
+        guild_id: str | None,
+        trust_tier: TrustTier,
+        task: CodingTask,
+    ) -> bool:
+        # The current logical guild is an authorization boundary. In particular,
+        # the physical guild where personal /chat was invoked must confer no
+        # authority over a guild task.
+        if task.guild_id != guild_id:
+            return False
+        return task.user_id == user_id or trust_tier >= TrustTier.STAFF
 
     async def _notify_id(self, task_id: str, context: ConversationContext | None = None) -> None:
         task = await self._store.get_task(task_id)
@@ -1550,11 +1622,12 @@ class CodingTaskService:
     @staticmethod
     def _trust_tier_from_checkpoint(task: CodingTask) -> TrustTier:
         raw = task.checkpoint.get("trust_tier")
-        if isinstance(raw, str):
-            with contextlib.suppress(ValueError):
-                return TrustTier(raw)
-        # Tasks created before trust was recorded get the lowest usable tier.
-        return TrustTier.MEMBER
+        if not isinstance(raw, str):
+            raise RuntimeError("Coding task checkpoint has no valid trust_tier")
+        try:
+            return TrustTier(raw)
+        except ValueError as exc:
+            raise RuntimeError("Coding task checkpoint has no valid trust_tier") from exc
 
     @staticmethod
     def _serialize_message(message: ConversationMessage) -> dict[str, Any]:

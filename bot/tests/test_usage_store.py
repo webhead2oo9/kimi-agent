@@ -337,119 +337,6 @@ async def test_created_at_is_utc_iso_string(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_usage_by_model_groups_by_model_and_role(tmp_path) -> None:
-    """The same model is routinely wired to several roles.
-
-    A per-model total alone hides "compaction costs more than chat", which is
-    the question this breakdown exists to answer.
-    """
-    db, store = await _store(tmp_path)
-    try:
-
-        async def turn(model: str, role: str, cost: float | None, out: int) -> None:
-            await store.record_turn(
-                user_id="u1",
-                user_name="Ann",
-                channel_id="c",
-                guild_id="g",
-                calls=[
-                    LLMUsageCall(
-                        model=model,
-                        role=role,
-                        usage=UsageBreakdown(input_tokens=10, output_tokens=out),
-                        est_cost_usd=cost,
-                    )
-                ],
-            )
-
-        await turn("big-model", "chat", 0.50, 100)
-        await turn("big-model", "chat", 0.25, 50)
-        await turn("big-model", "compaction", 0.10, 20)
-        await turn("small-model", "distill", None, 5)
-
-        since = datetime.now(UTC) - timedelta(hours=1)
-        rows = await store.usage_by_model(since)
-    finally:
-        await db.close()
-
-    assert [(r.model, r.role) for r in rows] == [
-        ("big-model", "chat"),
-        ("big-model", "compaction"),
-        ("small-model", "distill"),
-    ]
-    chat = rows[0]
-    assert chat.turns == 2
-    assert chat.est_cost_usd == pytest.approx(0.75)
-    assert chat.output_tokens == 150
-    # A model with no configured price reports zero cost, so the unpriced count
-    # is the only thing separating "free" from "unknown".
-    assert rows[2].est_cost_usd == pytest.approx(0.0)
-    assert rows[2].unpriced_llm_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_usage_by_model_honors_the_scope_filters(tmp_path) -> None:
-    """The breakdown must sum to the aggregate shown beside it."""
-    db, store = await _store(tmp_path)
-    try:
-        for user_id, guild_id in (("u1", "g1"), ("u2", "g1"), ("u1", "g2")):
-            await store.record_turn(
-                user_id=user_id,
-                user_name=user_id,
-                channel_id="c",
-                guild_id=guild_id,
-                calls=[
-                    LLMUsageCall(
-                        model="m",
-                        role="chat",
-                        usage=UsageBreakdown(output_tokens=10),
-                        est_cost_usd=0.10,
-                    )
-                ],
-            )
-
-        since = datetime.now(UTC) - timedelta(hours=1)
-        everything = await store.usage_by_model(since)
-        by_guild = await store.usage_by_model(since, guild_id="g1")
-        by_user = await store.usage_by_model(since, user_id="u1")
-        guild_total = await store.server_total("g1", since)
-        user_total = await store.user_total("u1", since)
-    finally:
-        await db.close()
-
-    assert everything[0].turns == 3
-    assert by_guild[0].turns == 2
-    assert by_guild[0].est_cost_usd == pytest.approx(guild_total.est_cost_usd)
-    assert by_user[0].turns == 2
-    assert by_user[0].est_cost_usd == pytest.approx(user_total.est_cost_usd)
-
-
-@pytest.mark.asyncio
-async def test_usage_by_model_excludes_rows_outside_the_window(tmp_path) -> None:
-    db, store = await _store(tmp_path)
-    try:
-        await store.record_turn(
-            user_id="u1",
-            user_name="Ann",
-            channel_id="c",
-            guild_id="g",
-            calls=[
-                LLMUsageCall(
-                    model="m",
-                    role="chat",
-                    usage=UsageBreakdown(output_tokens=10),
-                    est_cost_usd=0.10,
-                )
-            ],
-        )
-        rows = await store.usage_by_model(datetime.now(UTC) + timedelta(hours=1))
-    finally:
-        await db.close()
-
-    assert rows == []
-
-
-@pytest.mark.asyncio
 async def test_unattributed_aggregate_rows_keep_honest_call_limits(tmp_path) -> None:
     db, store = await _store(tmp_path)
     try:
@@ -471,15 +358,12 @@ async def test_unattributed_aggregate_rows_keep_honest_call_limits(tmp_path) -> 
             )
         since = datetime.now(UTC) - timedelta(hours=1)
         total = await store.user_total("aggregate-user", since)
-        rows = await store.usage_by_model(since, user_id="aggregate-user")
     finally:
         await db.close()
 
     assert total.turns == 1
     assert total.llm_calls == 3
     assert total.unpriced_llm_calls == 3
-    assert rows[0].attribution == "unattributed"
-    assert rows[0].llm_calls == 3
 
 
 @pytest.mark.asyncio
@@ -507,11 +391,10 @@ async def test_shared_turn_id_does_not_inflate_nested_llm_turns(tmp_path) -> Non
             )
         since = datetime.now(UTC) - timedelta(hours=1)
         total = await store.user_total("u1", since)
-        rows = await store.usage_by_model(since, user_id="u1")
     finally:
         await db.close()
 
     assert total.turns == 1
     assert total.llm_calls == 2
-    assert sum(row.est_cost_usd for row in rows) == pytest.approx(total.llm_est_cost_usd)
-    assert sum(row.input_tokens for row in rows) == total.input_tokens
+    assert total.llm_est_cost_usd == pytest.approx(0.5)
+    assert total.input_tokens == 20

@@ -15,7 +15,7 @@ from discord.ext import commands
 from agent.auto_handoff import build_auto_handoff_request
 from agent.backfill import message_source_timestamp, strip_chunk_marker
 from agent.context import ConversationContext
-from app.coding_jobs import CodingJobManager
+from app.coding_jobs import CodingJobManager, stop_recovered_coding_units
 from app.coding_tasks import CodingTaskRuntime, CodingTaskService
 from app.root_locks import RootLockPool
 from app.thread_handoff_boundary import THREAD_HANDOFF_REACTION, ThreadHandoffBoundary
@@ -241,6 +241,9 @@ class CodingDelivery:
                 final_text = f"Coding task `{task.id[:8]}` ended as **{task.status.value}**."
             moderated_final = await self.moderate_text(task, final_text, status=False)
             final_text = self.result_delivery_text(task.id, moderated_final.text)
+            # V1 could send a hidden-marker result before crashing ahead of the
+            # final_discord_message_id write. Reconcile that one upgrade edge
+            # before changing channels or sending the marker-free v2 format.
             legacy_marker = f"coding-result:{task.id}"
             legacy_final = await self._find_delivery(channel, legacy_marker)
             if legacy_final is not None:
@@ -521,7 +524,7 @@ class CodingDelivery:
         channel: discord.TextChannel | discord.Thread,
         expected_text: str,
         *,
-        legacy_marker: str,
+        legacy_marker: str | None = None,
     ) -> list[discord.Message]:
         """Recover only a complete multi-message result after a process crash."""
 
@@ -535,7 +538,7 @@ class CodingDelivery:
                 async for message in channel.history(limit=max(100, len(expected_chunks) * 2))
             ]
         except discord.HTTPException:
-            log.warning("Could not reconcile coding result %s", legacy_marker, exc_info=True)
+            log.warning("Could not reconcile coding result", exc_info=True)
             return []
 
         bot_messages = [
@@ -555,9 +558,10 @@ class CodingDelivery:
             if expected_index == len(expected_chunks):
                 return matched
 
-        for message in newest_first:
-            if message.author.id == bot_user.id and legacy_marker in message.content:
-                return [message]
+        if legacy_marker is not None:
+            for message in newest_first:
+                if message.author.id == bot_user.id and legacy_marker in message.content:
+                    return [message]
         return []
 
     async def delete_status_message(
@@ -597,7 +601,7 @@ class CodingDelivery:
         *,
         channel_id: str,
     ) -> None:
-        """Persist and route a final before disabling marker-based retry."""
+        """Persist the final transcript before committing its durable delivery state."""
 
         if task.conversation_id is None:
             return
@@ -640,8 +644,8 @@ class CodingDelivery:
         return None
 
     @staticmethod
-    def strip_delivery_marker(text: str, *, task_ref: str | None = None) -> str:
-        visible_result_marker = f"**Coding result `{task_ref}`**" if task_ref else None
+    def strip_delivery_marker(text: str, *, task_ref: str) -> str:
+        visible_result_marker = f"**Coding result `{task_ref}`**"
         lines = [
             line
             for line in text.splitlines()
@@ -715,11 +719,12 @@ class CodingDelivery:
     @staticmethod
     def _task_trust_tier(task: CodingTask) -> TrustTier:
         raw = task.checkpoint.get("trust_tier")
-        if isinstance(raw, str):
-            with suppress(ValueError):
-                return TrustTier(raw)
-        # Tasks created before trust was recorded get the lowest usable tier.
-        return TrustTier.MEMBER
+        if not isinstance(raw, str):
+            raise RuntimeError("Coding task checkpoint has no valid trust_tier")
+        try:
+            return TrustTier(raw)
+        except ValueError as exc:
+            raise RuntimeError("Coding task checkpoint has no valid trust_tier") from exc
 
     @staticmethod
     def status_wire_text(status_text: str) -> str:
@@ -745,7 +750,7 @@ class CodingDelivery:
             lines.append(
                 CodingTaskService._display_summary(
                     task.objective,
-                    str(getattr(task, "display_summary", "")),
+                    task.display_summary,
                 )
             )
         if task.milestone:
@@ -790,6 +795,8 @@ class CodingTaskController:
         self._delivery = delivery
         self._service: CodingTaskService | None = None
         self._state = CodingTaskControllerState.NOT_STARTED
+        self._recovery_lock = asyncio.Lock()
+        self._recovery_complete = False
 
     @property
     def state(self) -> CodingTaskControllerState:
@@ -803,13 +810,24 @@ class CodingTaskController:
     def store(self) -> CodingTaskStore:
         return self._store
 
-    @property
-    def delivery(self) -> CodingDelivery:
-        return self._delivery
+    async def recover_persisted_work(self) -> None:
+        """Stop pre-crash units and normalize their rows before any deletion."""
+
+        if self._recovery_complete:
+            return
+        if self.running:
+            raise RuntimeError("Cannot run startup coding recovery while workers are active")
+        async with self._recovery_lock:
+            if self._recovery_complete:
+                return
+            await stop_recovered_coding_units(self._store)
+            await self._store.recover_interrupted()
+            self._recovery_complete = True
 
     async def start(self) -> None:
         if self._state is CodingTaskControllerState.RUNNING:
             return
+        await self.recover_persisted_work()
         if self._state is CodingTaskControllerState.DISABLED:
             return
         if not self._settings.coding_tasks_enabled:
@@ -821,7 +839,7 @@ class CodingTaskController:
         # A missing role or sandbox leaves the coding surface unregistered instead
         # of taking the whole bot down: a sandbox probe that stops passing after a
         # host upgrade must not turn into a Discord outage (docs/coding-agent.md).
-        if model_config is None or model_config.roles.coding is None:
+        if model_config.roles.coding is None:
             self._state = CodingTaskControllerState.DISABLED
             log.warning("Coding tasks requested but config/models.yaml assigns no coding role")
             return
@@ -885,6 +903,7 @@ class CodingTaskController:
         await service.close()
         self._service = None
         self._state = CodingTaskControllerState.NOT_STARTED
+        self._recovery_complete = False
 
     def _running_service(self) -> CodingTaskService:
         service = self._service
@@ -942,6 +961,21 @@ class CodingTaskController:
     async def failed_handoff_task(self, task_id: str, /) -> CodingTask | None:
         return await self._store.get_task(task_id)
 
+    async def resolve_task_for_control(
+        self,
+        *,
+        user_id: str,
+        guild_id: str | None,
+        trust_tier: TrustTier,
+        task_id: str,
+    ) -> CodingTask | None:
+        return await self._running_service().resolve_task_for_control(
+            user_id=user_id,
+            guild_id=guild_id,
+            trust_tier=trust_tier,
+            task_id=task_id,
+        )
+
     async def cancel_task(self, task_id: str, *, reason: str = "") -> bool:
         return await self._running_service().cancel_task(task_id, reason=reason)
 
@@ -966,5 +1000,5 @@ class CodingTaskController:
     async def cancel_for_conversations(
         self,
         conversation_ids: Collection[int],
-    ) -> list[str]:
+    ) -> tuple[list[str], bool]:
         return await self._running_service().cancel_for_conversations(conversation_ids)

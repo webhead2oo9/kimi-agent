@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 from kimi_agent_module_api import (
     BASELINE_CAPABILITIES,
     MODULE_API_VERSION,
+    AppModule,
     ModuleCapabilities,
     ModuleLoadContext,
     ModulePermissions,
@@ -57,15 +58,20 @@ class OtherSettings(BaseSettings):
 
 
 def _spec(name: str = "demo") -> ModuleSpec:
-    def create(_ctx: ModuleLoadContext) -> object:
+    def create(_ctx: ModuleLoadContext) -> AppModule:
         raise AssertionError("not called")
 
-    return ModuleSpec(name=name, version="1.0.0", create=create)  # type: ignore[arg-type]
+    return ModuleSpec(
+        name=name,
+        version="1.0.0",
+        create=create,
+        api_version=MODULE_API_VERSION,
+    )
 
 
 def test_spec_and_runtime_context_keep_stable_defaults() -> None:
     spec = _spec()
-    assert spec.api_version == MODULE_API_VERSION == 1
+    assert spec.api_version == MODULE_API_VERSION == 2
     assert spec.permissions == ModulePermissions()
     assert spec.dependencies == ()
     required = {
@@ -74,6 +80,16 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
         if field.default is dataclasses.MISSING
     }
     assert {"events", "scheduler", "storage", "discord", "interactions", "services"} <= required
+
+
+def test_spec_requires_an_explicit_keyword_api_version() -> None:
+    def create(_ctx: ModuleLoadContext) -> AppModule:
+        raise AssertionError("not called")
+
+    with pytest.raises(TypeError, match="required keyword-only argument: 'api_version'"):
+        ModuleSpec("demo", "1.0.0", create)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="positional arguments"):
+        ModuleSpec("demo", "1.0.0", create, MODULE_API_VERSION)  # type: ignore[call-arg]
 
 
 def test_load_context_exercises_public_create_helpers() -> None:

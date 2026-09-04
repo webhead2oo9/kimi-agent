@@ -212,6 +212,14 @@ def test_read_guild_frontmatter_missing_or_invalid_is_none(tmp_path: Path) -> No
     assert read_guild_frontmatter("../400", config_dir=tmp_path) is None
 
 
+def test_read_guild_frontmatter_invalid_utf8_is_none(tmp_path: Path) -> None:
+    servers = tmp_path / "servers"
+    servers.mkdir()
+    (servers / "400.md").write_bytes(b"---\nname: \xff\n---\n")
+
+    assert read_guild_frontmatter("400", config_dir=tmp_path) is None
+
+
 def test_guild_frontmatter_is_stripped_from_server_instructions(tmp_path: Path) -> None:
     _write_guild(
         tmp_path,

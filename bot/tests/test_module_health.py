@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 from commands.modules_cmd import render_manifest, render_status
 from kimi_agent_module_api import (
+    MODULE_API_VERSION,
+    AppModule,
     ModuleLoadContext,
     ModulePermissions,
     ModuleRuntimeContext,
     ModuleSpec,
     ServiceDeclaration,
 )
-from kimi_agent_module_api.contracts import ModuleHealth
+from kimi_agent_module_api.contracts import ModuleHealth, ScopedModuleMigration
 from modules.health import HealthRegistry
 from modules.testing import build_test_runtime
 
@@ -38,7 +41,7 @@ def test_registry_bounds_detail_and_metrics_and_redacts_secret_keys() -> None:
     assert len(health.metrics) <= 32
     assert health.metrics["errors"] == 3.0
     assert health.updated_at == 10.0
-    assert registry.worst == "degraded"
+    assert registry.get("m") == health
 
 
 def test_registry_notifies_observers_and_survives_observer_errors() -> None:
@@ -52,9 +55,9 @@ def test_registry_notifies_observers_and_survives_observer_errors() -> None:
     registry.reporter_for("a").report("healthy")
     registry.set("b", "failed", "boom")
     assert seen == [("a", "healthy"), ("b", "failed")]
-    assert registry.worst == "failed"
+    assert registry.snapshot()["b"].state == "failed"
     registry.forget("b")
-    assert registry.worst == "healthy"
+    assert set(registry.snapshot()) == {"a"}
 
 
 def test_core_constraints_survive_module_reports_and_clear_independently() -> None:
@@ -76,7 +79,7 @@ def test_core_constraints_survive_module_reports_and_clear_independently() -> No
 
 
 class _Module:
-    migrations = ()
+    scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
     def __init__(self, *, report: str | None = None, fail: bool = False) -> None:
         self.report = report
@@ -95,10 +98,17 @@ class _Module:
 
 
 def _spec(name: str, module: _Module, **overrides: object) -> ModuleSpec:
-    def create(_ctx: ModuleLoadContext) -> _Module:
+    def create(_ctx: ModuleLoadContext) -> AppModule:
         return module
 
-    return ModuleSpec(name=name, version="1.0.0", create=create, **overrides)  # type: ignore[arg-type]
+    api_version = overrides.pop("api_version", MODULE_API_VERSION)
+    return ModuleSpec(
+        name=name,
+        version="1.0.0",
+        create=create,
+        api_version=api_version,  # type: ignore[arg-type]
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio
@@ -150,7 +160,6 @@ def test_render_manifest_lists_declarations_and_escapes() -> None:
             raw_bot=True,
         ),
         provides=(ServiceDeclaration("records.cases", 1),),
-        table_aliases={"cases": "legacy_cases"},
     )
     text = render_manifest(
         {"guard": spec}, {"guard": ModuleHealth("healthy")}, lambda _n: ("tool_a",)
@@ -159,7 +168,6 @@ def test_render_manifest_lists_declarations_and_escapes() -> None:
     assert "discord actions: ban, send_message" in text
     assert "activation capabilities: discord.message_content.v1" in text
     assert "escape hatches: raw_bot" in text
-    assert "table aliases: cases→legacy_cases" in text
     assert "llm tools: tool_a" in text
     assert render_status((), {}, {}).startswith("No application modules")
 

@@ -5,8 +5,8 @@ from typing import cast
 
 import discord
 
+from branding import DEFAULT_BOT_NAME
 from discord_adapter.io import (
-    DEFAULT_TEXT_INVOCATION_NAME,
     can_send_reply,
     should_respond,
     strip_mention,
@@ -60,8 +60,9 @@ def _should(
     return should_respond(
         message,  # type: ignore[arg-type]
         bot_user=bot,  # type: ignore[arg-type]
-        bot_name=DEFAULT_TEXT_INVOCATION_NAME,
+        bot_name=DEFAULT_BOT_NAME,
         responds_without_mention=lambda thread_id: thread_id in auto_responding,
+        allowed_guilds=set(),
         allowed_channels=allowed_channels,
     )
 
@@ -297,7 +298,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
         strip_mention(
             "hey kimi, troubleshoot the build",
             bot_user=bot_user,
-            bot_name=DEFAULT_TEXT_INVOCATION_NAME,
+            bot_name=DEFAULT_BOT_NAME,
         )
         == "troubleshoot the build"
     )
@@ -305,7 +306,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
         strip_mention(
             "Hi, Kimi! ping?",
             bot_user=bot_user,
-            bot_name=DEFAULT_TEXT_INVOCATION_NAME,
+            bot_name=DEFAULT_BOT_NAME,
         )
         == "ping?"
     )
@@ -313,7 +314,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
         strip_mention(
             "kimi help",
             bot_user=bot_user,
-            bot_name=DEFAULT_TEXT_INVOCATION_NAME,
+            bot_name=DEFAULT_BOT_NAME,
         )
         == "help"
     )
@@ -326,7 +327,7 @@ def test_strip_mention_keeps_bare_greeting_non_empty():
         strip_mention(
             "hey kimi",
             bot_user=bot_user,
-            bot_name=DEFAULT_TEXT_INVOCATION_NAME,
+            bot_name=DEFAULT_BOT_NAME,
         )
         == "hey kimi"
     )

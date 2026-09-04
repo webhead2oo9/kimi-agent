@@ -76,7 +76,6 @@ async def test_records_priced_row() -> None:
     run = ConversationRunResult(
         text="ok",
         usage=UsageBreakdown(input_tokens=1_000_000),
-        iterations=2,
         llm_calls=[
             LLMUsageCall(
                 model="minimax-m3-2026",
@@ -112,7 +111,6 @@ async def test_records_zero_usage_when_provider_returned_response() -> None:
         text="ok",
         usage=UsageBreakdown(),
         llm_calls=[LLMUsageCall(model="minimax-m3", role="chat", usage=UsageBreakdown())],
-        iterations=1,
     )
 
     await _record_usage(_deps(store, model_config, "minimax-m3"), _turn(), run)
@@ -136,7 +134,6 @@ async def test_records_missing_usage_as_unpriced() -> None:
                 usage_present=False,
             )
         ],
-        iterations=1,
     )
 
     await _record_usage(_deps(store, model_config, "minimax-m3"), _turn(), run)
@@ -148,7 +145,7 @@ async def test_records_missing_usage_as_unpriced() -> None:
 async def test_skips_when_no_provider_response_and_missing_deps() -> None:
     store = _FakeStore()
     model_config = _FakeModelConfig(None)
-    empty = ConversationRunResult(text="ok", usage=UsageBreakdown(), iterations=0)
+    empty = ConversationRunResult(text="ok", usage=UsageBreakdown())
 
     await _record_usage(_deps(store, model_config, "minimax-m3"), _turn(), empty)
     await _record_usage(
@@ -157,7 +154,6 @@ async def test_skips_when_no_provider_response_and_missing_deps() -> None:
         ConversationRunResult(
             text="ok",
             usage=UsageBreakdown(output_tokens=1),
-            iterations=1,
         ),
     )
 
@@ -175,7 +171,6 @@ async def test_store_failure_is_swallowed() -> None:
     run = ConversationRunResult(
         text="ok",
         usage=UsageBreakdown(output_tokens=1),
-        iterations=1,
         llm_calls=[
             LLMUsageCall(
                 model="minimax-m3",

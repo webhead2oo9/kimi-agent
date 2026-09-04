@@ -67,19 +67,17 @@ This doesn't replace the system Node installation; it just tells the installer w
 
 ---
 
-## Step 4. Confirm the install path is the expected one
+## Step 4. Keep the configured runtime path fixed
 
 ### Why do this?
-The installer only writes `/opt/kimi/betterwright`. An optional path argument exists for compatibility, but `realpath -m` resolves it to that exact location; other paths, including symlinks to another tree, are rejected before staging or removal begins. Point `BROWSER_RUNTIME_DIR` at the same reviewed location in your `.env`.
+The installer only writes `/opt/kimi/betterwright` and accepts no path argument. Point `BROWSER_RUNTIME_DIR` at that exact reviewed location in your `.env`.
 
-### What to run
-Nothing if you're taking the default path. If you set `BROWSER_RUNTIME_DIR` to anything else, verify it resolves to `/opt/kimi/betterwright`:
+### What to configure
+Add the runtime path to the bot's active `ENV_FILE` (normally `kimi.env`):
 
-```sh
-realpath -m "$BROWSER_RUNTIME_DIR"
+```dotenv
+BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
 ```
-
-The output should print `/opt/kimi/betterwright` exactly.
 
 ---
 

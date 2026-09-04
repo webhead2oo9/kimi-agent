@@ -473,7 +473,6 @@ settings for the transport itself stay in `.env`.
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `CODEX_TOKEN_FILE` | path | `secrets/codex-auth.json` | Codex auth file (WebSocket Responses transport). Codex auth is validated at startup when reachable. |
-| `CODEX_MODEL` | str | `gpt-5.5` | Default model passed to the Codex transport when a caller does not supply one; bot chat routing uses the YAML model entry. |
 | `CODEX_REASONING_EFFORT` | str | `high` | Codex reasoning effort. |
 | `CODEX_IMAGE_QUALITY` | str | `auto` | Quality for provider-native Codex image output. |
 | `CODEX_IMAGE_FORMAT` | str | `png` | Format for provider-native Codex image output. |
@@ -595,9 +594,6 @@ Channel instruction fragments are a separate configuration surface. The files un
 behave in those scopes, but their presence neither grants nor denies message-history
 access. Use Discord permissions for member visibility and
 `DISCORD_SEARCH_EXCLUDED_CHANNELS` for channels that must stay outside the search surface.
-
-`DISCORD_SEARCH_CHANNELS` is unsupported. A non-empty value aborts startup with
-guidance instead of silently reversing the deployment's policy.
 
 ---
 

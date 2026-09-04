@@ -178,11 +178,6 @@ class EventBusImpl:
         with contextlib.suppress(ValueError):
             self._subscriptions.remove(subscription)
 
-    def subscriptions_for(self, module_name: str) -> tuple[str, ...]:
-        return tuple(
-            s.pattern for s in self._subscriptions if s.module_name == module_name and not s.closed
-        )
-
     # ---- workers --------------------------------------------------------
 
     def _start_workers(self, lane: _ModuleLane) -> None:
@@ -261,17 +256,6 @@ class EventBusImpl:
                 self._metrics_sink(lane.module_name, lane.metrics())
             except Exception:
                 log.exception("Event metrics sink failed for %s", lane.module_name)
-
-    async def drain(self, module_name: str | None = None) -> None:
-        """Wait until the named lane (or every lane) has no pending work. Tests."""
-        lanes = [self._lanes[module_name]] if module_name else list(self._lanes.values())
-        for lane in lanes:
-            if lane.queue or lane.in_flight:
-                await lane.idle.wait()
-
-    def metrics_for(self, module_name: str) -> Mapping[str, float]:
-        lane = self._lanes.get(module_name)
-        return lane.metrics() if lane is not None else {}
 
     # ---- lifecycle ------------------------------------------------------
 

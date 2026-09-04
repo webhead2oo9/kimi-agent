@@ -62,6 +62,9 @@
 
 # Runtime-owned state. These paths may contain message content, user data,
 # tokens, or machine-local state and must not become public-repository input.
+# Pi background command receipts are local evidence, while other future .pi
+# project configuration remains eligible for source control.
+/.pi/tasks/
 **/data/
 **/logs/
 **/workspaces/

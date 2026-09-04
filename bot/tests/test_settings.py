@@ -8,6 +8,7 @@ they passed explicitly. Env *variables* still apply, which is what
 ``monkeypatch.setenv`` below relies on; only the file is cut out.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -238,6 +239,26 @@ def test_discord_search_exclusions_parse_numeric_ids() -> None:
     }
 
 
+@pytest.mark.parametrize("name", ["CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"])
+def test_retired_v1_environment_settings_fail_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv(name, "retired-value")
+
+    with pytest.raises(ValidationError, match=name):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("name", ["CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"])
+def test_retired_v1_dotenv_settings_fail_startup(tmp_path: Path, name: str) -> None:
+    env_file = tmp_path / "retired.env"
+    env_file.write_text(f"{name}=retired-value\n", encoding="utf-8")
+
+    with pytest.raises(ValidationError, match=name):
+        Settings(_env_file=env_file)  # type: ignore[call-arg]
+
+
 def test_discord_search_exclusions_reject_non_numeric_id() -> None:
     with pytest.raises(ValidationError):
         Settings(  # type: ignore[call-arg]
@@ -251,14 +272,6 @@ def test_discord_search_exclusions_reject_duplicate_id() -> None:
         Settings(  # type: ignore[call-arg]
             _env_file=None,
             discord_search_excluded_channels="123,123",
-        )
-
-
-def test_legacy_discord_search_allowlist_fails_with_migration_message() -> None:
-    with pytest.raises(ValidationError, match="DISCORD_SEARCH_EXCLUDED_CHANNELS"):
-        Settings(  # type: ignore[call-arg]
-            _env_file=None,
-            discord_search_channels="123:general",
         )
 
 

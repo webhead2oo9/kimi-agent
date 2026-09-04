@@ -47,11 +47,6 @@ def surface_tools(surface: str) -> frozenset[str]:
     return frozenset(_SURFACE_TOOLS.get(surface, ()))
 
 
-def reset_surface_tools() -> None:
-    """Drop every declaration. For tests and the eval harness's fresh builds."""
-    _SURFACE_TOOLS.clear()
-
-
 def snapshot_surface_tools() -> dict[str, frozenset[str]]:
     """Copy the table so a failed plugin's declarations can be rolled back."""
     return {surface: frozenset(names) for surface, names in _SURFACE_TOOLS.items()}

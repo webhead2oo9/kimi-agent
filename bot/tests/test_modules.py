@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import aiosqlite
 import pytest
 
 from app import modules as module_runtime
@@ -40,9 +40,15 @@ from kimi_agent_module_api.testing import (
 )
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from modules.events import EventBusImpl
-from modules.testing import build_test_runtime, fake_ports
+from modules.testing import (
+    build_test_runtime,
+    manager_config_dir,
+    manager_context,
+    start_test_manager,
+)
 from config.settings import Settings
 from storage.db import Database
+from tests.module_event_helpers import drain_event_bus
 from tools.registry import ToolRegistry
 
 
@@ -108,7 +114,7 @@ def _base(database: Database, manager: ModuleManager) -> ModuleRuntimeBase:
         database=database,
         bot=object(),
         is_guild_active=lambda _guild_id: True,
-        current_config_dir=lambda: manager.config_dir,
+        current_config_dir=lambda: manager_config_dir(manager),
         capabilities=ModuleCapabilities(
             available=frozenset(), members_intent=False, message_content_intent=False
         ),
@@ -121,7 +127,11 @@ def test_empty_configuration_discovers_nothing(tmp_path: Path) -> None:
 
     assert manager.load_state.requested == ()
     assert manager.load_state.loaded == ()
-    assert manager.config_dir == tmp_path
+    assert manager_config_dir(manager) == tmp_path
+
+
+def test_manager_start_exposes_only_the_production_contract() -> None:
+    assert tuple(inspect.signature(ModuleManager.start).parameters) == ("self", "base")
 
 
 def test_module_capabilities_advertise_enabled_privileged_intents(tmp_path: Path) -> None:
@@ -184,12 +194,14 @@ def test_missing_activation_capability_soft_disables_module_and_dependents(
             name="index",
             version="1",
             create=create("index"),
+            api_version=MODULE_API_VERSION,
             activation_capabilities=("discord.message_content.v1",),
         ),
         "consumer": ModuleSpec(
             name="consumer",
             version="1",
             create=create("consumer"),
+            api_version=MODULE_API_VERSION,
             dependencies=("index",),
         ),
     }
@@ -222,6 +234,7 @@ def test_missing_required_capability_remains_a_startup_error(tmp_path: Path) -> 
         name="index",
         version="1",
         create=lambda _ctx: FakeModule("index", []),
+        api_version=MODULE_API_VERSION,
         requires_capabilities=("discord.message_content.v1",),
     )
 
@@ -292,6 +305,7 @@ def test_discovery_imports_only_configured_entrypoints(
                     version="1",
                     dependencies=("base",),
                     create=lambda _ctx: FakeModule("dependent", []),
+                    api_version=MODULE_API_VERSION,
                 )
             },
             "requires active module",
@@ -314,6 +328,7 @@ def test_service_requirement_must_match_the_provider_declaration(tmp_path: Path)
         version="1",
         provides=(ServiceDeclaration("cases", 1),),
         create=lambda _ctx: FakeModule("provider", []),
+        api_version=MODULE_API_VERSION,
     )
     consumer = ModuleSpec(
         name="consumer",
@@ -321,6 +336,7 @@ def test_service_requirement_must_match_the_provider_declaration(tmp_path: Path)
         dependencies=("provider",),
         consumes=(ServiceRequirement("missing", 1, provider="provider"),),
         create=lambda _ctx: FakeModule("consumer", []),
+        api_version=MODULE_API_VERSION,
     )
     with pytest.raises(RuntimeError, match="does not declare"):
         _manager(
@@ -350,6 +366,7 @@ async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path
         guild_settings=schema,
         permissions=ModulePermissions(event_topics=(ev.TOPIC_MESSAGE,)),
         create=lambda _ctx: module,
+        api_version=MODULE_API_VERSION,
     )
     manager = _manager(tmp_path, ("optional",), {"optional": spec})
     manager.events = EventBusImpl()
@@ -364,7 +381,7 @@ async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path
     database = Database(tmp_path / "bot.db")
     await database.connect()
     try:
-        await manager.start(_base(database, manager), customize=fake_ports)
+        await start_test_manager(manager, _base(database, manager))
         assert seen[0].is_guild_active(guild_id) is False
         delivered: list[str] = []
 
@@ -375,13 +392,13 @@ async def test_invalid_disable_module_settings_gate_the_runtime_context(tmp_path
         assert manager.events is not None
         payload = SimpleNamespace(message=SimpleNamespace(ref=SimpleNamespace(guild_id=guild_id)))
         manager.events.publish_core(ev.TOPIC_MESSAGE, payload)
-        await manager.events.drain()
+        await drain_event_bus(manager.events)
         assert delivered == []
         settings_path.write_text("---\nchannels: []\n---\n", encoding="utf-8")
         manager.guild_settings.refresh((guild_id,))
         assert seen[0].is_guild_active(guild_id) is True
         manager.events.publish_core(ev.TOPIC_MESSAGE, payload)
-        await manager.events.drain()
+        await drain_event_bus(manager.events)
         assert delivered == [ev.TOPIC_MESSAGE]
     finally:
         await manager.close()
@@ -402,7 +419,9 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
         return base
 
     installed = {
-        "base": ModuleSpec(name="base", version="1", create=create_base),
+        "base": ModuleSpec(
+            name="base", version="1", create=create_base, api_version=MODULE_API_VERSION
+        ),
         "dependent": _spec("dependent", dependent, dependencies=("base",)),
     }
 
@@ -412,7 +431,7 @@ def test_dependencies_compose_in_order_and_can_register_llm_tools(tmp_path: Path
     assert registry.is_registered("module_demo")
     entry = next(tool for tool in registry.get_all_tools() if tool.name == "module_demo")
     assert entry.untrusted is True
-    assert manager.spec("base").name == "base"
+    assert manager.specs["base"].name == "base"
     assert manager.tool_names("base") == ("module_demo",)
     assert manager.tool_names("dependent") == ()
 
@@ -439,7 +458,7 @@ async def test_module_schema_lifecycle_and_reverse_close(tmp_path: Path) -> None
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
 
-    await manager.start(_base(database, manager), customize=fake_ports)
+    await start_test_manager(manager, _base(database, manager))
     await manager.close()
 
     cursor = await database.conn.execute(
@@ -458,28 +477,6 @@ async def test_module_schema_lifecycle_and_reverse_close(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_existing_core_v1_database_gains_module_ledger(tmp_path: Path) -> None:
-    path = tmp_path / "old-v1.db"
-    raw = await aiosqlite.connect(path)
-    await raw.execute(
-        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)"
-    )
-    await raw.execute("INSERT INTO schema_version VALUES (1, 'core_v1', 'now')")
-    await raw.execute("CREATE TABLE legacy_core_data (id INTEGER PRIMARY KEY)")
-    await raw.execute("CREATE TABLE coding_tasks (id TEXT PRIMARY KEY)")
-    await raw.commit()
-    await raw.close()
-
-    database = Database(path)
-    await database.connect()
-    cursor = await database.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'module_schema_versions'"
-    )
-    assert await cursor.fetchone() is not None
-    await database.close()
-
-
-@pytest.mark.asyncio
 async def test_start_failure_closes_already_started_modules(tmp_path: Path) -> None:
     events: list[str] = []
     base = FakeModule("base", events)
@@ -493,7 +490,7 @@ async def test_start_failure_closes_already_started_modules(tmp_path: Path) -> N
     await database.connect()
 
     with pytest.raises(RuntimeError, match="failed:failing"):
-        await manager.start(_base(database, manager), customize=fake_ports)
+        await start_test_manager(manager, _base(database, manager))
 
     assert events == ["start:base", "start:failing", "close:failing", "close:base"]
     await database.close()
@@ -526,7 +523,7 @@ async def test_start_timeout_fails_the_module_and_aborts(tmp_path: Path) -> None
     await database.connect()
 
     with pytest.raises(RuntimeError, match="start\\(\\) exceeded 0.05s"):
-        await manager.start(_base(database, manager), customize=fake_ports)
+        await start_test_manager(manager, _base(database, manager))
 
     assert events == ["start:slow", "close:slow"]
     await database.close()
@@ -545,7 +542,7 @@ async def test_close_timeout_is_logged_and_shutdown_continues(tmp_path: Path) ->
     manager.close_timeout_seconds = 0.05
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
-    await manager.start(_base(database, manager), customize=fake_ports)
+    await start_test_manager(manager, _base(database, manager))
 
     await manager.close()
 
@@ -564,7 +561,12 @@ def test_tool_registry_is_sealed_after_loading(tmp_path: Path) -> None:
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1.0", create)}, registry)
+    _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1.0", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
 
     assert registry.is_registered("early")
     with pytest.raises(RuntimeError, match="not start\\(\\)"):
@@ -596,7 +598,7 @@ async def test_base_factories_build_per_module_ports(tmp_path: Path) -> None:
         database=database,
         bot=object(),
         is_guild_active=lambda _guild_id: True,
-        current_config_dir=lambda: manager.config_dir,
+        current_config_dir=lambda: manager_config_dir(manager),
         capabilities=ModuleCapabilities(frozenset(), False, False),
         trust=FakeTrust(),
         discord_actions=discord_actions,
@@ -611,9 +613,9 @@ async def test_base_factories_build_per_module_ports(tmp_path: Path) -> None:
             "http": FakeHttp(),
         }
 
-    await manager.start(base, customize=only_bus)
+    await start_test_manager(manager, base, customize=only_bus)
     try:
-        ctx = manager.context_for("m")
+        ctx = manager_context(manager, "m")
         assert isinstance(ctx.interactions, FakeInteractions)
         assert sorted(seen) == [("discord", "m"), ("interactions", "m")]
     finally:
@@ -647,9 +649,7 @@ async def test_start_timeout_abandons_a_module_that_ignores_cancellation(
     await database.connect()
 
     with pytest.raises(RuntimeError, match="exceeded 0.05s"):
-        await asyncio.wait_for(
-            manager.start(_base(database, manager), customize=fake_ports), timeout=2
-        )
+        await asyncio.wait_for(start_test_manager(manager, _base(database, manager)), timeout=2)
     await database.close()
 
 
@@ -671,7 +671,7 @@ async def test_a_module_raising_timeout_error_is_not_a_deadline(tmp_path: Path) 
     await database.connect()
 
     with pytest.raises(TimeoutError, match="upstream"):
-        await manager.start(_base(database, manager), customize=fake_ports)
+        await start_test_manager(manager, _base(database, manager))
     await database.close()
 
 
@@ -689,7 +689,10 @@ def test_tool_registry_is_sealed_even_when_a_later_create_fails(tmp_path: Path) 
         _manager(
             tmp_path,
             ("first", "second"),
-            {"first": ModuleSpec("first", "1", first), "second": ModuleSpec("second", "1", second)},
+            {
+                "first": ModuleSpec("first", "1", first, api_version=MODULE_API_VERSION),
+                "second": ModuleSpec("second", "1", second, api_version=MODULE_API_VERSION),
+            },
         )
 
     with pytest.raises(RuntimeError, match="after module loading"):
@@ -716,18 +719,23 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
     base = ModuleRuntimeBase(
         database=database,
         bot=object(),
         is_guild_active=lambda guild_id: guild_id == 7,
-        current_config_dir=lambda: manager.config_dir,
+        current_config_dir=lambda: manager_config_dir(manager),
         capabilities=ModuleCapabilities(frozenset(), False, False),
         trust=FakeTrust(),
     )
-    await manager.start(base, customize=fake_ports)
+    await start_test_manager(manager, base)
     try:
         from tools.registry import MessageContext
         from trust.tiers import TrustTier as CoreTier
@@ -781,18 +789,23 @@ async def test_module_tools_refuse_guilds_where_the_module_is_inactive(tmp_path:
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
     base = ModuleRuntimeBase(
         database=database,
         bot=object(),
         is_guild_active=lambda guild_id: guild_id == 7,
-        current_config_dir=lambda: manager.config_dir,
+        current_config_dir=lambda: manager_config_dir(manager),
         capabilities=ModuleCapabilities(frozenset(), False, False),
         trust=FakeTrust(),
     )
-    await manager.start(base, customize=fake_ports)
+    await start_test_manager(manager, base)
     try:
         from tools.registry import MessageContext
         from trust.tiers import TrustTier as CoreTier
@@ -835,7 +848,12 @@ def test_module_tools_are_masked_until_the_module_starts(tmp_path: Path) -> None
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
 
     from trust.tiers import TrustTier as CoreTier
 
@@ -854,7 +872,7 @@ async def test_start_reports_a_cancelled_start_as_failed(tmp_path: Path) -> None
     await database.connect()
 
     with pytest.raises(RuntimeError, match="cancelled before it finished"):
-        await manager.start(_base(database, manager), customize=fake_ports)
+        await start_test_manager(manager, _base(database, manager))
     await database.close()
 
 
@@ -876,12 +894,17 @@ async def test_module_tools_stay_hidden_while_start_is_in_progress(tmp_path: Pat
         return Slow("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
     from trust.tiers import TrustTier as CoreTier
 
-    starting = asyncio.create_task(manager.start(_base(database, manager), customize=fake_ports))
+    starting = asyncio.create_task(start_test_manager(manager, _base(database, manager)))
     try:
         await asyncio.wait_for(entered.wait(), timeout=2)
         assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
@@ -903,10 +926,15 @@ async def test_module_tools_are_hidden_for_a_non_snowflake_guild_id(tmp_path: Pa
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
-    await manager.start(_base(database, manager), customize=fake_ports)
+    await start_test_manager(manager, _base(database, manager))
     from trust.tiers import TrustTier as CoreTier
 
     try:
@@ -929,7 +957,12 @@ async def test_bind_tool_availability_exposes_tools_without_start(tmp_path: Path
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     from trust.tiers import TrustTier as CoreTier
 
     assert not registry.get_tools_for_tier(CoreTier.STAFF, guild_id="7")
@@ -957,10 +990,15 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
         return FakeModule("m", [])
 
     registry = ToolRegistry()
-    manager = _manager(tmp_path, ("m",), {"m": ModuleSpec("m", "1", create)}, registry)
+    manager = _manager(
+        tmp_path,
+        ("m",),
+        {"m": ModuleSpec("m", "1", create, api_version=MODULE_API_VERSION)},
+        registry,
+    )
     database = Database(str(tmp_path / "bot.db"))
     await database.connect()
-    await manager.start(_base(database, manager), customize=fake_ports)
+    await start_test_manager(manager, _base(database, manager))
     try:
         from tools.registry import USER_APP_SCOPE_CHANNEL_ID, MessageContext
         from trust.tiers import TrustTier as CoreTier

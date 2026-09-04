@@ -254,7 +254,6 @@ class ConversationRunResult:
     generated_assets: list[GeneratedAsset] = field(default_factory=list)
     usage: UsageBreakdown = field(default_factory=UsageBreakdown)
     llm_calls: list[LLMUsageCall] = field(default_factory=list)
-    iterations: int = 0
     timed_out: bool = False
     turn_id: str = ""
     termination_reason: ConversationTerminationReason = "completed"
@@ -602,7 +601,6 @@ class _ConversationRunner:
                     text=e.safe_message,
                     usage=_usage_total(state.llm_calls),
                     llm_calls=list(state.llm_calls),
-                    iterations=state.completed_calls,
                     turn_id=turn_id,
                     termination_reason="provider_error",
                     outbox=msg_ctx.outbox,
@@ -677,7 +675,6 @@ class _ConversationRunner:
                             ),
                             usage=_usage_total(state.llm_calls),
                             llm_calls=list(state.llm_calls),
-                            iterations=state.completed_calls,
                             turn_id=turn_id,
                             termination_reason="provider_error",
                             outbox=msg_ctx.outbox,
@@ -696,7 +693,6 @@ class _ConversationRunner:
                         ),
                         usage=_usage_total(state.llm_calls),
                         llm_calls=list(state.llm_calls),
-                        iterations=state.completed_calls,
                         turn_id=turn_id,
                         termination_reason="provider_error",
                         outbox=msg_ctx.outbox,
@@ -864,7 +860,6 @@ class _ConversationRunner:
             generated_assets=state.generated_assets,
             usage=_usage_total(state.llm_calls),
             llm_calls=list(state.llm_calls),
-            iterations=state.completed_calls,
             timed_out=timed_out,
             turn_id=turn_id,
             termination_reason="timed_out" if timed_out else "max_iterations",
@@ -1104,7 +1099,6 @@ class _ConversationRunner:
             generated_assets=state.generated_assets,
             usage=_usage_total(state.llm_calls),
             llm_calls=list(state.llm_calls),
-            iterations=state.completed_calls,
             turn_id=turn_id,
             outbox=msg_ctx.outbox,
         )
@@ -1149,7 +1143,6 @@ class _ConversationRunner:
             generated_assets=state.generated_assets,
             usage=_usage_total(state.llm_calls),
             llm_calls=list(state.llm_calls),
-            iterations=state.completed_calls,
             turn_id=turn_id,
             outbox=msg_ctx.outbox,
         )
@@ -1290,7 +1283,6 @@ class _ConversationRunner:
             temperature=request.temperature,
             provider_state=state.current_provider_state,
             recalled_memories=request.recalled_memories,
-            continuation_context_messages=continuation_context_messages,
             requested_capabilities=_requested_capabilities(
                 messages=request_messages,
                 current_user_parts=request_parts,
@@ -1331,7 +1323,7 @@ def _apply_tool_reasoning_escalation(
     called_names = {tool_call.name for tool_call in tool_calls}
     matched_efforts = [
         escalation.effort
-        for escalation in getattr(provider, "reasoning_escalations", ())
+        for escalation in provider.reasoning_escalations
         if called_names & escalation.tool_names
     ]
     if not matched_efforts:

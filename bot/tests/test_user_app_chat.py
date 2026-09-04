@@ -37,6 +37,7 @@ from trust.tiers import TrustTier
 from trust.user_app import UserAppAccess
 from tools.registry import MessageContext, TurnOutbox
 from workspace import user_app_workspace_key
+from tests.app_state_probes import admission_state
 from tests.helpers import (
     LifecycleProbe,
     PersonalChatDriver,
@@ -490,7 +491,7 @@ async def _image_chat_app(
 ) -> Any:
     app = await _user_app_chat_app(tmp_path, monkeypatch)
     provider_manager = cast(StubProviderManager, app.provider_manager)
-    provider_manager.main.capabilities = {
+    provider_manager.provider.capabilities = {
         ProviderCapability.TEXT,
         ProviderCapability.IMAGE_INPUT,
         ProviderCapability.TOOL_CALLING,
@@ -571,7 +572,7 @@ async def test_registered_chat_passes_generic_mime_image_to_image_provider(
         assert delivered == ["I can see the image."]
         assert len(requests) == 1
         provider_manager = cast(StubProviderManager, app.provider_manager)
-        assert requests[0].provider is provider_manager.main
+        assert requests[0].provider is provider_manager.provider
         input_parts = requests[0].input_parts
         assert input_parts is not None
         assert len(input_parts) == 1
@@ -1011,13 +1012,13 @@ async def test_chat_admission_stays_active_through_delivery(
 
     try:
         await asyncio.wait_for(delivery_started.wait(), timeout=0.5)
-        snapshot = await app.turn_admission.snapshot()
+        snapshot = await admission_state(app.turn_admission)
         assert snapshot.active_total == 1
         assert snapshot.active_by_user == {"42": 1}
 
         release_delivery.set()
         await asyncio.wait_for(task, timeout=0.5)
-        assert (await app.turn_admission.snapshot()).active_total == 0
+        assert (await admission_state(app.turn_admission)).active_total == 0
     finally:
         release_delivery.set()
         if not task.done():
@@ -1299,6 +1300,14 @@ def test_personal_chat_blocks_guild_artifact_tools() -> None:
     for name in ("teach", "recall_community", "reflect_community"):
         assert name in _PERSONAL_CHAT_BLOCKED_TOOLS
     for name in ("skill_create", "skill_edit", "skill_delete"):
+        assert name in _PERSONAL_CHAT_BLOCKED_TOOLS
+    for name in (
+        "start_coding_task",
+        "coding_task_status",
+        "coding_task_message",
+        "coding_task_cancel",
+        "coding_task_retry_delivery",
+    ):
         assert name in _PERSONAL_CHAT_BLOCKED_TOOLS
 
 

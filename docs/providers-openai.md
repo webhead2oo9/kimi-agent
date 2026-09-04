@@ -55,8 +55,7 @@ it cannot set `base_url`. On top of the generic profile fields it gains:
   service tier. Leave it empty to keep OpenRouter's default.
 - **`timeout_seconds`**: the SDK transport timeout for OpenRouter requests.
 - **`app_name`**: the provider-facing identity. Inherits `BOT_NAME` when
-  unset, and is sent to OpenRouter as both `X-OpenRouter-Title` and the
-  legacy `X-Title`.
+  unset, and is sent to OpenRouter as `X-OpenRouter-Title`.
 - **`app_url`**: the `HTTP-Referer` attribution header, unset by default.
 
 ```yaml

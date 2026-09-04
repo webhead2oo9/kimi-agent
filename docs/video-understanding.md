@@ -51,13 +51,11 @@ roles:
   video: gemini-video-flash
 ```
 
-> **Upgrading an existing video deployment:** add the provider, model, and
-> `roles.video` entries above; remove the legacy `model:` field from
-> `config/tools/video.md`; then restart. Schema v6 backfills existing sessions
-> from their stored upstream model, so their continuations keep using that
-> model. Central pricing can fall back to a catalog entry with the same upstream
-> ID when its rate card is unambiguous; keep that entry and rate card until the
-> migrated sessions expire.
+> **Upgrading from v1:** add the provider, model, and `roles.video` entries
+> above, and remove the old `model:` field from `config/tools/video.md` before
+> starting v2. The v7 migration expires v1 video sessions and queues their
+> provider resources for deletion; users start a new session on v2. Follow the
+> complete [v2 upgrade runbook](upgrading-to-v2.md).
 
 The `VIDEO_UNDERSTANDING_ENABLED` flag enables all three source types. If it is
 false, the tool is absent no matter what. If it is true but `roles.video` is

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import logging
 import secrets
 import time
-from typing import Protocol
+from typing import Protocol, overload
 
 from utils.asyncio import await_uncancellable
 from video_understanding.client import (
@@ -71,14 +71,34 @@ class VideoInteractionClient(Protocol):
 class VideoSessionError(RuntimeError):
     """A model-facing session or provider failure."""
 
+    @overload
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: None = None,
+        catalog_model: None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: VideoInteractionResult,
+        catalog_model: str,
+    ) -> None: ...
+
     def __init__(
         self,
         message: str,
         *,
         result: VideoInteractionResult | None = None,
-        catalog_model: str = "",
+        catalog_model: str | None = None,
     ) -> None:
         super().__init__(message)
+        if result is not None and not catalog_model:
+            raise TypeError("catalog_model is required when a video result is provided")
         self.result = result
         self.catalog_model = catalog_model
 
@@ -90,9 +110,11 @@ class VideoResultCancelled(asyncio.CancelledError):
         self,
         *,
         result: VideoInteractionResult,
-        catalog_model: str = "",
+        catalog_model: str,
     ) -> None:
         super().__init__()
+        if not catalog_model:
+            raise ValueError("catalog_model must not be empty")
         self.result = result
         self.catalog_model = catalog_model
 
@@ -102,7 +124,10 @@ class VideoInteractionCancelled(asyncio.CancelledError):
 
     def __init__(self, *, error: VideoInteractionError) -> None:
         super().__init__()
+        if not error.catalog_model:
+            raise ValueError("cancelled video interaction has no catalog_model attribution")
         self.error = error
+        self.catalog_model = error.catalog_model
 
 
 async def _finish_persistence[T](
@@ -190,7 +215,7 @@ class VideoSessionRepository(Protocol):
         youtube_url: str,
         youtube_video_id: str,
         model: str,
-        catalog_model: str = "",
+        catalog_model: str,
         interaction_id: str,
         now: float,
         expires_at: float,
@@ -220,7 +245,7 @@ class VideoSessionRepository(Protocol):
         source_locator: str,
         source_byte_size: int,
         model: str,
-        catalog_model: str = "",
+        catalog_model: str,
         interaction_id: str,
         file_name: str,
         now: float,
@@ -307,7 +332,7 @@ class VideoSessionConfig:
     max_output_tokens: int
     max_session_interactions: int
     session_ttl_minutes: int
-    catalog_model: str = ""
+    catalog_model: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,7 +357,7 @@ class VideoAnalysis:
     limitations: tuple[str, ...]
     model: str
     usage: VideoUsage
-    catalog_model: str = ""
+    catalog_model: str
     usage_present: bool = True
 
 
@@ -365,7 +390,7 @@ class VideoUnderstandingService:
     ) -> VideoAnalysis:
         client = self._require_client()
         store = self._require_store()
-        catalog_model = config.catalog_model or config.model
+        catalog_model = config.catalog_model
         result, interaction_cancellation = await self._run_interaction_call(
             client.start(
                 url=youtube_url,
@@ -447,7 +472,7 @@ class VideoUnderstandingService:
     ) -> VideoAnalysis:
         client = self._require_client()
         store = self._require_store()
-        catalog_model = config.catalog_model or config.model
+        catalog_model = config.catalog_model
         file_id = f"kv-{secrets.token_hex(16)}"
         file_name = f"files/{file_id}"
         reserved_at = time.time()
@@ -605,7 +630,7 @@ class VideoUnderstandingService:
                 "Several video sessions are active. Pass the session returned by the relevant start call."
             )
         current = matches[0]
-        catalog_model = getattr(current, "catalog_model", "") or current.model
+        catalog_model = current.catalog_model
         if current.interaction_count >= config.max_session_interactions:
             raise VideoSessionError(
                 "This video session reached its follow-up limit. Start a new session to continue."
@@ -1004,7 +1029,7 @@ def _analysis(
     source_locator: str,
     youtube_url: str,
     result: VideoInteractionResult,
-    catalog_model: str = "",
+    catalog_model: str,
 ) -> VideoAnalysis:
     return VideoAnalysis(
         session=handle,
@@ -1017,6 +1042,6 @@ def _analysis(
         limitations=result.limitations,
         model=result.model,
         usage=result.usage,
-        catalog_model=catalog_model or result.model,
+        catalog_model=catalog_model,
         usage_present=result.usage_present,
     )

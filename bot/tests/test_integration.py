@@ -6,6 +6,7 @@ import pytest
 from skills.loader import scan_skills
 from skills.registration import register_all_skill_tools
 from tests.helpers import make_settings
+from tests.skill_runner_helpers import run_script_with_direct_test_command
 from tools.browse import init_browse_tools
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
@@ -14,12 +15,8 @@ from trust.tiers import TrustTier
 @pytest.fixture
 def full_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ToolRegistry:
     from skills import registration
-    from skills.runner import run_script
 
-    async def _run_without_sandbox(**kwargs):
-        return await run_script(_sandbox_enabled=False, **kwargs)
-
-    monkeypatch.setattr(registration, "run_script", _run_without_sandbox)
+    monkeypatch.setattr(registration, "run_script", run_script_with_direct_test_command)
 
     reg = ToolRegistry()
     store = Path("tests/fixtures/skills")

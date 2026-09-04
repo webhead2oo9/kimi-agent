@@ -24,7 +24,6 @@ __all__ = [
     "KIND_FLOAT",
     "KIND_INT",
     "KIND_TEXT",
-    "SCALAR_KINDS",
     "coerce_scalar",
 ]
 
@@ -33,10 +32,6 @@ KIND_FLOAT = "float"
 KIND_BOOL = "bool"
 KIND_TEXT = "text"
 KIND_CHOICE = "choice"
-
-# The kinds every surface understands. A surface may add its own (deployment
-# settings also has an id-list kind) and handles those before delegating here.
-SCALAR_KINDS = frozenset({KIND_INT, KIND_FLOAT, KIND_BOOL, KIND_TEXT, KIND_CHOICE})
 
 
 def coerce_scalar(

@@ -39,6 +39,7 @@ from storage.conversations import (
     ConversationStore,
 )
 from storage.db import Database
+from tests.app_state_probes import admission_state
 from tests.helpers import (
     make_settings,
     replace_app_database,
@@ -1169,7 +1170,7 @@ async def test_on_message_mapped_reply_with_mention_continues_existing_root(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -1275,7 +1276,7 @@ async def test_on_message_mapped_reply_without_mention_is_ignored(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             False
         ),
     )
@@ -1333,7 +1334,7 @@ async def test_on_message_consent_gate_runs_before_conversation_row_write(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -1364,7 +1365,7 @@ async def test_on_message_no_turn_result_adds_no_success_reaction(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -1435,7 +1436,7 @@ async def _drive_on_message_root_concurrency(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             message in messages
         ),
     )
@@ -1600,7 +1601,7 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
         TURN_ADMISSION_BUSY_MESSAGE,
         reference=second,
     )
-    assert (await app.turn_admission.snapshot()).active_total == 0
+    assert (await admission_state(app.turn_admission)).active_total == 0
 
 
 @pytest.mark.asyncio
@@ -1628,7 +1629,7 @@ async def test_blocked_user_is_ignored_before_status_and_turn(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -1662,7 +1663,7 @@ async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_databa
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             next(verdicts)
         ),
     )
@@ -2686,7 +2687,7 @@ async def test_on_message_delivery_failure_adds_failure_reaction(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -2718,7 +2719,7 @@ async def test_on_message_attachment_error_adds_failure_reaction(
     monkeypatch.setattr(
         message_runtime,
         "should_respond",
-        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_channels=None, allowed_guilds=None: (
+        lambda message, *, bot_user, bot_name, responds_without_mention, allowed_guilds, allowed_channels=None: (
             True
         ),
     )
@@ -2747,11 +2748,10 @@ async def test_reply_to_live_chunk_resolves_original_root_before_durable_map() -
     """A reply to the first visible chunk must not fork a fresh root mid-send."""
     from app.live_reply_routes import (
         LiveReplyRoute,
-        clear_live_replies,
         register_live_reply,
+        unregister_live_reply,
     )
 
-    clear_live_replies()
     try:
         register_live_reply(
             "1001",
@@ -2774,4 +2774,4 @@ async def test_reply_to_live_chunk_resolves_original_root_before_durable_map() -
         assert resolved.key == "root-abc"
         assert resolved.db_conversation_id == 42
     finally:
-        clear_live_replies()
+        unregister_live_reply("1001")

@@ -20,7 +20,7 @@ from utils.asyncio import await_uncancellable
 from utils.video_types import video_media_type
 from workspace import ENV_DIR_NAMES, WorkspaceKey, WorkspaceManager
 from usage.normalization import LLMUsageCall, UsageBreakdown
-from video_understanding.client import VideoInteractionError
+from video_understanding.client import VideoInteractionError, VideoUsage
 from video_understanding.service import (
     UploadedVideoSource,
     VideoAnalysis,
@@ -164,11 +164,13 @@ def init_video_tool(
     *,
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
-    catalog_model: str = "",
-    model: str = "",
+    catalog_model: str,
+    model: str,
 ) -> bool:
     if not service.available:
         return False
+    if not catalog_model or not model:
+        raise ValueError("video tool requires catalog and upstream model identities")
 
     async def handler(args: dict, ctx: MessageContext) -> str:
         uploaded_source: UploadedVideoSource | None = None
@@ -267,9 +269,7 @@ def init_video_tool(
                             ctx,
                             exc.error.model or config.model,
                             exc.error.usage,
-                            pricing_model=(
-                                exc.error.catalog_model or config.catalog_model or config.model
-                            ),
+                            pricing_model=exc.catalog_model,
                             usage_present=exc.error.usage_present,
                         )
                     )
@@ -282,7 +282,7 @@ def init_video_tool(
                         ctx,
                         exc.result.model,
                         exc.result.usage,
-                        pricing_model=(exc.catalog_model or config.catalog_model or config.model),
+                        pricing_model=exc.catalog_model,
                         usage_present=exc.result.usage_present,
                     )
                 )
@@ -294,7 +294,7 @@ def init_video_tool(
                     ctx,
                     exc.result.model,
                     exc.result.usage,
-                    pricing_model=(exc.catalog_model or config.catalog_model or config.model),
+                    pricing_model=_billable_catalog_model(exc.catalog_model),
                     usage_present=exc.result.usage_present,
                 )
             return tool_error(str(exc))
@@ -304,7 +304,7 @@ def init_video_tool(
                     ctx,
                     exc.model or config.model,
                     exc.usage,
-                    pricing_model=(exc.catalog_model or config.catalog_model or config.model),
+                    pricing_model=_billable_catalog_model(exc.catalog_model),
                     usage_present=exc.usage_present,
                 )
             return tool_error(str(exc))
@@ -537,18 +537,15 @@ async def _finish_after_cancellation(operation: Awaitable[None]) -> None:
 async def _record_result_usage(
     ctx: MessageContext,
     model: str,
-    usage: object,
+    usage: VideoUsage,
     *,
     pricing_model: str,
-    usage_present: bool = True,
+    usage_present: bool,
 ) -> None:
-    input_tokens = int(getattr(usage, "input_tokens", 0))
-    cached_tokens = int(getattr(usage, "cached_tokens", 0))
-    output_tokens = int(getattr(usage, "output_tokens", 0))
     breakdown = UsageBreakdown(
-        input_tokens=input_tokens,
-        cached_read_tokens=cached_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        cached_read_tokens=usage.cached_tokens,
+        output_tokens=usage.output_tokens,
     )
     call = LLMUsageCall(
         model=model,
@@ -562,6 +559,12 @@ async def _record_result_usage(
         await await_uncancellable(ctx.record_usage_call(call))
     elif ctx.usage_sink is not None:
         ctx.usage_sink.append(call)
+
+
+def _billable_catalog_model(catalog_model: str | None) -> str:
+    if not catalog_model:
+        raise RuntimeError("Billable video result has no catalog_model attribution")
+    return catalog_model
 
 
 def _render_analysis(analysis: VideoAnalysis) -> str:

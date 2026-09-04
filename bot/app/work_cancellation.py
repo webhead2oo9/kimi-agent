@@ -123,7 +123,6 @@ class WorkCancellationCoordinator:
         response_sender: ResponseSender,
         strip_message_invocation: MessageInvocationStripper,
         cleanup_wait_seconds: float,
-        global_staff_ids: frozenset[str],
         conversation_store: ConversationStore | None = None,
     ) -> None:
         self._bot = bot
@@ -137,7 +136,6 @@ class WorkCancellationCoordinator:
         self._response_sender = response_sender
         self._strip_message_invocation = strip_message_invocation
         self._cleanup_wait_seconds = cleanup_wait_seconds
-        self._global_staff_ids = global_staff_ids
         self._conversation_store = conversation_store
 
     def is_stop_message(self, message: discord.Message) -> bool:
@@ -176,20 +174,21 @@ class WorkCancellationCoordinator:
         if task_id is not None:
             if not self._coding_tasks.running:
                 return "Coding tasks are not enabled."
-            task = await self._coding_tasks.store.get_task(task_id)
-            guild_id = str(interaction.guild_id) if interaction.guild_id else None
+            user_only = is_user_only_integration(interaction)
+            # User-install invocations are logically guild-less even when Discord
+            # supplies the physical guild where the command was opened.
+            guild_id = (
+                None if user_only else str(interaction.guild_id) if interaction.guild_id else None
+            )
             member = interaction.user if isinstance(interaction.user, discord.Member) else None
             tier = self._trust_resolver.resolve(member, user_id, guild_id)
-            same_guild_staff = (
-                task is not None
-                and tier >= TrustTier.STAFF
-                and task.guild_id is not None
-                and task.guild_id == guild_id
+            task = await self._coding_tasks.resolve_task_for_control(
+                user_id=user_id,
+                guild_id=guild_id,
+                trust_tier=tier,
+                task_id=task_id,
             )
-            globally_configured_staff = user_id in self._global_staff_ids
-            if task is None or (
-                task.user_id != user_id and not same_guild_staff and not globally_configured_staff
-            ):
+            if task is None:
                 return "That coding task was not found."
             await self._coding_tasks.cancel_task(task.id, reason="Stopped with /stop")
             cleanup_complete = await self._coding_tasks.cleanup_complete(task.id)
@@ -284,11 +283,13 @@ class WorkCancellationCoordinator:
 
     async def cancel_for_privacy(self, user_id: str) -> None:
         await self._invalidate_retained_requests(user_id)
-        await self.cancel(
+        summary = await self.cancel(
             user_id=user_id,
             scopes=(WorkScope(channel_id="", root_key=None),),
             all_work=True,
         )
+        if not summary.clean:
+            raise RuntimeError("The user's active work did not finish cleanup")
         # Deleting this user's rooted conversations would otherwise cascade
         # through the conversation FK and silently erase another user's live
         # coding-task row mid-worker. Drain those tasks first regardless of
@@ -299,7 +300,9 @@ class WorkCancellationCoordinator:
         if self._conversation_store is not None and self._coding_tasks.running:
             rooted_ids = await self._conversation_store.rooted_conversation_ids(user_id)
             if rooted_ids:
-                await self._coding_tasks.cancel_for_conversations(rooted_ids)
+                _cancelled, clean = await self._coding_tasks.cancel_for_conversations(rooted_ids)
+                if not clean:
+                    raise RuntimeError("Shared-conversation coding work did not finish cleanup")
 
     async def _invalidate_retained_requests(self, user_id: str) -> None:
         # Pending consent callbacks are not active asyncio tasks. Invalidate

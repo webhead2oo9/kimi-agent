@@ -99,6 +99,7 @@ def _dependencies(**overrides: Any) -> TurnDependencies:
 
 class BlockingModerationService:
     enabled = True
+    output_exempt_tier: TrustTier | None = None
 
     def __init__(self, direction: Direction = Direction.INPUT) -> None:
         self.direction = direction
@@ -118,6 +119,7 @@ class BlockingModerationService:
 
 class RecordingModerationService:
     enabled = True
+    output_exempt_tier: TrustTier | None = None
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -146,6 +148,7 @@ class TextBlockingModerationService(RecordingModerationService):
 
 class FilteringModerationService:
     enabled = True
+    output_exempt_tier: TrustTier | None = None
 
     def __init__(self, checked_image_urls: tuple[str, ...]) -> None:
         self.checked_image_urls = checked_image_urls
@@ -671,6 +674,7 @@ class _CaptioningVisionProvider(StubProvider):
             content="Image 1: a stop sign.",
             model="vision-served",
             usage={"input_tokens": 10, "output_tokens": 5},
+            usage_present=True,
         )
 
 

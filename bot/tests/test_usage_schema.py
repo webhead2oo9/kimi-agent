@@ -55,4 +55,4 @@ async def test_usage_ledgers_and_indexes_exist_in_current_schema(tmp_path) -> No
     } <= paid_indexes
     assert {"user_id", "surface", "operation", "unit_count", "created_at"} <= marker_columns
     assert {"idx_usage_markers_user_surface_time", "idx_usage_markers_time"} <= marker_indexes
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION == 7

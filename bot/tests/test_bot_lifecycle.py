@@ -27,6 +27,7 @@ from storage.conversations import ConversationStore, UserDataDeletion
 from storage.db import Database
 from storage.preferences import PreferenceStore
 from storage.privacy import PrivacyDeletionRequestStore
+from tests.app_state_probes import admission_state
 from tests.helpers import (
     CommandSyncProbe,
     LifecycleProbe,
@@ -80,9 +81,20 @@ class CloseableProvider:
         self.close_count += 1
 
 
+class _FakeMemoryClient:
+    def __init__(self) -> None:
+        self.bank_state_store: object | None = None
+
+    def set_user_bank_state_store(self, store: object) -> None:
+        self.bank_state_store = store
+
+
+_DEFAULT_MEMORY_CLIENT = object()
+
+
 class FakeMemoryManager:
-    def __init__(self, client: object | None = object()) -> None:
-        self.client = client
+    def __init__(self, client: object | None = _DEFAULT_MEMORY_CLIENT) -> None:
+        self.client = _FakeMemoryClient() if client is _DEFAULT_MEMORY_CLIENT else client
         self.ready = False
         self.ensure_calls: list[tuple[object, object]] = []
         self.close_count = 0
@@ -124,10 +136,10 @@ async def test_gateway_resume_restores_admission_after_disconnect(
     LifecycleProbe(app).set_gateway_ready()
 
     await app.on_disconnect()
-    assert app.gateway_ready is False
+    assert LifecycleProbe(app).snapshot().gateway_ready is False
 
     await app.on_resumed()
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
 
 
 @pytest.mark.asyncio
@@ -138,13 +150,13 @@ async def test_gateway_resume_does_not_restore_failed_or_closed_application(
     LifecycleProbe(failed).set_db_initialized(True)
     LifecycleProbe(failed).set_startup_error(RuntimeError("startup failed"))
     await failed.on_resumed()
-    assert failed.gateway_ready is False
+    assert LifecycleProbe(failed).snapshot().gateway_ready is False
 
     closed = _build_test_app(monkeypatch)
     LifecycleProbe(closed).set_db_initialized(True)
     LifecycleProbe(closed).set_closed()
     await closed.on_resumed()
-    assert closed.gateway_ready is False
+    assert LifecycleProbe(closed).snapshot().gateway_ready is False
 
 
 @pytest.mark.asyncio
@@ -160,7 +172,7 @@ async def test_ready_preamble_error_restores_initialized_admission_and_unregiste
     with pytest.raises(RuntimeError, match="log failed"):
         await app.on_ready()
 
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
     assert CommandSyncProbe(app).snapshot().ready_event_tasks == ()
 
 
@@ -185,7 +197,7 @@ async def test_component_interaction_readiness_closes_before_resource_shutdown(
 
     # Resource cleanup has not proceeded, but new component callbacks must
     # already be rejected at the same boundary as slash commands.
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
     assert app.gateway_interactions_ready() is False
 
     release_close.set()
@@ -219,7 +231,7 @@ async def test_ready_does_not_initialize_after_close_has_started(
     initialize.assert_not_awaited()
     sync.assert_not_awaited()
     start_background.assert_not_called()
-    assert app.gateway_ready is False
+    assert LifecycleProbe(app).snapshot().gateway_ready is False
 
     release_close.set()
     await closing
@@ -419,8 +431,9 @@ async def test_on_ready_closes_client_when_required_startup_fails(
     allowed = await app.bot.tree.interaction_check(interaction)
 
     assert LifecycleProbe(app).snapshot().startup_error is failure
-    assert app.db_initialized is False
-    assert app.gateway_ready is False
+    state = LifecycleProbe(app).snapshot()
+    assert state.db_initialized is False
+    assert state.gateway_ready is False
     assert allowed is False
     response.send_message.assert_awaited_once_with(
         "The bot is still starting up or temporarily unavailable. Please try again shortly.",
@@ -441,7 +454,7 @@ async def test_on_message_is_ignored_before_ready_initialization(
     await app.on_message(cast(discord.Message, object()))
 
     handler.assert_not_awaited()
-    assert (await app.turn_admission.snapshot()).active_total == 0
+    assert (await admission_state(app.turn_admission)).active_total == 0
 
 
 @pytest.mark.asyncio
@@ -484,7 +497,7 @@ async def test_on_ready_delegates_memory_manager_and_starts_one_activation_refre
         (conversation_store, preference_store),
         (conversation_store, preference_store),
     ]
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
 
 
 @pytest.mark.asyncio
@@ -804,7 +817,7 @@ async def test_on_ready_waits_for_first_startup_before_reconnect_ready_continues
     second_ready = asyncio.create_task(app.on_ready())
     await asyncio.sleep(0)
 
-    assert app.db_initialized is False
+    assert LifecycleProbe(app).snapshot().db_initialized is False
     second_finished_during_first_init = second_ready.done()
 
     release_first_init.set()
@@ -1087,7 +1100,7 @@ async def test_startup_replay_tombstones_failed_user_but_allows_others(
 
 
 @pytest.mark.asyncio
-async def test_close_provider_resources_closes_main_compaction_and_persona(
+async def test_close_provider_resources_closes_cached_compaction_and_persona(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     main_provider = CloseableProvider("main")
@@ -1095,9 +1108,10 @@ async def test_close_provider_resources_closes_main_compaction_and_persona(
     persona_provider = CloseableProvider("persona")
     manager = provider_runtime.ProviderManager(
         settings=_settings(),
-        main=cast(LLMProvider, main_provider),
+        model_config=_single_model_config(),
         compaction=cast(LLMProvider, compaction_provider),
         persona=cast(LLMProvider, persona_provider),
+        _providers={"main": cast(LLMProvider, main_provider)},
     )
 
     await manager.close()
@@ -1106,7 +1120,6 @@ async def test_close_provider_resources_closes_main_compaction_and_persona(
     assert compaction_provider.close_count == 1
     # ProviderManager is the persona provider's sole shutdown owner.
     assert persona_provider.close_count == 1
-    assert manager.main is None
     assert manager.compaction is None
     assert manager.persona is None
 
@@ -1118,14 +1131,14 @@ async def test_close_provider_resources_closes_shared_provider_once(
     provider = CloseableProvider()
     manager = provider_runtime.ProviderManager(
         settings=_settings(),
-        main=cast(LLMProvider, provider),
+        model_config=_single_model_config(),
         compaction=cast(LLMProvider, provider),
+        _providers={"main": cast(LLMProvider, provider)},
     )
 
     await manager.close()
 
     assert provider.close_count == 1
-    assert manager.main is None
     assert manager.compaction is None
 
 
@@ -1212,7 +1225,7 @@ async def test_transport_error_during_command_sync_does_not_mute_initialized_bot
 
     await app.on_ready()
 
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
 
 
 @pytest.mark.asyncio
@@ -1240,7 +1253,7 @@ async def test_attachment_sweep_error_does_not_mute_or_block_background_startup(
 
     await app.on_ready()
 
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
     assert LifecycleProbe(app).snapshot().workspace_sweeper_started is True
     assert len(created) == 2
 
@@ -1519,7 +1532,7 @@ async def test_disconnect_does_not_cancel_a_newer_ready_while_pause_yields(
 
     assert global_completed is True
     assert runtime.guild_sync_calls == 1
-    assert app.gateway_ready is True
+    assert LifecycleProbe(app).snapshot().gateway_ready is True
 
 
 @pytest.mark.asyncio

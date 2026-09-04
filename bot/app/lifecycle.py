@@ -163,29 +163,6 @@ class LifecycleResources:
     callbacks: LifecycleCallbacks
 
 
-@dataclass(frozen=True, slots=True)
-class LifecycleSnapshot:
-    closed: bool
-    close_complete: bool
-    startup_error: Exception | None
-    db_initialized: bool
-    gateway_ready: bool
-    workspace_sweeper_started: bool
-    auto_retain_sweeper_started: bool
-    transcript_retention_sweeper_started: bool
-    video_session_sweeper_started: bool
-    active_transcript_retention_days: int
-    active_transcript_retention_sweep_interval_seconds: int | None
-    guild_activation_refresh_task: asyncio.Task[None] | None
-    auto_retain_task: asyncio.Task[Any] | None
-    attachment_sweeper_task: asyncio.Task[Any] | None
-    workspace_sweeper_task: asyncio.Task[Any] | None
-    transcript_retention_task: asyncio.Task[Any] | None
-    video_session_sweeper_task: asyncio.Task[Any] | None
-    module_event_publisher: ModuleEventPublisher | None
-    module_interaction_runtime: InteractionRuntime | None
-
-
 def settings_secret_values(settings: Settings) -> tuple[str, ...]:
     values = (getattr(settings, field_name) for field_name in type(settings).model_fields)
     return tuple(
@@ -227,8 +204,6 @@ class ApplicationLifecycle:
         self._auto_retain_sweeper_started = False
         self._transcript_retention_sweeper_started = False
         self._video_session_sweeper_started = False
-        self._active_transcript_retention_days = 0
-        self._active_transcript_retention_sweep_interval_seconds: int | None = None
         self._auto_retain_task: asyncio.Task[Any] | None = None
         self._attachment_sweeper_task: asyncio.Task[Any] | None = None
         self._workspace_sweeper_task: asyncio.Task[Any] | None = None
@@ -252,14 +227,6 @@ class ApplicationLifecycle:
         return self._closed
 
     @property
-    def gateway_ready(self) -> bool:
-        return self._gateway_ready
-
-    @property
-    def db_initialized(self) -> bool:
-        return self._db_initialized
-
-    @property
     def startup_error(self) -> Exception | None:
         return self._startup_error
 
@@ -270,35 +237,6 @@ class ApplicationLifecycle:
     @property
     def thread_handoff(self) -> ThreadHandoffManager | None:
         return self._thread_handoff
-
-    @property
-    def proposal_service(self) -> ConfigProposalService | None:
-        return self._proposal_service
-
-    def snapshot(self) -> LifecycleSnapshot:
-        return LifecycleSnapshot(
-            closed=self._closed,
-            close_complete=self._close_complete.is_set(),
-            startup_error=self._startup_error,
-            db_initialized=self._db_initialized,
-            gateway_ready=self._gateway_ready,
-            workspace_sweeper_started=self._workspace_sweeper_started,
-            auto_retain_sweeper_started=self._auto_retain_sweeper_started,
-            transcript_retention_sweeper_started=self._transcript_retention_sweeper_started,
-            video_session_sweeper_started=self._video_session_sweeper_started,
-            active_transcript_retention_days=self._active_transcript_retention_days,
-            active_transcript_retention_sweep_interval_seconds=(
-                self._active_transcript_retention_sweep_interval_seconds
-            ),
-            guild_activation_refresh_task=self._resources.guild_activation.refresh_task,
-            auto_retain_task=self._auto_retain_task,
-            attachment_sweeper_task=self._attachment_sweeper_task,
-            workspace_sweeper_task=self._workspace_sweeper_task,
-            transcript_retention_task=self._transcript_retention_task,
-            video_session_sweeper_task=self._video_session_sweeper_task,
-            module_event_publisher=self._module_event_publisher,
-            module_interaction_runtime=self._module_interaction_runtime,
-        )
 
     def interactions_ready(self) -> bool:
         return self._gateway_ready and self._startup_error is None and not self._closed
@@ -419,8 +357,6 @@ class ApplicationLifecycle:
         self._transcript_retention_task = None
         if transcript_task is not None:
             self._transcript_retention_sweeper_started = False
-            self._active_transcript_retention_days = 0
-            self._active_transcript_retention_sweep_interval_seconds = None
         if not await resources.active_operations.cancel_all():
             log.warning("Timed out waiting for active operations during shutdown")
         await drain_confirmed_privacy_deletions()
@@ -601,8 +537,6 @@ class ApplicationLifecycle:
                 )
             )
             self._transcript_retention_sweeper_started = True
-            self._active_transcript_retention_days = retention_days
-            self._active_transcript_retention_sweep_interval_seconds = sweep_interval
             log.info(
                 "Transcript retention sweeper started (window: %dd, every %ds)",
                 retention_days,
@@ -649,6 +583,11 @@ class ApplicationLifecycle:
         repositories = resources.repositories
         callbacks = resources.callbacks
         await resources.database.connect()
+        # External sandbox units outlive the bot process. Reconcile them before
+        # privacy replay or any retention path can cascade-delete the persisted
+        # unit names needed to stop them. This is independent of whether the
+        # coding feature can register for the new process.
+        await resources.coding_tasks.recover_persisted_work()
         await resources.provider_manager.initialize_circuits(
             ProviderCircuitStore(resources.database)
         )
@@ -664,13 +603,10 @@ class ApplicationLifecycle:
             await repositories.model_selection_store.set(None)
             resources.provider_manager.set_active_chat_model(None)
 
-        configure_bank_tracking = getattr(
-            resources.memory_manager.client,
-            "set_user_bank_state_store",
-            None,
-        )
-        if configure_bank_tracking is not None:
-            configure_bank_tracking(repositories.user_memory_bank_state_store)
+        if resources.memory_manager.client is not None:
+            resources.memory_manager.client.set_user_bank_state_store(
+                repositories.user_memory_bank_state_store
+            )
         set_user_memory_preference_store(repositories.preference_store)
         auto_retain_watermarks = AutoRetainStore(resources.database)
         await self.resume_pending_privacy_deletions(auto_retain_watermarks=auto_retain_watermarks)

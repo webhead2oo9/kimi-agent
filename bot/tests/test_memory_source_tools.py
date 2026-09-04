@@ -271,6 +271,9 @@ async def test_forget_waits_for_inflight_explicit_retain_then_deletes_bank(
             self.enabled = enabled
             return changed
 
+        async def clear_persona(self, user_id: str) -> bool:
+            return False
+
     class BlockingMemory(RecordingMemory):
         def __init__(self) -> None:
             super().__init__()
@@ -284,7 +287,7 @@ async def test_forget_waits_for_inflight_explicit_retain_then_deletes_bank(
             self.operations.append("retain")
             return await super().retain(**kwargs)
 
-        async def delete_bank(self, bank_id: str) -> bool:
+        async def delete_bank_strict(self, bank_id: str) -> bool:
             self.operations.append("delete")
             return True
 

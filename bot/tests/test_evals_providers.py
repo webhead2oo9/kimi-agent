@@ -8,7 +8,7 @@ from evals.models import (
 )
 
 
-def test_codex_model_goes_into_codex_model_field_not_settings_default():
+def test_codex_uses_shared_provider_model_field():
     spec = ModelSpec(
         label="codex-cand",
         provider_name="codex",
@@ -17,14 +17,11 @@ def test_codex_model_goes_into_codex_model_field_not_settings_default():
         api_key_env="",
     )
     cfg = eval_provider_config(spec, api_key="")
-    # The factory resolves codex as `config.codex_model or config.model`; the
-    # candidate model MUST land in codex_model so it is never overridden by a
-    # settings default.
-    assert cfg.codex_model == "gpt-5.5-some-variant"
+    assert cfg.model == "gpt-5.5-some-variant"
     assert cfg.provider_name == "codex"
 
 
-def test_non_codex_model_uses_model_field():
+def test_other_provider_uses_model_field():
     spec = ModelSpec(
         label="anthropic-cand",
         provider_name="anthropic",
@@ -112,6 +109,22 @@ def test_load_models_parses_baseline_candidate_judge(tmp_path):
     assert models.image_captioner.model == "gpt-5.6-luna"
 
 
+def test_load_models_rejects_removed_judge_panel(tmp_path):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "baseline:\n"
+        "  provider_name: anthropic\n"
+        "  model: baseline\n"
+        "judge:\n"
+        "  provider_name: anthropic\n"
+        "  model: judge\n"
+        "  panel: [judge-a, judge-b]\n"
+    )
+
+    with pytest.raises(ValueError, match=r"judge\.panel was removed"):
+        load_models(path)
+
+
 def test_load_models_rejects_nonvision_image_captioner(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(
@@ -161,7 +174,7 @@ def test_load_models_rejects_non_finite_request_controls(tmp_path, field, value)
         load_models(path)
 
 
-def test_load_models_tolerates_missing_candidates_and_panel(tmp_path):
+def test_load_models_tolerates_missing_candidates(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(
         "baseline:\n"
@@ -174,7 +187,6 @@ def test_load_models_tolerates_missing_candidates_and_panel(tmp_path):
     )
     models = load_models(path)
     assert models.candidates == {}
-    assert models.judge_panel == []
 
 
 def test_load_models_rejects_openai_compat_with_empty_base_url(tmp_path):

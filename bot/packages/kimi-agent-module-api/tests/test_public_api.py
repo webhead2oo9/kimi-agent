@@ -17,6 +17,22 @@ def test_public_exports_resolve() -> None:
     assert all(getattr(api, name, None) is not None for name in api.__all__)
 
 
+def test_contract_ports_are_not_accidental_package_root_exports() -> None:
+    hidden_ports = {
+        "DiscordActions",
+        "EventBus",
+        "GuildSettings",
+        "HealthReporter",
+        "InteractionRouter",
+        "ModuleHttp",
+        "ModuleStorage",
+        "Scheduler",
+        "ServiceRegistry",
+        "TrustLookup",
+    }
+    assert hidden_ports.isdisjoint(vars(api))
+
+
 def test_standalone_environment_has_no_core_runtime() -> None:
     """CI runs this package from an isolated environment, outside core's import root."""
     assert importlib.util.find_spec("app") is None

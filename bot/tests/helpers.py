@@ -26,15 +26,13 @@ from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.turn import TurnDependencies
 from app.foreground_turn import HandleTurn
-from app.command_sync import CommandSyncSnapshot
-from app.lifecycle import AppRepositories, LifecycleSnapshot
+from app.lifecycle import AppRepositories
 from app.message_runtime import remove_processing_reaction as remove_message_processing_reaction
-from app.root_locks import RootLockSnapshot
 from app.user_app_chat import UserAppChatRequest
 from config.model_config import parse_model_config_text
 from config.settings import Settings
 from providers.assets import write_generated_assets
-from providers.types import ProviderCapability
+from providers.types import ProviderCapability, ReasoningEscalation
 from storage.blocked_users import BlockedUserStore
 from storage.coding_tasks import CodingTaskStore
 from storage.conversations import ConversationStore
@@ -50,6 +48,14 @@ from tools.registry import MessageContext
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
+from tests.app_state_probes import (
+    CommandSyncState,
+    LifecycleState,
+    RootLockState,
+    command_sync_state,
+    lifecycle_state,
+    root_lock_state,
+)
 
 from workspace.manager import WorkspaceManager
 
@@ -87,8 +93,8 @@ class LifecycleProbe:
     def __init__(self, app: Any) -> None:
         self._app = app
 
-    def snapshot(self) -> LifecycleSnapshot:
-        return self._app.lifecycle.snapshot()
+    def snapshot(self) -> LifecycleState:
+        return lifecycle_state(self._app.lifecycle)
 
     async def first_init_core(self) -> None:
         await self._app.lifecycle.initialize()
@@ -186,8 +192,8 @@ class CommandSyncProbe:
     def __init__(self, app: Any) -> None:
         self._app = app
 
-    def snapshot(self) -> CommandSyncSnapshot:
-        return self._app.command_sync.snapshot()
+    def snapshot(self) -> CommandSyncState:
+        return command_sync_state(self._app.command_sync)
 
 
 class PersonalChatDriver:
@@ -225,8 +231,8 @@ class RootLockProbe:
     def __init__(self, app: Any) -> None:
         self._app = app
 
-    def snapshot(self) -> RootLockSnapshot:
-        return self._app.root_locks.snapshot()
+    def snapshot(self) -> RootLockState:
+        return root_lock_state(self._app.root_locks)
 
     @asynccontextmanager
     async def hold(self, key: str) -> AsyncIterator[None]:
@@ -345,6 +351,7 @@ class StubProvider:
         self.provider_key = provider_key
         self.model = model
         self.capabilities = capabilities if capabilities is not None else set()
+        self.reasoning_escalations: tuple[ReasoningEscalation, ...] = ()
 
 
 # Routing for the stub manager: one ordinary key-based profile, nothing on an
@@ -377,7 +384,7 @@ class StubProviderManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.main = StubProvider()
+        self.provider = StubProvider()
         self.closed = False
         self.close_count = 0
         self.model_config = parse_model_config_text(_STUB_MODEL_CONFIG_YAML)
@@ -407,14 +414,24 @@ class StubProviderManager:
         self.validate_active_chat_model(model_name)
         self.active_chat_model = model_name
 
-    def ensure_research(self) -> StubProvider:
-        return self.main
+    def resolve(self, role: str, scope: Any = None, *, images: bool = False) -> StubProvider:
+        _ = (role, scope, images)
+        return self.provider
 
-    def ensure_research_synth(self) -> StubProvider:
-        return self.main
+    def resolved_chat_model_name(self, scope: Any = None, *, images: bool = False) -> str:
+        if self.active_chat_model is None:
+            return self.model_config.model_name_for_role("chat", scope, images=images)
+        model_names = self.model_config.model_names_for_selected_chat(
+            self.active_chat_model,
+            images=images,
+        )
+        return model_names[0]
+
+    def context_window_warnings(self) -> list[Any]:
+        return []
 
     def ensure_compaction(self) -> StubProvider:
-        return self.main
+        return self.provider
 
     def build_compactor(self, llm_semaphore: Any = None) -> None:
         return None

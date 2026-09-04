@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kimi_agent_module_api import ModuleStorage
+from kimi_agent_module_api.contracts import ModuleStorage
 
 DAY_SECONDS = 24 * 60 * 60
 

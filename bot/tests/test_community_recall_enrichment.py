@@ -17,7 +17,6 @@ class _Client:
             RecalledMemory(
                 text="Quest 3 has stick drift.",
                 type="memory",
-                context="Taught by Ann (Staff) - topic: how-to",
                 tags=["scope:public", "source:learned", "verified:external", "confidence:high"],
             )
         ]
@@ -76,7 +75,6 @@ async def test_recall_staff_taught_omits_stale_citation() -> None:
                 RecalledMemory(
                     text="t",
                     type="memory",
-                    context="Taught by Ann (Staff) - topic: how-to",
                     tags=["scope:public", "source:taught", "confidence:high", "topic:how-to"],
                 )
             ]
@@ -107,7 +105,7 @@ async def test_reflect_community_returns_untrusted_answer() -> None:
 async def test_recall_no_confidence_tag_yields_empty() -> None:
     class _C:
         async def recall(self, **kwargs):
-            return [RecalledMemory(text="t", type="memory", context=None, tags=["scope:public"])]
+            return [RecalledMemory(text="t", type="memory", tags=["scope:public"])]
 
     item = json.loads(await _registry(_C()).dispatch("recall_community", {"query": "x"}, _ctx()))[
         "results"

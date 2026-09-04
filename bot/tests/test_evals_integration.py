@@ -15,7 +15,6 @@ from evals.judge import Rubric, RubricDimension, judge_pair
 from evals.mechanical import compute_mechanical
 from evals.report import ScenarioReport, render_report, write_raw_jsonl
 from evals.scenario import Expect, Scenario
-from evals.stub_gateway import StubGateway
 from providers.base import LLMProvider
 from providers.types import ProviderRequest, ProviderResponse, ToolCall
 from trust.tiers import TrustTier
@@ -74,14 +73,11 @@ def test_full_pipeline_harness_judge_mechanical_report(tmp_path):
         )
     )
     baseline = InstrumentedProvider(_Scripted("base", [ProviderResponse(content="not sure")]))
-    gateway = StubGateway()
-
     cand_run = asyncio.run(
         run_scenario_for_model(
             scenario,
             provider=candidate,
             registry=registry,
-            gateway=gateway,
             memory_client=None,
             preference_store=None,
         )
@@ -91,7 +87,6 @@ def test_full_pipeline_harness_judge_mechanical_report(tmp_path):
             scenario,
             provider=baseline,
             registry=registry,
-            gateway=gateway,
             memory_client=None,
             preference_store=None,
         )

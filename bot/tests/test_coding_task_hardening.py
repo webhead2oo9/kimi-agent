@@ -75,8 +75,16 @@ async def test_paused_resume_queue_cap_is_atomic_across_database_connections(tmp
             root_key="second",
             workspace_key="u1__g2",
         )
-        await first_store.set_status(first.id, CodingTaskStatus.WAITING_FOR_INPUT)
-        await first_store.set_status(second.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        assert await first_store.transition_active_status(
+            first.id,
+            CodingTaskStatus.WAITING_FOR_INPUT,
+            from_statuses=frozenset({CodingTaskStatus.QUEUED}),
+        )
+        assert await first_store.transition_active_status(
+            second.id,
+            CodingTaskStatus.WAITING_FOR_INPUT,
+            from_statuses=frozenset({CodingTaskStatus.QUEUED}),
+        )
 
         results = await asyncio.gather(
             first_store.steer_active_task(

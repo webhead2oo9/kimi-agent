@@ -237,7 +237,9 @@ Everything else keeps its own lifecycle, by design:
   `privacy_deletion_requests` before Discord is acknowledged and before any
   destructive step, which is what makes the workflow survive a crash. Confirmed
   workflows are drained during graceful shutdown; after a hard restart, startup
-  loads every remaining request, marks all affected users pending, and replays
+  first uses persisted coding-job unit names to confirm that every pre-crash
+  sandbox is inactive, independently of whether coding can register again. It
+  then loads every remaining request, marks all affected users pending, and replays
   each through the same barrier and deletion dependencies before exposing
   normal turn context. A failed attempt leaves the row in place and pauses new
   messages and automatic memory retention for that user only, so unaffected
@@ -252,8 +254,9 @@ Everything else keeps its own lifecycle, by design:
     user owns, spoke in, or initiated a managed thread within. Coding-task
     cancellation covers active tasks other users started on conversations the
     requester rooted, which the transcript delete would otherwise cascade away
-    mid-worker; if that drain fails, nothing is deleted and the pending lease
-    stays armed for the retry. That root drain
+    mid-worker. Every affected worker and managed job must reach a confirmed
+    inactive state; a cleanup timeout counts as a failed drain, so nothing is
+    deleted and the pending lease stays armed for the retry. That root drain
     covers another participant's already-running model turn, Discord delivery,
     and assistant-transcript persistence, so a shared-root reply derived from
     the deleted rows cannot land after deletion. It then purges the SQLite

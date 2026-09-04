@@ -1,47 +1,44 @@
-"""Module storage: prefixed naming, aliases, scoped migrations, shared lock."""
+"""Module storage: prefixed naming, scoped migrations, and shared lock."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from kimi_agent_module_api import ModuleLoadContext, ModuleRuntimeContext, ModuleSpec
-from kimi_agent_module_api.contracts import MigrationContext, ModuleContractError
-from modules.storage import ModuleStorageImpl, validate_table_aliases
+from kimi_agent_module_api import (
+    MODULE_API_VERSION,
+    AppModule,
+    ModuleLoadContext,
+    ModuleRuntimeContext,
+    ModuleSpec,
+)
+from kimi_agent_module_api.contracts import (
+    MigrationContext,
+    ModuleContractError,
+    ScopedModuleMigration,
+)
+from modules.storage import ModuleStorageImpl
 from modules.testing import build_test_runtime
 from storage.db import Database
 
 
-def test_table_names_are_prefixed_quoted_and_alias_aware() -> None:
-    storage = ModuleStorageImpl(
-        database=object(),
-        module_name="audit-log",
-        table_aliases={"hashes": "legacy_hashes"},
-    )
+def test_table_names_are_prefixed_and_quoted() -> None:
+    storage = ModuleStorageImpl(database=object(), module_name="audit-log")
     assert storage.table("sync_state") == '"audit_log_sync_state"'
-    assert storage.table("hashes") == '"legacy_hashes"'
+    assert storage.table("hashes") == '"audit_log_hashes"'
     with pytest.raises(ModuleContractError):
         storage.table("Bad Name")
     with pytest.raises(ModuleContractError):
         storage.table("x; DROP TABLE y")
 
 
-def test_alias_validation_rejects_prefixed_targets_and_bad_identifiers() -> None:
-    validate_table_aliases("case_manager", {"cases": "legacy_cases"})
-    with pytest.raises(ModuleContractError):
-        validate_table_aliases("case_manager", {"cases": "case_manager_cases"})
-    with pytest.raises(ModuleContractError):
-        validate_table_aliases("m", {"ok": "not valid"})
-    with pytest.raises(ModuleContractError):
-        validate_table_aliases("m", {"Bad": "fine"})
-
-
 class ScopedModule:
     """Declares scoped migrations that name tables through the context."""
 
-    migrations = ()
+    scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
     def __init__(self) -> None:
         self.rows: list[tuple[int, str]] = []
@@ -72,11 +69,18 @@ class ScopedModule:
         pass
 
 
-def _spec(name: str, instance: object, **overrides: object) -> ModuleSpec:
-    def create(_ctx: ModuleLoadContext) -> object:
+def _spec(name: str, instance: AppModule, **overrides: object) -> ModuleSpec:
+    def create(_ctx: ModuleLoadContext) -> AppModule:
         return instance
 
-    return ModuleSpec(name=name, version="1.0.0", create=create, **overrides)  # type: ignore[arg-type]
+    api_version = overrides.pop("api_version", MODULE_API_VERSION)
+    return ModuleSpec(
+        name=name,
+        version="1.0.0",
+        create=create,
+        api_version=api_version,  # type: ignore[arg-type]
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio
@@ -120,45 +124,6 @@ async def test_module_host_rejects_non_callable_migration_before_database_work(
         assert await cursor.fetchall() == []
     finally:
         await database.close()
-
-
-@pytest.mark.asyncio
-async def test_aliases_resolve_to_legacy_tables(tmp_path: Path) -> None:
-    class Legacy:
-        migrations = ()
-
-        def __init__(self) -> None:
-            self.scoped_migrations = (("init", self._init),)
-            self.seen = ""
-
-        async def _init(self, ctx: MigrationContext) -> None:
-            await ctx.connection.execute(
-                f"CREATE TABLE {ctx.table('cases')} (id INTEGER PRIMARY KEY)"
-            )
-
-        async def start(self, ctx: ModuleRuntimeContext) -> None:
-            assert ctx.storage is not None
-            self.seen = ctx.storage.table("cases")
-
-        async def close(self) -> None:
-            pass
-
-    module = Legacy()
-    runtime = await build_test_runtime(
-        tmp_path,
-        ["case_manager"],
-        installed={
-            "case_manager": _spec("case_manager", module, table_aliases={"cases": "legacy_cases"})
-        },
-    )
-    try:
-        assert module.seen == '"legacy_cases"'
-        cursor = await runtime.database.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'legacy_cases'"
-        )
-        assert await cursor.fetchone() is not None
-    finally:
-        await runtime.close()
 
 
 @pytest.mark.asyncio

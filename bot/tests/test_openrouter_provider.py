@@ -118,7 +118,7 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
     request = completions.calls[0]
     assert request["extra_headers"]["HTTP-Referer"] == "https://example.com"
     assert request["extra_headers"]["X-OpenRouter-Title"] == "Kimi Injected- value"
-    assert request["extra_headers"]["X-Title"] == "Kimi Injected- value"
+    assert "X-Title" not in request["extra_headers"]
     assert request["extra_headers"]["X-OpenRouter-Metadata"] == "enabled"
     assert request["service_tier"] == "priority"
     assert request["extra_body"]["provider"] == {

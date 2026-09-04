@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pathlib import Path
@@ -9,13 +10,19 @@ from pathlib import Path
 import pytest
 
 from kimi_agent_module_api import (
+    MODULE_API_VERSION,
+    AppModule,
     ModuleLoadContext,
     ModuleRuntimeContext,
     ModuleSpec,
     ServiceDeclaration,
     ServiceRequirement,
 )
-from kimi_agent_module_api.contracts import ModuleContractError, ServiceUnavailable
+from kimi_agent_module_api.contracts import (
+    ModuleContractError,
+    ScopedModuleMigration,
+    ServiceUnavailable,
+)
 from modules.services import ModuleServiceView, ServiceRegistryImpl
 from modules.testing import build_test_runtime
 
@@ -63,7 +70,7 @@ def test_view_enforces_declarations_and_proxy_dies_with_provider() -> None:
 
 
 class Provider:
-    migrations = ()
+    scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
     def __init__(self) -> None:
         self.service = CaseService()
@@ -77,7 +84,7 @@ class Provider:
 
 
 class Consumer:
-    migrations = ()
+    scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
     def __init__(self) -> None:
         self.proxy: object | None = None
@@ -91,7 +98,7 @@ class Consumer:
 
 
 class Forgetful:
-    migrations = ()
+    scoped_migrations: Sequence[ScopedModuleMigration] = ()
 
     async def start(self, ctx: ModuleRuntimeContext) -> None:
         pass
@@ -100,11 +107,18 @@ class Forgetful:
         pass
 
 
-def _spec(name: str, instance: object, **overrides: object) -> ModuleSpec:
-    def create(_ctx: ModuleLoadContext) -> object:
+def _spec(name: str, instance: AppModule, **overrides: object) -> ModuleSpec:
+    def create(_ctx: ModuleLoadContext) -> AppModule:
         return instance
 
-    return ModuleSpec(name=name, version="1.0.0", create=create, **overrides)  # type: ignore[arg-type]
+    api_version = overrides.pop("api_version", MODULE_API_VERSION)
+    return ModuleSpec(
+        name=name,
+        version="1.0.0",
+        create=create,
+        api_version=api_version,  # type: ignore[arg-type]
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
 
 
-class RecordingProvider:
+class RecordingProvider(LLMProvider):
     provider_key = "recording"
     model = "test-model"
     capabilities = {ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING}

@@ -258,7 +258,7 @@ class OpenAIChatProvider(LLMProvider):
         keeps producing chunks may run as long as the caller's turn deadline
         allows; one that goes silent for ``stall_timeout_seconds`` (including
         never answering the initial request) is aborted with ``TimeoutError``,
-        which `is_provider_availability_error` classifies as transient so a
+        which the shared provider failure policy classifies as transient so a
         FailoverProvider chain can move to the next backend.
         """
         acc = _StreamAccumulator(self._model)

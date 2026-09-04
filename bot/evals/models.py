@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
@@ -73,17 +73,13 @@ class ModelSpec:
         return min(requested, self.max_output_tokens)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ModelsConfig:
     baseline: ModelSpec
     candidates: dict[str, ModelSpec]
     judge: ModelSpec
-    # Reserved for the deferred multi-judge panel (parsed from judge.panel in YAML); the
-    # v1 run loop uses the single `judge` and ignores this.
-    judge_panel: list[ModelSpec] = field(default_factory=list)
-    # Optional shared vision arm. Its position preserves four-argument
-    # ModelsConfig(base, candidates, judge, panel) construction.
-    # When present, all compared chat models receive the identical caption.
+    # Optional shared vision arm. When present, all compared chat models receive
+    # the identical caption.
     image_captioner: ModelSpec | None = None
 
 
@@ -133,6 +129,11 @@ def _spec_from(label: str, data: dict[str, Any]) -> ModelSpec:
 def load_models(path: str | Path) -> ModelsConfig:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     judge_raw = raw["judge"]
+    if isinstance(judge_raw, dict) and "panel" in judge_raw:
+        raise ValueError(
+            "judge.panel was removed in v2 because the evaluator never consumed it; "
+            "delete the key and configure the single judge model directly"
+        )
     baseline = _spec_from("baseline", raw["baseline"])
     judge = _spec_from("judge", judge_raw)
     candidates = {
@@ -144,23 +145,16 @@ def load_models(path: str | Path) -> ModelsConfig:
     )
     if image_captioner is not None and not image_captioner.supports_images():
         raise ValueError("image_captioner must declare the image_input capability")
-    panel = [_spec_from(f"judge-{i}", d) for i, d in enumerate(judge_raw.get("panel", []))]
     return ModelsConfig(
         baseline=baseline,
         candidates=candidates,
         judge=judge,
         image_captioner=image_captioner,
-        judge_panel=panel,
     )
 
 
 def eval_provider_config(spec: ModelSpec, *, api_key: str) -> ProviderConfig:
-    """Build a ProviderConfig directly, placing `model` in the field the factory reads.
-
-    The bot's app.providers.provider_config(settings, ...) helper defaults codex
-    fields from settings; that would silently override a candidate's model. We never use
-    it here.
-    """
+    """Build a ProviderConfig directly from an evaluation model specification."""
     if spec.provider_name == "codex":
         kwargs: dict[str, Any] = {}
         if spec.reasoning_effort:
@@ -170,7 +164,6 @@ def eval_provider_config(spec: ModelSpec, *, api_key: str) -> ProviderConfig:
             api_key=api_key,
             base_url=spec.base_url,
             model=spec.model,
-            codex_model=spec.model,
             openai_timeout_seconds=spec.timeout_seconds or 900.0,
             **kwargs,
         )

@@ -45,28 +45,6 @@ class UsageMarker:
 
 
 @dataclass(frozen=True)
-class ModelUsageRow:
-    """One (model, role) pair's share of the LLM spend in a window.
-
-    Split by role as well as model because the same model is routinely wired to
-    several roles, and "compaction is costing more than chat" is exactly the kind
-    of thing a single per-model total hides.
-    """
-
-    model: str
-    role: str
-    input_tokens: int
-    cached_read_tokens: int
-    cache_write_tokens: int
-    output_tokens: int
-    est_cost_usd: float
-    llm_calls: int
-    unpriced_llm_calls: int
-    turns: int
-    attribution: str
-
-
-@dataclass(frozen=True)
 class SpenderRow:
     user_id: str
     user_name: str | None
@@ -423,53 +401,6 @@ class UsageStore:
                 turns=int(row["turns"]),
                 paid_tool_cost_usd=float(row["paid_tool_cost_usd"]),
                 paid_tool_calls=int(row["paid_tool_calls"]),
-            )
-            for row in rows
-        ]
-
-    async def usage_by_model(
-        self,
-        since: datetime,
-        *,
-        guild_id: str | None = None,
-        user_id: str | None = None,
-    ) -> list[ModelUsageRow]:
-        """LLM spend grouped by (model, role), most expensive first.
-
-        The scope filters mirror the totals they sit beside, so a per-model
-        breakdown always sums to the aggregate shown above it.
-        """
-        clauses = ["created_at >= ?"]
-        params: list[Any] = [_iso_utc(since)]
-        if guild_id is not None:
-            clauses.append("guild_id = ?")
-            params.append(guild_id)
-        if user_id is not None:
-            clauses.append("user_id = ?")
-            params.append(user_id)
-        where = " AND ".join(clauses)
-        async with self._db.conn.execute(
-            f"SELECT model, role, CASE WHEN turn_id IS NULL THEN 'unattributed' "
-            f"ELSE 'per_call' END AS attribution, {_SUMS} "
-            f"FROM usage_ledger WHERE {where} "
-            "GROUP BY model, role, attribution "
-            "ORDER BY est_cost_usd DESC, turns DESC",
-            tuple(params),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [
-            ModelUsageRow(
-                model=str(row["model"]),
-                role=str(row["role"] or ""),
-                input_tokens=int(row["input_tokens"]),
-                cached_read_tokens=int(row["cached_read_tokens"]),
-                cache_write_tokens=int(row["cache_write_tokens"]),
-                output_tokens=int(row["output_tokens"]),
-                est_cost_usd=float(row["est_cost_usd"]),
-                llm_calls=int(row["llm_calls"]),
-                unpriced_llm_calls=int(row["unpriced_llm_calls"]),
-                turns=int(row["turns"]),
-                attribution=str(row["attribution"]),
             )
             for row in rows
         ]

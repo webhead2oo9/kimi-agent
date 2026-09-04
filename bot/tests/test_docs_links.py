@@ -41,6 +41,8 @@ _ENV_TOKEN_RE = re.compile(r"`([A-Z][A-Z0-9_]{4,})`")
 
 _TOOL_TABLE_ROW_RE = re.compile(r"^\|\s*`([a-z][a-z0-9_]*)`\s*\|", re.MULTILINE)
 
+_RETIRED_ENV_TOKENS = frozenset({"CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"})
+
 # Tokens that look like settings but are deliberately not `Settings` fields.
 _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
     {
@@ -190,6 +192,8 @@ def test_env_vars_named_in_docs_exist() -> None:
         if not page.exists():
             continue
         for token in sorted(set(_ENV_TOKEN_RE.findall(page.read_text(encoding="utf-8")))):
+            if token in _RETIRED_ENV_TOKENS and page.name == "upgrading-to-v2.md":
+                continue
             if token not in known:
                 unresolved.setdefault(token, []).append(page.name)
 

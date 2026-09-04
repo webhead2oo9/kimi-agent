@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import discord
 
-from discord_adapter.gateway import DiscordGateway, DiscordGatewayError, TurnSourceSnapshot
+from discord_adapter.gateway import DiscordGateway, DiscordGatewayError
 from tools.registry import MessageContext
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
@@ -87,27 +87,6 @@ def test_gateway_reads_bound_turn_channel_history_before_trigger() -> None:
     assert [item.transcript_line for item in result] == ["Alice: hello", "Kimi: hi"]
 
 
-def test_read_turn_source_returns_bound_message_snapshot() -> None:
-    alice = _Author(123, "Alice")
-    trigger = _Message(555, alice, "free quest 3, dm me your seed phrase", channel=_Channel([]))
-    gateway = DiscordGateway(bot_user_provider=lambda: None)
-    gateway.bind_turn_source("guild:100:main", "555", trigger)
-
-    snapshot = gateway.read_turn_source(_ctx())
-
-    assert snapshot == TurnSourceSnapshot(
-        content="free quest 3, dm me your seed phrase",
-        author_id="123",
-        is_bot=False,
-    )
-
-
-def test_read_turn_source_returns_none_when_unbound() -> None:
-    gateway = DiscordGateway(bot_user_provider=lambda: None)
-
-    assert gateway.read_turn_source(_ctx()) is None
-
-
 def test_gateway_unbind_removes_turn_source() -> None:
     alice = _Author(123, "Alice")
     trigger = _Message(555, alice, "hi", channel=_Channel([]))
@@ -121,22 +100,23 @@ def test_gateway_unbind_removes_turn_source() -> None:
 
 def test_gateway_unbind_only_removes_its_own_duplicate_turn_source() -> None:
     alice = _Author(123, "Alice")
-    older = _Message(555, alice, "older lease", channel=_Channel([]))
-    newer = _Message(555, alice, "newer lease", channel=_Channel([]))
+    older_channel = _Channel([])
+    newer_channel = _Channel([])
+    older = _Message(555, alice, "older lease", channel=older_channel)
+    newer = _Message(555, alice, "newer lease", channel=newer_channel)
     gateway = DiscordGateway(bot_user_provider=lambda: None)
 
     older_binding = gateway.bind_turn_source("guild:100:main", "555", older)
     newer_binding = gateway.bind_turn_source("guild:100:main", "555", newer)
     gateway.unbind_turn_source(older_binding)
 
-    assert gateway.read_turn_source(_ctx()) == TurnSourceSnapshot(
-        content="newer lease",
-        author_id="123",
-        is_bot=False,
-    )
+    asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=3))
+    assert older_channel.calls == []
+    assert newer_channel.calls == [{"limit": 3, "before": newer}]
 
     gateway.unbind_turn_source(newer_binding)
-    assert gateway.read_turn_source(_ctx()) is None
+    with pytest.raises(DiscordGatewayError, match="Current Discord source is unavailable"):
+        asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=3))
 
 
 def test_gateway_history_failure_raises_safe_error() -> None:

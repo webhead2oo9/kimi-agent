@@ -6,8 +6,8 @@ applies their migrations, and starts them with a runtime context whose ports
 are the real implementations where core has them and the public fakes from
 ``kimi_agent_module_api.testing`` elsewhere. Health, services, and storage are
 always the real core implementations; inspect them via ``runtime.manager``.
-``fake_ports`` is the same substitution for tests that drive ``ModuleManager``
-directly.
+``start_test_manager`` applies the same fake-port substitution for tests that
+drive ``ModuleManager`` directly.
 Module-package tests may import this; module production source may not.
 """
 
@@ -41,6 +41,21 @@ from kimi_agent_module_api.testing import (
 )
 from storage.db import Database
 from tools.registry import ToolRegistry
+
+
+def manager_config_dir(manager: ModuleManager) -> Path:
+    """Return a loaded manager's config directory for test assertions."""
+    if manager.settings is None:
+        raise RuntimeError("Kimi module manager has not been loaded")
+    return manager.settings.config_dir
+
+
+def manager_context(manager: ModuleManager, module_name: str) -> ModuleRuntimeContext:
+    """Return the runtime context captured for a started module."""
+    try:
+        return manager._contexts[module_name]
+    except KeyError as exc:
+        raise RuntimeError(f"Kimi module {module_name!r} has not been started") from exc
 
 
 class FakeTree:
@@ -94,7 +109,7 @@ class TestRuntime:
     _closed: bool = False
 
     def ctx_for(self, module_name: str) -> ModuleRuntimeContext:
-        return self.manager.context_for(module_name)
+        return manager_context(self.manager, module_name)
 
     async def close(self) -> None:
         if self._closed:
@@ -233,7 +248,7 @@ async def build_test_runtime(
         ports=ports,
     )
     try:
-        await manager.start(base, customize=per_module)
+        await start_test_manager(manager, base, customize=per_module)
     except BaseException:
         await database.close()
         raise
@@ -241,7 +256,7 @@ async def build_test_runtime(
 
 
 def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
-    """``customize`` for manager tests: public fakes for the Discord-bound ports."""
+    """Replace a manager's Discord-bound ports with public test fakes."""
 
     # Every ModuleStorageImpl created by one manager points at the same Database.
     # Keep the fake command tree there so successive customize() calls share the
@@ -268,6 +283,16 @@ def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def start_test_manager(
+    manager: ModuleManager,
+    base: ModuleRuntimeBase,
+    *,
+    customize: Callable[[ModuleSpec, dict[str, Any]], dict[str, Any]] | None = None,
+) -> None:
+    """Start a manager through its private fake-port integration seam."""
+    await manager._start(base, _customize=fake_ports if customize is None else customize)
+
+
 __all__ = [
     "FakeBot",
     "FakeTree",
@@ -275,5 +300,8 @@ __all__ = [
     "TestRuntime",
     "build_test_runtime",
     "fake_ports",
+    "manager_config_dir",
+    "manager_context",
+    "start_test_manager",
     "write_guild_config",
 ]

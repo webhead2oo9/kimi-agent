@@ -556,7 +556,7 @@ async def test_live_guild_sync_failure_restores_handlers_and_retries_compensatio
     await bot.tree.guild_commands[1]["stable"].callback(_Interaction())
     assert calls == ["before"]
     assert store.tracked == {1}
-    assert runtime.command_sync_degraded is True
+    assert runtime._sync_failures or runtime._scope_discovery_failure is not None
     assert health[-1][1] == "degraded"
 
     bot.tree.sync_error = None
@@ -565,7 +565,7 @@ async def test_live_guild_sync_failure_restores_handlers_and_retries_compensatio
 
     assert bot.tree.sync_calls == [1, 1, 1, 1]
     assert bot.tree.published_guild_commands[1]["stable"] is published_before
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
     assert health[-1] == ("mod", "healthy", "")
 
 
@@ -598,7 +598,7 @@ async def test_ambiguous_live_publication_compensates_the_restored_tree() -> Non
     assert bot.tree.guild_commands[1]["stable"] is published_before
     assert bot.tree.published_guild_commands[1]["stable"] is published_before
     assert bot.tree.sync_calls == [1, 1, 1]
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
     assert runtime._sync_retry_tasks == {}
 
 
@@ -632,7 +632,7 @@ async def test_failed_live_rollback_is_not_automatically_published() -> None:
     assert isinstance(raised.value.__cause__, ExceptionGroup)
     assert len(raised.value.__cause__.exceptions) == 2
     assert bot.tree.sync_calls == [1, 1]
-    assert runtime.command_sync_exhausted_guild_ids == (1,)
+    assert runtime._sync_exhausted == {1}
     assert runtime._sync_retry_tasks == {}
 
 
@@ -684,14 +684,14 @@ async def test_startup_guild_sync_failure_retries_without_another_ready() -> Non
 
     assert set(bot.tree.guild_commands[1]) == {"pending"}
     assert store.tracked == {1}
-    assert runtime.command_sync_degraded is True
+    assert runtime._sync_failures or runtime._scope_discovery_failure is not None
     bot.tree.sync_error = None
     retry = runtime._sync_retry_tasks[1]
     await retry
 
     assert bot.tree.sync_calls == [1, 1]
     assert set(bot.tree.published_guild_commands[1]) == {"pending"}
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
     assert health[-1] == ("mod", "healthy", "")
 
 
@@ -727,7 +727,7 @@ async def test_startup_track_retry_still_publishes_the_desired_tree() -> None:
 
     assert bot.tree.sync_calls == [1]
     assert set(bot.tree.published_guild_commands[1]) == {"pending"}
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
 
 
 @pytest.mark.asyncio
@@ -770,7 +770,7 @@ async def test_live_track_failure_preserves_an_existing_pending_publish() -> Non
     await asyncio.gather(scheduled, return_exceptions=True)
 
     assert set(bot.tree.published_guild_commands[1]) == {"pending"}
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
 
 
 @pytest.mark.asyncio
@@ -798,7 +798,7 @@ async def test_guild_sync_retry_budget_exhaustion_is_observable() -> None:
     await retry
 
     assert bot.tree.sync_calls == [1, 1, 1]
-    assert runtime.command_sync_exhausted_guild_ids == (1,)
+    assert runtime._sync_exhausted == {1}
     assert health[-1][1] == "failed"
 
 
@@ -827,7 +827,7 @@ async def test_scope_discovery_failure_does_not_block_known_local_publication() 
     await runtime.sync_ready()
 
     assert set(bot.tree.published_guild_commands[1]) == {"known"}
-    assert runtime.command_scope_discovery_failure == "RuntimeError"
+    assert runtime._scope_discovery_failure == "RuntimeError"
     assert health[-1][1] == "degraded"
 
     scheduled = runtime._scope_discovery_retry_task
@@ -837,8 +837,8 @@ async def test_scope_discovery_failure_does_not_block_known_local_publication() 
     await runtime._retry_scope_discovery()
     await asyncio.gather(scheduled, return_exceptions=True)
 
-    assert runtime.command_scope_discovery_failure is None
-    assert runtime.command_sync_degraded is False
+    assert runtime._scope_discovery_failure is None
+    assert not runtime._sync_failures
     assert health[-1] == ("mod", "healthy", "")
 
 
@@ -867,7 +867,7 @@ async def test_empty_publication_retries_only_failed_scope_cleanup() -> None:
 
     assert bot.tree.guild_commands[1] == {}
     assert bot.tree.published_guild_commands[1] == {}
-    assert runtime.command_sync_degraded is True
+    assert runtime._sync_failures or runtime._scope_discovery_failure is not None
     assert bot.tree.sync_calls == [1, 1]
 
     store.forget_error = None
@@ -876,7 +876,7 @@ async def test_empty_publication_retries_only_failed_scope_cleanup() -> None:
 
     assert bot.tree.sync_calls == [1, 1]
     assert store.forget_calls == [1, 1]
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
 
 
 @pytest.mark.asyncio
@@ -907,7 +907,7 @@ async def test_disconnect_pauses_retry_and_resume_rearms_it() -> None:
     bot.tree.sync_error = None
     await runtime.resume_sync()
     assert bot.tree.sync_calls == [1, 1]
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
 
 
 @pytest.mark.asyncio
@@ -1007,7 +1007,7 @@ async def test_disconnected_scope_forget_failure_does_not_block_connected_scopes
 
     assert bot.tree.sync_calls == [1]
     assert store.tracked == {99}
-    assert runtime.command_sync_failures == {99: "RuntimeError"}
+    assert runtime._sync_failures == {99: "RuntimeError"}
 
     scheduled = runtime._sync_retry_tasks[99]
     store.forget_error_guild_ids.clear()
@@ -1016,7 +1016,7 @@ async def test_disconnected_scope_forget_failure_does_not_block_connected_scopes
     await asyncio.gather(scheduled, return_exceptions=True)
 
     assert store.tracked == set()
-    assert runtime.command_sync_degraded is False
+    assert not runtime._sync_failures and runtime._scope_discovery_failure is None
 
 
 @pytest.mark.asyncio

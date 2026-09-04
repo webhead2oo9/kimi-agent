@@ -30,7 +30,7 @@ class Session:
     youtube_video_id: str
     latest_interaction_id: str
     model: str = "gemini-3.7-flash"
-    catalog_model: str = ""
+    catalog_model: str = "gemini-video-flash"
     interaction_count: int = 1
     expires_at: float = 99999999999
     source_kind: str = "youtube"
@@ -227,7 +227,7 @@ def _result(interaction_id: str) -> VideoInteractionResult:
 def _config(
     *,
     model: str = "gemini-3.7-flash",
-    catalog_model: str = "",
+    catalog_model: str = "gemini-video-flash",
 ) -> VideoSessionConfig:
     return VideoSessionConfig(
         model=model,
@@ -237,6 +237,19 @@ def _config(
         session_ttl_minutes=60,
         catalog_model=catalog_model,
     )
+
+
+def test_billable_service_errors_require_catalog_attribution() -> None:
+    result = _result("remote")
+
+    with pytest.raises(TypeError, match="catalog_model is required"):
+        VideoSessionError("persistence failed", result=result, catalog_model="")
+    with pytest.raises(ValueError, match="catalog_model must not be empty"):
+        VideoResultCancelled(result=result, catalog_model="")
+
+    nonbillable = VideoSessionError("not configured")
+    assert nonbillable.result is None
+    assert nonbillable.catalog_model is None
 
 
 @pytest.mark.asyncio
@@ -444,6 +457,7 @@ async def test_cancellation_during_malformed_follow_up_preserves_error_usage() -
                 interaction_id="remote-malformed",
                 model="old-upstream",
                 usage=VideoUsage(input_tokens=10),
+                usage_present=True,
             )
             try:
                 await release_interaction.wait()
@@ -708,6 +722,7 @@ async def test_malformed_follow_up_keeps_stored_catalog_model() -> None:
         interaction_id="remote-malformed",
         model="old-upstream",
         usage=VideoUsage(input_tokens=10),
+        usage_present=True,
     )
     store = CleanupFailureStore(
         sessions=[
@@ -755,6 +770,7 @@ async def test_cancelled_malformed_follow_up_cleanup_keeps_usage_attribution() -
         interaction_id="remote-malformed",
         model="old-upstream",
         usage=VideoUsage(input_tokens=10),
+        usage_present=True,
     )
     store = BlockingCleanupStore(
         sessions=[
@@ -1096,6 +1112,7 @@ async def test_malformed_completed_interaction_is_durably_queued_for_cleanup() -
             interaction_id="remote-malformed",
             model="gemini-3.7-flash",
             usage=VideoUsage(input_tokens=10),
+            usage_present=True,
         ),
     )
     service = VideoUnderstandingService(client=client, get_store=lambda: store)

@@ -206,6 +206,11 @@ class Cassette:
         if not cassette.path.exists():
             return cassette
         raw = json.loads(cassette.path.read_text(encoding="utf-8"))
+        if raw.get("version") != cls.VERSION:
+            raise ValueError(
+                f"Unsupported cassette version in {cassette.path}; "
+                f"expected version {cls.VERSION}. Re-record this cassette."
+            )
         for item in raw.get("entries", []):
             tool = str(item.get("tool", ""))
             args = item.get("args") if isinstance(item.get("args"), dict) else {}
@@ -223,15 +228,10 @@ class Cassette:
                         for value in raw_calls
                     )
                 ):
-                    # Version-1 search recordings lack the local budget effect.
-                    # Treat them as misses so replay mode refreshes them live
-                    # instead of guessing how many providers were contacted.
-                    log.warning(
-                        "Ignoring legacy internet_search cassette entry without "
-                        "backend-call metadata in %s",
-                        cassette.path,
+                    raise ValueError(
+                        "internet_search cassette entry has invalid backend-call metadata "
+                        f"in {cassette.path}; re-record this cassette."
                     )
-                    continue
                 backend_calls = list(raw_calls)
             key = call_key(tool, args)
             from_base = bool(item.get("from_base"))
@@ -257,9 +257,6 @@ class Cassette:
 
     def clear(self) -> None:
         """Drop all entries (fresh recording). The underlay is not ours to clear."""
-        # A legacy-only tape may have no usable entries after load discarded
-        # invalid search recordings. Record mode must still replace that file,
-        # even when this run records no new calls.
         if self._store or self.path.exists():
             self._dirty = True
         self._store = {}

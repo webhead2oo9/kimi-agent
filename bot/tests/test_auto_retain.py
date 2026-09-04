@@ -25,7 +25,7 @@ class FakeMemoryClient:
         self.retains.append(kwargs)
         return self.retain_ok
 
-    async def delete_bank(self, bank_id: str) -> bool:
+    async def delete_bank_strict(self, bank_id: str) -> bool:
         self.deleted_banks.append(bank_id)
         return True
 
@@ -43,6 +43,9 @@ class FakePreferences:
         else:
             self.disabled.add(user_id)
         return True
+
+    async def clear_persona(self, user_id: str) -> bool:
+        return False
 
 
 async def fake_ensure_user_bank(client, discord_id: str, display_name: str) -> str:
@@ -745,9 +748,9 @@ async def test_forget_waits_for_inflight_auto_retain_then_deletes_bank(tmp_path)
             self.operations.append("retain")
             return await super().retain(**kwargs)
 
-        async def delete_bank(self, bank_id: str) -> bool:
+        async def delete_bank_strict(self, bank_id: str) -> bool:
             self.operations.append("delete")
-            return await super().delete_bank(bank_id)
+            return await super().delete_bank_strict(bank_id)
 
     class SignalingPreferences(FakePreferences):
         def __init__(self) -> None:

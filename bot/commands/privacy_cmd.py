@@ -82,7 +82,6 @@ class PrivacyDeletionOutcome:
     ok: bool
     lines: list[str]
     durable_request_completed: bool | None = None
-    effective_scope: DeleteScope | None = None
 
 
 _CONFIRMED_PRIVACY_DELETIONS: set[asyncio.Task[PrivacyDeletionOutcome]] = set()
@@ -250,7 +249,6 @@ async def run_privacy_deletion(
                                 )
                             ],
                             durable_request_completed=False,
-                            effective_scope=scope,
                         )
                 effective_scope = durable_request.scope
                 required_memory_backend = (
@@ -292,7 +290,6 @@ async def run_privacy_deletion(
                         ok=False,
                         lines=outcome.lines,
                         durable_request_completed=False,
-                        effective_scope=effective_scope,
                     )
                 try:
                     completed = await deletion_request_store.complete(durable_request)
@@ -309,7 +306,6 @@ async def run_privacy_deletion(
                             ),
                         ],
                         durable_request_completed=False,
-                        effective_scope=effective_scope,
                     )
                 if completed:
                     await privacy_barrier.clear_deletion_pending(user_id)
@@ -330,7 +326,6 @@ async def run_privacy_deletion(
                         ]
                     ),
                     durable_request_completed=completed,
-                    effective_scope=effective_scope,
                 )
 
         # Confirmation is the authorization point. If Discord cancels the
@@ -369,7 +364,6 @@ async def run_privacy_deletion(
                         "else was removed. Please ask staff to check the bot logs."
                     )
                 ],
-                effective_scope=scope,
             )
         lines.append(
             f"Deleted **{deletion.conversations_deleted}** conversation(s) you "
@@ -433,7 +427,7 @@ async def run_privacy_deletion(
     )
     ok = ok and memory_ok
     lines.append(memory_line)
-    return PrivacyDeletionOutcome(ok=ok, lines=lines, effective_scope=scope)
+    return PrivacyDeletionOutcome(ok=ok, lines=lines)
 
 
 def _build_tldr_embed(
@@ -637,7 +631,6 @@ class _DeleteConfirmView(_AuthorGuardedView):
                             )
                         ],
                         durable_request_completed=False,
-                        effective_scope=self._scope,
                     )
             return await run_privacy_deletion(
                 scope=self._scope,

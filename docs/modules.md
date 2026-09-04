@@ -56,7 +56,7 @@ Before writing any code, read in this order:
 4. CLAUDE.md, for code style and conventions
 
 Rules and boundaries to follow:
-- Depend on `kimi-agent-module-api>=1,<2` for host contracts and declare any
+- Depend on `kimi-agent-module-api>=2,<3` for host contracts and declare any
   other runtime dependencies in the module package. Never import `bot/` core
   packages; tests may use the SDK fakes in
   `kimi_agent_module_api.testing` and nothing from core.
@@ -130,11 +130,29 @@ A module distribution depends on the standalone `kimi-agent-module-api` package,
 [project]
 name = "my-assistant-module"
 version = "0.1.0"
-dependencies = ["kimi-agent-module-api>=1,<2"]
+dependencies = ["kimi-agent-module-api>=2,<3"]
 
 [project.entry-points."kimi_agent.modules"]
 my_module = "my_assistant_module:SPEC"
 ```
+
+The `ModuleSpec` must declare the host contract as an explicit keyword:
+
+```python
+from kimi_agent_module_api import ModuleSpec
+
+SPEC = ModuleSpec(
+    name="my_module",
+    version="0.1.0",
+    create=create,
+    api_version=2,
+)
+```
+
+Pin `api_version` to the literal version the source implements. Do not fill it
+from the installed SDK's `MODULE_API_VERSION`: rebuilding unchanged source
+against a future SDK must remain an incompatibility until the module is
+reviewed and deliberately updated.
 
 Install it using whatever source your deployment controls (a local path, wheel, private Git repository, or package index), then add `my_module` to `KIMI_MODULES`. Install into the exact environment that runs Kimi; installing with another interpreter doesn't make the entry point visible to the bot. For the standard in-checkout `.venv`, run this from `bot/` after installing the core environment. A local checkout doesn't need publishing:
 
@@ -176,9 +194,9 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `1.3.0` with `MODULE_API_VERSION = 1`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.0.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
-Before the first tag, reserve the `kimi-agent-module-api` project through PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi`. A name lookup isn't a reservation, so confirm availability again immediately before the first release.
+If the `kimi-agent-module-api` project has not yet been reserved on PyPI, use PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi` before the next tag. A name lookup isn't a reservation, so confirm availability again immediately before a release.
 
 ## Lifecycle contract
 
@@ -195,6 +213,8 @@ Core drives every configured module through the same phases, in this order:
 
 A `ModuleSpec` can declare what the module intends to use. After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs, so a malformed declaration aborts startup with a named reason:
 
+- `api_version`: required keyword pinned to the literal host API contract the
+  module source implements.
 - `permissions.discord_actions`: the Discord operations the module will call (`send_message`, `send_dm`, `edit_message`, `delete_message`, `ban`, `kick`, `timeout`, `fetch_message`, `fetch_member`, `fetch_channel`, `fetch_messages`, `fetch_pins`, `fetch_public_threads`, `fetch_roles`, `fetch_invites`, `can_view_channel`).
 - `permissions.event_topics`: core (`discord.*`) or sibling-module topics the module subscribes to. A module never declares its own namespace; it may publish only under `<module_name>.*`.
 - `permissions.http_hosts`: exact outbound hosts, the `discord-cdn` token, or `${setting_name}` resolved from the module's settings. Wildcards are not accepted.
@@ -215,8 +235,7 @@ the ports are a contract and an audit surface, not a sandbox.
 
 - `ctx.storage`: the shared database seen through the module's table prefix.
   `ctx.storage.table("cases")` returns the quoted physical name
-  `"<module>_cases"`, or the aliased name when the spec declares a
-  `table_aliases` entry. A module that defines `scoped_migrations` gets a
+  `"<module>_cases"`. A module that defines `scoped_migrations` gets a
   `MigrationContext` with the same `table()` helper instead of a raw
   connection. This is naming discipline on one shared connection, not SQL
   isolation; every writer still goes through `write_transaction()`.
@@ -289,9 +308,10 @@ the ports are a contract and an audit surface, not a sandbox.
   `<CONFIG_DIR>/guild-modules/<guild_id>/<module_name>.md` (frontmatter
   only). These documents are parsed strictly. Broken frontmatter markers or
   invalid YAML make the snapshot invalid instead of quietly behaving like
-  empty settings. Until a guild has that document, the schema's field names are
-  read from `servers/<guild_id>.md` and the snapshot reports
-  `legacy=True`, with the module marked `degraded` naming those guilds.
+  empty settings. A missing document uses defaults where the schema declares
+  them; required fields still make the snapshot invalid until the document
+  supplies them. Core server settings in `servers/<guild_id>.md` are never
+  interpreted as module settings.
   `render_guild_settings(values)` renders a document in this format for a
   proposal (pass the snapshot's `values` with your change applied: invalid
   field names are rejected, unset fields are omitted, and strings are quoted).

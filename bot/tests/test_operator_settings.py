@@ -24,10 +24,10 @@ from config.operator_settings import (
     OPERATOR_EDITABLE_FIELDS,
     OperatorSettingsError,
     SETTINGS_SPEC,
+    SettingSpec,
     apply_operator_settings,
     coerce_value,
     load_operator_settings,
-    spec_for,
 )
 from config.settings import Settings
 
@@ -38,6 +38,10 @@ def _settings(**values: Any) -> Settings:
 
 def _write(config_dir: Path, body: str) -> None:
     (config_dir / "settings.md").write_text(body, encoding="utf-8")
+
+
+def _spec_for(field: str) -> SettingSpec | None:
+    return next((spec for spec in SETTINGS_SPEC if spec.field == field), None)
 
 
 def test_default_bot_name_uses_the_shared_brand() -> None:
@@ -95,7 +99,7 @@ def test_unlisted_plain_scalars_stay_environment_only() -> None:
     }
     assert all(Settings.model_fields[field].annotation is str for field in environment_only)
     assert environment_only.isdisjoint(OPERATOR_EDITABLE_FIELDS)
-    assert all(spec_for(field) is None for field in environment_only)
+    assert all(_spec_for(field) is None for field in environment_only)
 
 
 def test_no_secret_is_managed() -> None:
@@ -217,7 +221,7 @@ def test_choice_vocabularies_match_the_code_that_consumes_them() -> None:
         "codex_reasoning_effort": {"", *REASONING_EFFORT_ORDER},
     }
     for field, vocabulary in expected.items():
-        spec = spec_for(field)
+        spec = _spec_for(field)
         assert spec is not None
         assert spec.kind == KIND_CHOICE
         assert set(spec.choices) == vocabulary
@@ -227,7 +231,7 @@ def test_choice_vocabularies_match_the_code_that_consumes_them() -> None:
 
 
 def test_int_coercion_rejects_bools_and_enforces_minimums() -> None:
-    spec = spec_for("react_max_iterations")
+    spec = _spec_for("react_max_iterations")
     assert spec is not None
     assert coerce_value(spec, 5) == 5
     # bool is an int subclass; true would silently become 1.
@@ -240,7 +244,7 @@ def test_int_coercion_rejects_bools_and_enforces_minimums() -> None:
 
 
 def test_id_list_accepts_yaml_lists_and_comma_strings() -> None:
-    spec = spec_for("staff_user_ids")
+    spec = _spec_for("staff_user_ids")
     assert spec is not None
     assert coerce_value(spec, [111, 222]) == "111,222"
     assert coerce_value(spec, "111, 222") == "111,222"
@@ -250,7 +254,7 @@ def test_id_list_accepts_yaml_lists_and_comma_strings() -> None:
 
 
 def test_choice_coercion_rejects_values_outside_the_list() -> None:
-    spec = spec_for("image_detail")
+    spec = _spec_for("image_detail")
     assert spec is not None
     assert coerce_value(spec, "high") == "high"
     with pytest.raises(ValueError):
@@ -259,7 +263,7 @@ def test_choice_coercion_rejects_values_outside_the_list() -> None:
 
 @pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
 def test_float_coercion_rejects_non_finite_values(value: float) -> None:
-    spec = spec_for("react_temperature")
+    spec = _spec_for("react_temperature")
     assert spec is not None
     assert spec.kind == KIND_FLOAT
     with pytest.raises(ValueError, match="finite"):

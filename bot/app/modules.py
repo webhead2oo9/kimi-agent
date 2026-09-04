@@ -62,7 +62,7 @@ from modules.health import HealthRegistry
 from modules.http import ModuleHttpRuntime, ResolvedHostRule, resolve_host_rules
 from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
-from modules.storage import ModuleStorageImpl, validate_table_aliases
+from modules.storage import ModuleStorageImpl
 from modules.tasks import run_bounded
 
 log = logging.getLogger(__name__)
@@ -363,7 +363,6 @@ def _validate_declarations(spec: ModuleSpec) -> None:
         validate_services(spec.name, spec.dependencies, spec.provides, spec.consumes)
         if spec.guild_settings is not None:
             validate_guild_settings_schema(spec.name, spec.guild_settings)
-        validate_table_aliases(spec.name, spec.table_aliases)
     except ValueError as exc:
         raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
 
@@ -404,8 +403,7 @@ class ModuleRuntimeBase:
     Every port a module receives is derived here or from the manager's own
     services; ``discord_actions`` and ``interactions`` are factories because
     both bind to the module's name and guild-activation predicate. A ``None``
-    factory leaves that port unset, which ``start()`` rejects unless a
-    ``customize`` hook (the test harness) supplies it.
+    factory leaves that port unset, which ``start()`` rejects.
     """
 
     database: Database
@@ -452,12 +450,6 @@ class ModuleManager:
     start_timeout_seconds: float = 60.0
     close_timeout_seconds: float = 15.0
     _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
-
-    @property
-    def config_dir(self) -> Path:
-        if self.settings is None:
-            raise RuntimeError("Kimi module manager has not been loaded")
-        return self.settings.config_dir
 
     @classmethod
     def load(
@@ -571,47 +563,38 @@ class ModuleManager:
             if spec.guild_settings is not None
         }
 
-    def spec(self, name: str) -> ModuleSpec:
-        for spec in self._specs:
-            if spec.name == name:
-                return spec
-        raise RuntimeError(f"Kimi module {name!r} is not active")
+    async def start(self, base: ModuleRuntimeBase) -> None:
+        """Migrate and start every configured module using production ports."""
+        await self._start(base)
 
-    def context_for(self, name: str) -> ModuleRuntimeContext:
-        """The per-module runtime context handed to ``start`` (after it ran)."""
-        try:
-            return self._contexts[name]
-        except KeyError as exc:
-            raise RuntimeError(f"Kimi module {name!r} has not been started") from exc
-
-    async def start(
+    async def _start(
         self,
         base: ModuleRuntimeBase,
         *,
-        customize: Callable[[ModuleSpec, dict[str, Any]], dict[str, Any]] | None = None,
+        _customize: Callable[[ModuleSpec, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         """Migrate every module, then start them in dependency order.
 
         Each module receives its own frozen ``ModuleRuntimeContext`` assembled
-        from ``base`` plus the per-module ports. ``customize`` lets a test
-        harness replace ports with fakes before the context is frozen; missing
-        required ports abort startup. A ``start()`` that exceeds
-        ``start_timeout_seconds`` is cancelled, given a short grace period,
-        then abandoned if it ignores cancellation; either way it counts as a
-        failed start.
+        from ``base`` plus the per-module ports. The private customizer is used
+        only by the integration harness to replace Discord-bound ports with
+        fakes before the context is frozen. Missing required ports abort
+        startup. A ``start()`` that exceeds ``start_timeout_seconds`` is
+        cancelled, given a short grace period, then abandoned if it ignores
+        cancellation; either way it counts as a failed start.
         """
         try:
             for spec in self._specs:
                 instance = self._modules[spec.name]
-                storage = ModuleStorageImpl(base.database, spec.name, spec.table_aliases)
+                storage = ModuleStorageImpl(base.database, spec.name)
                 await base.database.apply_module_migrations(
                     spec.name, _migrations_for(instance, storage)
                 )
             for spec in self._specs:
                 instance = self._modules[spec.name]
                 ports = self._ports_for(spec, base)
-                if customize is not None:
-                    ports = customize(spec, ports)
+                if _customize is not None:
+                    ports = _customize(spec, ports)
                 missing = sorted(name for name in _REQUIRED_PORTS if ports.get(name) is None)
                 if missing:
                     raise RuntimeError(
@@ -674,7 +657,7 @@ class ModuleManager:
                 else None
             ),
             "scheduler": self.scheduler.view_for(spec.name) if self.scheduler is not None else None,
-            "storage": ModuleStorageImpl(base.database, spec.name, spec.table_aliases),
+            "storage": ModuleStorageImpl(base.database, spec.name),
             "health": self.health.reporter_for(spec.name),
             "discord": (
                 DeclaredDiscordActions(
@@ -794,7 +777,7 @@ class ModuleManager:
 
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
-    scoped = tuple(getattr(instance, "scoped_migrations", ()))
+    scoped = tuple(instance.scoped_migrations)
     declared_names: set[str] = set()
 
     def wrap(migrate: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:

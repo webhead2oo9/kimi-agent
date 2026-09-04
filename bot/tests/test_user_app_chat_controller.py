@@ -23,6 +23,7 @@ from app.user_app_chat import (
 )
 from storage.conversations import OWNER_ONLY, ConversationStore
 from storage.db import Database
+from tests.app_state_probes import root_lock_state
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
 
@@ -223,7 +224,7 @@ async def test_access_and_block_are_rechecked_under_the_root_lock(
     async with roots.hold("userchat:42"):
         task = asyncio.create_task(_run(controller, interaction))
         deadline = asyncio.get_running_loop().time() + 0.5
-        while roots.snapshot().refcounts.get("userchat:42") != 2:
+        while root_lock_state(roots).refcounts.get("userchat:42") != 2:
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError("personal chat did not queue for its root lock")
             await asyncio.sleep(0)

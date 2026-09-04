@@ -40,10 +40,6 @@ class ImageGenService:
         self._max_image_bytes = max_image_bytes
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
-    @property
-    def backend_name(self) -> str:
-        return self._backend.name
-
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.generate(request)

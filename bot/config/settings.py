@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+import os
+from pathlib import Path
+from typing import Any, Literal
 
+from dotenv import dotenv_values
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -10,6 +13,28 @@ from branding import DEFAULT_BOT_NAME
 from config.environment import selected_env_file
 
 type EventLogContentMode = Literal["metadata", "redacted", "full"]
+
+# v2.0 safety tombstones only: these values are never interpreted. Remove this
+# gate in v2.1 after every known deployment has completed the v2 runbook once.
+_RETIRED_SETTINGS = frozenset({"codex_model", "discord_search_channels"})
+
+
+def _retired_settings_in_sources(values: dict[str, Any], env_file: object) -> set[str]:
+    candidates = {str(key).casefold() for key in values}
+    candidates.update(str(key).casefold() for key in os.environ)
+
+    if isinstance(env_file, (str, os.PathLike)):
+        env_files: tuple[str | os.PathLike[str], ...] = (env_file,)
+    elif isinstance(env_file, (tuple, list)):
+        env_files = tuple(path for path in env_file if isinstance(path, (str, os.PathLike)))
+    else:
+        env_files = ()
+    for path in env_files:
+        candidates.update(
+            str(key).casefold() for key in dotenv_values(Path(path), interpolate=False)
+        )
+
+    return candidates & _RETIRED_SETTINGS
 
 
 def _env_file() -> str:
@@ -35,6 +60,28 @@ class Settings(BaseSettings):
         "extra": "ignore",
         "validate_assignment": True,
     }
+
+    def __init__(self, **values: Any) -> None:
+        env_file = values.get("_env_file", self.model_config.get("env_file"))
+        for name in _retired_settings_in_sources(values, env_file):
+            # Unknown process-environment names are normally filtered before
+            # model validation. Inject only their names (never their values) so
+            # the safety validator below sees every active settings source.
+            values.setdefault(name, "<retired setting present>")
+        super().__init__(**values)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_retired_settings(cls, data: object) -> object:
+        if isinstance(data, dict):
+            present = sorted(
+                str(key).upper() for key in data if str(key).lower() in _RETIRED_SETTINGS
+            )
+            if present:
+                raise ValueError(
+                    "Removed v1 setting(s) must be deleted before startup: " + ", ".join(present)
+                )
+        return data
 
     # Discord
     discord_bot_token: SecretStr = SecretStr("")
@@ -137,7 +184,6 @@ class Settings(BaseSettings):
     react_temperature: float | None = 1.0
     codex_token_file: str = "secrets/codex-auth.json"
     xai_oauth_token_file: str = "secrets/xai-oauth.json"
-    codex_model: str = "gpt-5.5"
     codex_reasoning_effort: str = "high"
     codex_image_quality: str = "auto"
     codex_image_format: str = "png"
@@ -165,12 +211,9 @@ class Settings(BaseSettings):
     moderation_output_refusal: str = "I wrote a reply, but it didn't pass my content filter, so I'm not posting it. Nothing's wrong on your end; try asking a different way."
     moderation_error_refusal: str = "I can't run my content check right now, so I'm holding this one back. Try again in a minute."
 
-    # Discord guild text search. The compatibility allowlist field is a migration
-    # sentinel: any non-empty value fails validation rather than silently
-    # inverting the configured access policy.
+    # Discord guild text search.
     discord_text_search_enabled: bool = True
     discord_search_excluded_channels: str = ""
-    discord_search_channels: str = ""
     discord_search_timeout_seconds: float = 30.0
 
     # Live internet search. The tool registers when any provider key is set.
@@ -1062,16 +1105,6 @@ class Settings(BaseSettings):
                 )
             seen_ids.add(channel_id)
         return value
-
-    @model_validator(mode="after")
-    def _reject_legacy_discord_search_allowlist(self) -> Settings:
-        if self.discord_search_channels.strip():
-            raise ValueError(
-                "DISCORD_SEARCH_CHANNELS has been replaced by "
-                "DISCORD_SEARCH_EXCLUDED_CHANNELS; migrate the old allowlist "
-                "before starting the bot"
-            )
-        return self
 
     @field_validator("moderation_output_exempt_tier")
     @classmethod

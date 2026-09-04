@@ -57,6 +57,7 @@ from config.settings import Settings
 from memory.banks import ensure_user_bank
 from memory.recall import recall_current_user_context
 from providers.assets import write_generated_assets
+from tools.coding_tasks import CODING_CONTROL_TOOLS
 from tools.config_spec import ToolConfigField
 from tools.registry import ToolRegistry
 from tools.workspace.common import UserLocks
@@ -186,17 +187,12 @@ class TurnDependencyFactory:
 
 
 def _resolve_chat_provider(
-    provider_manager: object,
+    provider_manager: ProviderManager,
     scope: Scope,
     *,
     images: bool = False,
 ) -> TurnProvider:
-    resolve = getattr(provider_manager, "resolve", None)
-    if callable(resolve):
-        return resolve("chat", scope, images=images)
-    # getattr, not attribute access: provider_manager is typed `object` here so the
-    # duck-typed fallback stays usable by test doubles that only expose `main`.
-    return getattr(provider_manager, "main")  # noqa: B009
+    return provider_manager.resolve("chat", scope, images=images)
 
 
 def chat_model_name_for_scope(
@@ -205,19 +201,9 @@ def chat_model_name_for_scope(
     *,
     images: bool = False,
 ) -> str:
-    """The configured chat model for a scope, or "" when routing is unavailable.
+    """Return the configured chat model for a scope."""
 
-    One implementation, called both here and by the application's own method
-    (`app/runtime.py`), which the duck-typed lookup below prefers when present.
-    """
-
-    resolver = getattr(provider_manager, "resolved_chat_model_name", None)
-    if callable(resolver):
-        return str(resolver(scope, images=images))
-    model_config = getattr(provider_manager, "model_config", None)
-    if model_config is None:
-        return ""
-    return str(model_config.model_name_for_role("chat", scope, images=images))
+    return provider_manager.resolved_chat_model_name(scope, images=images)
 
 
 def build_turn_preparation_config(
@@ -266,19 +252,22 @@ def _tool_config_channel_id(source: TurnPreparationInput) -> str:
 # would pull guild-private knowledge into a private transcript. Blocking is
 # re-checked at the dispatch privilege boundary, and it keeps the model's tool
 # list honest rather than offering tools that can only refuse.
-_PERSONAL_CHAT_BLOCKED_TOOLS = frozenset(
-    {
-        "move_to_thread",
-        "leave_thread",
-        "pause_thread_replies",
-        "resume_thread_replies",
-        "teach",
-        "recall_community",
-        "reflect_community",
-        "skill_create",
-        "skill_edit",
-        "skill_delete",
-    }
+_PERSONAL_CHAT_BLOCKED_TOOLS = (
+    frozenset(
+        {
+            "move_to_thread",
+            "leave_thread",
+            "pause_thread_replies",
+            "resume_thread_replies",
+            "teach",
+            "recall_community",
+            "reflect_community",
+            "skill_create",
+            "skill_edit",
+            "skill_delete",
+        }
+    )
+    | CODING_CONTROL_TOOLS
 )
 
 
@@ -322,7 +311,7 @@ async def build_turn_dependencies(
         return chat_model_name_for_scope(services.provider_manager, chat_scope, images=images)
 
     image_probe_kwargs: dict[str, Any] = {"bot_user": services.get_bot_user()}
-    if getattr(source, "allow_bot_authored_reply_context", False):
+    if source.allow_bot_authored_reply_context:
         image_probe_kwargs["allow_bot_authored"] = True
     has_images = bool(services.settings.max_turn_images > 0) and await hooks.turn_has_image_input(
         source.source_message, **image_probe_kwargs

@@ -8,7 +8,6 @@ import os
 import shutil
 import signal
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -323,43 +322,29 @@ async def run_script(
     max_output_scan_entries: int = 1000,
     allow_network: bool = False,
     sandbox_limits: ScriptSandboxLimits | None = None,
-    _sandbox_enabled: bool = True,
 ) -> ScriptResult:
     resolved_path = validate_script_path(script_path, skill_dir)
     interpreter = _get_interpreter(resolved_path)
-    scratch_home: str | None = None
-    command: list[str]
-    cwd: str | None
-    if _sandbox_enabled:
-        runtime = detect_sandbox_runtime()
-        limits = sandbox_limits or ScriptSandboxLimits()
-        workspace = Path(workspace_dir) if workspace_dir else None
-        command = build_sandbox_command(
-            runtime=runtime,
-            limits=limits,
-            interpreter=interpreter,
-            resolved_script=resolved_path,
-            skill_dir=skill_dir,
-            workspace_dir=workspace,
-            allow_network=allow_network,
-        )
-        env = _build_env(
-            secrets,
-            "/workspace" if workspace is not None else None,
-            scratch_home="/tmp/home",
-        )
-        env["PATH"] = ":".join((str(interpreter.parent), "/usr/local/bin", "/usr/bin", "/bin"))
-        env["TMPDIR"] = "/tmp"
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        cwd = None
-    else:
-        # Test-only orchestration seam. Production registration never disables
-        # the sandbox; keeping this explicit lets cross-platform unit tests cover
-        # stream caps, redaction, and process cleanup without emulating Linux.
-        scratch_home = tempfile.mkdtemp(prefix="skill-home-")
-        env = _build_env(secrets, workspace_dir, scratch_home=scratch_home)
-        command = [str(interpreter), str(resolved_path)]
-        cwd = str(skill_dir)
+    runtime = detect_sandbox_runtime()
+    limits = sandbox_limits or ScriptSandboxLimits()
+    workspace = Path(workspace_dir) if workspace_dir else None
+    command = build_sandbox_command(
+        runtime=runtime,
+        limits=limits,
+        interpreter=interpreter,
+        resolved_script=resolved_path,
+        skill_dir=skill_dir,
+        workspace_dir=workspace,
+        allow_network=allow_network,
+    )
+    env = _build_env(
+        secrets,
+        "/workspace" if workspace is not None else None,
+        scratch_home="/tmp/home",
+    )
+    env["PATH"] = ":".join((str(interpreter.parent), "/usr/local/bin", "/usr/bin", "/bin"))
+    env["TMPDIR"] = "/tmp"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     stdin_data = json.dumps(arguments).encode()
     proc: asyncio.subprocess.Process | None = None
 
@@ -370,7 +355,7 @@ async def run_script(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
-            cwd=cwd,
+            cwd=None,
             start_new_session=os.name == "posix",
         )
         stdout_bytes, stdout_omitted, stderr_bytes, stderr_omitted = await asyncio.wait_for(
@@ -432,5 +417,3 @@ async def run_script(
         )
     finally:
         await _cleanup_process_group(proc)
-        if scratch_home is not None:
-            await asyncio.to_thread(shutil.rmtree, scratch_home, True)

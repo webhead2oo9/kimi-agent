@@ -3,9 +3,6 @@
 Each module declares a ``GuildSettingsSchema``. Values live in
 ``<config_dir>/guild-modules/<guild_id>/<module_name>.md`` (frontmatter only)
 so every module document has its own revision hash under the control plane.
-For one release, a guild without a namespaced document falls back to the
-schema's field names in ``servers/<guild_id>.md`` (the legacy keys) and the
-snapshot says ``legacy=True``.
 
 Invalid documents never half-apply. Under ``disable_module`` the module is
 simply disabled for that guild; under ``disable_guild`` (the default for
@@ -101,47 +98,29 @@ class GuildSettingsService:
         schema = self.schemas[module_name]
         base = self.config_dir()
         namespaced = base / GUILD_MODULES_DIR / str(guild_id) / f"{module_name}.md"
-        legacy = False
         try:
             text = namespaced.read_text(encoding="utf-8")
         except FileNotFoundError:
             text = ""
-        except OSError as exc:
-            return GuildSettingsSnapshot({}, False, (f"unreadable document: {exc}",), "", False)
+        except (OSError, UnicodeError) as exc:
+            return GuildSettingsSnapshot({}, False, (f"unreadable document: {exc}",), "")
         if text:
             try:
                 metadata, body = split_frontmatter_strict(text)
             except FrontmatterError as exc:
-                return GuildSettingsSnapshot({}, False, (str(exc),), _revision(text), False)
+                return GuildSettingsSnapshot({}, False, (str(exc),), _revision(text))
             if body.strip():
                 return GuildSettingsSnapshot(
                     {}, False, ("module guild settings must be frontmatter only",), _revision(text)
                 )
         else:
-            legacy = True
-            legacy_path = base / "servers" / f"{guild_id}.md"
-            try:
-                legacy_text = legacy_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                legacy_text = ""
-            except OSError as exc:
-                return GuildSettingsSnapshot(
-                    {}, False, (f"unreadable legacy document: {exc}",), "", False
-                )
-            try:
-                legacy_meta, _ = split_frontmatter_strict(legacy_text) if legacy_text else ({}, "")
-            except FrontmatterError as exc:
-                return GuildSettingsSnapshot({}, False, (str(exc),), _revision(legacy_text), False)
-            known = {f.name for f in schema.fields}
-            metadata = {k: v for k, v in legacy_meta.items() if k in known}
-            text = legacy_text
+            metadata = {}
         values, errors = coerce_document(schema, metadata)
         return GuildSettingsSnapshot(
             values=values,
             valid=not errors,
             errors=errors,
             revision=_revision(text) if text else "",
-            legacy=legacy and bool(metadata),
         )
 
     def build_refresh(self, guild_ids: Iterable[int]) -> _RefreshBatch:
@@ -210,12 +189,9 @@ class GuildSettingsService:
                 if name == module_name
             ]
             bad = sorted(g for g, snap in entries if not snap.valid)
-            legacy = sorted(g for g, snap in entries if snap.legacy)
             parts: list[str] = []
             if bad:
                 parts.append(f"invalid guild settings in {', '.join(map(str, bad[:10]))}")
-            if legacy:
-                parts.append(f"legacy server keys still used by {', '.join(map(str, legacy[:10]))}")
             detail = "; ".join(parts)
             previous = self._reported.get(module_name)
             if previous == detail:

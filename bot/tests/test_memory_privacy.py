@@ -18,23 +18,15 @@ class RecordingMemoryClient:
             raise self.error
         return self.deleted
 
-    async def delete_bank(self, bank_id: str) -> bool:
-        raise AssertionError("strict bank deletion should be used")
-
 
 class RecordingPreferenceStore:
     def __init__(self) -> None:
         self.set_calls: list[tuple[str, bool]] = []
+        self.clear_persona_calls: list[str] = []
 
     async def set_memory_enabled(self, user_id: str, enabled: bool) -> bool:
         self.set_calls.append((user_id, enabled))
         return True
-
-
-class RecordingPersonaPreferenceStore(RecordingPreferenceStore):
-    def __init__(self) -> None:
-        super().__init__()
-        self.clear_persona_calls: list[str] = []
 
     async def clear_persona(self, user_id: str) -> bool:
         self.clear_persona_calls.append(user_id)
@@ -66,11 +58,10 @@ def test_forget_user_memory_deletes_bank_and_disables_future_memory() -> None:
         )
     )
 
-    assert result.bank_id == "user:123"
     assert result.bank_deleted is True
-    assert result.memory_disabled is True
     assert memory.delete_bank_calls == ["user:123"]
     assert preferences.set_calls == [("123", False)]
+    assert preferences.clear_persona_calls == ["123"]
     assert bank_state.absent == ["123"]
 
 
@@ -90,22 +81,6 @@ def test_forget_user_memory_fails_if_deleted_bank_state_cannot_be_finalized() ->
 
     assert memory.delete_bank_calls == ["user:123"]
     assert preferences.set_calls == [("123", False)]
-
-
-def test_forget_user_memory_clears_persona_when_supported() -> None:
-    memory = RecordingMemoryClient()
-    preferences = RecordingPersonaPreferenceStore()
-
-    result = asyncio.run(
-        forget_user_memory(
-            memory_client=memory,
-            preference_store=preferences,
-            user_id="123",
-        )
-    )
-
-    assert result.bank_deleted is True
-    assert preferences.set_calls == [("123", False)]
     assert preferences.clear_persona_calls == ["123"]
 
 
@@ -121,8 +96,8 @@ def test_forget_user_memory_disables_future_memory_without_hindsight_client() ->
     )
 
     assert result.bank_deleted is False
-    assert result.memory_disabled is True
     assert preferences.set_calls == [("123", False)]
+    assert preferences.clear_persona_calls == ["123"]
 
 
 def test_forget_user_memory_propagates_unconfirmed_backend_failure() -> None:
@@ -142,4 +117,5 @@ def test_forget_user_memory_propagates_unconfirmed_backend_failure() -> None:
 
     assert memory.delete_bank_calls == ["user:123"]
     assert preferences.set_calls == [("123", False)]
+    assert preferences.clear_persona_calls == ["123"]
     assert bank_state.absent == []

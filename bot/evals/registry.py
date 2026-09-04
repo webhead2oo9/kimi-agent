@@ -37,7 +37,6 @@ def compose_tools(
         settings,
         gateway,
         provider_manager,
-        memory_manager,
         get_blocked_user_store=lambda: blocked_user_store,
         # Thread handoff is on by default in production. `move_to_thread` only
         # sets ctx.outbox.thread_request, and lifecycle tools fail closed outside a

@@ -8,14 +8,7 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
-from skills.loader import (
-    SKILLS_DIR,
-    SKILL_FILENAME,
-    SkillMeta,
-    load_skill,
-    parse_skill_document,
-    scan_skills,
-)
+from skills.loader import SKILLS_DIR, SKILL_FILENAME, load_skill, parse_skill_document
 from utils.files import atomic_write_text
 from utils.parsing import as_bool
 
@@ -285,9 +278,3 @@ def delete_skill(name: str, skills_dir: Path | None = None) -> str | None:
 
     log.info("Deleted skill: %s", name)
     return None
-
-
-def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
-    """List all available skills."""
-    root = skills_dir or SKILLS_DIR
-    return list(scan_skills(root).values())

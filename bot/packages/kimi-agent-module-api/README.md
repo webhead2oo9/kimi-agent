@@ -22,11 +22,30 @@ group:
 
 ```toml
 [project]
-dependencies = ["kimi-agent-module-api>=1,<2"]
+dependencies = ["kimi-agent-module-api>=2,<3"]
 
 [project.entry-points."kimi_agent.modules"]
 my_module = "my_module_package:SPEC"
 ```
+
+The source must pin the API contract it implements when constructing the
+specification:
+
+```python
+from kimi_agent_module_api import ModuleSpec
+
+SPEC = ModuleSpec(
+    name="my_module",
+    version="0.1.0",
+    create=create,
+    api_version=2,
+)
+```
+
+`api_version` is a required keyword. Keep it as a literal rather than deriving
+it from the installed SDK's `MODULE_API_VERSION`; unchanged module source must
+not silently claim compatibility merely because it was rebuilt with a newer
+SDK.
 
 The [module guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/modules.md)
 documents installation, declarations, lifecycle, and every runtime port. The
@@ -34,18 +53,22 @@ documents installation, declarations, lifecycle, and every runtime port. The
 is a complete, commented example that exercises most ports; start there.
 
 Guild-scoped live command replacement was added in 1.1. Modules using
-`InteractionRouter.replace_guild_commands()` should depend on
-`kimi-agent-module-api>=1.1,<2` and require the host capability
+`InteractionRouter.replace_guild_commands()` should require the host capability
 `discord.guild_commands.v1`.
 
 Version 1.2 adds typed modal forms and a narrow Components V2 layout model. Once a response uses
 that layout model, Discord requires every later edit of the same message to remain a layout.
-Modules using them should depend on `kimi-agent-module-api>=1.2,<2` and require
+Modules using them should require
 `discord.modals.v1` and/or `discord.components_v2.v1`.
 
 Version 1.3 adds cached author classification to message-deletion events:
 `MessageDeleteEvent.author_is_bot` and `MessageBulkDeleteEvent.bot_message_ids`.
 The values remain unknown for messages that were absent from Discord's cache.
+
+Version 2 requires an explicit, source-pinned `ModuleSpec.api_version`, and
+removes the temporary guild-settings legacy flag and module table aliases.
+Modules must use namespaced guild documents and migrate legacy tables to the
+physical names returned by `ctx.storage.table()` before upgrading.
 
 ## Testing the SDK
 

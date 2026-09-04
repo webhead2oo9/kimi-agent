@@ -64,7 +64,10 @@ async def _create(
     user_id: str = "u1",
     workspace_key: str = "u1__g1",
     root_key: str = "root-1",
+    guild_id: str | None = "g1",
     handoff_pending: bool = False,
+    max_queued_per_user: int | None = None,
+    max_queued_per_workspace: int | None = None,
 ):
     return await store.create_task(
         conversation_id=None,
@@ -72,7 +75,7 @@ async def _create(
         workspace_key=workspace_key,
         user_id=user_id,
         user_name="User",
-        guild_id="g1",
+        guild_id=guild_id,
         channel_id="c1",
         thread_id=None,
         handoff_pending=handoff_pending,
@@ -81,7 +84,33 @@ async def _create(
         acceptance_criteria=["Tests pass"],
         context_text="",
         max_seconds=3600,
+        max_queued_per_user=max_queued_per_user,
+        max_queued_per_workspace=max_queued_per_workspace,
     )
+
+
+async def _transition_active_task(
+    store: CodingTaskStore,
+    task_id: str,
+    status: CodingTaskStatus,
+    *,
+    from_status: CodingTaskStatus = CodingTaskStatus.QUEUED,
+) -> None:
+    assert await store.transition_active_status(
+        task_id,
+        status,
+        from_statuses=frozenset({from_status}),
+    )
+
+
+async def _create_active_job(
+    store: CodingTaskStore,
+    task_id: str,
+    request: dict[str, Any],
+):
+    job = await store.create_job_if_active(task_id, request)
+    assert job is not None
+    return job
 
 
 def _steering_service(
@@ -108,6 +137,10 @@ def _steering_service(
 
 async def _nobody_blocked(_user_id: str) -> bool:
     return False
+
+
+async def _wait_forever() -> None:
+    await asyncio.Event().wait()
 
 
 @asynccontextmanager
@@ -368,6 +401,59 @@ async def test_status_accepts_the_eight_character_task_reference_shown_to_users(
 
 
 @pytest.mark.asyncio
+async def test_task_control_requires_matching_logical_guild_scope(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        service = _steering_service(
+            store,
+            max_queued_per_user=10,
+            max_queued_per_workspace=10,
+        )
+
+        assert (
+            await service.status_from_tool(
+                _control_context(guild_id=None, context_key="userchat:u1"),
+                task_id=task.id,
+            )
+            is None
+        )
+        assert (
+            await service.status_from_tool(
+                _control_context(guild_id="g2"),
+                task_id=task.id,
+            )
+            is None
+        )
+        assert (
+            await service.status_from_tool(
+                _control_context(
+                    user_id="staff",
+                    guild_id="g2",
+                    trust_tier=TrustTier.STAFF,
+                ),
+                task_id=task.id,
+            )
+            is None
+        )
+
+        same_guild_staff = await service.status_from_tool(
+            _control_context(
+                user_id="staff",
+                guild_id="g1",
+                trust_tier=TrustTier.STAFF,
+            ),
+            task_id=task.id,
+        )
+        assert same_guild_staff is not None
+        assert same_guild_staff["task_id"] == task.id
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_short_task_reference_rejects_ambiguous_authorized_prefix(
     tmp_path, monkeypatch
 ) -> None:
@@ -401,15 +487,21 @@ async def test_short_task_reference_rejects_ambiguous_authorized_prefix(
         await db.close()
 
 
-def _control_context(*, user_id: str = "u1") -> MessageContext:
+def _control_context(
+    *,
+    user_id: str = "u1",
+    guild_id: str | None = "g1",
+    trust_tier: TrustTier = TrustTier.MEMBER,
+    context_key: str = "root-1",
+) -> MessageContext:
     return MessageContext(
         user_id=user_id,
         user_name="User",
-        guild_id="g1",
+        guild_id=guild_id,
         channel_id="c1",
         thread_id=None,
-        trust_tier=TrustTier.MEMBER,
-        context_key="root-1",
+        trust_tier=trust_tier,
+        context_key=context_key,
     )
 
 
@@ -456,7 +548,7 @@ async def test_coding_tables_use_current_schema(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
-        assert SCHEMA_VERSION == 6
+        assert SCHEMA_VERSION == 7
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'coding_%'"
         ) as cursor:
@@ -505,9 +597,13 @@ async def test_handoff_task_is_held_until_target_is_bound_and_released(tmp_path)
         await _create(store, root_key="root-2")
 
         assert task.handoff_pending is True
-        assert await store.queued_counts(
-            user_id=task.user_id, workspace_key=task.workspace_key
-        ) == (2, 2)
+        with pytest.raises(CodingTaskQueueFull, match="user queue"):
+            await _create(
+                store,
+                root_key="root-3",
+                max_queued_per_user=2,
+                max_queued_per_workspace=2,
+            )
         assert await store.claim_next() is None
 
         assert await store.bind_handoff_target(task.id, channel_id="c2", thread_id="t2")
@@ -1005,7 +1101,7 @@ async def test_paused_resume_rejects_full_queue_without_storing_steering(
     try:
         store = CodingTaskStore(db)
         paused = await _create(store)
-        await store.set_status(paused.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, paused.id, CodingTaskStatus.WAITING_FOR_INPUT)
         await _create(
             store,
             user_id=queued_user,
@@ -1045,8 +1141,8 @@ async def test_two_paused_resumes_racing_for_one_user_slot_admit_exactly_one(tmp
         store = CodingTaskStore(db)
         first = await _create(store, workspace_key="u1__g1", root_key="first")
         second = await _create(store, workspace_key="u1__g2", root_key="second")
-        await store.set_status(first.id, CodingTaskStatus.WAITING_FOR_INPUT)
-        await store.set_status(second.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, first.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, second.id, CodingTaskStatus.WAITING_FOR_INPUT)
 
         results = await asyncio.gather(
             store.steer_active_task(
@@ -1088,7 +1184,7 @@ async def test_running_task_steering_ignores_queued_caps(tmp_path) -> None:
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        await store.set_status(task.id, CodingTaskStatus.RUNNING)
+        await _transition_active_task(store, task.id, CodingTaskStatus.RUNNING)
 
         refreshed = await store.steer_active_task(
             task.id,
@@ -1234,15 +1330,11 @@ async def test_coding_task_keeps_caller_tier_and_current_tool_policy(tmp_path) -
         await db.close()
 
 
-@pytest.mark.asyncio
-async def test_legacy_coding_task_defaults_to_member_tier(tmp_path) -> None:
-    db = Database(tmp_path / "bot.db")
-    await db.connect()
-    try:
-        task = await _create(CodingTaskStore(db))
-        assert CodingTaskService._trust_tier_from_checkpoint(task) is TrustTier.MEMBER
-    finally:
-        await db.close()
+def test_coding_task_without_checkpoint_tier_is_rejected() -> None:
+    task = cast(CodingTask, SimpleNamespace(checkpoint={}))
+
+    with pytest.raises(RuntimeError, match="checkpoint has no valid trust_tier"):
+        CodingTaskService._trust_tier_from_checkpoint(task)
 
 
 @pytest.mark.asyncio
@@ -1269,7 +1361,7 @@ async def test_cancel_waiting_for_input_task_is_terminal(tmp_path) -> None:
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        await store.set_status(task.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, task.id, CodingTaskStatus.WAITING_FOR_INPUT)
 
         assert await store.request_cancel(task.id, reason="stop") is True
 
@@ -1283,13 +1375,34 @@ async def test_cancel_waiting_for_input_task_is_terminal(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cleanup_complete_requires_terminal_task_and_no_active_jobs(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        job = await _create_active_job(store, task.id, {"path": "test.sh"})
+        service = object.__new__(CodingTaskService)
+        service._store = store
+        service._workers = {}
+
+        await store.finish(task.id, CodingTaskStatus.CANCELLED)
+        assert await service.cleanup_complete(task.id) is False
+
+        await store.update_job(job.id, CodingJobStatus.CANCELLED)
+        assert await service.cleanup_complete(task.id) is True
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_restart_preserves_waiting_for_input_until_user_steers(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        await store.set_status(task.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, task.id, CodingTaskStatus.WAITING_FOR_INPUT)
 
         recovered = await store.recover_interrupted()
 
@@ -1303,13 +1416,97 @@ async def test_restart_preserves_waiting_for_input_until_user_steers(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_steered_pause_cannot_be_reclaimed_while_original_worker_is_live(
+    tmp_path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    worker: asyncio.Task[None] | None = None
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        await _transition_active_task(store, task.id, CodingTaskStatus.RUNNING)
+        await _transition_active_task(
+            store,
+            task.id,
+            CodingTaskStatus.WAITING_FOR_INPUT,
+            from_status=CodingTaskStatus.RUNNING,
+        )
+        resumed = await store.steer_active_task(task.id, "use option B")
+        assert resumed is not None and resumed.status is CodingTaskStatus.QUEUED
+
+        service = _steering_service(
+            store,
+            max_queued_per_user=10,
+            max_queued_per_workspace=10,
+        )
+        worker = asyncio.create_task(_wait_forever())
+        service._workers = {task.id: worker}
+
+        assert await store.claim_next(excluded_task_ids=service._workers) is None
+        messages, _cursor = await service._external_task_messages(task.id, 0)
+        assert "Additional instruction from the user: use option B" in messages
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None and refreshed.status is CodingTaskStatus.RUNNING
+        assert await store.claim_next(excluded_task_ids=service._workers) is None
+    finally:
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_steering_becomes_claimable_after_worker_exit(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        await _transition_active_task(store, task.id, CodingTaskStatus.RUNNING)
+        await _transition_active_task(
+            store,
+            task.id,
+            CodingTaskStatus.WAITING_FOR_INPUT,
+            from_status=CodingTaskStatus.RUNNING,
+        )
+        resumed = await store.steer_active_task(task.id, "late input")
+        assert resumed is not None and resumed.status is CodingTaskStatus.QUEUED
+
+        assert await store.claim_next(excluded_task_ids={task.id}) is None
+        claimed = await store.claim_next()
+        assert claimed is not None and claimed.id == task.id
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_worker_callback_does_not_remove_replacement() -> None:
+    service = object.__new__(CodingTaskService)
+    service._wake = asyncio.Event()
+    stale = asyncio.create_task(asyncio.sleep(0))
+    replacement = asyncio.create_task(_wait_forever())
+    await stale
+    service._workers = {"task-1": replacement}
+
+    service._worker_done(stale, task_id="task-1")
+
+    try:
+        assert service._workers == {"task-1": replacement}
+        assert service._wake.is_set()
+    finally:
+        replacement.cancel()
+        await asyncio.gather(replacement, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_waiting_for_input_expires_at_total_deadline(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        await store.set_status(task.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, task.id, CodingTaskStatus.WAITING_FOR_INPUT)
         async with db.write_transaction() as conn:
             await conn.execute("UPDATE coding_tasks SET deadline_at = 0 WHERE id = ?", (task.id,))
 
@@ -1318,6 +1515,37 @@ async def test_waiting_for_input_expires_at_total_deadline(tmp_path) -> None:
         assert [item.id for item in expired] == [task.id]
         assert expired[0].status == CodingTaskStatus.TIMED_OUT
         assert expired[0].delivery_state == "final_pending"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_finish_does_not_rewrite_a_terminal_delivered_task(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        assert await store.finish(
+            task.id,
+            CodingTaskStatus.COMPLETED,
+            result_text="authoritative result",
+        )
+        await store.mark_delivered(task.id, "discord-final")
+
+        assert not await store.finish(
+            task.id,
+            CodingTaskStatus.FAILED,
+            error_text="stale worker",
+        )
+        refreshed = await store.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status is CodingTaskStatus.COMPLETED
+        assert refreshed.result_text == "authoritative result"
+        assert refreshed.error_text == ""
+        assert refreshed.delivery_state == "delivered"
+        assert refreshed.final_discord_message_id == "discord-final"
+        assert [event.kind for event in await store.events(task.id)].count("finished") == 1
     finally:
         await db.close()
 
@@ -1452,7 +1680,7 @@ async def test_cancel_wins_over_stale_waiting_input_resume(tmp_path) -> None:
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        await store.set_status(task.id, CodingTaskStatus.WAITING_FOR_INPUT)
+        await _transition_active_task(store, task.id, CodingTaskStatus.WAITING_FOR_INPUT)
         await store.request_cancel(task.id, reason="stop")
 
         resumed = await store.steer_active_task(
@@ -1480,7 +1708,7 @@ async def test_restart_requeues_task_and_interrupts_uncertain_job(tmp_path) -> N
         task = await _create(store)
         claimed = await store.claim_next()
         assert claimed is not None
-        job = await store.create_job(task.id, {"path": "test.sh"})
+        job = await _create_active_job(store, task.id, {"path": "test.sh"})
         await store.update_job(job.id, CodingJobStatus.RUNNING)
 
         recovered = await store.recover_interrupted()
@@ -1499,6 +1727,30 @@ async def test_restart_requeues_task_and_interrupts_uncertain_job(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_recovery_interrupts_active_job_with_terminal_parent(tmp_path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        store = CodingTaskStore(db)
+        task = await _create(store)
+        job = await _create_active_job(store, task.id, {"path": "test.sh"})
+        await store.update_job(job.id, CodingJobStatus.RUNNING, unit_name="orphan.scope")
+        await store.finish(task.id, CodingTaskStatus.COMPLETED, result_text="done")
+
+        recovered = await store.recover_interrupted()
+
+        assert recovered == []
+        refreshed_task = await store.get_task(task.id)
+        refreshed_job = await store.get_job(job.id)
+        assert refreshed_task is not None
+        assert refreshed_task.status is CodingTaskStatus.COMPLETED
+        assert refreshed_job is not None
+        assert refreshed_job.status is CodingJobStatus.INTERRUPTED
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_recovery_stops_the_exact_persisted_systemd_unit(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1507,7 +1759,7 @@ async def test_recovery_stops_the_exact_persisted_systemd_unit(
     try:
         store = CodingTaskStore(db)
         task = await _create(store)
-        job = await store.create_job(task.id, {"path": "test.sh"})
+        job = await _create_active_job(store, task.id, {"path": "test.sh"})
         await store.update_job(
             job.id,
             CodingJobStatus.RUNNING,
@@ -1550,8 +1802,8 @@ async def test_recovery_attempts_every_persisted_unit_before_failing(
         store = CodingTaskStore(db)
         first = await _create(store, root_key="r1")
         second = await _create(store, user_id="u2", workspace_key="u2__g1", root_key="r2")
-        first_job = await store.create_job(first.id, {"path": "first.sh"})
-        second_job = await store.create_job(second.id, {"path": "second.sh"})
+        first_job = await _create_active_job(store, first.id, {"path": "first.sh"})
+        second_job = await _create_active_job(store, second.id, {"path": "second.sh"})
         await store.update_job(first_job.id, CodingJobStatus.RUNNING, unit_name="first.scope")
         await store.update_job(second_job.id, CodingJobStatus.RUNNING, unit_name="second.scope")
         attempts: list[str] = []
@@ -1594,8 +1846,8 @@ async def test_recovery_attempts_later_units_before_propagating_cancellation(
         store = CodingTaskStore(db)
         first = await _create(store, root_key="r1")
         second = await _create(store, user_id="u2", workspace_key="u2__g1", root_key="r2")
-        first_job = await store.create_job(first.id, {"path": "first.sh"})
-        second_job = await store.create_job(second.id, {"path": "second.sh"})
+        first_job = await _create_active_job(store, first.id, {"path": "first.sh"})
+        second_job = await _create_active_job(store, second.id, {"path": "second.sh"})
         await store.update_job(first_job.id, CodingJobStatus.RUNNING, unit_name="first.scope")
         await store.update_job(second_job.id, CodingJobStatus.RUNNING, unit_name="second.scope")
         attempts: list[str] = []

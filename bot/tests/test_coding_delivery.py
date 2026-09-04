@@ -17,6 +17,7 @@ from app.coding_delivery import (
     CodingTaskControllerState,
 )
 from app.root_locks import RootLockPool
+from config.model_config import ModelConfig
 from discord_adapter.io import (
     attachment_delivery_notice,
     chunk_message,
@@ -58,6 +59,7 @@ class FakeCodingTaskStore:
     def __init__(self, task: CodingTask | None = None) -> None:
         self.task = task
         self.checkpoints: list[tuple[str, dict[str, Any]]] = []
+        self.recovery_calls = 0
 
     async def get_task(self, task_id: str) -> CodingTask | None:
         if self.task is not None:
@@ -69,6 +71,13 @@ class FakeCodingTaskStore:
 
     async def mark_status_message(self, task_id: str, message_id: str) -> None:
         return None
+
+    async def list_active_jobs(self) -> list[object]:
+        return []
+
+    async def recover_interrupted(self) -> list[CodingTask]:
+        self.recovery_calls += 1
+        return []
 
 
 class FakeConversationStore:
@@ -168,11 +177,25 @@ def make_controller(*, coding_tasks_enabled: bool) -> CodingTaskController:
     async def user_blocked(_user_id: str) -> bool:
         return False
 
+    model_config = ModelConfig.model_validate(
+        {
+            "providers": {
+                "stub": {
+                    "type": "openai_compat",
+                    "base_url": "https://stub.invalid/v1",
+                    "api_key_env": "MODEL_API_KEY",
+                }
+            },
+            "models": {"chat": {"provider": "stub", "model": "stub-model"}},
+            "roles": {"chat": "chat", "compaction": "chat"},
+        }
+    )
+
     return CodingTaskController(
         settings=make_settings(coding_tasks_enabled=coding_tasks_enabled),
         store=cast(CodingTaskStore, FakeCodingTaskStore()),
         usage_store=cast(Any, object()),
-        provider_manager=cast(Any, SimpleNamespace(model_config=None)),
+        provider_manager=cast(Any, SimpleNamespace(model_config=model_config)),
         source_registry=cast(Any, object()),
         tools=cast(Any, object()),
         llm_semaphore=asyncio.Semaphore(1),
@@ -191,6 +214,7 @@ async def test_disabled_controller_has_an_explicit_valid_state() -> None:
 
     assert controller.state is CodingTaskControllerState.DISABLED
     assert controller.running is False
+    assert cast(FakeCodingTaskStore, controller.store).recovery_calls == 1
 
 
 @pytest.mark.asyncio
@@ -206,6 +230,7 @@ async def test_enabled_controller_degrades_when_coding_role_is_unavailable(
 
     assert controller.state is CodingTaskControllerState.DISABLED
     assert controller.running is False
+    assert cast(FakeCodingTaskStore, controller.store).recovery_calls == 1
     assert "assigns no coding role" in caplog.text
 
 
@@ -239,6 +264,13 @@ def test_coding_delivery_text_uses_readable_short_task_reference() -> None:
         )
         == "Implemented the requested change."
     )
+    assert (
+        CodingDelivery.strip_delivery_marker(
+            f"Legacy result.\n-# coding-result:{task_id}\n-# coding-status:{task_id}",
+            task_ref=task_id[:8],
+        )
+        == "Legacy result."
+    )
 
 
 def test_coding_status_replaces_summary_with_worker_plan() -> None:
@@ -263,12 +295,6 @@ def test_coding_status_wire_text_suppresses_link_previews() -> None:
     status = "Working on https://example.com/repo"
 
     assert CodingDelivery.status_wire_text(status) == "Working on <https://example.com/repo>"
-
-
-def test_strip_coding_delivery_marker_supports_legacy_messages() -> None:
-    text = "-# coding-result:3ff8bac7f9e24ed19a65d267c188d7ea\nDone."
-
-    assert CodingDelivery.strip_delivery_marker(text) == "Done."
 
 
 def test_coding_result_delivery_uses_normal_discord_chunking_without_truncation() -> None:
@@ -304,20 +330,31 @@ async def test_coding_result_recovery_matches_link_suppressed_wire_chunks() -> N
     delivery = make_delivery(bot=FakeBot(user=bot_user))
     complete = cast(discord.TextChannel | discord.Thread, HistoryChannel(expected))
     partial = cast(discord.TextChannel | discord.Thread, HistoryChannel(expected[:-1]))
+    task_id = "3ff8bac7f9e24ed19a65d267c188d7ea"
+    legacy_marker = f"coding-result:{task_id}"
+    legacy_content = f"Legacy result.\n-# {legacy_marker}"
+    legacy = cast(
+        discord.TextChannel | discord.Thread,
+        HistoryChannel([legacy_content]),
+    )
 
     recovered = await delivery.find_result_delivery(
         complete,
         expected_text,
-        legacy_marker="coding-result:legacy",
     )
     incomplete = await delivery.find_result_delivery(
         partial,
         expected_text,
-        legacy_marker="coding-result:legacy",
+    )
+    recovered_legacy = await delivery.find_result_delivery(
+        legacy,
+        expected_text,
+        legacy_marker=legacy_marker,
     )
 
     assert [message.content for message in recovered] == expected
     assert incomplete == []
+    assert [message.content for message in recovered_legacy] == [legacy_content]
 
 
 @pytest.mark.asyncio
@@ -578,6 +615,19 @@ async def test_coding_output_moderation_uses_checkpoint_task_tier() -> None:
             },
         )
     ]
+
+
+def test_coding_output_moderation_rejects_missing_checkpoint_tier() -> None:
+    delivery = make_delivery(
+        moderation_service=SimpleNamespace(
+            enabled=True,
+            output_exempt_tier=TrustTier.REGULAR,
+        )
+    )
+    task = cast(CodingTask, SimpleNamespace(checkpoint={}))
+
+    with pytest.raises(RuntimeError, match="checkpoint has no valid trust_tier"):
+        delivery.should_moderate_output(task)
 
 
 @pytest.mark.asyncio

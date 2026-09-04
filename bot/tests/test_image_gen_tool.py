@@ -38,6 +38,7 @@ class StubService:
         self.edit_requests: list[ImageEditRequest] = []
         self.failure: Exception | None = None
         self.usage: dict[str, object] | None = None
+        self.image_bytes: bytes | None = PNG_BYTES
 
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         self.generate_requests.append(request)
@@ -48,6 +49,7 @@ class StubService:
             size="1024x1024",
             background="opaque",
             usage=self.usage,
+            image_bytes=self.image_bytes,
         )
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
@@ -58,6 +60,7 @@ class StubService:
             image_base64=PNG_BASE64,
             size="1024x1536",
             usage=self.usage,
+            image_bytes=self.image_bytes,
         )
 
 
@@ -414,6 +417,19 @@ async def test_workspace_os_error_scrubs_absolute_path(
 
 
 @pytest.mark.asyncio
+async def test_unverified_service_result_is_rejected(tmp_path: Path) -> None:
+    registry, service, manager = _registered(tmp_path)
+    service.image_bytes = None
+    ctx = _context()
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result == {"error": "image generation service returned unverified image data"}
+    assert not any(path.is_file() for path in manager.user_files_dir(ctx.workspace_key).rglob("*"))
+    assert not ctx.outbox.output_files
+
+
+@pytest.mark.asyncio
 async def test_cancelled_worker_holds_workspace_lease_until_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -486,14 +502,12 @@ async def test_cancelled_completed_write_removes_only_its_generated_file(
         workspace_manager: WorkspaceManager,
         workspace_config: WorkspaceToolConfig,
         workspace_key: WorkspaceKey,
-        image_base64: str,
-        image_bytes: bytes | None,
+        image_bytes: bytes,
     ) -> tuple[Path, str, int]:
         result = write_output(
             workspace_manager,
             workspace_config,
             workspace_key,
-            image_base64,
             image_bytes,
         )
         generated.append(result[0])
@@ -535,8 +549,7 @@ def test_output_temp_file_is_removed_when_atomic_replace_fails(
             manager,
             WorkspaceToolConfig(),
             ctx.workspace_key,
-            PNG_BASE64,
-            None,
+            PNG_BYTES,
         )
 
     output_dir = manager.user_files_dir(ctx.workspace_key) / "generated_images"

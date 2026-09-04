@@ -60,9 +60,8 @@ def test_factory_creates_codex_provider_without_api_key(tmp_path: Path) -> None:
             provider_name="codex",
             api_key="",
             base_url="",
-            model="",
+            model="gpt-5.5",
             codex_token_file=str(token_file),
-            codex_model="gpt-5.5",
             codex_reasoning_effort="high",
             codex_image_quality="auto",
             codex_image_format="png",
@@ -84,9 +83,8 @@ def test_factory_reuses_codex_auth_manager_for_same_token_file(tmp_path: Path) -
             provider_name="codex",
             api_key="",
             base_url="",
-            model="",
+            model="gpt-5.5",
             codex_token_file=str(token_file),
-            codex_model="gpt-5.5",
         )
     )
     eval_provider = create_provider(
@@ -94,9 +92,8 @@ def test_factory_reuses_codex_auth_manager_for_same_token_file(tmp_path: Path) -
             provider_name="codex",
             api_key="",
             base_url="",
-            model="",
+            model="gpt-5.5-mini",
             codex_token_file=str(token_file),
-            codex_model="gpt-5.5-mini",
         )
     )
 
@@ -136,7 +133,7 @@ def test_codex_factory_passes_read_timeout_to_transport(tmp_path: Path) -> None:
             provider_name="codex",
             api_key="",
             base_url="",
-            model="",
+            model="gpt-5.5",
             codex_token_file=str(token_file),
             codex_ws_read_timeout=42.0,
         )

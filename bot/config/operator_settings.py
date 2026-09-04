@@ -111,7 +111,6 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
         "turn_max_concurrency",
         "turn_max_concurrency_per_user",
         "react_temperature",
-        "codex_model",
         "codex_reasoning_effort",
         "codex_image_quality",
         "codex_image_format",
@@ -130,7 +129,6 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
         "moderation_error_refusal",
         "discord_text_search_enabled",
         "discord_search_excluded_channels",
-        "discord_search_channels",
         "discord_search_timeout_seconds",
         "exa_search_cost_usd",
         "exa_contents_cost_usd",
@@ -527,11 +525,6 @@ SETTINGS_SPEC = _build_settings_spec()
 _BY_FIELD = {spec.field: spec for spec in SETTINGS_SPEC}
 
 
-def spec_for(field: str) -> SettingSpec | None:
-    """The validation spec for one field, or None if it is not overlay-eligible."""
-    return _BY_FIELD.get(field)
-
-
 def settings_file_path(config_dir: Path | None = None) -> Path:
     return (config_dir or paths.default_config_dir()) / SETTINGS_FILENAME
 
@@ -561,20 +554,6 @@ def coerce_value(spec: SettingSpec, raw: Any) -> Any:
         minimum=spec.minimum,
         maximum=spec.maximum,
     )
-
-
-def settings_values(settings: Any) -> dict[str, Any]:
-    """Return every managed field in the JSON/form representation."""
-    values: dict[str, Any] = {}
-    for spec in SETTINGS_SPEC:
-        current = getattr(settings, spec.field)
-        if spec.kind == KIND_ID_LIST:
-            values[spec.field] = [
-                token.strip() for token in str(current or "").split(",") if token.strip()
-            ]
-        else:
-            values[spec.field] = current
-    return values
 
 
 def _parse_operator_document(text: str, path: Path) -> dict[str, Any]:

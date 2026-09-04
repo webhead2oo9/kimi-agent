@@ -68,36 +68,6 @@ class SkillAdminService:
         self._lock = threading.RLock()
         self._require_safe_store(allow_missing=True)
 
-    def list_skills(self) -> list[dict[str, Any]]:
-        with self._lock:
-            self._require_safe_store(allow_missing=True)
-            if not self.skills_dir.is_dir():
-                return []
-            details: list[dict[str, Any]] = []
-            for skill_dir in sorted(self.skills_dir.iterdir()):
-                if self._is_link(skill_dir) or not skill_dir.is_dir():
-                    continue
-                if manager.validate_name(skill_dir.name):
-                    # Keep list/get contracts aligned: a manually created directory
-                    # names outside the management grammar remain runtime-owned
-                    # and are not presented as editable Web UI resources.
-                    continue
-                skill_path = skill_dir / SKILL_FILENAME
-                if self._is_link(skill_path) or not skill_path.is_file():
-                    continue
-                try:
-                    details.append(self._detail_from_path(skill_path))
-                except SkillAdminError:
-                    # A malformed file, or one that disappears between directory
-                    # enumeration and read, should not make the entire operator
-                    # listing fail.
-                    continue
-            return details
-
-    def get(self, name: str) -> dict[str, Any]:
-        with self._lock:
-            return self._detail_from_path(self._skill_path(name))
-
     def create(
         self,
         *,

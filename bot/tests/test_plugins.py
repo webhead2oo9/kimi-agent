@@ -12,7 +12,12 @@ import pytest
 
 import agent.activity as activity
 from app import tool_surfaces
-from app.plugins import PLUGIN_API_VERSION, PluginContext, build_plugin_context, load_plugins
+from app.plugins import (
+    PLUGIN_API_VERSION,
+    PluginContext,
+    build_plugin_context,
+    load_plugins_with_settings,
+)
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from tools.registry import MessageContext, ToolRegistry
@@ -47,10 +52,15 @@ def _register_tool(registry: ToolRegistry, name: str) -> None:
 
 def _fake_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs: Any) -> ModuleType:
     module = ModuleType(name)
+    attrs.setdefault("PLUGIN_API_VERSION", PLUGIN_API_VERSION)
     for key, value in attrs.items():
         setattr(module, key, value)
     monkeypatch.setitem(sys.modules, name, module)
     return module
+
+
+def _load(module_names: tuple[str, ...], ctx: PluginContext) -> None:
+    load_plugins_with_settings(module_names, ctx)
 
 
 def test_load_plugins_registers_tools_and_labels(
@@ -65,9 +75,8 @@ def test_load_plugins_registers_tools_and_labels(
 
     _fake_module(monkeypatch, "fake_plugin", register=register)
 
-    loaded = load_plugins(("fake_plugin",), _ctx(registry))
+    _load(("fake_plugin",), _ctx(registry))
 
-    assert loaded == ["fake_plugin"]
     assert registry.is_registered("fake_plugin_tool")
     assert activity.tool_display_label("fake_plugin_tool") == "Doing fake things"
 
@@ -89,9 +98,8 @@ def test_failed_plugin_is_skipped_and_rolled_back(
     _fake_module(monkeypatch, "broken_plugin", register=broken_register)
     _fake_module(monkeypatch, "good_plugin", register=good_register)
 
-    loaded = load_plugins(("broken_plugin", "good_plugin"), _ctx(registry))
+    _load(("broken_plugin", "good_plugin"), _ctx(registry))
 
-    assert loaded == ["good_plugin"]
     assert not registry.is_registered("broken_tool_a")
     assert not registry.is_registered("broken_tool_b")
     assert registry.is_registered("good_tool")
@@ -109,7 +117,7 @@ def test_plugin_declares_surface_tools(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _fake_module(monkeypatch, "surface_plugin", register=register)
 
-    assert load_plugins(("surface_plugin",), _ctx(registry)) == ["surface_plugin"]
+    _load(("surface_plugin",), _ctx(registry))
     assert tool_surfaces.surface_tools("eval_record") == frozenset({"plugin_writer"})
     assert tool_surfaces.surface_tools("eval_stub") == frozenset({"plugin_writer"})
 
@@ -132,7 +140,7 @@ def test_failed_plugin_rolls_back_surface_declarations(
     _fake_module(monkeypatch, "broken_surface_plugin", register=broken_register)
     _fake_module(monkeypatch, "good_surface_plugin", register=good_register)
 
-    load_plugins(("broken_surface_plugin", "good_surface_plugin"), _ctx(registry))
+    _load(("broken_surface_plugin", "good_surface_plugin"), _ctx(registry))
 
     # A skipped plugin leaves nothing behind, not even a stale declaration.
     assert tool_surfaces.surface_tools("eval_stub") == frozenset({"good_tool"})
@@ -150,7 +158,7 @@ def test_unknown_surface_name_skips_the_whole_plugin(
 
     _fake_module(monkeypatch, "typo_plugin", register=register)
 
-    assert load_plugins(("typo_plugin",), _ctx(registry)) == []
+    _load(("typo_plugin",), _ctx(registry))
     # Fail-closed: the tool is gone entirely rather than live on Fact Check.
     assert not registry.is_registered("typo_tool")
 
@@ -167,15 +175,14 @@ def test_duplicate_tool_name_resolves_in_cores_favor(
 
     _fake_module(monkeypatch, "colliding_plugin", register=register)
 
-    loaded = load_plugins(("colliding_plugin",), _ctx(registry))
+    _load(("colliding_plugin",), _ctx(registry))
 
-    assert loaded == []
     assert registry.is_registered("core_tool")
     # The rollback removes the plugin's partial registrations, not core's tool.
     assert not registry.is_registered("plugin_only_tool")
 
 
-def test_unknown_module_version_mismatch_and_missing_register_are_skipped(
+def test_unknown_missing_or_mismatched_version_and_missing_register_are_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = ToolRegistry()
@@ -186,13 +193,20 @@ def test_unknown_module_version_mismatch_and_missing_register_are_skipped(
         register=lambda ctx: None,
     )
     _fake_module(monkeypatch, "registerless_plugin")
+    missing_version = ModuleType("unversioned_plugin")
+    missing_version.register = lambda ctx: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "unversioned_plugin", missing_version)
 
-    loaded = load_plugins(
-        ("does_not_exist_plugin", "old_plugin", "registerless_plugin"),
+    _load(
+        (
+            "does_not_exist_plugin",
+            "old_plugin",
+            "registerless_plugin",
+            "unversioned_plugin",
+        ),
         _ctx(registry),
     )
 
-    assert loaded == []
     assert registry.registered_names() == frozenset()
 
 
@@ -210,11 +224,9 @@ def test_build_runtime_tools_loads_configured_plugins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end: PLUGIN_MODULES flows through the composition root."""
-    from app.memory import MemoryManager
     from app.providers import ProviderManager
     from app.tools import build_runtime_tools
-    from providers.base import LLMProvider
-    from tests.helpers import StubProvider
+    from tests.helpers import StubProviderManager
 
     seen: dict[str, Any] = {}
 
@@ -237,8 +249,7 @@ def test_build_runtime_tools_loads_configured_plugins(
     runtime_tools = build_runtime_tools(
         settings,
         cast(DiscordGateway, gateway),
-        ProviderManager(settings=settings, main=cast(LLMProvider, StubProvider())),
-        MemoryManager(settings=settings, registry=ToolRegistry()),
+        cast(ProviderManager, StubProviderManager(settings)),
     )
 
     assert runtime_tools.registry.is_registered("wired_plugin_tool")

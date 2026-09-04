@@ -23,7 +23,7 @@ import os
 
 import pytest
 
-from app.tool_surfaces import reset_surface_tools
+from app import tool_surfaces
 from config.settings import Settings
 
 
@@ -47,12 +47,12 @@ def _settings_env_names() -> frozenset[str]:
     return frozenset(name.upper() for name in Settings.model_fields)
 
 
-_SETTINGS_ENV_NAMES = _settings_env_names()
+_SETTINGS_ENV_NAMES = _settings_env_names() | {"CODEX_MODEL", "DISCORD_SEARCH_CHANNELS"}
 
 
 @pytest.fixture(autouse=True)
-def _reset_tool_surfaces() -> None:
-    reset_surface_tools()
+def _reset_tool_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tool_surfaces, "_SURFACE_TOOLS", {})
 
 
 @pytest.fixture(autouse=True)

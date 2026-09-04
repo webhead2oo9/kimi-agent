@@ -8,6 +8,7 @@ import pytest
 from discord import app_commands
 
 from app.command_sync import CommandSyncConfig, DiscordCommandSync
+from tests.app_state_probes import command_sync_state
 from tests.helpers import set_command_sync_retired_tasks
 
 
@@ -104,7 +105,7 @@ async def test_fast_sync_stays_cached_until_same_generation_cohort_leaves() -> N
     await asyncio.gather(cohort_member(), cohort_member())
 
     assert calls == 1
-    assert command_sync.snapshot().global_sync_task is None
+    assert command_sync_state(command_sync).global_sync_task is None
 
 
 @pytest.mark.asyncio
@@ -128,7 +129,7 @@ async def test_completed_cache_is_not_shared_across_gateway_generations() -> Non
 
     old_ready = asyncio.create_task(old_cohort())
     await old_cached.wait()
-    assert command_sync.snapshot().global_sync_task is not None
+    assert command_sync_state(command_sync).global_sync_task is not None
 
     await command_sync.disconnect()
     async with command_sync.ready_cohort() as generation:
@@ -206,7 +207,7 @@ async def test_cancellation_preserves_tasks_retired_after_its_snapshot() -> None
     set_command_sync_retired_tasks(command_sync, (old, newly_retired))
     await cancelling
 
-    retired = command_sync.snapshot().retired_global_sync_tasks
+    retired = command_sync_state(command_sync).retired_global_sync_tasks
     assert old in retired
     assert newly_retired in retired
 
@@ -243,7 +244,7 @@ async def test_stubborn_old_global_put_blocks_put_but_not_guild_reconciliation()
 
     assert global_calls == 1
     assert port.guild_sync_calls == 1
-    assert command_sync.snapshot().retired_global_sync_tasks
+    assert command_sync_state(command_sync).retired_global_sync_tasks
 
     release_old.set()
     await old_publication

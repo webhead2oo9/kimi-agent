@@ -3,14 +3,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+_BASELINE_SCHEMA_VERSION = 7
+_BASELINE_SCHEMA_NAME = "core_v7_baseline"
+# v2.0 upgrade boundary. Remove the v6 migration/diagnostic in v2.1 after every
+# known deployment is stamped v7; fresh installs already use the v7 baseline.
+_MINIMUM_UPGRADABLE_SCHEMA_VERSION = 6
+_V1_BRIDGE_REVISION = "dfd01ce006d0553c8960de0760fcb5136300c718"
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -20,7 +28,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 -- Optional application modules version their own schemas independently from
--- the flattened core v1 baseline. Removing a module never drops its data.
+-- the flattened core v7 baseline. Removing a module never drops its data.
 CREATE TABLE IF NOT EXISTS module_schema_versions (
     module_name TEXT NOT NULL,
     version     INTEGER NOT NULL CHECK (version > 0),
@@ -588,228 +596,81 @@ async def _has_existing_user_tables(conn: aiosqlite.Connection) -> bool:
 
 type Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
 
-
-_INITIAL_SCHEMA_NAME = "initial_schema"
-
-
-async def _migrate_v1_to_v2(conn: aiosqlite.Connection) -> None:
-    await conn.execute(
-        "ALTER TABLE coding_tasks ADD COLUMN display_summary TEXT NOT NULL DEFAULT ''"
-    )
-    await conn.execute(
-        "ALTER TABLE coding_tasks ADD COLUMN context_messages_json TEXT NOT NULL DEFAULT '[]'"
-    )
-    await conn.execute(
-        "ALTER TABLE coding_tasks ADD COLUMN input_files_json TEXT NOT NULL DEFAULT '[]'"
-    )
+_MESSAGE_MIGRATION_BATCH_SIZE = 500
 
 
-async def _migrate_v2_to_v3(conn: aiosqlite.Connection) -> None:
-    statements = (
-        """CREATE TABLE video_sessions (
-            handle                TEXT PRIMARY KEY,
-            conversation_id       INTEGER NOT NULL
-                                  REFERENCES conversations(id) ON DELETE CASCADE,
-            actor_user_id         TEXT NOT NULL,
-            guild_id              TEXT NOT NULL,
-            source_kind           TEXT NOT NULL
-                                  CHECK (source_kind IN ('youtube', 'attachment', 'workspace')),
-            source_display_name   TEXT NOT NULL CHECK (length(source_display_name) > 0),
-            source_locator        TEXT NOT NULL CHECK (length(source_locator) > 0),
-            source_byte_size      INTEGER CHECK (source_byte_size IS NULL OR source_byte_size >= 0),
-            youtube_url           TEXT NOT NULL DEFAULT '',
-            youtube_video_id      TEXT NOT NULL DEFAULT '',
-            model                 TEXT NOT NULL,
-            latest_interaction_id TEXT NOT NULL,
-            interaction_count     INTEGER NOT NULL CHECK (interaction_count > 0),
-            created_at            REAL NOT NULL,
-            last_active_at        REAL NOT NULL,
-            expires_at            REAL NOT NULL,
-            CHECK (
-                (source_kind = 'youtube' AND youtube_url != '' AND youtube_video_id != '')
-                OR (source_kind != 'youtube' AND youtube_url = '' AND youtube_video_id = '')
-            )
-        )""",
-        """CREATE INDEX idx_video_sessions_scope
-            ON video_sessions(conversation_id, actor_user_id, guild_id, expires_at)""",
-        """CREATE INDEX idx_video_sessions_actor
-            ON video_sessions(actor_user_id, expires_at)""",
-        """CREATE TABLE video_interactions (
-            interaction_id TEXT PRIMARY KEY,
-            session_handle TEXT NOT NULL
-                           REFERENCES video_sessions(handle) ON DELETE CASCADE,
-            actor_user_id  TEXT NOT NULL,
-            created_at     REAL NOT NULL
-        )""",
-        """CREATE TABLE video_interaction_deletions (
-            interaction_id TEXT PRIMARY KEY,
-            actor_user_id  TEXT NOT NULL,
-            session_handle TEXT,
-            queued_at      REAL NOT NULL,
-            updated_at     REAL NOT NULL,
-            attempts       INTEGER NOT NULL DEFAULT 0,
-            last_error     TEXT NOT NULL DEFAULT ''
-        )""",
-        """CREATE INDEX idx_video_deletions_actor
-            ON video_interaction_deletions(actor_user_id, queued_at)""",
-        """CREATE INDEX idx_video_deletions_session
-            ON video_interaction_deletions(session_handle)""",
-        """CREATE TRIGGER queue_video_interaction_deletion
-        BEFORE DELETE ON video_interactions
-        BEGIN
-            INSERT INTO video_interaction_deletions (
-                interaction_id, actor_user_id, session_handle,
-                queued_at, updated_at, attempts, last_error
-            ) VALUES (
-                OLD.interaction_id, OLD.actor_user_id, OLD.session_handle,
-                CAST(strftime('%s', 'now') AS REAL),
-                CAST(strftime('%s', 'now') AS REAL), 0, ''
-            ) ON CONFLICT(interaction_id) DO NOTHING;
-        END""",
-        """CREATE TABLE video_provider_files (
-            file_name        TEXT PRIMARY KEY,
-            conversation_id INTEGER NOT NULL
-                            REFERENCES conversations(id) ON DELETE CASCADE,
-            actor_user_id   TEXT NOT NULL,
-            guild_id        TEXT NOT NULL,
-            mime_type       TEXT NOT NULL,
-            byte_size       INTEGER NOT NULL CHECK (byte_size >= 0),
-            session_handle  TEXT REFERENCES video_sessions(handle) ON DELETE CASCADE,
-            created_at      REAL NOT NULL
-        )""",
-        """CREATE INDEX idx_video_provider_files_actor
-            ON video_provider_files(actor_user_id, created_at)""",
-        """CREATE INDEX idx_video_provider_files_unattached
-            ON video_provider_files(created_at) WHERE session_handle IS NULL""",
-        """CREATE TABLE video_provider_file_deletions (
-            file_name       TEXT PRIMARY KEY,
-            actor_user_id  TEXT NOT NULL,
-            session_handle TEXT,
-            queued_at      REAL NOT NULL,
-            updated_at     REAL NOT NULL,
-            attempts       INTEGER NOT NULL DEFAULT 0,
-            last_error     TEXT NOT NULL DEFAULT ''
-        )""",
-        """CREATE INDEX idx_video_file_deletions_actor
-            ON video_provider_file_deletions(actor_user_id, queued_at)""",
-        """CREATE TRIGGER queue_video_provider_file_deletion
-        BEFORE DELETE ON video_provider_files
-        BEGIN
-            INSERT INTO video_provider_file_deletions (
-                file_name, actor_user_id, session_handle,
-                queued_at, updated_at, attempts, last_error
-            ) VALUES (
-                OLD.file_name, OLD.actor_user_id, OLD.session_handle,
-                CAST(strftime('%s', 'now') AS REAL),
-                CAST(strftime('%s', 'now') AS REAL), 0, ''
-            ) ON CONFLICT(file_name) DO NOTHING;
-        END""",
-    )
-    for statement in statements:
-        await conn.execute(statement)
+def _canonical_message_content(content: Any, fallback_text: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if isinstance(content, list):
+        canonical: list[dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type in {"text", "input_text"}:
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    canonical.append({**part, "type": "text", "text": text})
+            elif part_type in {"image", "input_image"}:
+                image_url = part.get("image_url")
+                media_type = part.get("media_type")
+                if isinstance(image_url, str) and isinstance(media_type, str):
+                    detail = part.get("detail")
+                    canonical.append(
+                        {
+                            **part,
+                            "type": "image",
+                            "image_url": image_url,
+                            "media_type": media_type,
+                            "detail": detail if isinstance(detail, str) and detail else "auto",
+                        }
+                    )
+        return canonical
+    if isinstance(fallback_text, str) and fallback_text:
+        return [{"type": "text", "text": fallback_text}]
+    return []
 
 
-async def _migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
-    await conn.execute(
-        """CREATE TABLE provider_circuits (
-            scope_key     TEXT PRIMARY KEY,
-            scope_kind    TEXT NOT NULL CHECK (scope_kind IN ('model', 'account')),
-            display_label TEXT NOT NULL,
-            reason        TEXT NOT NULL,
-            status_code   INTEGER,
-            provider_code TEXT,
-            opened_at     REAL NOT NULL,
-            retry_at      REAL NOT NULL,
-            updated_at    REAL NOT NULL
-        )"""
-    )
-    await conn.execute("CREATE INDEX idx_provider_circuits_retry_at ON provider_circuits(retry_at)")
+async def _migrate_v6_to_v7(conn: aiosqlite.Connection) -> None:
+    last_id = 0
+    while True:
+        async with conn.execute(
+            "SELECT id, content, message_data FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, _MESSAGE_MIGRATION_BATCH_SIZE),
+        ) as cur:
+            rows = tuple(await cur.fetchall())
+        if not rows:
+            break
 
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            row_id = int(row["id"])
+            try:
+                data = json.loads(row["message_data"])
+            except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Cannot migrate messages row {row_id}: message_data is not valid JSON"
+                ) from exc
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"Cannot migrate messages row {row_id}: message_data must be a JSON object"
+                )
+            data["content"] = _canonical_message_content(data.get("content"), row["content"])
+            updates.append((json.dumps(data), row_id))
 
-async def _migrate_v4_to_v5(conn: aiosqlite.Connection) -> None:
-    statements = (
-        """CREATE TABLE IF NOT EXISTS config_proposals (
-            proposal_id TEXT PRIMARY KEY,
-            module_name TEXT NOT NULL,
-            guild_id TEXT NOT NULL,
-            target TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_revision TEXT NOT NULL,
-            base_exists INTEGER NOT NULL CHECK (base_exists IN (0, 1)),
-            base_content TEXT NOT NULL,
-            base_revision TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            actor_json TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('pending','applied','rejected')),
-            decided_by TEXT,
-            decision_reason TEXT NOT NULL DEFAULT '',
-            message_channel_id TEXT,
-            message_id TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )""",
-        """CREATE INDEX IF NOT EXISTS idx_config_proposals_state_time
-            ON config_proposals(state, created_at DESC)""",
-        """CREATE TABLE IF NOT EXISTS module_scheduler_jobs (
-            job_id           TEXT PRIMARY KEY,
-            module_name      TEXT NOT NULL,
-            job_key          TEXT NOT NULL,
-            handler          TEXT NOT NULL,
-            run_at           REAL NOT NULL,
-            interval_seconds REAL,
-            jitter_seconds   REAL NOT NULL DEFAULT 0,
-            backoff_json     TEXT NOT NULL DEFAULT '{}',
-            payload_json     TEXT NOT NULL DEFAULT '{}',
-            attempt          INTEGER NOT NULL DEFAULT 0,
-            leased_until     REAL,
-            lease_token      TEXT,
-            last_error       TEXT,
-            created_at       REAL NOT NULL,
-            updated_at       REAL NOT NULL,
-            UNIQUE (module_name, job_key)
-        )""",
-        """CREATE INDEX IF NOT EXISTS idx_module_scheduler_jobs_due
-            ON module_scheduler_jobs(run_at, leased_until)""",
-        """CREATE TABLE IF NOT EXISTS module_scheduler_runner (
-            id           INTEGER PRIMARY KEY CHECK (id = 1),
-            token        TEXT,
-            leased_until REAL NOT NULL DEFAULT 0
-        )""",
-        (
-            "INSERT OR IGNORE INTO module_scheduler_runner (id, token, leased_until) "
-            "VALUES (1, NULL, 0)"
-        ),
-        """CREATE TABLE IF NOT EXISTS module_command_guilds (
-            guild_id TEXT PRIMARY KEY
-        )""",
-        """CREATE TABLE IF NOT EXISTS module_schema_versions (
-            module_name TEXT NOT NULL,
-            version     INTEGER NOT NULL CHECK (version > 0),
-            name        TEXT NOT NULL,
-            applied_at  TEXT NOT NULL,
-            PRIMARY KEY (module_name, version)
-        )""",
-    )
-    for statement in statements:
-        await conn.execute(statement)
-
-
-async def _migrate_v5_to_v6(conn: aiosqlite.Connection) -> None:
-    async with conn.execute("PRAGMA table_info(video_sessions)") as cur:
-        columns = {row[1] for row in await cur.fetchall()}
-    if "catalog_model" not in columns:
-        await conn.execute(
-            "ALTER TABLE video_sessions ADD COLUMN catalog_model TEXT NOT NULL DEFAULT ''"
-        )
-    await conn.execute("UPDATE video_sessions SET catalog_model = model WHERE catalog_model = ''")
+        await conn.executemany("UPDATE messages SET message_data = ? WHERE id = ?", updates)
+        last_id = int(rows[-1]["id"])
+    # v6 sessions may contain an upstream model id in catalog_model. Expire them
+    # instead of letting v2 treat that value as a pricing-catalog key. Cascades
+    # invoke the child-table deletion triggers and leave provider cleanup queued.
+    await conn.execute("DELETE FROM video_sessions")
+    await conn.execute("DROP TABLE IF EXISTS control_proposal_events")
+    await conn.execute("DROP TABLE IF EXISTS control_proposals")
 
 
 _MIGRATIONS: dict[int, Migration] = {
-    2: ("coding_task_context_inputs", _migrate_v1_to_v2),
-    3: ("video_understanding_sessions", _migrate_v2_to_v3),
-    4: ("provider_circuit_breakers", _migrate_v3_to_v4),
-    5: ("core_runtime_tables", _migrate_v4_to_v5),
-    6: ("video_session_catalog_model", _migrate_v5_to_v6),
+    7: (_BASELINE_SCHEMA_NAME, _migrate_v6_to_v7),
 }
 
 
@@ -837,6 +698,7 @@ def _require_migration(target: int) -> Migration:
 async def _apply_migrations(conn: aiosqlite.Connection, current: int) -> None:
     for target in range(current + 1, SCHEMA_VERSION + 1):
         name, migrate = _require_migration(target)
+        log.info("Applying database migration v%d (%s)", target, name)
         try:
             await conn.execute("BEGIN IMMEDIATE")
             await migrate(conn)
@@ -861,11 +723,6 @@ class Database:
         self._encryption_key = encryption_key or None
         self._conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
-
-    @property
-    def encrypted(self) -> bool:
-        """Whether this Database instance opened through the SQLCipher path."""
-        return self._encryption_key is not None
 
     async def connect(self) -> None:
         if self._conn is not None:
@@ -933,11 +790,21 @@ class Database:
 
         if current == 0:
             await conn.executescript(_SCHEMA_SQL)
-            await _record_schema_version(conn, 1, _INITIAL_SCHEMA_NAME)
-            for version in range(2, SCHEMA_VERSION + 1):
+            await _record_schema_version(
+                conn,
+                _BASELINE_SCHEMA_VERSION,
+                _BASELINE_SCHEMA_NAME,
+            )
+            for version in range(_BASELINE_SCHEMA_VERSION + 1, SCHEMA_VERSION + 1):
                 name, _ = _require_migration(version)
                 await _record_schema_version(conn, version, name)
             await conn.commit()
+        elif current < _MINIMUM_UPGRADABLE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema v{current} is no longer supported. Upgrade it to v6 "
+                f"with the audited v1 bridge revision {_V1_BRIDGE_REVISION} first, then "
+                "install this release."
+            )
         elif current < SCHEMA_VERSION:
             await _apply_migrations(conn, current)
 

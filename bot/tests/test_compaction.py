@@ -259,7 +259,7 @@ def test_maybe_compact_noop_below_threshold():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 10}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 10}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -282,7 +282,7 @@ def _compact_small_window(summarizer, turn):
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -313,7 +313,7 @@ def test_keep_split_budget_keeps_more_than_floor():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -459,7 +459,7 @@ def test_keep_split_zero_budget_keeps_exactly_floor():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -510,7 +510,7 @@ def test_maybe_compact_elides_when_summarizer_fails():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -535,7 +535,7 @@ def test_maybe_compact_carries_plan_into_note():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
             plan=[{"content": "keep going", "status": "in_progress"}],
         )
@@ -560,7 +560,7 @@ def test_summarizer_failure_appends_checklist_note_after_elision():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
             plan=[{"content": "keep going", "status": "in_progress"}],
         )
@@ -599,7 +599,9 @@ def test_repeated_summarizer_failures_do_not_stack_checklist_notes():
                     turn_messages=out,
                     head_messages=[],
                     system_prompt="",
-                    last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+                    last_response=ProviderResponse(
+                        usage={"prompt_tokens": 200000}, usage_present=True
+                    ),
                     appended=out[-2:],
                     plan=plan,
                 )
@@ -628,7 +630,7 @@ def test_no_split_compaction_refreshes_fallback_checklist_note():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
             plan=plan,
         )
@@ -679,7 +681,7 @@ def test_hard_truncate_reaches_budget_and_terminates():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )
@@ -698,7 +700,7 @@ def test_hard_truncate_stubs_medium_tool_outputs_until_under_budget():
             turn_messages=turn,
             head_messages=[],
             system_prompt="",
-            last_response=ProviderResponse(usage={"prompt_tokens": 200000}),
+            last_response=ProviderResponse(usage={"prompt_tokens": 200000}, usage_present=True),
             appended=turn[-2:],
         )
     )

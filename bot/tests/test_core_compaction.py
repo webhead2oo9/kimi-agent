@@ -86,12 +86,14 @@ def test_compaction_shrinks_second_request():
             tool_calls=[ToolCall(id="c1", name="big", arguments={})],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 200000},
+            usage_present=True,
         ),
         ProviderResponse(
             content="",
             tool_calls=[ToolCall(id="c2", name="big", arguments={})],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 5000},
+            usage_present=True,
         ),
         ProviderResponse(content="Done."),
     ]
@@ -143,12 +145,14 @@ def test_compaction_note_carries_live_plan_checklist():
             ],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 10},
+            usage_present=True,
         ),
         ProviderResponse(
             content="",
             tool_calls=[ToolCall(id="c1", name="big", arguments={})],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 200000},
+            usage_present=True,
         ),
         ProviderResponse(content="Done."),
     ]
@@ -198,6 +202,7 @@ def test_compaction_emits_tool_stream_event(tmp_path):
             tool_calls=[ToolCall(id="c1", name="big", arguments={})],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 200000},
+            usage_present=True,
         ),
         ProviderResponse(content="Done."),
     ]
@@ -261,6 +266,7 @@ def test_compaction_event_counts_grow_on_elision_fallback(tmp_path):
             tool_calls=[ToolCall(id="c1", name="big", arguments={})],
             finish_reason="tool_calls",
             usage={"prompt_tokens": 200000},
+            usage_present=True,
         ),
         ProviderResponse(content="Done."),
     ]
@@ -317,6 +323,7 @@ def test_compaction_resets_server_side_provider_state_after_rewrite():
                 tool_calls=[ToolCall(id="c1", name="big", arguments={})],
                 finish_reason="tool_calls",
                 usage={"prompt_tokens": 200000},
+                usage_present=True,
                 provider_state={"latest_response_id": "resp-1"},
             ),
             ProviderResponse(content="Done."),
@@ -426,6 +433,7 @@ def test_emergency_compaction_retry_uses_safe_partial_completion_error():
                     tool_calls=[ToolCall(id="c1", name="big", arguments={})],
                     finish_reason="tool_calls",
                     usage={"prompt_tokens": 1},
+                    usage_present=True,
                 )
             if self.calls == 2:
                 raise ProviderContextOverflowError("maximum context length exceeded")
@@ -486,6 +494,7 @@ def test_per_iteration_clamp_preserves_raw_tool_event(tmp_path):
                 tool_calls=[ToolCall(id="c1", name="big_error", arguments={})],
                 finish_reason="tool_calls",
                 usage={"prompt_tokens": 1},
+                usage_present=True,
             ),
             ProviderResponse(content="Done."),
         ]

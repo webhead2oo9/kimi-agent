@@ -19,6 +19,7 @@ from config.settings import Settings
 from kimi_agent_module_api import (
     BASELINE_CAPABILITIES,
     MODULE_API_VERSION,
+    AppModule,
     GuildSettingsSchema,
     ModuleLoadContext,
     ModulePermissions,
@@ -74,10 +75,17 @@ def test_sdk_baseline_capabilities_remain_host_independent() -> None:
 
 
 def _spec(name: str = "demo", **overrides: object) -> ModuleSpec:
-    def create(ctx: ModuleLoadContext) -> object:  # pragma: no cover - never called
+    def create(ctx: ModuleLoadContext) -> AppModule:  # pragma: no cover - never called
         raise AssertionError("preflight must not create modules")
 
-    return ModuleSpec(name=name, version="0.0.0", create=create, **overrides)  # type: ignore[arg-type]
+    api_version = overrides.pop("api_version", MODULE_API_VERSION)
+    return ModuleSpec(
+        name=name,
+        version="0.0.0",
+        create=create,
+        api_version=api_version,  # type: ignore[arg-type]
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 def _settings() -> Settings:
@@ -93,7 +101,7 @@ def test_spec_declares_nothing_by_default() -> None:
     assert spec.guild_settings is None
     assert spec.provides == ()
     assert spec.consumes == ()
-    assert spec.api_version == MODULE_API_VERSION == 1
+    assert spec.api_version == MODULE_API_VERSION == 2
 
 
 def test_core_and_modules_share_the_public_trust_enum() -> None:
@@ -200,11 +208,11 @@ def test_module_settings_name_must_match_module_name() -> None:
 
 
 def test_unsupported_module_api_version_is_rejected_clearly() -> None:
-    with pytest.raises(RuntimeError, match="requires module API 2; core provides 1"):
+    with pytest.raises(RuntimeError, match="requires module API 3; core provides 2"):
         validate_module_selection(
             ("legacy",),
             core_settings=_settings(),
-            installed={"legacy": _spec("legacy", api_version=2)},
+            installed={"legacy": _spec("legacy", api_version=MODULE_API_VERSION + 1)},
         )
 
 

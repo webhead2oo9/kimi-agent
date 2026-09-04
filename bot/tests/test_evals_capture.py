@@ -46,7 +46,9 @@ def _req():
 
 
 def test_instrumented_provider_passes_through_and_records_usage():
-    inner = _Scripted(ProviderResponse(content="hi", usage={"total_tokens": 42}))
+    inner = _Scripted(
+        ProviderResponse(content="hi", usage={"total_tokens": 42}, usage_present=True)
+    )
     provider = InstrumentedProvider(inner)
     assert provider.model == "inner-model"
 
@@ -73,7 +75,7 @@ def test_instrumented_provider_paces_request_starts_without_counting_wait_as_lat
 
         async def run_turn(self, request):
             starts.append(time.monotonic())
-            return ProviderResponse(content="ok", usage={"output_tokens": 1})
+            return ProviderResponse(content="ok", usage={"output_tokens": 1}, usage_present=True)
 
     async def run() -> InstrumentedProvider:
         provider = InstrumentedProvider(_Timed(), min_request_interval_seconds=0.02)

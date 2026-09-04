@@ -12,7 +12,7 @@ from providers.circuit_breaker import CircuitRecord, CircuitTarget, ProviderCirc
 from providers.errors import (
     ProviderBackendAccessError,
     ProviderCapabilityError,
-    is_provider_availability_error,
+    provider_failure_disposition,
 )
 from providers.failover import FailoverBackend, FailoverProvider
 from providers.failure_policy import CircuitScopeKind
@@ -217,6 +217,51 @@ def test_provider_state_is_only_replayed_to_the_backend_that_created_it() -> Non
     assert fallback.request_states[-1] == {"cursor": "fallback"}
 
 
+def test_empty_provider_state_starts_fresh() -> None:
+    primary = _StubProvider("primary")
+    chain = FailoverProvider([primary])
+
+    result = asyncio.run(chain.run_turn(replace(_REQUEST, provider_state={})))
+
+    assert result.content == "primary-response"
+    assert primary.calls == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"cursor": "old"},
+        {"_failover_state": None},
+        {"_failover_state": {}},
+        {"_failover_state": {"provider_index": 0}},
+        {"_failover_state": {"provider_state": {}}},
+        {"_failover_state": {"provider_index": True, "provider_state": {}}},
+        {"_failover_state": {"provider_index": -1, "provider_state": {}}},
+        {"_failover_state": {"provider_index": 1, "provider_state": {}}},
+        {"_failover_state": {"provider_index": 0, "provider_state": []}},
+        {
+            "_failover_state": {
+                "provider_index": 0,
+                "provider_state": {},
+                "legacy": True,
+            }
+        },
+        {
+            "_failover_state": {"provider_index": 0, "provider_state": {}},
+            "legacy": True,
+        },
+    ],
+)
+def test_bare_or_malformed_provider_state_is_rejected(state: dict[str, object]) -> None:
+    primary = _StubProvider("primary")
+    chain = FailoverProvider([primary])
+
+    with pytest.raises(ValueError, match="[Ff]ailover provider state"):
+        asyncio.run(chain.run_turn(replace(_REQUEST, provider_state=state)))
+
+    assert primary.calls == 0
+
+
 def test_retries_same_backend_before_failing_over() -> None:
     primary = _StubProvider("primary", error=_StatusError("blip", 503), fail_times=1)
     fallback = _StubProvider("fallback")
@@ -412,19 +457,19 @@ def test_empty_chain_is_rejected() -> None:
 
 def test_availability_classifier_excludes_typed_provider_errors() -> None:
     # Capability/overflow are deterministic; they must never trigger failover.
-    assert is_provider_availability_error(ProviderCapabilityError("x")) is False
-    assert is_provider_availability_error(_StatusError("bad request", 400)) is False
-    assert is_provider_availability_error(_StatusError("teapot", 418)) is False
-    assert is_provider_availability_error(_StatusError("server error", 500)) is True
+    assert provider_failure_disposition(ProviderCapabilityError("x")) == "stop"
+    assert provider_failure_disposition(_StatusError("bad request", 400)) == "stop"
+    assert provider_failure_disposition(_StatusError("teapot", 418)) == "stop"
+    assert provider_failure_disposition(_StatusError("server error", 500)) == "retry"
     assert (
-        is_provider_availability_error(CodexWebSocketRequestError("bad request", retryable=False))
-        is False
+        provider_failure_disposition(CodexWebSocketRequestError("bad request", retryable=False))
+        == "stop"
     )
 
 
 @pytest.mark.parametrize("status_code", range(500, 600))
 def test_availability_classifier_includes_every_5xx(status_code: int) -> None:
-    assert is_provider_availability_error(_StatusError("server error", status_code)) is True
+    assert provider_failure_disposition(_StatusError("server error", status_code)) == "retry"
 
 
 def test_httpx_status_errors_only_fail_over_for_availability_statuses() -> None:
@@ -440,5 +485,5 @@ def test_httpx_status_errors_only_fail_over_for_availability_statuses() -> None:
         response=httpx.Response(503, request=request),
     )
 
-    assert is_provider_availability_error(bad_request) is False
-    assert is_provider_availability_error(unavailable) is True
+    assert provider_failure_disposition(bad_request) == "stop"
+    assert provider_failure_disposition(unavailable) == "retry"

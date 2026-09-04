@@ -2,15 +2,12 @@
 
 The connection is the same one core uses: this is naming discipline and an
 audited convention for trusted code, not SQL isolation. ``table(name)``
-returns ``<module>_<name>`` (hyphens normalized to underscores), or the legacy
-physical name when the module declares a ``table_aliases`` entry so an
-existing installation keeps its data until the physical rename ships.
+returns ``<module>_<name>`` (hyphens normalized to underscores).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from kimi_agent_module_api.contracts import (
@@ -33,7 +30,6 @@ class ModuleStorageImpl:
 
     database: Any
     module_name: str
-    table_aliases: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def prefix(self) -> str:
@@ -49,11 +45,7 @@ class ModuleStorageImpl:
             raise ModuleContractError(
                 f"module {self.module_name!r} table name {name!r} is not a valid identifier"
             )
-        physical = self.table_aliases.get(name, f"{self.prefix}_{name}")
-        return _quote(physical)
-
-    def physical_names(self, names: Mapping[str, Any] | tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(self.table(name) for name in names)
+        return _quote(f"{self.prefix}_{name}")
 
     def write_transaction(self) -> Any:
         return self.database.write_transaction()
@@ -62,22 +54,4 @@ class ModuleStorageImpl:
         return MigrationContext(connection=connection, table=self.table)
 
 
-def validate_table_aliases(module_name: str, aliases: Mapping[str, str]) -> None:
-    prefix = table_prefix(module_name)
-    for logical, physical in aliases.items():
-        if not _IDENTIFIER_RE.match(logical):
-            raise ModuleContractError(
-                f"module {module_name!r} alias {logical!r} is not a valid identifier"
-            )
-        if not _IDENTIFIER_RE.match(physical):
-            raise ModuleContractError(
-                f"module {module_name!r} alias target {physical!r} is not a valid identifier"
-            )
-        if physical.startswith(f"{prefix}_"):
-            raise ModuleContractError(
-                f"module {module_name!r} alias {logical!r} targets an already-prefixed table; "
-                "drop the alias"
-            )
-
-
-__all__ = ["ModuleStorageImpl", "validate_table_aliases"]
+__all__ = ["ModuleStorageImpl"]

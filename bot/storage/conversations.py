@@ -829,10 +829,7 @@ def _stored_to_history_conversation_message(
     raw_provider_data = message.message_data.get("raw_provider_data")
     if isinstance(raw_provider_data, dict) and raw_provider_data.get("tool_calls"):
         return None
-    content = _content_parts_from_data(
-        message.message_data.get("content"),
-        fallback_text=message.content,
-    )
+    content = _content_parts_from_data(message.message_data.get("content"))
     if not content:
         return None
     if message.role == "user" and message.user_name:
@@ -905,7 +902,7 @@ async def _enforce_image_part_limit(
         if not isinstance(content, list):
             continue
         for index, part in enumerate(content):
-            if isinstance(part, dict) and part.get("type") in {"image", "input_image"}:
+            if isinstance(part, dict) and part.get("type") == "image":
                 image_refs.append((row_id, index))
 
     excess = len(image_refs) - max_images
@@ -946,23 +943,17 @@ def _ensure_user_label(parts: list[ContentPart], user_name: str) -> list[Content
     return [labeled, *parts[1:]]
 
 
-def _content_parts_from_data(
-    content: Any,
-    *,
-    fallback_text: str | None,
-) -> list[ContentPart]:
-    if isinstance(content, str):
-        return [ContentPart.from_text(content)] if content else []
+def _content_parts_from_data(content: Any) -> list[ContentPart]:
     if isinstance(content, list):
         parts: list[ContentPart] = []
         for part in content:
             if not isinstance(part, dict):
                 continue
-            if part.get("type") in {"text", "input_text"}:
+            if part.get("type") == "text":
                 text = part.get("text")
                 if isinstance(text, str) and text:
                     parts.append(ContentPart.from_text(text))
-            elif part.get("type") in {"image", "input_image"}:
+            elif part.get("type") == "image":
                 image_url = part.get("image_url")
                 media_type = part.get("media_type")
                 if isinstance(image_url, str) and isinstance(media_type, str):
@@ -974,4 +965,4 @@ def _content_parts_from_data(
                         )
                     )
         return parts
-    return [ContentPart.from_text(fallback_text)] if fallback_text else []
+    return []

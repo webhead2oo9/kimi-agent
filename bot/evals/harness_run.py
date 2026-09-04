@@ -848,7 +848,6 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
                     scenario,
                     provider=provider,
                     registry=registry,
-                    gateway=gateway,
                     memory_client=eval_registry.memory_manager.active_client(),
                     preference_store=eval_registry.preference_store,
                     bot_name=settings.bot_name,

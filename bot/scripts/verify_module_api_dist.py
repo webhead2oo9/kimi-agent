@@ -72,7 +72,7 @@ def _verify_consumer() -> None:
     assert hasattr(contracts, "ModalSpec")
     assert hasattr(contracts, "OutgoingLayout")
 
-    assert api.MODULE_API_VERSION == 1
+    assert api.MODULE_API_VERSION == 2
     matches = [
         point
         for point in entry_points(group=api.MODULE_ENTRYPOINT_GROUP)

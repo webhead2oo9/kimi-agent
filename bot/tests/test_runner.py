@@ -7,19 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from skills.runner import _build_env, _collect_output_files, run_script, validate_script_path
+from skills.runner import _build_env, _collect_output_files, validate_script_path
+from tests.skill_runner_helpers import run_script_with_direct_test_command
 
 # These tests spawn real /bin/sh children and assert POSIX process-group
 # kill/cleanup semantics; neither exists on Windows.
 _requires_posix_processes = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX shell children / process groups"
 )
-
-
-async def _run_script_without_sandbox(**kwargs):
-    """Exercise runner orchestration cross-platform; Linux tests cover isolation."""
-
-    return await run_script(_sandbox_enabled=False, **kwargs)
 
 
 def test_build_env_ignores_reserved_names_in_secrets() -> None:
@@ -72,7 +67,7 @@ async def test_run_script_python() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/echo.py",
             skill_dir=skill_dir,
             arguments={"query": "hello"},
@@ -94,7 +89,7 @@ async def test_run_script_allows_child_that_exits_without_reading_stdin() -> Non
         script = scripts / "quick.sh"
         script.write_text("printf '%s\\n' '{\"ok\":true}'\n", encoding="utf-8")
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/quick.sh",
             skill_dir=skill_dir,
             arguments={"payload": "x" * 2_000_000},
@@ -115,7 +110,7 @@ async def test_run_script_timeout() -> None:
         script = scripts / "hang.py"
         script.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/hang.py",
             skill_dir=skill_dir,
             arguments={},
@@ -155,7 +150,7 @@ async def test_run_script_timeout_kills_child_processes() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/spawn_child.py",
             skill_dir=skill_dir,
             arguments={},
@@ -202,7 +197,7 @@ async def test_run_script_success_cleans_up_child_processes() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/spawn_child_success.py",
             skill_dir=skill_dir,
             arguments={},
@@ -225,7 +220,7 @@ async def test_run_script_scrubs_secrets() -> None:
         script = scripts / "leak.py"
         script.write_text("print('The secret is sk-supersecret123')\n", encoding="utf-8")
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/leak.py",
             skill_dir=skill_dir,
             arguments={},
@@ -251,7 +246,7 @@ async def test_run_script_scrubs_secret_after_multibyte_prefix_when_truncated() 
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/leak_after_unicode.py",
             skill_dir=skill_dir,
             arguments={},
@@ -277,7 +272,7 @@ async def test_run_script_scrubs_stderr_on_failure() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/fail.py",
             skill_dir=skill_dir,
             arguments={},
@@ -298,7 +293,7 @@ async def test_run_script_truncates_large_output() -> None:
         script = scripts / "large.py"
         script.write_text("print('x' * 100)\n", encoding="utf-8")
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/large.py",
             skill_dir=skill_dir,
             arguments={},
@@ -329,7 +324,7 @@ async def test_run_script_reports_output_files_from_workspace_job_dir() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/write_file.py",
             skill_dir=skill_dir,
             arguments={},
@@ -362,7 +357,7 @@ async def test_run_script_caps_output_files_from_workspace_job_dir() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/write_many_files.py",
             skill_dir=skill_dir,
             arguments={},
@@ -429,7 +424,7 @@ async def test_run_script_scrubs_secret_from_text_output_file_and_keeps_it() -> 
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/write_secret.py",
             skill_dir=skill_dir,
             arguments={},
@@ -462,7 +457,7 @@ async def test_run_script_keeps_clean_output_file_when_secret_injected() -> None
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/write_clean.py",
             skill_dir=skill_dir,
             arguments={},
@@ -494,7 +489,7 @@ async def test_run_script_drops_binary_output_file_containing_secret() -> None:
             encoding="utf-8",
         )
 
-        result = await _run_script_without_sandbox(
+        result = await run_script_with_direct_test_command(
             script_path="scripts/write_binary_secret.py",
             skill_dir=skill_dir,
             arguments={},

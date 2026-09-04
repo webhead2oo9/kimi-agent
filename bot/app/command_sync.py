@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 from discord import app_commands
@@ -27,16 +26,6 @@ class GuildCommandSyncPort(Protocol):
 @dataclass(frozen=True, slots=True)
 class CommandSyncConfig:
     drain_timeout_seconds: float
-
-
-@dataclass(frozen=True, slots=True)
-class CommandSyncSnapshot:
-    gateway_generation: int
-    global_sync_task: asyncio.Task[None] | None
-    global_sync_generation: int | None
-    retired_global_sync_tasks: tuple[asyncio.Task[None], ...]
-    ready_event_tasks: tuple[asyncio.Task[Any], ...]
-    ready_event_generations: Mapping[asyncio.Task[Any], int]
 
 
 class DiscordCommandSync:
@@ -61,16 +50,6 @@ class DiscordCommandSync:
     @property
     def current_generation(self) -> int:
         return self._gateway_generation
-
-    def snapshot(self) -> CommandSyncSnapshot:
-        return CommandSyncSnapshot(
-            gateway_generation=self._gateway_generation,
-            global_sync_task=self._global_sync_task,
-            global_sync_generation=self._global_sync_generation,
-            retired_global_sync_tasks=tuple(self._retired_global_sync_tasks),
-            ready_event_tasks=tuple(self._ready_event_generations),
-            ready_event_generations=MappingProxyType(dict(self._ready_event_generations)),
-        )
 
     @asynccontextmanager
     async def ready_cohort(self) -> AsyncIterator[int]:

@@ -704,7 +704,6 @@ roles:
         "codex-chat",
         settings=_settings(
             codex_token_file="secrets/custom-codex.json",
-            codex_model="settings-codex-model",
             codex_reasoning_effort="medium",
             codex_image_quality="high",
             codex_image_format="webp",
@@ -715,7 +714,7 @@ roles:
     )
 
     assert provider_config.provider_name == "codex"
-    assert provider_config.codex_model == "gpt-5.5-override"
+    assert provider_config.model == "gpt-5.5-override"
     assert provider_config.codex_token_file == "secrets/custom-codex.json"
     assert provider_config.codex_reasoning_effort == "medium"
     assert provider_config.codex_image_quality == "high"
@@ -1641,7 +1640,7 @@ def test_provider_manager_resolves_image_chain(
     assert isinstance(image_chat, FailoverProvider)
     assert [p.model for p in image_chat._providers] == ["vision-model", "vision-backup"]
 
-    # Text turn resolves to its own chain and does not get clobbered over main.
+    # Text and image turns resolve to independent cached chains.
     text_chat = manager.resolve("chat", None, images=False)
     assert isinstance(text_chat, FailoverProvider)
     assert [p.model for p in text_chat._providers] == [
@@ -1649,9 +1648,8 @@ def test_provider_manager_resolves_image_chain(
         "text-backup",
         "vision-model",
     ]
-    # main is only assigned for the default (non-image) chat resolution.
-    assert manager.main is text_chat
-    assert manager.main is not image_chat
+    assert manager.resolve("chat", None, images=False) is text_chat
+    assert manager.resolve("chat", None, images=True) is image_chat
 
 
 def _keyless_config(tmp_path: Path, extra: str = "") -> Path:

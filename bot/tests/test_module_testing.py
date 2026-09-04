@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from kimi_agent_module_api import (
+    MODULE_API_VERSION,
     ModuleCapabilities,
     ModuleLoadContext,
     ModulePermissions,
@@ -60,7 +61,14 @@ def _spec(name: str, module: RecordingModule, **overrides: object) -> ModuleSpec
     def create(_ctx: ModuleLoadContext) -> RecordingModule:
         return module
 
-    return ModuleSpec(name=name, version="0.0.1", create=create, **overrides)  # type: ignore[arg-type]
+    api_version = overrides.pop("api_version", MODULE_API_VERSION)
+    return ModuleSpec(
+        name=name,
+        version="0.0.1",
+        create=create,
+        api_version=api_version,  # type: ignore[arg-type]
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio
@@ -416,7 +424,7 @@ async def test_harness_capability_override_is_used_for_create_and_start(tmp_path
         seen.append(ctx.capabilities)
 
     module.start = start  # type: ignore[method-assign]
-    spec = ModuleSpec(name="demo", version="0.0.1", create=create)
+    spec = ModuleSpec(name="demo", version="0.0.1", create=create, api_version=MODULE_API_VERSION)
     runtime = await build_test_runtime(
         tmp_path,
         ("demo",),
@@ -432,6 +440,7 @@ async def test_harness_capability_override_is_used_for_create_and_start(tmp_path
         name="required",
         version="0.0.1",
         create=lambda _ctx: RecordingModule("required", []),
+        api_version=MODULE_API_VERSION,
         requires_capabilities=("discord.modals.v1",),
     )
     missing_root = tmp_path / "missing"

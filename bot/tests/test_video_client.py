@@ -13,6 +13,7 @@ from video_understanding.client import (
     GeminiVideoClient,
     VideoInteractionError,
     VideoUploadRequest,
+    VideoUsage,
     _parse_interaction,
 )
 from video_understanding.service import (
@@ -677,6 +678,15 @@ def test_parse_interaction_distinguishes_missing_usage_from_reported_zero() -> N
     assert reported_zero.usage_present is True
 
 
+def test_interaction_error_requires_explicit_presence_when_it_carries_usage() -> None:
+    nonbillable = VideoInteractionError("unavailable")
+    assert nonbillable.usage is None
+    assert nonbillable.usage_present is False
+
+    with pytest.raises(TypeError, match="usage_present is required"):
+        cast(Any, VideoInteractionError)("malformed", usage=VideoUsage(input_tokens=1))
+
+
 def test_parse_interaction_rejects_noncompleted_or_unstructured_response() -> None:
     with pytest.raises(VideoInteractionError):
         _parse_interaction({"id": "x", "status": "failed", "steps": []})
@@ -833,6 +843,7 @@ async def test_cancellation_during_retry_backoff_releases_analysis_slot(
             question="Question",
             config=VideoSessionConfig(
                 model="custom-video-model",
+                catalog_model="custom-video-catalog",
                 thinking_level="low",
                 max_output_tokens=1024,
                 max_session_interactions=5,
@@ -887,6 +898,7 @@ async def test_service_cancellation_while_queued_does_not_dispatch_or_leak_slot(
             question="Question",
             config=VideoSessionConfig(
                 model="custom-video-model",
+                catalog_model="custom-video-catalog",
                 thinking_level="low",
                 max_output_tokens=1024,
                 max_session_interactions=5,

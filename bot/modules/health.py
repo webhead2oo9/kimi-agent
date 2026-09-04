@@ -169,20 +169,6 @@ class HealthRegistry:
     def reporter_for(self, module_name: str) -> ModuleHealthReporter:
         return ModuleHealthReporter(self, module_name)
 
-    @property
-    def worst(self) -> HealthState:
-        order: dict[HealthState, int] = {
-            "healthy": 0,
-            "starting": 1,
-            "degraded": 2,
-            "failed": 3,
-        }
-        worst: HealthState = "healthy"
-        for health in self._states.values():
-            if order[health.state] > order[worst]:
-                worst = health.state
-        return worst
-
 
 @dataclass(frozen=True, slots=True)
 class ModuleHealthReporter:

@@ -1,17 +1,19 @@
 import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from memory import banks
-from memory.client import MemoryBackendError, MemoryClient, MemoryRecord
+from memory.client import MemoryBackendError, MemoryClient
 
 
 class FakeHindsight:
     def __init__(self) -> None:
         self.create_bank_calls: list[dict] = []
-        self.config_calls: list[tuple[str, dict]] = []
+        self.config_calls: list[tuple[str, dict, float]] = []
+        self.banks = _FakeBanks(self.config_calls)
 
     def create_bank(self, **kwargs: object) -> None:
         raise AssertionError("sync create_bank should not be used in async code")
@@ -19,8 +21,19 @@ class FakeHindsight:
     async def acreate_bank(self, **kwargs: object) -> None:
         self.create_bank_calls.append(kwargs)
 
-    async def _aupdate_bank_config(self, bank_id: str, updates: dict) -> dict:
-        self.config_calls.append((bank_id, updates))
+
+class _FakeBanks:
+    def __init__(self, calls: list[tuple[str, dict, float]]) -> None:
+        self._calls = calls
+
+    async def update_bank_config(
+        self,
+        *,
+        bank_id: str,
+        bank_config_update: Any,
+        _request_timeout: float,
+    ) -> dict:
+        self._calls.append((bank_id, bank_config_update.updates, _request_timeout))
         return {"bank_id": bank_id}
 
 
@@ -41,13 +54,7 @@ class FakeRecallHindsight:
                         {
                             "text": "webhead uses a Quest 3.",
                             "type": "world",
-                            "context": None,
-                            "tags": None,
-                            "document_id": "user-memory:123:111:abcd",
-                            "metadata": {
-                                "source_kind": "discord_user_memory",
-                                "subject_user_id": "123",
-                            },
+                            "tags": ["scope:global"],
                         },
                     )()
                 ]
@@ -78,58 +85,6 @@ class RecordingUserBankState:
         self.marked.append(user_id)
 
 
-class FakeLowLevelMemoryApi:
-    def __init__(self) -> None:
-        self.list_calls: list[dict[str, object]] = []
-        self.clear_calls: list[dict[str, object]] = []
-
-    async def list_memories(self, **kwargs: object) -> object:
-        self.list_calls.append(kwargs)
-        return type(
-            "ListMemoryResult",
-            (),
-            {
-                "items": [
-                    {
-                        "id": "mem-1",
-                        "text": "webhead prefers seated VR.",
-                        "type": "world",
-                        "document_id": "doc-1",
-                        "tags": ["source:admin_manual"],
-                        "metadata": {"source": "admin_manual"},
-                    }
-                ],
-                "total": 1,
-                "limit": 20,
-                "offset": 0,
-            },
-        )()
-
-    async def clear_bank_memories(self, **kwargs: object) -> object:
-        self.clear_calls.append(kwargs)
-        return object()
-
-
-class FakeLowLevelDocumentsApi:
-    def __init__(self) -> None:
-        self.delete_calls: list[dict[str, object]] = []
-
-    async def delete_document(self, **kwargs: object) -> object:
-        self.delete_calls.append(kwargs)
-        return SimpleNamespace(success=True)
-
-
-class FakeAdminHindsight:
-    def __init__(self) -> None:
-        self.memory = FakeLowLevelMemoryApi()
-        self.documents = FakeLowLevelDocumentsApi()
-        self.delete_bank_calls: list[str] = []
-
-    async def adelete_bank(self, bank_id: str) -> object:
-        self.delete_bank_calls.append(bank_id)
-        return SimpleNamespace(success=True)
-
-
 class FakeMemoryClient:
     def __init__(self, created: bool) -> None:
         self.created = created
@@ -140,10 +95,22 @@ class FakeMemoryClient:
         return self.created
 
 
+def _memory_client(
+    hindsight: object,
+    *,
+    user_bank_state_store: RecordingUserBankState | None = None,
+) -> MemoryClient:
+    """Build a fully initialized wrapper without constructing the real SDK client."""
+
+    client = object.__new__(MemoryClient)
+    client._client = cast(Any, hindsight)
+    client._user_bank_state_store = user_bank_state_store
+    return client
+
+
 def test_create_bank_creates_shell_then_configures_via_config_patch() -> None:
     fake_hindsight = FakeHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
+    client = _memory_client(fake_hindsight)
 
     created = asyncio.run(
         client.create_bank(
@@ -170,16 +137,53 @@ def test_create_bank_creates_shell_then_configures_via_config_patch() -> None:
                 "disposition_literalism": 5,
                 "disposition_empathy": 1,
             },
+            120.0,
         )
     ]
+
+
+def test_public_banks_api_preserves_host_auth_body_and_timeout(monkeypatch) -> None:
+    client = MemoryClient("https://memory.example/base/", api_key="test-key")
+    api_client = client._client.banks.api_client
+
+    class _Response:
+        async def read(self) -> None:
+            return None
+
+    call_api = AsyncMock(return_value=_Response())
+    monkeypatch.setattr(api_client, "call_api", call_api)
+    monkeypatch.setattr(
+        api_client,
+        "response_deserialize",
+        lambda **_kwargs: SimpleNamespace(data={"bank_id": "bot-skills"}),
+    )
+
+    try:
+        updated = asyncio.run(
+            client.update_bank_config(
+                "bot-skills",
+                {"reflect_mission": "Store procedural knowledge."},
+            )
+        )
+    finally:
+        client.close()
+
+    assert updated is True
+    call_api.assert_awaited_once()
+    awaited = call_api.await_args
+    assert awaited is not None
+    args = awaited.args
+    assert args[0] == "PATCH"
+    assert args[1] == "https://memory.example/base/v1/default/banks/bot-skills/config"
+    assert args[2]["Authorization"] == "Bearer test-key"
+    assert args[3] == {"updates": {"reflect_mission": "Store procedural knowledge."}}
+    assert awaited.kwargs == {"_request_timeout": 120.0}
 
 
 def test_create_user_bank_persists_may_exist_marker() -> None:
     fake_hindsight = FakeHindsight()
     state = RecordingUserBankState()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
-    client._user_bank_state_store = state
+    client = _memory_client(fake_hindsight, user_bank_state_store=state)
 
     created = asyncio.run(
         client.create_bank(
@@ -195,8 +199,7 @@ def test_create_user_bank_persists_may_exist_marker() -> None:
 
 def test_recall_forwards_fact_types_to_hindsight_async_api() -> None:
     fake_hindsight = FakeRecallHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
+    client = _memory_client(fake_hindsight)
 
     memories = asyncio.run(
         client.recall(
@@ -209,11 +212,7 @@ def test_recall_forwards_fact_types_to_hindsight_async_api() -> None:
     )
 
     assert [m.text for m in memories] == ["webhead uses a Quest 3."]
-    assert memories[0].document_id == "user-memory:123:111:abcd"
-    assert memories[0].metadata == {
-        "source_kind": "discord_user_memory",
-        "subject_user_id": "123",
-    }
+    assert memories[0].tags == ["scope:global"]
     assert fake_hindsight.recall_calls == [
         {
             "bank_id": "user:123",
@@ -227,8 +226,7 @@ def test_recall_forwards_fact_types_to_hindsight_async_api() -> None:
 
 def test_retain_forces_completed_write_and_forwards_timestamp() -> None:
     fake_hindsight = FakeRetainHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
+    client = _memory_client(fake_hindsight)
 
     retained = asyncio.run(
         client.retain(
@@ -259,9 +257,7 @@ def test_retain_forces_completed_write_and_forwards_timestamp() -> None:
 def test_user_bank_retain_persists_may_exist_marker() -> None:
     fake_hindsight = FakeRetainHindsight()
     state = RecordingUserBankState()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
-    client._user_bank_state_store = state
+    client = _memory_client(fake_hindsight, user_bank_state_store=state)
 
     retained = asyncio.run(
         client.retain(
@@ -277,9 +273,10 @@ def test_user_bank_retain_persists_may_exist_marker() -> None:
 
 def test_user_bank_retain_is_refused_when_marker_cannot_be_persisted() -> None:
     fake_hindsight = FakeRetainHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
-    client._user_bank_state_store = RecordingUserBankState(fail=True)
+    client = _memory_client(
+        fake_hindsight,
+        user_bank_state_store=RecordingUserBankState(fail=True),
+    )
 
     retained = asyncio.run(
         client.retain(
@@ -301,8 +298,7 @@ def test_retain_rejects_uncompleted_backend_response(
     var_async: bool,
 ) -> None:
     fake_hindsight = FakeRetainHindsight(success=success, var_async=var_async)
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
+    client = _memory_client(fake_hindsight)
 
     retained = asyncio.run(
         client.retain(
@@ -314,57 +310,20 @@ def test_retain_rejects_uncompleted_backend_response(
     assert retained is False
 
 
-def test_list_memories_uses_low_level_async_api_and_normalizes_records() -> None:
-    fake_hindsight = FakeAdminHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
+def test_delete_bank_uses_async_hindsight_api() -> None:
+    class _RecordingHindsight:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
 
-    page = asyncio.run(
-        client.list_memories(
-            bank_id="user:123",
-            query="seated",
-            memory_type="world",
-            limit=20,
-            offset=0,
-        )
-    )
+        async def adelete_bank(self, bank_id: str) -> object:
+            self.calls.append(bank_id)
+            return SimpleNamespace(success=True)
 
-    assert page.total == 1
-    assert page.items == [
-        MemoryRecord(
-            id="mem-1",
-            text="webhead prefers seated VR.",
-            type="world",
-            document_id="doc-1",
-            tags=["source:admin_manual"],
-            metadata={"source": "admin_manual"},
-        )
-    ]
-    assert fake_hindsight.memory.list_calls == [
-        {
-            "bank_id": "user:123",
-            "q": "seated",
-            "type": "world",
-            "limit": 20,
-            "offset": 0,
-        }
-    ]
+    hindsight = _RecordingHindsight()
+    client = _memory_client(hindsight)
 
-
-def test_destructive_admin_operations_use_async_hindsight_apis() -> None:
-    fake_hindsight = FakeAdminHindsight()
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, fake_hindsight)
-
-    deleted_doc = asyncio.run(client.delete_document(bank_id="user:123", document_id="doc-1"))
-    deleted_bank = asyncio.run(client.delete_bank(bank_id="user:123"))
-
-    assert deleted_doc is True
-    assert deleted_bank is True
-    assert fake_hindsight.documents.delete_calls == [
-        {"bank_id": "user:123", "document_id": "doc-1"}
-    ]
-    assert fake_hindsight.delete_bank_calls == ["user:123"]
+    assert asyncio.run(client.delete_bank_strict(bank_id="user:123")) is True
+    assert hindsight.calls == ["user:123"]
 
 
 def test_delete_bank_treats_backend_404_as_idempotent_success() -> None:
@@ -377,34 +336,9 @@ def test_delete_bank_treats_backend_404_as_idempotent_success() -> None:
         async def adelete_bank(self, bank_id: str) -> None:
             raise _NotFound
 
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, _MissingBankHindsight())
+    client = _memory_client(_MissingBankHindsight())
 
-    assert asyncio.run(client.delete_bank(bank_id="user:123")) is True
-
-
-def test_strict_document_delete_distinguishes_missing_from_backend_failure() -> None:
-    class _DeleteFailure(Exception):
-        def __init__(self, status: int) -> None:
-            super().__init__(f"delete failed: {status}")
-            self.status_code = status
-
-    class _DocumentsApi:
-        def __init__(self, status: int) -> None:
-            self.status = status
-
-        async def delete_document(self, **kwargs: object) -> None:
-            raise _DeleteFailure(self.status)
-
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, SimpleNamespace(documents=_DocumentsApi(404)))
-    assert (
-        asyncio.run(client.delete_document_strict(bank_id="user:123", document_id="doc-1")) is False
-    )
-
-    client._client = cast(Any, SimpleNamespace(documents=_DocumentsApi(503)))
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.delete_document_strict(bank_id="user:123", document_id="doc-1"))
+    assert asyncio.run(client.delete_bank_strict(bank_id="user:123")) is True
 
 
 def test_strict_bank_delete_raises_when_backend_does_not_confirm_deletion() -> None:
@@ -412,25 +346,10 @@ def test_strict_bank_delete_raises_when_backend_does_not_confirm_deletion() -> N
         async def adelete_bank(self, bank_id: str) -> None:
             raise RuntimeError("backend down")
 
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, _DownHindsight())
+    client = _memory_client(_DownHindsight())
 
     with pytest.raises(MemoryBackendError):
         asyncio.run(client.delete_bank_strict(bank_id="user:123"))
-    assert asyncio.run(client.delete_bank(bank_id="user:123")) is False
-
-
-def test_strict_document_delete_rejects_negative_backend_acknowledgement() -> None:
-    class _DocumentsApi:
-        async def delete_document(self, **kwargs: object) -> object:
-            return SimpleNamespace(success=False)
-
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, SimpleNamespace(documents=_DocumentsApi()))
-
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.delete_document_strict(bank_id="user:123", document_id="doc-1"))
-    assert asyncio.run(client.delete_document(bank_id="user:123", document_id="doc-1")) is False
 
 
 def test_strict_bank_delete_rejects_negative_backend_acknowledgement() -> None:
@@ -438,57 +357,25 @@ def test_strict_bank_delete_rejects_negative_backend_acknowledgement() -> None:
         async def adelete_bank(self, bank_id: str) -> object:
             return SimpleNamespace(success=False)
 
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, _NegativeHindsight())
+    client = _memory_client(_NegativeHindsight())
 
     with pytest.raises(MemoryBackendError):
         asyncio.run(client.delete_bank_strict(bank_id="user:123"))
-    assert asyncio.run(client.delete_bank(bank_id="user:123")) is False
-
-
-class _DownLowLevelMemoryApi:
-    async def list_memories(self, **kwargs: object) -> object:
-        raise RuntimeError("backend down")
-
-
-class _DownLowLevelDocumentsApi:
-    async def list_documents(self, **kwargs: object) -> object:
-        raise RuntimeError("backend down")
 
 
 class FakeDownHindsight:
-    def __init__(self) -> None:
-        self.memory = _DownLowLevelMemoryApi()
-        self.documents = _DownLowLevelDocumentsApi()
-
     async def arecall(self, **kwargs: object) -> object:
         raise RuntimeError("backend down")
 
 
 def _down_client() -> MemoryClient:
-    client = object.__new__(MemoryClient)
-    client._client = cast(Any, FakeDownHindsight())
-    return client
+    return _memory_client(FakeDownHindsight())
 
 
-def test_lenient_reads_swallow_backend_failure_into_safe_defaults() -> None:
+def test_recall_swallows_backend_failure_into_safe_default() -> None:
     client = _down_client()
 
     assert asyncio.run(client.recall(bank_id="user:123", query="q")) == []
-    page = asyncio.run(client.list_memories(bank_id="user:123"))
-    assert page.items == [] and page.total == 0
-    assert asyncio.run(client.list_documents(bank_id="user:123")) == []
-
-
-def test_strict_reads_raise_memory_backend_error_on_failure() -> None:
-    client = _down_client()
-
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.recall_strict(bank_id="user:123", query="q"))
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.list_memories_strict(bank_id="user:123"))
-    with pytest.raises(MemoryBackendError):
-        asyncio.run(client.list_documents_strict(bank_id="user:123"))
 
 
 def test_ensure_user_bank_retries_after_failed_creation() -> None:

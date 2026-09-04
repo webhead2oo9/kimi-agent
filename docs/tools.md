@@ -208,10 +208,10 @@ code-execution sandbox are both enabled and available:
 | Tool | Purpose |
 |---|---|
 | `start_coding_task` | Queue multi-file or repository work with optional bounded conversation context, selected triggering-message attachments, and validated workspace starting files. Returns immediately with a durable task id, or a specific explanation when nothing was queued. |
-| `coding_task_status` | Inspect an owned active or recent task without waiting for completion. |
-| `coding_task_message` | Append steering that the agent receives at its next model boundary. |
-| `coding_task_cancel` | Cancel a queued or running task after stopping its managed jobs. |
-| `coding_task_retry_delivery` | Retry an exhausted final-report delivery after its Discord target is restored. |
+| `coding_task_status` | Inspect an authorized active or recent task in the current guild without waiting for completion. |
+| `coding_task_message` | Append steering to an authorized task in the current guild for the agent's next model boundary. |
+| `coding_task_cancel` | Cancel an authorized queued or running task in the current guild after stopping its managed jobs. |
+| `coding_task_retry_delivery` | Retry an authorized task's exhausted final-report delivery after its Discord target is restored. |
 
 The worker itself sees a narrower surface: the workspace subset, the research
 tools `fetch_url`, `internet_search`, and `browser` when the foreground has

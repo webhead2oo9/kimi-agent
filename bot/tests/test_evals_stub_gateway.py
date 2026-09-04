@@ -18,15 +18,6 @@ def _ctx():
     )
 
 
-def test_stub_gateway_returns_fixture_turn_source():
-    gateway = StubGateway()
-    gateway.set_fixture(trigger_content="help me", trigger_author_id="42")
-    snap = gateway.read_turn_source(_ctx())
-    assert snap is not None
-    assert snap.content == "help me"
-    assert snap.author_id == "42"
-
-
 def test_stub_gateway_channel_context_defaults_empty():
     gateway = StubGateway()
     result = asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=5))
@@ -184,9 +175,7 @@ def test_stub_gateway_resolve_member_returns_sticky_fixture():
         role_count=0,
         trust_tier="member",
     )
-    gateway.set_fixture(member=MemberLookup(match="exact", profile=profile))
-    # Member fixture is sticky: a later trigger-only set_fixture must not clear it.
-    gateway.set_fixture(trigger_content="hi", trigger_author_id="1")
+    gateway.set_member_fixture(MemberLookup(match="exact", profile=profile))
     result = asyncio.run(gateway.resolve_member(_ctx(), user_id="42"))
     assert result.match == "exact"
     assert result.profile is not None

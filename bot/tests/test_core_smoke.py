@@ -2157,7 +2157,6 @@ def test_reply_context_is_ephemeral_continuation_context_each_iteration() -> Non
 
     first_request = provider.requests[0]
     assert len(first_request.messages) == 1
-    assert first_request.continuation_context_messages == first_request.messages
     first_reply_context = first_request.messages[0]
     assert first_reply_context.role == "user"
     first_reply_text = first_reply_context.content[0].text or ""
@@ -2339,7 +2338,6 @@ def test_run_conversation_surfaces_attachments_ephemerally() -> None:
     )
     assert "data.zip" in request_text
     assert "import_attachment" in request_text
-    assert provider.requests[0].continuation_context_messages == provider.requests[0].messages
 
     # ...but was NOT persisted to conversation history.
     history_text = "".join(part.text or "" for msg in context.get_history() for part in msg.content)

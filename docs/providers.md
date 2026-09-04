@@ -261,7 +261,7 @@ cannot look effective while doing nothing.
 | `models_endpoint` | `""` | OpenAI-compatible | A `/v1/models` URL used to filter selectable candidates at startup. |
 | `prompt_caching` | `true` | `anthropic_compat` | Send a rolling prompt-cache breakpoint. |
 | `provider_routing` | `{}` | `openrouter` | Typed OpenRouter privacy, filtering, ordering, price, quantization, and performance routing policy. See [OpenAI and OpenRouter](providers-openai.md#openrouter). |
-| `app_name` | `BOT_NAME` | OpenAI-compatible | Optional provider-facing identity override. By default the configured bot name becomes the `User-Agent`; OpenRouter also receives it as `X-OpenRouter-Title` and `X-Title`. |
+| `app_name` | `BOT_NAME` | OpenAI-compatible | Optional provider-facing identity override. By default the configured bot name becomes the `User-Agent`; OpenRouter also receives it as `X-OpenRouter-Title`. |
 | `app_url` | `""` | `openrouter` | `HTTP-Referer` attribution header. |
 | `service_tier` | `""` | OpenAI, OpenRouter | OpenAI service tier, or OpenRouter `flex` or `priority`. Sent only on the OpenAI gateway and on OpenRouter; dropped on other compatibility gateways. Empty on OpenRouter leaves the upstream default in place. |
 | `timeout_seconds` | `900` | `anthropic`, `anthropic_compat`, `openai_compat`, `openai_responses`, `openrouter`, `xai` | SDK transport timeout. |

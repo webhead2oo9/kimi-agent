@@ -11,7 +11,12 @@ import pytest
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
-from app.plugins import PluginContext, build_plugin_context, load_plugins_with_settings
+from app.plugins import (
+    PLUGIN_API_VERSION,
+    PluginContext,
+    build_plugin_context,
+    load_plugins_with_settings,
+)
 from config.plugin_settings import (
     PluginSetting,
     PluginSettingsDefinition,
@@ -83,6 +88,7 @@ def _ctx(tmp_path: Path) -> PluginContext:
 
 def _module(monkeypatch: pytest.MonkeyPatch, register) -> None:
     module = ModuleType("demo_plugin")
+    module.PLUGIN_API_VERSION = PLUGIN_API_VERSION  # type: ignore[attr-defined]
     module.PLUGIN_SETTINGS = DEMO_DEFINITION  # type: ignore[attr-defined]
     module.register = register  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "demo_plugin", module)
@@ -178,12 +184,9 @@ def test_invalid_saved_fragment_remains_repairable_but_skips_registration(
 
     _module(monkeypatch, register)
     registry = PluginSettingsRegistry(config_dir=tmp_path)
-    loaded, registry = load_plugins_with_settings(
-        ("demo_plugin",), _ctx(tmp_path), settings_registry=registry
-    )
+    load_plugins_with_settings(("demo_plugin",), _ctx(tmp_path), settings_registry=registry)
 
     entry = registry.get("demo")
-    assert loaded == []
     assert called is False
     assert entry is not None
     assert entry.can_register is False
@@ -203,18 +206,22 @@ def test_saved_override_instance_is_the_exact_instance_consumed_by_register(
         seen["typed"] = ctx.settings_for(DemoSettings)
 
     _module(monkeypatch, register)
-    loaded, registry = load_plugins_with_settings(
+    registry = load_plugins_with_settings(
         ("demo_plugin",),
         _ctx(tmp_path),
         settings_registry=PluginSettingsRegistry(config_dir=tmp_path),
     )
 
     entry = registry.get("demo")
-    assert loaded == ["demo_plugin"]
     assert entry is not None
     assert entry.active.demo_limit == 9  # type: ignore[attr-defined]
     assert seen["raw"] is entry.active
     assert seen["typed"] is entry.active
+
+
+def test_settings_for_rejects_an_unprepared_direct_context(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="declare PLUGIN_SETTINGS"):
+        _ctx(tmp_path).settings_for(DemoSettings)
 
 
 def test_selected_env_file_backs_plugin_settings_instead_of_dotenv_default(

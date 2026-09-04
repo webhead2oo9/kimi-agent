@@ -23,6 +23,7 @@ import pytest
 import sandbox.runner as runner
 import sandbox.seccomp as seccomp
 from sandbox.netns_lease import NetnsLease, NetnsLeasePoisonedError
+from tests.netns_lease_helpers import netns_lease_is_poisoned
 from sandbox.runner import (
     SandboxConfig,
     SandboxTeardownError,
@@ -588,7 +589,7 @@ async def test_cancelled_unconfirmed_unit_stop_poisons_and_wakes_netns_waiter(
     with pytest.raises(NetnsLeasePoisonedError, match="unavailable until restart"):
         await waiter
 
-    assert lease.poisoned
+    assert netns_lease_is_poisoned(lease)
     assert not lease.locked()
 
 

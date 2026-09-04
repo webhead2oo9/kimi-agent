@@ -1,8 +1,8 @@
 """Operator plugin loading.
 
 A plugin is an importable module named in ``PLUGIN_MODULES`` that exposes
-``register(ctx: PluginContext) -> None`` (and optionally an integer
-``PLUGIN_API_VERSION``). Plugins are operator-trusted code. This is a
+``register(ctx: PluginContext) -> None`` and an integer ``PLUGIN_API_VERSION``.
+Plugins are operator-trusted code. This is a
 composition seam, not a sandbox: they receive the full public ``Settings``
 object, the live tool registry, and the Discord gateway. Private integrations
 (their own clients, their own ``pydantic_settings.BaseSettings`` over the same
@@ -39,7 +39,6 @@ from app.tool_surfaces import (
     restore_surface_tools,
     snapshot_surface_tools,
 )
-from config.environment import selected_env_file
 from config.plugin_settings import (
     PluginSetting,
     PluginSettingsDefinition,
@@ -54,42 +53,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 _SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
 
 __all__ = [
     "PLUGIN_API_VERSION",
     "PluginContext",
-    "PluginLoadState",
     "PluginSetting",
     "PluginSettingsDefinition",
     "build_plugin_context",
-    "load_plugins",
     "load_plugins_with_settings",
-    "validate_plugin_selection",
 ]
-
-
-@dataclass(frozen=True)
-class PluginLoadState:
-    """Configured plugin modules and the outcome of this process's load attempt."""
-
-    requested: tuple[str, ...] = ()
-    loaded: tuple[str, ...] = ()
-    failed: tuple[str, ...] = ()
-
-    @classmethod
-    def from_loaded(
-        cls, module_names: Sequence[str], loaded_names: Sequence[str]
-    ) -> PluginLoadState:
-        requested = tuple(module_names)
-        loaded = tuple(loaded_names)
-        loaded_set = frozenset(loaded)
-        return cls(
-            requested=requested,
-            loaded=loaded,
-            failed=tuple(name for name in requested if name not in loaded_set),
-        )
 
 
 @dataclass(frozen=True)
@@ -117,11 +91,11 @@ class PluginContext:
     def settings_for(self, settings_type: type[_SettingsT]) -> _SettingsT:
         """Return the prepared settings instance for this plugin.
 
-        The fallback preserves direct unit-level ``register(ctx)`` calls. The
-        runtime loader always supplies the prepared, overlaid instance.
+        The runtime loader supplies the prepared, overlaid instance for every
+        plugin that declares ``PLUGIN_SETTINGS``.
         """
         if self.plugin_settings is None:
-            return settings_type(_env_file=selected_env_file())
+            raise TypeError("plugin has no prepared settings; declare PLUGIN_SETTINGS")
         if not isinstance(self.plugin_settings, settings_type):
             raise TypeError(f"prepared plugin settings are not {settings_type.__name__}")
         return self.plugin_settings
@@ -140,46 +114,20 @@ def build_plugin_context(
     )
 
 
-def load_plugins(module_names: Sequence[str], ctx: PluginContext) -> list[str]:
-    """Import and register each named plugin; returns the loaded module names.
-
-    Per-plugin isolation: one broken plugin (bad import, version mismatch,
-    missing/raising ``register``) is skipped with its partial tool
-    registrations rolled back, and every other plugin still loads.
-    """
-    return load_plugins_with_settings(module_names, ctx)[0]
-
-
-def validate_plugin_selection(module_names: Sequence[str]) -> None:
-    """Import and validate plugin entry contracts before staging a restart."""
-    if len(set(module_names)) != len(tuple(module_names)):
-        raise RuntimeError("PLUGIN_MODULES contains a duplicate module name")
-    for name in module_names:
-        module = importlib.import_module(name)
-        version = getattr(module, "PLUGIN_API_VERSION", PLUGIN_API_VERSION)
-        if version != PLUGIN_API_VERSION:
-            raise RuntimeError(
-                f"plugin {name!r} requires API {version!r}; core provides {PLUGIN_API_VERSION}"
-            )
-        if not callable(getattr(module, "register", None)):
-            raise RuntimeError(f"plugin {name!r} exposes no callable register(ctx)")
-
-
 def load_plugins_with_settings(
     module_names: Sequence[str],
     ctx: PluginContext,
     *,
     settings_registry: PluginSettingsRegistry | None = None,
-) -> tuple[list[str], PluginSettingsRegistry]:
+) -> PluginSettingsRegistry:
     """Load plugins and prepare any declared safe settings before registration."""
     registry = settings_registry or PluginSettingsRegistry(config_dir=Path(ctx.settings.config_dir))
-    loaded: list[str] = []
     for name in module_names:
         before = ctx.registry.registered_names()
         surfaces_before = snapshot_surface_tools()
         try:
             module = importlib.import_module(name)
-            version = getattr(module, "PLUGIN_API_VERSION", PLUGIN_API_VERSION)
+            version = getattr(module, "PLUGIN_API_VERSION", None)
             if version != PLUGIN_API_VERSION:
                 log.warning(
                     "Skipping plugin %s: PLUGIN_API_VERSION %r is not the supported %d",
@@ -222,6 +170,5 @@ def load_plugins_with_settings(
             # leaves nothing behind at all.
             restore_surface_tools(surfaces_before)
             continue
-        loaded.append(name)
         log.info("Plugin registered: %s", name)
-    return loaded, registry
+    return registry

@@ -59,6 +59,38 @@ async def _run_locked_thread[T](function: Callable[[], T]) -> T:
         raise cancellation
 
 
+async def stop_recovered_coding_units(store: CodingTaskStore) -> None:
+    """Prove every persisted pre-crash command inactive before rows can be deleted."""
+
+    failures: list[tuple[str, BaseException]] = []
+    cancellation: asyncio.CancelledError | None = None
+    for job in await store.list_active_jobs():
+        if job.unit_name is None:
+            if job.status == CodingJobStatus.RUNNING:
+                failures.append(
+                    (
+                        job.id,
+                        RuntimeError(
+                            f"Running coding job {job.id} has no recoverable systemd unit"
+                        ),
+                    )
+                )
+            continue
+        try:
+            await stop_sandbox_unit(job.unit_name)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except Exception as exc:
+            failures.append((job.id, exc))
+    if cancellation is not None:
+        raise cancellation
+    if failures:
+        failed_ids = ", ".join(job_id for job_id, _exc in failures)
+        raise RuntimeError(
+            f"Could not confirm {len(failures)} recovered coding unit(s) inactive: {failed_ids}"
+        ) from failures[0][1]
+
+
 def _append_job_stderr(stderr: str, note: str) -> str:
     current = stderr.rstrip()
     return f"{current}\n\n{note}" if current else note
@@ -217,33 +249,7 @@ class CodingJobManager:
     async def stop_recovered_units(self) -> None:
         """Prove every pre-crash command inactive before tasks are requeued."""
 
-        failures: list[tuple[str, BaseException]] = []
-        cancellation: asyncio.CancelledError | None = None
-        for job in await self._store.list_active_jobs():
-            if job.unit_name is None:
-                if job.status == CodingJobStatus.RUNNING:
-                    failures.append(
-                        (
-                            job.id,
-                            RuntimeError(
-                                f"Running coding job {job.id} has no recoverable systemd unit"
-                            ),
-                        )
-                    )
-                continue
-            try:
-                await stop_sandbox_unit(job.unit_name)
-            except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-            except Exception as exc:
-                failures.append((job.id, exc))
-        if cancellation is not None:
-            raise cancellation
-        if failures:
-            failed_ids = ", ".join(job_id for job_id, _exc in failures)
-            raise RuntimeError(
-                f"Could not confirm {len(failures)} recovered coding unit(s) inactive: {failed_ids}"
-            ) from failures[0][1]
+        await stop_recovered_coding_units(self._store)
 
     def _job_done(self, _task: asyncio.Task[None], *, job_id: str) -> None:
         self._tasks.pop(job_id, None)

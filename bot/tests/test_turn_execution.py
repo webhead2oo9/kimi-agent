@@ -507,7 +507,6 @@ async def test_execute_turn_records_partial_usage_from_timed_out_run(
         ConversationRunResult(
             text="timed out",
             usage=UsageBreakdown(input_tokens=120, output_tokens=30),
-            iterations=2,
             llm_calls=[
                 LLMUsageCall(
                     model="gpt-5.4",
@@ -703,7 +702,6 @@ async def test_normal_usage_persistence_outlives_response_deadline(tmp_path: Pat
             text="ok",
             usage=usage,
             llm_calls=[LLMUsageCall(model="gpt-5.4", role="chat", usage=usage)],
-            iterations=1,
             turn_id="turn-usage-deadline",
         )
     )
@@ -893,6 +891,7 @@ async def test_execute_turn_distills_images_for_text_model_and_reuses_cache(
                 content=("Image 1: A red sign reading STOP [120, 80, 610, 740], confidence high."),
                 model="vision-served",
                 usage={"input_tokens": 40, "output_tokens": 18},
+                usage_present=True,
             )
 
     context = ConversationContext(key="guild:100:main", db_conversation_id=55)
@@ -989,6 +988,7 @@ async def test_execute_turn_records_distillation_usage_with_router_attribution(
                 content="Image 1: A red sign reading STOP [1, 2, 3, 4], confidence high.",
                 model="vision-served",
                 usage={"input_tokens": 40, "output_tokens": 18},
+                usage_present=True,
                 upstream_provider="Moonshot AI",
                 service_tier="flex",
                 openrouter_charge_usd=0.004,

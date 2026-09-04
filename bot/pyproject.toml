@@ -1,18 +1,18 @@
 [project]
 name = "kimi-agent"
-version = "1.2.0"
+version = "2.0.0"
 description = "Kimi: a general-purpose Discord assistant"
 requires-python = ">=3.14"
 authors = [{ name = "Webhead" }]
 license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
-    "kimi-agent-module-api>=1.3.0,<2",
+    "kimi-agent-module-api>=2.0.0,<3",
     "aiohttp>=3.14.3",
     "discord.py>=2.7",
     "aiosqlite",
     "openai>=3.0",
-    "hindsight-client",
+    "hindsight-client>=0.9.2,<1",
     "httpx",
     "pydantic",
     "pydantic-settings>=2.14.2",

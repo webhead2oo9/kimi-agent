@@ -201,7 +201,6 @@ async def run_scenario_for_model(
     *,
     provider: InstrumentedProvider,
     registry: InstrumentedRegistry,
-    gateway: Any,
     memory_client: Any | None,
     preference_store: Any | None,
     bot_name: str = "",
@@ -232,7 +231,6 @@ async def run_scenario_for_model(
 
     for turn_index, turn in enumerate(scenario.turns):
         user_message = turn.text
-        gateway.set_fixture(trigger_content=user_message, trigger_author_id=identity.user_id)
         provider.reset()
         registry.reset_sink()
 

@@ -1466,7 +1466,6 @@ class GuildSettingsSnapshot:
     valid: bool
     errors: tuple[str, ...]
     revision: str
-    legacy: bool = False
 
 
 class GuildSettings(Protocol):

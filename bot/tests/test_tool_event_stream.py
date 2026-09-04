@@ -739,10 +739,12 @@ def test_run_conversation_emits_tool_call_and_turn_events(tmp_path: Path) -> Non
                 tool_calls=[ToolCall(id="c1", name="lookup", arguments={"query": "vr"})],
                 finish_reason="tool_calls",
                 usage={"input_tokens": 10, "output_tokens": 5},
+                usage_present=True,
             ),
             ProviderResponse(
                 content="Final answer.",
                 usage={"input_tokens": 20, "output_tokens": 7},
+                usage_present=True,
                 upstream_provider="OpenAI",
                 service_tier="priority",
                 openrouter_charge_usd=0.02,

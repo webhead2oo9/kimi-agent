@@ -16,7 +16,6 @@ from config.model_config import (
     ModelConfig,
     Scope,
     load_model_config,
-    load_model_config_with_revision,
     resolve_provider_config,
 )
 from config.settings import Settings
@@ -73,16 +72,14 @@ class ContextWindowWarning:
 @dataclass
 class ProviderManager:
     settings: Settings
-    model_config: ModelConfig | None = None
-    model_config_revision: str | None = None
+    model_config: ModelConfig
     active_chat_model: str | None = None
     # Runtime-filtered subset of model_config.selectable_chat_models. None means
     # no configured catalog exists; an empty tuple means discovery ran but no
     # catalog-backed candidates were available.
     _discovered_selectable_chat_models: tuple[str, ...] | None = None
-    # Optional lifecycle handles for resolved or injected providers; the normal
-    # runtime path uses model_config + the cache below.
-    main: LLMProvider | None = None
+    # Lifecycle handles for role-specific providers. The normal runtime path uses
+    # model_config + the caches below.
     compaction: LLMProvider | None = None
     persona: LLMProvider | None = None
     # Underlying single-model providers, one per model name (lifecycle owner).
@@ -96,10 +93,6 @@ class ProviderManager:
         self, role: str, scope: Scope | None = None, *, images: bool = False
     ) -> LLMProvider:
         model_config = self.model_config
-        if model_config is None:
-            if role == "chat" and self.main is not None:
-                return self.main
-            raise RuntimeError("ProviderManager requires model_config to resolve providers")
         if role == "chat" and self.active_chat_model is not None:
             model_names = model_config.model_names_for_selected_chat(
                 self.active_chat_model,
@@ -117,8 +110,6 @@ class ProviderManager:
                 backends=[self._failover_backend(model_config, name) for name in model_names],
             )
             self._chains[key] = provider
-        if role == "chat" and scope is None and not images:
-            self.main = provider
         return provider
 
     def _failover_backend(self, model_config: ModelConfig, model_name: str) -> FailoverBackend:
@@ -142,12 +133,10 @@ class ProviderManager:
         )
 
     async def initialize_circuits(self, store: CircuitStore) -> None:
-        model_config = self.model_config
         keys: set[str] = set()
-        if model_config is not None:
-            for model_name in model_config.models:
-                target = self._failover_backend(model_config, model_name).target
-                keys.update((target.model_scope_key, target.account_scope_key))
+        for model_name in self.model_config.models:
+            target = self._failover_backend(self.model_config, model_name).target
+            keys.update((target.model_scope_key, target.account_scope_key))
         await self.circuit_breaker.initialize(store, keys)
 
     async def circuit_snapshots(self) -> tuple[CircuitRecord, ...]:
@@ -158,8 +147,6 @@ class ProviderManager:
 
     @property
     def selectable_chat_models(self) -> tuple[str, ...]:
-        if self.model_config is None:
-            return ()
         if self._discovered_selectable_chat_models is not None:
             return self._discovered_selectable_chat_models
         return tuple(self.model_config.selectable_chat_models)
@@ -167,9 +154,6 @@ class ProviderManager:
     async def refresh_selectable_chat_models(self) -> None:
         """Filter configured choices through their providers' live model catalogs."""
         model_config = self.model_config
-        if model_config is None:
-            self._discovered_selectable_chat_models = ()
-            return
         candidates = tuple(model_config.selectable_chat_models)
         groups: dict[tuple[str, str], list[str]] = {}
         available = {
@@ -214,9 +198,6 @@ class ProviderManager:
     def set_active_chat_model(self, model_name: str | None) -> None:
         self.validate_active_chat_model(model_name)
         self.active_chat_model = model_name
-        # Some direct test callers read ``main`` directly. Force their next lookup
-        # through resolve rather than leaving an obsolete global provider handle.
-        self.main = None
 
     def resolved_chat_model_name(
         self,
@@ -225,8 +206,6 @@ class ProviderManager:
         images: bool = False,
     ) -> str:
         model_config = self.model_config
-        if model_config is None:
-            return ""
         if self.active_chat_model is None:
             return model_config.model_name_for_role("chat", scope, images=images)
         names = model_config.model_names_for_selected_chat(
@@ -276,13 +255,9 @@ class ProviderManager:
         )
 
     def has_active_llm_credentials(self) -> bool:
-        if self.model_config is None:
-            return self.main is not None
         return _has_active_llm_credentials(self.settings, self.model_config)
 
     def context_window_warnings(self) -> list[ContextWindowWarning]:
-        if self.model_config is None:
-            return []
         required_tokens = self.settings.compaction_trigger_tokens + self.settings.react_max_tokens
         warnings: list[ContextWindowWarning] = []
         for model_name in sorted(self.model_config.chat_model_names()):
@@ -301,7 +276,6 @@ class ProviderManager:
         closed_provider_ids: set[int] = set()
         providers = [
             *self._providers.values(),
-            self.main,
             self.compaction,
             self.persona,
         ]
@@ -315,7 +289,6 @@ class ProviderManager:
             await close_provider(provider)
         self._providers.clear()
         self._chains.clear()
-        self.main = None
         self.compaction = None
         self.persona = None
 
@@ -323,13 +296,10 @@ class ProviderManager:
 def build_provider_manager(
     settings: Settings, *, model_config_path: Path | None = None
 ) -> ProviderManager:
-    model_config, revision = load_model_config_with_revision(
-        model_config_path or Path(settings.config_dir) / "models.yaml"
-    )
+    model_config = load_model_config(model_config_path or Path(settings.config_dir) / "models.yaml")
     return ProviderManager(
         settings=settings,
         model_config=model_config,
-        model_config_revision=revision,
     )
 
 

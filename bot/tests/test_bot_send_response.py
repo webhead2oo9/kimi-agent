@@ -184,7 +184,7 @@ async def test_send_response_omits_only_files_over_guild_limit(tmp_path: Path) -
     channel.guild = SimpleNamespace(filesize_limit=4)
     channel.fail_next_file_upload = False
 
-    sent = await send_response(
+    await send_response(
         cast(discord.abc.Messageable, channel),
         "The files are attached.",
         output_files=[str(fitting), str(oversized)],
@@ -201,8 +201,6 @@ async def test_send_response_omits_only_files_over_guild_limit(tmp_path: Path) -
     assert channel.calls[0]["content"].endswith("The files are attached.")
     uploaded = channel.calls[0]["files"]
     assert [Path(file.fp.name).name for file in uploaded] == ["fits.zip"]
-    assert sent.attachment_plan is not None
-    assert [item.filename for item in sent.attachment_plan.omitted] == ["too-large.zip"]
 
 
 @pytest.mark.asyncio

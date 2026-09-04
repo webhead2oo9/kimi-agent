@@ -1198,9 +1198,6 @@ class InteractionRouterImpl:
 
     # ---- ownership -----------------------------------------------------------
 
-    def owned_commands(self) -> tuple[str, ...]:
-        return tuple(f"{g}.{n}" if g else n for g, n in self._commands)
-
     def guild_command_ids(self) -> tuple[int, ...]:
         return tuple(self._guild_top_names)
 
@@ -1249,7 +1246,6 @@ class InteractionRuntime:
     _sync_operations: set[asyncio.Task[Any]] = field(default_factory=set, init=False)
     _scope_discovery_failure: str | None = field(default=None, init=False)
     _scope_discovery_failure_modules: frozenset[str] = field(default_factory=frozenset, init=False)
-    _scope_discovery_retry_attempt: int = field(default=0, init=False)
     _scope_discovery_exhausted: bool = field(default=False, init=False)
     _scope_discovery_retry_task: asyncio.Task[None] | None = field(default=None, init=False)
     _reported_sync_health: dict[str, tuple[HealthState, str]] = field(
@@ -1285,30 +1281,6 @@ class InteractionRuntime:
         for guild_id in self._sync_failures:
             self._sync_failure_modules[guild_id] = self._modules_for_guild(guild_id)
         self._publish_sync_health()
-
-    @property
-    def command_sync_degraded(self) -> bool:
-        """Whether one or more guild command scopes still need reconciliation."""
-
-        return bool(self._sync_failures) or self._scope_discovery_failure is not None
-
-    @property
-    def command_sync_failures(self) -> Mapping[int, str]:
-        """Bounded, non-secret failure summaries keyed by guild ID."""
-
-        return dict(self._sync_failures)
-
-    @property
-    def command_sync_exhausted_guild_ids(self) -> tuple[int, ...]:
-        """Guilds whose current bounded automatic retry series is exhausted."""
-
-        return tuple(sorted(self._sync_exhausted))
-
-    @property
-    def command_scope_discovery_failure(self) -> str | None:
-        """Bounded non-secret summary when persisted scope discovery is unavailable."""
-
-        return self._scope_discovery_failure
 
     @contextmanager
     def _track_sync_operation(self) -> Iterator[None]:
@@ -1638,14 +1610,12 @@ class InteractionRuntime:
             self._scope_discovery_failure_modules | self._modules_with_guild_commands()
         )
         if reset_attempts:
-            self._scope_discovery_retry_attempt = 0
             self._scope_discovery_exhausted = False
         self._publish_sync_health()
 
     def _clear_scope_discovery_failure(self) -> None:
         self._scope_discovery_failure = None
         self._scope_discovery_failure_modules = frozenset()
-        self._scope_discovery_retry_attempt = 0
         self._scope_discovery_exhausted = False
         task = self._scope_discovery_retry_task
         if task is not None and task is not asyncio.current_task() and not task.done():
@@ -1785,12 +1755,11 @@ class InteractionRuntime:
         task.add_done_callback(self._scope_discovery_retry_done)
 
     async def _retry_scope_discovery(self) -> None:
-        for attempt, delay in enumerate(self.sync_retry_delays, start=1):
+        for delay in self.sync_retry_delays:
             await asyncio.sleep(max(0.0, delay))
             async with self._sync_lock:
                 if self._closed or not self._live or self._scope_discovery_failure is None:
                     return
-                self._scope_discovery_retry_attempt = attempt
                 try:
                     tracked = set(await self._tracked_guild_ids())
                 except Exception as exc:

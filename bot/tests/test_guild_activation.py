@@ -12,6 +12,7 @@ from app.modules import ModuleManager
 from config.fragments.guild_config import server_setup_activation
 from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
+from tests.app_state_probes import guild_activation_task
 
 
 class FakeBot:
@@ -117,13 +118,13 @@ async def test_module_guild_settings_refresh_notifies_on_event_loop(tmp_path: Pa
 async def test_close_cancels_activation_refresher(tmp_path: Path) -> None:
     service = _service(tmp_path, refresh_seconds=60.0)
     service.start()
-    task = service.refresh_task
+    task = guild_activation_task(service)
     assert task is not None
 
     await service.close()
 
     assert task.cancelled()
-    assert service.refresh_task is None
+    assert guild_activation_task(service) is None
 
 
 @pytest.mark.asyncio

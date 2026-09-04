@@ -143,7 +143,7 @@ def read_guild_frontmatter(
     fragment = (config_dir or paths.default_config_dir()) / "servers" / f"{guild_id}.md"
     try:
         text = fragment.read_text(encoding="utf-8")
-    except FileNotFoundError, OSError:
+    except OSError, UnicodeError:
         return None
     meta, _body = split_frontmatter(text)
     return meta, str(fragment)

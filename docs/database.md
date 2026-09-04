@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v6. If you upgrade to a newer release, the bot runs the right migrations at startup. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
+The current schema version is v7. A v6 database upgrades automatically at startup. Schemas v1-v5 must first be opened by the audited v1 bridge revision `dfd01ce006d0553c8960de0760fcb5136300c718`, which brings them to v6; this release then performs the v7 upgrade. That exact revision is the repository state immediately before the v2 compatibility reset, so the bridge remains obtainable without keeping its migration chain in v2. If you try to start an older release against a newer database, the bot refuses rather than guess at unknown tables. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -72,7 +72,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry upgrades supported lower versions.
+- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry upgrades the supported previous version.
 - Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -80,21 +80,21 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 ## Schema upgrades
 
-`Database.connect()` creates the current schema for an empty database and writes one `schema_version` row per version. A database on a supported lower version runs each registered migration in order.
+`Database.connect()` creates the current schema for an empty database and records the v7 baseline as a single `schema_version` row. An existing v6 database runs the v7 migration and retains its earlier ledger rows.
 
 The current registry:
 
-| Version | Migration name | What it adds |
+| Version | Migration name | What it changes |
 |---:|---|---|
-| v1 → v2 | `coding_task_context_inputs` | Durable worker input metadata for coding tasks. |
-| v2 → v3 | `video_understanding_sessions` | Video session bookkeeping, interactions, provider files, and deletion outboxes. |
-| v3 → v4 | `provider_circuit_breakers` | Persistent provider circuit breaker. |
-| v4 → v5 | `core_runtime_tables` | Canonical config-proposal, module scheduler, command-scope, and module-ledger tables. |
-| v5 → v6 | `video_session_catalog_model` | Catalog model identity for existing and new video sessions, backfilled from the stored upstream model. |
+| v6 → v7 | `core_v7_baseline` | Canonical transcript content, removal of obsolete control-proposal tables, and expiration of legacy video sessions. |
 
-Each version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema and version stamp unchanged.
+The v7 transcript rewrite converts legacy strings and provider-native `input_text`/`input_image` parts to the stored `text`/`image` list format. It preserves the other fields in each message payload. Invalid JSON or a non-object payload aborts and rolls back the entire upgrade with the offending message row id; restore a known-good backup or repair the corrupt row before retrying.
 
-Migrations only move forward and only run at startup. Back up before you upgrade a real instance. Rolling back means restoring that older release's database backup; an older process can't open a newer schema safely. The bot rejects a non-empty database without a schema stamp, and rejects any database stamped above its supported version.
+The migration also deletes every active v6 video session. Cascading deletion queues its Gemini Interaction and attached Files API identifiers in the durable provider-cleanup outboxes, so remote cleanup still runs after startup. Users must start a new video session after the upgrade. Unattached uploads remain tracked for ordinary cleanup.
+
+Each supported version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema, transcript rows, video sessions, cleanup outboxes, and version stamp unchanged.
+
+Migrations only move forward and only run at startup. Back up before you upgrade a real instance. Rolling back means restoring that older release's database backup; an older process can't open a newer schema safely. The bot rejects a non-empty database without a schema stamp, any database stamped above its supported version, and schemas older than v6. For v1-v5, install and start the audited v1 bridge revision `dfd01ce006d0553c8960de0760fcb5136300c718` once, confirm it reaches v6, stop it, take another backup, and then install this release.
 
 Before moving or restoring the database, stop the bot and copy the main file with its `-wal` and `-shm` sidecars, or use SQLite's backup API. Don't edit `schema_version` by hand; the version ledger and the actual schema have to agree.
 
@@ -128,7 +128,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`auto_retain_watermarks`** records the highest `messages.id` flushed to Hindsight per (conversation, user). Advancing a watermark without retaining is how opt-out, trivial-content, and forget-me slices are permanently skipped.
 - **`privacy_deletion_requests`** holds the durable authorization for a confirmed `/privacy` deletion: one coalesced row per user with the widest requested scope, a generation counter, and a unique token. The token stops a worker holding stale authorization from completing a superseded request after a crash or race. It contains no message content.
 - **`user_memory_bank_states`** is conservative local knowledge that a user's remote Hindsight bank may exist. The flag is written *before* any create or retain attempt and cleared only after a confirmed delete, so disabling the backend can't hide a bank from the privacy workflow.
-- **`video_sessions`** holds one actor/root/guild-scoped specialist session: opaque local handle, source kind, safe display filename/relative locator and byte size for uploads (or canonical YouTube URL/video id), the pricing identity (`models.yaml` catalog name for new sessions or the legacy upstream ID backfilled during a v6 migration), the resolved upstream model ID used to continue the chain, latest Gemini Interaction id, count, and expiry. It stores no video bytes, provider capability URLs, questions, or answers.
+- **`video_sessions`** holds one actor/root/guild-scoped specialist session: opaque local handle, source kind, safe display filename/relative locator and byte size for uploads (or canonical YouTube URL/video id), the `models.yaml` catalog name used for pricing, the resolved upstream model ID used to continue the chain, latest Gemini Interaction id, count, and expiry. It stores no video bytes, provider capability URLs, questions, or answers.
 - **`video_interactions`** records every Gemini Interaction id in each session, so deleting only the latest turn can't strand provider state.
 - **`video_provider_files`** reserves each client-chosen Gemini Files API name before upload and later associates it with one session. Unattached rows let startup and periodic cleanup recover from a crash between upload and session creation; the cleanup interval is `TRANSCRIPT_RETENTION_SWEEP_INTERVAL_SECONDS` (one hour by default).
 - **`video_interaction_deletions`** and **`video_provider_file_deletions`** are content-free provider deletion outboxes. Triggers fill them before local session and cascade deletion; Interaction deletion gates the backing File delete. Failed attempts use a capped one-minute-to-six-hour exponential delay. Retry-ready rows sort ahead of delayed failures, and the attempt count never discards privacy cleanup metadata.
@@ -137,7 +137,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 
 - **`coding_tasks`** holds the durable objective, owner/root/workspace scope, deadline, status, plan, checkpoint, Discord delivery ids, terminal result, conversation context and input-file references supplied to the worker, and the short-lived handoff hold that prevents execution before reply routing is settled.
 - **`coding_task_events`** is the append-only task journal for steering, milestones, checkpoints, recovery, cancellation, and terminal transitions.
-- **`coding_command_jobs`** records managed sandbox job requests and bounded terminal stdout/stderr. Active jobs become `interrupted` after a restart, so an agent can't unknowingly replay a command whose outcome is uncertain.
+- **`coding_command_jobs`** records managed sandbox job requests, exact systemd unit names, and bounded terminal stdout/stderr. Startup confirms every persisted active unit is inactive before privacy replay or retention can delete these identifiers, even when coding is disabled or unavailable in the new process. Active jobs then become `interrupted`, so an agent can't unknowingly replay a command whose outcome is uncertain.
 - **`usage_ledger`** holds one row per completed model request. See [Model, paid-tool, and bounded-tool usage](#model-paid-tool-and-bounded-tool-usage).
 - **`paid_usage_ledger`** holds one row per non-LLM tool backend that actually charged money. Same section.
 - **`usage_markers`** stores zero-cost per-user counters for bounded tool surfaces. Code execution uses it for the rolling network-run budget. Rows hold attribution, surface/operation, units, and time, never code or tool output.
@@ -151,14 +151,14 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`module_scheduler_runner`** is the module scheduler's single lease: one row (`token`, `leased_until`) that the running process renews every tick and releases on close. A second bot process pointed at the same file pauses its scheduler instead of running jobs twice.
 - **`module_scheduler_jobs`** stores durable module jobs (`module_name`, `job_key`, `handler`, `run_at`, `interval_seconds`, lease columns, attempt count, and last error). Core owns the table; modules reach it through `ctx.scheduler`.
 - **`module_command_guilds`** holds only the guild IDs where modules have published guild-scoped commands. After a module is disabled or removed, core uses this set to delete its stale Discord commands, and a row is removed once a sync leaves that guild with no module commands.
-- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back. Older databases may still contain `control_proposals` and `control_proposal_events`; v5 leaves them in place but never reads or creates them.
+- **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back. The v7 migration removes the obsolete `control_proposals` and `control_proposal_events` tables.
 - **`module_schema_versions`** records the latest applied schema version for each module that has run migrations.
 
 ## Model, paid-tool, and bounded-tool usage
 
 Every completed model request writes one row to `usage_ledger`. A single Discord interaction may make several model requests: the reply, compaction summaries, image descriptions, persona compilation. They share a `turn_id` so they can be reported as one interaction.
 
-Each row records the user, channel, server, serving model, pricing-model name, purpose, token counts, timestamp, and an optional estimated cost. It does not store prompts or model responses. Cost estimates use the `pricing` rates for the exact catalog name in `config/models.yaml`, or an unambiguous matching upstream model ID; if those rates aren't configured, the usage stays unpriced. Video Interactions use this same pipeline with either the new session's catalog identity or a migrated session's upstream-ID fallback pinned to the session.
+Each row records the user, channel, server, serving model, pricing-model name, purpose, token counts, timestamp, and an optional estimated cost. It does not store prompts or model responses. Cost estimates use the `pricing` rates for the exact catalog name in `config/models.yaml`, or an unambiguous matching upstream model ID; if those rates aren't configured, the usage stays unpriced. Video Interactions use the catalog identity pinned to the session.
 
 Rows save as each model request finishes, so if a later request fails or the interaction times out, usage from the completed requests is still recorded. The `/usage` command summarizes this data over time.
 

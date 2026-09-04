@@ -4,21 +4,12 @@ set -eu
 
 VERSION=1.10.2
 MERMAID_VERSION=11.17.2
-EXPECTED_RUNTIME_DIR=/opt/kimi/betterwright
-RUNTIME_INPUT=${1:-$EXPECTED_RUNTIME_DIR}
+RUNTIME_DIR=/opt/kimi/betterwright
 NODE_BIN=${NODE_BIN:-/usr/bin/node}
 NPM_BIN=${NPM_BIN:-/usr/bin/npm}
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-[ "$#" -le 1 ] || {
-  echo "usage: $0 [/opt/kimi/betterwright]" >&2
-  exit 2
-}
-RUNTIME_DIR=$(realpath -m -- "$RUNTIME_INPUT") || {
-  echo "could not resolve runtime directory: $RUNTIME_INPUT" >&2
-  exit 2
-}
-[ "$RUNTIME_DIR" = "$EXPECTED_RUNTIME_DIR" ] || {
-  echo "refusing runtime directory outside $EXPECTED_RUNTIME_DIR: $RUNTIME_INPUT" >&2
+[ "$#" -eq 0 ] || {
+  echo "usage: $0" >&2
   exit 2
 }
 PARENT_DIR=$(dirname -- "$RUNTIME_DIR")

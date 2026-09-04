@@ -625,12 +625,11 @@ async def test_live_reply_bridge_closes_once_replies_persist(
     """The send-to-persist bridge must not outlive the durable write."""
     from app.live_reply_routes import (
         LiveReplyRoute,
-        clear_live_replies,
         lookup_live_reply,
         register_live_reply,
+        unregister_live_reply,
     )
 
-    clear_live_replies()
     try:
         register_live_reply(
             "assistant-1",
@@ -649,4 +648,4 @@ async def test_live_reply_bridge_closes_once_replies_persist(
         await runner.run(_invocation(), adapter=adapter)
         assert lookup_live_reply("assistant-1") is None
     finally:
-        clear_live_replies()
+        unregister_live_reply("assistant-1")

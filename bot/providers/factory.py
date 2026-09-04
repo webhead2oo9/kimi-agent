@@ -54,7 +54,6 @@ class ProviderConfig:
     openrouter_app_name: str = DEFAULT_BOT_NAME
     user_agent: str = DEFAULT_BOT_NAME
     codex_token_file: str = "secrets/codex-auth.json"
-    codex_model: str = "gpt-5.5"
     codex_reasoning_effort: str = "high"
     codex_image_quality: str = "auto"
     codex_image_format: str = "png"
@@ -139,7 +138,7 @@ def create_provider(config: ProviderConfig) -> LLMProvider:
             return CodexProvider(
                 auth_manager=auth_manager,
                 transport=transport,
-                model=config.codex_model or config.model or "gpt-5.5",
+                model=config.model,
                 reasoning_effort=config.codex_reasoning_effort,
                 image_quality=config.codex_image_quality,
                 image_format=config.codex_image_format,

@@ -601,7 +601,7 @@ class HangingStream:
 
 
 def test_openai_compat_aborts_stalled_stream_as_availability_error() -> None:
-    from providers.errors import is_provider_availability_error
+    from providers.errors import provider_failure_disposition
 
     class StallCompletions:
         async def create(self, **kwargs: Any) -> Any:
@@ -635,7 +635,7 @@ def test_openai_compat_aborts_stalled_stream_as_availability_error() -> None:
 
     exc = asyncio.run(run())
     assert isinstance(exc, TimeoutError)
-    assert is_provider_availability_error(exc)
+    assert provider_failure_disposition(exc) == "retry"
 
 
 def test_openai_compat_slow_but_moving_stream_outlives_stall_timeout() -> None:

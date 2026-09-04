@@ -31,7 +31,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace, run_bounded
@@ -366,35 +366,6 @@ class DurableScheduler:
         elif outcome.error is not None:
             raise outcome.error
 
-    @property
-    def paused_for_foreign_runner(self) -> bool:
-        return self._foreign_paused
-
-    async def run_due(self, *, now: float | None = None, limit: int = 50) -> int:
-        """Claim and run due jobs one at a time, inline; returns how many ran.
-
-        This is the serial path used by tests and by callers that want a
-        deterministic tick. It holds the same runner lease and shares the
-        one-job-per-module bookkeeping with the runner loop, so it never runs
-        while another process owns the scheduler or overlaps a running job.
-        """
-        now = self._clock() if now is None else now
-        if not await self._acquire_runner_lease(now):
-            self._enter_foreign_pause()
-            return 0
-        self._exit_foreign_pause()
-        ran = 0
-        for _ in range(limit):
-            row = await self._claim_next(now)
-            if row is None:
-                break
-            # Tracked like a runner-started job so close() can cancel it.
-            task = asyncio.create_task(self._run_claimed(row), name=f"module-job:{row.job_id}")
-            self._running[row.job_id] = task
-            await task
-            ran += 1
-        return ran
-
     async def _run_loop(self) -> None:
         while not self._closed:
             try:
@@ -510,8 +481,8 @@ class DurableScheduler:
         """Lease the next due job whose module has nothing running; reserve its module.
 
         The reservation in ``_running_modules`` is made under the same write
-        lock as the lease, so two claimants (the runner loop and ``run_due``)
-        cannot both take a job for one module. ``_run_claimed`` releases it.
+        lock as the lease, so overlapping ticks cannot both take a job for one
+        module. ``_run_claimed`` releases it.
         """
         token = f"{now:.6f}:{self._rng.random():.12f}"
         try:
@@ -611,9 +582,8 @@ class DurableScheduler:
     async def _heartbeat(self, row: _Row) -> None:
         """Keep both the job lease and this process's runner lease alive while a job runs.
 
-        Renewing the runner lease here, not only in ``_tick``, means a long
-        job started from ``run_due`` (which has no loop ticking beside it)
-        still keeps other processes out.
+        Renewing the runner lease here, not only in ``_tick``, keeps other
+        processes out while a long job is still running.
         """
         interval = max(0.05, self._lease_seconds * HEARTBEAT_FRACTION)
         while True:
@@ -740,5 +710,3 @@ __all__ = [
     "DurableScheduler",
     "ModuleSchedulerView",
 ]
-
-_ = field  # dataclasses.field retained for future per-view state

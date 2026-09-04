@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from agent.activity import ActivityUpdate, tool_display_label
-from branding import DEFAULT_BOT_NAME
 
 if TYPE_CHECKING:
     from tools.embeds import EmbedSpec
@@ -31,7 +30,6 @@ ACTIVITY_IDLE_NUDGE_SECONDS = 30.0
 # elapsed counter so a long single step reads as alive, not hung. 0 disables the
 # heartbeat after the initial stale indicator.
 ACTIVITY_STALE_HEARTBEAT_SECONDS = 15.0
-DEFAULT_TEXT_INVOCATION_NAME = DEFAULT_BOT_NAME
 
 
 @dataclass(frozen=True)
@@ -61,8 +59,6 @@ class SentMessages(list[discord.Message]):
         self.delivery_failed = False
         self.delivery_permanent = False
         self.delivery_error = ""
-        self.attachment_plan: AttachmentDeliveryPlan | None = None
-        self.prepared_content = ""
 
 
 def _bot_invocation_names(
@@ -149,8 +145,8 @@ def is_eligible_to_respond(
     message: discord.Message,
     *,
     bot_user: discord.ClientUser | None,
+    allowed_guilds: set[int],
     allowed_channels: set[int] | None = None,
-    allowed_guilds: set[int] | None = None,
 ) -> bool:
     """Author/type/guild/channel gates that must hold before ANY response.
 
@@ -158,9 +154,8 @@ def is_eligible_to_respond(
     Sharing these gates prevents self-reply loops and applies guild/channel
     eligibility consistently across both entry paths.
 
-    ``allowed_guilds=None`` disables the guild gate for isolated callers.
-    Runtime always supplies a set, including an empty set when no guild has
-    been activated, so an invited but unconfigured guild fails closed.
+    Callers must supply the current active-guild set. An empty set rejects
+    every guild, so an invited but unconfigured guild fails closed.
     """
     if message.author == bot_user:
         return False
@@ -168,10 +163,9 @@ def is_eligible_to_respond(
         return False
     if message.type not in (discord.MessageType.default, discord.MessageType.reply):
         return False
-    if allowed_guilds is not None:
-        guild = getattr(message, "guild", None)
-        if guild is not None and guild.id not in allowed_guilds:
-            return False
+    guild = getattr(message, "guild", None)
+    if guild is not None and guild.id not in allowed_guilds:
+        return False
     if allowed_channels:
         cid = _channel_id_for_allowlist(message)
         if cid is not None and cid not in allowed_channels:
@@ -212,7 +206,7 @@ def is_user_only_integration(interaction: discord.Interaction) -> bool:
 def is_allowed_guild_interaction(
     interaction: discord.Interaction,
     *,
-    allowed_guilds: set[int] | None = None,
+    allowed_guilds: set[int],
 ) -> bool:
     """Return whether an app-command interaction passes the guild gate.
 
@@ -222,8 +216,6 @@ def is_allowed_guild_interaction(
     was never added to that guild, so the gate does not apply. Only
     guild-integration invocations (and the ambiguous/unknown ones) are gated.
     """
-    if allowed_guilds is None:
-        return True
     if is_user_only_integration(interaction):
         return True
     guild_id = getattr(interaction, "guild_id", None)
@@ -236,8 +228,8 @@ def should_respond(
     bot_user: discord.ClientUser | None,
     bot_name: str,
     responds_without_mention: Callable[[int], bool],
+    allowed_guilds: set[int],
     allowed_channels: set[int] | None = None,
-    allowed_guilds: set[int] | None = None,
 ) -> bool:
     if not is_eligible_to_respond(
         message,
@@ -1100,8 +1092,6 @@ async def send_prepared_response(
     chunks = chunk_message(content)
     reference = _reply_reference(reference)
     sent_messages = SentMessages()
-    sent_messages.attachment_plan = plan
-    sent_messages.prepared_content = content
     suppress_notice_mentions = bool(attachment_delivery_notice(plan))
     for i, chunk in enumerate(chunks):
         first_message_files: list[Path] = []

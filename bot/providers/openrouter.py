@@ -76,9 +76,6 @@ class OpenRouterProvider(OpenAIChatProvider):
             headers["HTTP-Referer"] = self._app_url
         if self._app_name:
             headers["X-OpenRouter-Title"] = self._app_name
-            # Keep the legacy title header during migration for deployments that
-            # still inspect it downstream.
-            headers["X-Title"] = self._app_name
         # Router metadata is opt-in. The response parser retains only normalized
         # attribution fields, never the full provider payload.
         headers["X-OpenRouter-Metadata"] = "enabled"

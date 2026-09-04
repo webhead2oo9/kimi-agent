@@ -9,6 +9,7 @@ import pytest
 
 from app.root_locks import RootLockPool
 from storage.conversations import ConversationStore
+from tests.app_state_probes import root_lock_state
 
 
 @pytest.mark.asyncio
@@ -16,11 +17,11 @@ async def test_root_lock_evicts_entry_after_last_holder_releases() -> None:
     locks = RootLockPool()
 
     async with locks.hold("root:1"):
-        snapshot = locks.snapshot()
+        snapshot = root_lock_state(locks)
         assert snapshot.keys == ("root:1",)
         assert snapshot.refcounts == {"root:1": 1}
 
-    snapshot = locks.snapshot()
+    snapshot = root_lock_state(locks)
     assert snapshot.keys == ()
     assert snapshot.refcounts == {}
 
@@ -45,13 +46,13 @@ async def test_concurrent_same_root_acquirers_share_one_lock() -> None:
     second = asyncio.create_task(waiter())
     await asyncio.sleep(0)
 
-    snapshot = locks.snapshot()
+    snapshot = root_lock_state(locks)
     assert snapshot.keys == ("root:1",)
     assert snapshot.refcounts == {"root:1": 2}
 
     release.set()
     await asyncio.gather(first, second)
-    snapshot = locks.snapshot()
+    snapshot = root_lock_state(locks)
     assert snapshot.keys == ()
     assert snapshot.refcounts == {}
 
@@ -64,7 +65,7 @@ async def test_root_lock_evicts_entry_when_holder_raises() -> None:
         async with locks.hold("root:1"):
             raise RuntimeError("boom")
 
-    snapshot = locks.snapshot()
+    snapshot = root_lock_state(locks)
     assert snapshot.keys == ()
     assert snapshot.refcounts == {}
 
@@ -90,13 +91,13 @@ async def test_user_conversation_roots_are_acquired_in_sorted_order() -> None:
 
     async with locks.hold_user_conversations("alice", store):
         assert acquired == ["root:a", "root:m", "root:z"]
-        assert locks.snapshot().refcounts == {
+        assert root_lock_state(locks).refcounts == {
             "root:a": 1,
             "root:m": 1,
             "root:z": 1,
         }
 
-    assert locks.snapshot().keys == ()
+    assert root_lock_state(locks).keys == ()
 
 
 @pytest.mark.asyncio
@@ -151,6 +152,6 @@ async def test_same_task_reentrant_hold_does_not_self_deadlock() -> None:
 
     await asyncio.wait_for(outer(), timeout=5.0)
     assert events == ["outer", "inner"]
-    snapshot = locks.snapshot()
+    snapshot = root_lock_state(locks)
     assert snapshot.keys == ()
     assert snapshot.refcounts == {}

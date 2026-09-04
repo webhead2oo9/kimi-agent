@@ -12,7 +12,7 @@ import math
 import random
 import re
 import time
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import quote, urlsplit
 
 import aiohttp
@@ -152,6 +152,32 @@ class _ResponseBodyLimitError(ValueError):
 class VideoInteractionError(RuntimeError):
     """A sanitized Gemini transport or response failure."""
 
+    @overload
+    def __init__(
+        self,
+        message: str,
+        *,
+        interaction_id: str = "",
+        model: str = "",
+        usage: None = None,
+        usage_present: Literal[False] = False,
+        file_name: str = "",
+        catalog_model: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        message: str,
+        *,
+        interaction_id: str = "",
+        model: str = "",
+        usage: VideoUsage,
+        usage_present: bool,
+        file_name: str = "",
+        catalog_model: str | None = None,
+    ) -> None: ...
+
     def __init__(
         self,
         message: str,
@@ -161,13 +187,19 @@ class VideoInteractionError(RuntimeError):
         usage: VideoUsage | None = None,
         usage_present: bool | None = None,
         file_name: str = "",
-        catalog_model: str = "",
+        catalog_model: str | None = None,
     ) -> None:
         super().__init__(message)
+        if usage is not None and usage_present is None:
+            raise TypeError("usage_present is required when video usage is provided")
+        if usage is None and usage_present not in (None, False):
+            raise ValueError("usage_present cannot be true without video usage")
+        if catalog_model == "":
+            raise ValueError("catalog_model must not be empty")
         self.interaction_id = interaction_id
         self.model = model
         self.usage = usage
-        self.usage_present = usage is not None if usage_present is None else usage_present
+        self.usage_present = False if usage_present is None else usage_present
         self.file_name = file_name
         self.catalog_model = catalog_model
 

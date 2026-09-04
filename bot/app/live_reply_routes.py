@@ -56,7 +56,3 @@ def unregister_live_reply(discord_message_id: str) -> None:
     indefinitely.
     """
     _routes.pop(discord_message_id, None)
-
-
-def clear_live_replies() -> None:
-    _routes.clear()

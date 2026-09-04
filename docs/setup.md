@@ -599,6 +599,13 @@ systemctl --user is-active kimi-agent.service
 
 ## 16. Upgrading
 
+Upgrading an existing installation from v1 to v2 is a one-time breaking
+migration. Follow [Upgrading from v1 to v2](upgrading-to-v2.md) before using the
+routine steps below. In particular, an upgrade from an older database requires
+schema v6, v2 requires v2 extension packages, and it cannot be rolled back
+without restoring the pre-upgrade backup. Fresh databases and databases already
+at v7 start normally.
+
 ### 1. Stop the service
 ```sh
 systemctl --user stop kimi-agent.service
@@ -610,12 +617,30 @@ If you want a safety net:
 umask 077
 backup_dir="$HOME/kimi-agent-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 700 "$backup_dir"
-tar -C "$HOME" -czf "$backup_dir/private-state.tar.gz" \
+backup_items=()
+for item in \
   .config/kimi-agent \
   .config/systemd/user/kimi-agent.service \
-  .local/share/kimi-agent
+  .config/systemd/user/kimi-agent.service.d \
+  .local/share/kimi-agent \
+  .cache/kimi-agent \
+  .local/state/kimi-agent
+do
+  if [[ -e "$HOME/$item" ]]; then
+    backup_items+=("$item")
+  fi
+done
+if (( ${#backup_items[@]} == 0 )); then
+  echo "No standard deployment state found; identify custom paths before continuing" >&2
+  exit 1
+fi
+tar -C "$HOME" -czf "$backup_dir/private-state.tar.gz" "${backup_items[@]}"
 chmod 600 "$backup_dir/private-state.tar.gz"
 ```
+
+Back up any deployment-owned environment, credential, database, workspace,
+attachment, skill, browser-profile, or log path outside these standard trees
+separately, preserving its original path and permissions.
 
 ### 3. Update the code
 Make sure your checkout is clean, then pull:

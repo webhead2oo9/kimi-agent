@@ -46,7 +46,3 @@ def video_media_type(filename: str, declared: str | None) -> str | None:
     # Discord sometimes omits or generalizes Content-Type. A recognized suffix
     # is still useful, while the Files API performs the authoritative decode.
     return from_suffix
-
-
-def supported_video_suffixes() -> tuple[str, ...]:
-    return tuple(sorted(_VIDEO_MIME_BY_SUFFIX))

@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -60,7 +59,6 @@ from app.threads import ThreadHandoffManager
 from app.memory import MemoryManager
 from app.moderation import build_moderation_service
 from app.providers import (
-    ContextWindowWarning,
     ProviderManager,
     build_provider_manager,
     codex_startup_check,
@@ -69,14 +67,14 @@ from app.providers import (
 from utils.privacy_barrier import UserPrivacyBarrier
 from app.tools import RuntimeTools, build_runtime_tools
 from config import paths
-from config.operator_settings import apply_operator_settings, settings_values
+from config.operator_settings import apply_operator_settings
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import (
     is_allowed_guild_interaction,
 )
 from skills.loader import SkillsIndexCache
-from app.learn_log import LearnLogFeed, build_learn_log_feed
+from app.learn_log import build_learn_log_feed
 from storage.blocked_users import BlockedUserStore
 from storage.coding_tasks import CodingTaskStore
 from storage.image_distillations import ImageDistillationStore
@@ -188,7 +186,6 @@ async def _reject_unready_interaction(interaction: discord.Interaction) -> None:
 @dataclass
 class KimiApplication:
     settings: Settings
-    inherited_settings_values: Mapping[str, Any]
     bot: KimiBot
     _trust_resolver: TrustResolver = field(repr=False)
     discord_gateway: DiscordGateway
@@ -197,7 +194,6 @@ class KimiApplication:
     _tools: RuntimeTools = field(repr=False)
     _database: Database = field(repr=False)
     _repository_bundle: AppRepositories = field(repr=False)
-    learn_log: LearnLogFeed | None = None
     _privacy_barrier: UserPrivacyBarrier = field(default_factory=UserPrivacyBarrier, repr=False)
     _active_operations: ActiveOperationRegistry = field(
         default_factory=ActiveOperationRegistry, repr=False
@@ -354,14 +350,6 @@ class KimiApplication:
         )
 
     @property
-    def db_initialized(self) -> bool:
-        return self.lifecycle.db_initialized
-
-    @property
-    def gateway_ready(self) -> bool:
-        return self.lifecycle.gateway_ready
-
-    @property
     def repositories(self) -> AppRepositories:
         lifecycle = getattr(self, "lifecycle", None)
         return self._repository_bundle if lifecycle is None else lifecycle.repositories
@@ -428,12 +416,7 @@ class KimiApplication:
                 "and the referenced .env secret values."
             )
             sys.exit(1)
-        context_window_warnings: Callable[[], list[ContextWindowWarning]] = getattr(
-            self.provider_manager,
-            "context_window_warnings",
-            list,
-        )
-        for warning in context_window_warnings():
+        for warning in self.provider_manager.context_window_warnings():
             log.warning(
                 "COMPACTION_TRIGGER_TOKENS (%d) + REACT_MAX_TOKENS (%d) exceeds "
                 "context_window (%d) for chat model %s (%s); lower the trigger or "
@@ -446,11 +429,11 @@ class KimiApplication:
             )
         codex_startup_check(
             self.settings,
-            model_config=getattr(self.provider_manager, "model_config", None),
+            model_config=self.provider_manager.model_config,
         )
         xai_startup_check(
             self.settings,
-            model_config=getattr(self.provider_manager, "model_config", None),
+            model_config=self.provider_manager.model_config,
         )
         log.info("Starting %s...", self.settings.bot_name)
         self.bot.run(
@@ -511,12 +494,6 @@ def build_app(settings: Settings) -> KimiApplication:
     # explicitly: the process-wide default still points at the checkout here,
     # and reading the overlay from there ignored every production settings.md.
     apply_operator_settings(settings, config_dir=Path(settings.config_dir).resolve())
-    inherited_settings_values = MappingProxyType(
-        {
-            field: tuple(value) if isinstance(value, list) else value
-            for field, value in settings_values(settings).items()
-        }
-    )
     # Point the process-wide config-dir default at the fully resolved instance
     # directory before anything reads prompt or fragment paths.
     paths.set_default_config_dir(Path(settings.config_dir).resolve())
@@ -601,19 +578,16 @@ def build_app(settings: Settings) -> KimiApplication:
     )
     application = KimiApplication(
         settings=settings,
-        inherited_settings_values=inherited_settings_values,
         bot=bot,
         _trust_resolver=trust_resolver,
         discord_gateway=gateway,
         _provider_manager=provider_manager,
         _memory_manager=memory_manager,
         _moderation_service=moderation_service,
-        learn_log=learn_log,
         _tools=build_runtime_tools(
             settings,
             gateway,
             provider_manager,
-            memory_manager,
             registry=registry,
             on_learn=learn_log.record,
             get_preference_store=lambda: application.preference_store,
@@ -752,7 +726,6 @@ def build_app(settings: Settings) -> KimiApplication:
         response_sender=application.response_sender.send,
         strip_message_invocation=application.message_controller.strip_message_invocation,
         cleanup_wait_seconds=settings.coding_stop_cleanup_wait_seconds,
-        global_staff_ids=frozenset(settings.staff_ids),
         conversation_store=repositories.conversation_store,
     )
     lifecycle = ApplicationLifecycle(

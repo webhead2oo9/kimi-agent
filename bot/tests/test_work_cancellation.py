@@ -61,13 +61,30 @@ class _CodingTasks:
         results: list[tuple[list[str], bool]] | None = None,
         *,
         running: bool = True,
+        resolved_task: object | None = None,
+        conversation_result: tuple[list[str], bool] | None = None,
     ) -> None:
         self._events = events
         self._results = list(results or [([], True)])
         self.running = running
+        self.resolved_task = resolved_task
+        self.conversation_result = conversation_result or (["task-b"], True)
         self.calls: list[dict[str, object]] = []
+        self.control_calls: list[dict[str, object]] = []
+        self.cancelled_task_ids: list[str] = []
         self.conversation_cancels: list[list[int]] = []
         self.store = SimpleNamespace()
+
+    async def resolve_task_for_control(self, **kwargs: object) -> object | None:
+        self.control_calls.append(kwargs)
+        return self.resolved_task
+
+    async def cancel_task(self, task_id: str, *, reason: str = "") -> bool:
+        self.cancelled_task_ids.append(task_id)
+        return True
+
+    async def cleanup_complete(self, _task_id: str) -> bool:
+        return True
 
     async def cancel_for_scope(self, **kwargs: object) -> tuple[list[str], bool]:
         self._events.append("coding")
@@ -76,11 +93,11 @@ class _CodingTasks:
 
     async def cancel_for_conversations(
         self, conversation_ids: Collection[int], *, reason: str = ""
-    ) -> list[str]:
+    ) -> tuple[list[str], bool]:
         ids = sorted(conversation_ids)
         self._events.append(f"coding-conversations:{ids}")
         self.conversation_cancels.append(ids)
-        return ["task-b"]
+        return self.conversation_result
 
 
 class _Gateway:
@@ -138,7 +155,6 @@ def _coordinator(
         response_sender=send_response,
         strip_message_invocation=strip_invocation,
         cleanup_wait_seconds=0.25,
-        global_staff_ids=frozenset(),
         conversation_store=cast(Any, conversation_store),
     )
 
@@ -233,6 +249,38 @@ async def test_dual_installed_stop_cancels_personal_and_guild_scopes() -> None:
         (USER_APP_SCOPE_CHANNEL_ID, "userchat:42"),
         ("555", None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_task_id_stop_uses_shared_resolver_with_logical_user_app_scope() -> None:
+    events: list[str] = []
+    task = SimpleNamespace(id="12345678aaaaaaaaaaaaaaaaaaaaaaaa")
+    coding = _CodingTasks(events, resolved_task=task)
+    coordinator = _coordinator(events=events, coding=coding)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        channel_id=555,
+        guild_id=777,
+        is_user_integration=lambda: True,
+        is_guild_integration=lambda: False,
+    )
+
+    result = await coordinator.handle_stop_interaction(
+        cast(discord.Interaction, interaction),
+        False,
+        "12345678",
+    )
+
+    assert result.startswith("Stopped coding task `12345678`.")
+    assert coding.control_calls == [
+        {
+            "user_id": "42",
+            "guild_id": None,
+            "trust_tier": TrustTier.MEMBER,
+            "task_id": "12345678",
+        }
+    ]
+    assert coding.cancelled_task_ids == [task.id]
 
 
 @pytest.mark.asyncio
@@ -366,6 +414,36 @@ async def test_privacy_cancel_drains_shared_root_tasks_regardless_of_owner() -> 
     await coordinator.cancel_for_privacy("A")
     assert coding.conversation_cancels == [[7, 9]]
     assert any(str(e).startswith("coding-conversations:") for e in events)
+
+
+@pytest.mark.asyncio
+async def test_privacy_fails_closed_when_owned_work_is_still_cleaning() -> None:
+    events: list[str] = []
+    coding = _CodingTasks(events, [(["task-a"], False)])
+    coordinator = _coordinator(events=events, coding=coding)
+
+    with pytest.raises(RuntimeError, match="user's active work"):
+        await coordinator.cancel_for_privacy("A")
+
+
+@pytest.mark.asyncio
+async def test_privacy_fails_closed_when_shared_root_work_is_still_cleaning() -> None:
+    events: list[str] = []
+    coding = _CodingTasks(
+        events,
+        [([], True)],
+        conversation_result=(["task-b"], False),
+    )
+
+    async def _rooted_ids(user_id: str) -> list[int]:
+        return [7] if user_id == "A" else []
+
+    store = SimpleNamespace(rooted_conversation_ids=_rooted_ids)
+    coordinator = _coordinator(events=events, coding=coding, conversation_store=store)
+
+    with pytest.raises(RuntimeError, match="Shared-conversation coding work"):
+        await coordinator.cancel_for_privacy("A")
+    assert coding.conversation_cancels == [[7]]
 
 
 @pytest.mark.asyncio

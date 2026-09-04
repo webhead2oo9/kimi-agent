@@ -38,8 +38,8 @@ The remaining Codex transport settings live in `.env` rather than
 `models.yaml`, since they are operational knobs rather than routing decisions:
 `CODEX_TOKEN_FILE`, `CODEX_REASONING_EFFORT`, `CODEX_IMAGE_QUALITY`,
 `CODEX_IMAGE_FORMAT`, `CODEX_WS_IDLE_TIMEOUT`, `CODEX_WS_READ_TIMEOUT`, and
-`CODEX_VERBOSE`. `CODEX_MODEL` is only the transport's fallback when a caller
-supplies no model at all; bot chat always uses the YAML model entry.
+`CODEX_VERBOSE`. The model is always taken from the selected model entry in
+`models.yaml`.
 
 ## Authentication
 

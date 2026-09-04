@@ -82,6 +82,7 @@ class ErrorVideoService(FakeVideoService):
                 limitations=(),
                 usage=VideoUsage(input_tokens=50, cached_tokens=40, output_tokens=10),
             ),
+            catalog_model=kwargs["config"].catalog_model,
         )
 
 
@@ -95,7 +96,8 @@ class CancelledVideoService(FakeVideoService):
                 evidence=(),
                 limitations=(),
                 usage=VideoUsage(input_tokens=50, cached_tokens=40, output_tokens=10),
-            )
+            ),
+            catalog_model=kwargs["config"].catalog_model,
         )
 
 
@@ -116,12 +118,16 @@ class MissingUsageErrorVideoService(FakeVideoService):
         raise VideoSessionError(
             "session persistence failed",
             result=_missing_usage_result(),
+            catalog_model=kwargs["config"].catalog_model,
         )
 
 
 class MissingUsageCancelledVideoService(FakeVideoService):
     async def start(self, **kwargs: Any) -> VideoAnalysis:
-        raise VideoResultCancelled(result=_missing_usage_result())
+        raise VideoResultCancelled(
+            result=_missing_usage_result(),
+            catalog_model=kwargs["config"].catalog_model,
+        )
 
 
 def test_video_capability_probe_lists_every_registration_gate() -> None:
@@ -155,6 +161,7 @@ class PinnedFollowupFailureVideoService(FakeVideoService):
                 interaction_id=result.interaction_id,
                 model=result.model,
                 usage=result.usage,
+                usage_present=result.usage_present,
                 catalog_model="old-catalog",
             )
             if self.failure == "interaction_cancelled":
@@ -621,6 +628,7 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_fails()
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.input_tokens == 50
     assert ctx.usage_sink[0].usage.cached_read_tokens == 40
+    assert ctx.usage_sink[0].pricing_model == "gemini-video-flash"
 
 
 @pytest.mark.asyncio
@@ -641,6 +649,7 @@ async def test_completed_call_usage_is_recorded_when_session_persistence_is_canc
     assert ctx.usage_sink is not None
     assert ctx.usage_sink[0].usage.input_tokens == 50
     assert ctx.usage_sink[0].usage.cached_read_tokens == 40
+    assert ctx.usage_sink[0].pricing_model == "gemini-video-flash"
 
 
 @pytest.mark.asyncio

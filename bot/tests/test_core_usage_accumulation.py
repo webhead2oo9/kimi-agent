@@ -13,7 +13,7 @@ from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, UsageBreakdown
 
 
-class ScriptedProvider:
+class ScriptedProvider(LLMProvider):
     provider_key = "scripted"
     model = "test-model"
     capabilities = {ProviderCapability.TEXT, ProviderCapability.TOOL_CALLING}
@@ -86,6 +86,7 @@ async def test_core_preserves_missing_usage_vs_explicit_zero_usage() -> None:
                         ProviderResponse(
                             content="done",
                             usage={"input_tokens": 0, "output_tokens": 0},
+                            usage_present=True,
                         )
                     ]
                 ),
@@ -114,6 +115,7 @@ async def test_core_preserves_openrouter_attribution_on_usage_calls() -> None:
                         ProviderResponse(
                             content="done",
                             usage={"input_tokens": 1, "output_tokens": 2},
+                            usage_present=True,
                             upstream_provider="Anthropic",
                             service_tier="priority",
                             openrouter_charge_usd=0.003,
@@ -141,6 +143,7 @@ async def test_run_conversation_accumulates_multi_iteration_usage() -> None:
                 content="",
                 tool_calls=[ToolCall(id="call_1", name="lookup", arguments={"query": "vr"})],
                 usage={"input_tokens": 10, "output_tokens": 2},
+                usage_present=True,
             ),
             ProviderResponse(
                 content="done",
@@ -149,6 +152,7 @@ async def test_run_conversation_accumulates_multi_iteration_usage() -> None:
                     "completion_tokens": 5,
                     "prompt_tokens_details": {"cached_tokens": 8},
                 },
+                usage_present=True,
             ),
         ]
     )
@@ -166,7 +170,6 @@ async def test_run_conversation_accumulates_multi_iteration_usage() -> None:
     )
 
     assert result.text == "done"
-    assert result.iterations == 2
     assert result.usage == UsageBreakdown(
         input_tokens=22,
         cached_read_tokens=8,
@@ -200,10 +203,12 @@ async def test_model_backed_tool_appends_to_shared_call_ledger() -> None:
             ProviderResponse(
                 tool_calls=[ToolCall(id="call_1", name="model_tool", arguments={})],
                 usage={"input_tokens": 10, "output_tokens": 2},
+                usage_present=True,
             ),
             ProviderResponse(
                 content="done",
                 usage={"input_tokens": 20, "output_tokens": 5},
+                usage_present=True,
             ),
         ]
     )
@@ -236,6 +241,7 @@ async def test_later_provider_error_preserves_prior_usage() -> None:
                 content="",
                 tool_calls=[ToolCall(id="call_1", name="lookup", arguments={"query": "vr"})],
                 usage={"input_tokens": 10, "output_tokens": 2},
+                usage_present=True,
             ),
             RuntimeError("boom"),
         ]
@@ -254,5 +260,4 @@ async def test_later_provider_error_preserves_prior_usage() -> None:
     )
 
     assert "internal error" in result.text
-    assert result.iterations == 1
     assert result.usage == UsageBreakdown(input_tokens=10, output_tokens=2)

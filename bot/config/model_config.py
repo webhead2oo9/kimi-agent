@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -813,11 +812,8 @@ def parse_model_config_text(text: str) -> ModelConfig:
     return ModelConfig.model_validate(raw)
 
 
-def load_model_config_with_revision(
-    path: str | Path = "config/models.yaml",
-) -> tuple[ModelConfig, str]:
-    """Load model configuration and the exact source-text revision."""
-
+def load_model_config(path: str | Path = "config/models.yaml") -> ModelConfig:
+    """Load and validate the model routing document."""
     try:
         source = Path(path).read_bytes()
     except FileNotFoundError as exc:
@@ -831,11 +827,7 @@ def load_model_config_with_revision(
             f"config/models.example.yaml to {path}, then replace its placeholders."
         ) from exc
     text = source.decode("utf-8")
-    return parse_model_config_text(text), sha256(source).hexdigest()
-
-
-def load_model_config(path: str | Path = "config/models.yaml") -> ModelConfig:
-    return load_model_config_with_revision(path)[0]
+    return parse_model_config_text(text)
 
 
 def resolve_provider_config(
@@ -879,7 +871,6 @@ def resolve_provider_config(
         openrouter_app_name=app_name,
         user_agent=app_name,
         codex_token_file=settings.codex_token_file,
-        codex_model=entry.model if provider_name == "codex" else settings.codex_model,
         codex_reasoning_effort=(profile.reasoning_effort or settings.codex_reasoning_effort),
         codex_image_quality=settings.codex_image_quality,
         codex_image_format=settings.codex_image_format,

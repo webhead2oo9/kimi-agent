@@ -647,10 +647,7 @@ class DiscordMessageController:
         )
 
     def model_log_label(self, role: str) -> str:
-        model_config = getattr(self._provider_manager, "model_config", None)
-        if model_config is None:
-            provider = getattr(self._provider_manager, "main", None)
-            return getattr(provider, "model", "?")
+        model_config = self._provider_manager.model_config
         model_name = model_config.model_name_for_role(role)
         entry = model_config.models[model_name]
         profile = model_config.profile_for_model(model_name)

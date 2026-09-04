@@ -13,6 +13,8 @@ The rest is reference material.
 
 - [Install and operate Kimi](setup.md): the canonical end-to-end Ubuntu
   deployment, service, upgrade, and troubleshooting guide.
+- [Upgrade from v1 to v2](upgrading-to-v2.md): the one-time database,
+  configuration, plugin, and module compatibility cut.
 - [Architecture](architecture.md): the shape of the system and its package map.
 - [Configuration](configuration.md): every deployment setting and every live
   fragment surface.

@@ -70,7 +70,7 @@ class VideoSessionStore:
         youtube_url: str,
         youtube_video_id: str,
         model: str,
-        catalog_model: str = "",
+        catalog_model: str,
         interaction_id: str,
         now: float,
         expires_at: float,
@@ -88,7 +88,7 @@ class VideoSessionStore:
                 source_byte_size=None,
                 youtube_url=youtube_url,
                 youtube_video_id=youtube_video_id,
-                catalog_model=catalog_model or model,
+                catalog_model=catalog_model,
                 model=model,
                 interaction_id=interaction_id,
                 now=now,
@@ -140,7 +140,7 @@ class VideoSessionStore:
         source_locator: str,
         source_byte_size: int,
         model: str,
-        catalog_model: str = "",
+        catalog_model: str,
         interaction_id: str,
         file_name: str,
         now: float,
@@ -165,7 +165,7 @@ class VideoSessionStore:
                 source_byte_size=source_byte_size,
                 youtube_url="",
                 youtube_video_id="",
-                catalog_model=catalog_model or model,
+                catalog_model=catalog_model,
                 model=model,
                 interaction_id=interaction_id,
                 now=now,
@@ -501,6 +501,8 @@ async def _insert_session(
     now: float,
     expires_at: float,
 ) -> None:
+    if not catalog_model:
+        raise ValueError("video session catalog model is required")
     await conn.execute(
         """
         INSERT INTO video_sessions (
@@ -573,12 +575,9 @@ def _pending_query(
 
 
 def _session_from_row(row: Row) -> VideoSession:
-    keys = row.keys() if hasattr(row, "keys") else ()
-    catalog_model = (
-        str(row["catalog_model"])
-        if "catalog_model" in keys and row["catalog_model"]
-        else str(row["model"])
-    )
+    catalog_model = str(row["catalog_model"])
+    if not catalog_model:
+        raise ValueError("video session has no catalog model")
     return VideoSession(
         handle=str(row["handle"]),
         conversation_id=int(row["conversation_id"]),

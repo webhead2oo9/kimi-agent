@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from pydantic_settings import BaseSettings
 
+from kimi_agent_module_api import contracts as _contracts
 from kimi_agent_module_api.contracts import (
     ConfigSnapshot,
     RoleSnapshot,
     render_guild_settings,
-    DiscordActions,
-    EventBus,
-    GuildSettings,
     GuildSettingsSchema,
-    HealthReporter,
     InviteSnapshot,
-    InteractionRouter,
     LayoutGallery,
     LayoutItem,
     LayoutSection,
@@ -27,9 +23,7 @@ from kimi_agent_module_api.contracts import (
     LayoutSeparatorSpacing,
     LayoutText,
     ModalSpec,
-    ModuleHttp,
     ModulePermissions,
-    ModuleStorage,
     OutgoingLayout,
     ScopedModuleMigration,
     ProposalActor,
@@ -37,11 +31,8 @@ from kimi_agent_module_api.contracts import (
     ProposalRef,
     ProposalService,
     ProposalState,
-    Scheduler,
     ServiceDeclaration,
-    ServiceRegistry,
     ServiceRequirement,
-    TrustLookup,
     TextInputSpec,
     TextInputStyle,
 )
@@ -53,7 +44,7 @@ from kimi_agent_module_api.tools import (
 )
 from kimi_agent_module_api.trust import TrustTier
 
-MODULE_API_VERSION = 1
+MODULE_API_VERSION = 2
 MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
 # Capabilities every compatible host advertises regardless of configuration.
 BASELINE_CAPABILITIES: frozenset[str] = frozenset({"discord.history.v1", "proposals.v2"})
@@ -82,10 +73,13 @@ class AppModule(Protocol):
 
 @dataclass(frozen=True)
 class ModuleSpec:
+    """A module declaration with an explicit, source-pinned host API version."""
+
     name: str
     version: str
     create: Callable[[ModuleLoadContext], AppModule]
-    api_version: int = MODULE_API_VERSION
+    _: KW_ONLY
+    api_version: int
     dependencies: tuple[str, ...] = ()
     settings: ModuleSettingsDefinition | None = None
     requires_capabilities: tuple[str, ...] = ()
@@ -94,7 +88,6 @@ class ModuleSpec:
     guild_settings: GuildSettingsSchema | None = None
     provides: tuple[ServiceDeclaration, ...] = ()
     consumes: tuple[ServiceRequirement, ...] = ()
-    table_aliases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -138,16 +131,16 @@ class ModuleRuntimeContext:
     is_guild_active: Callable[[int], bool]
     current_config_dir: Callable[[], Path]
     capabilities: ModuleCapabilities
-    events: EventBus
-    scheduler: Scheduler
-    storage: ModuleStorage
-    health: HealthReporter
-    discord: DiscordActions
-    interactions: InteractionRouter
-    http: ModuleHttp
-    services: ServiceRegistry
-    trust: TrustLookup
-    guild_settings: GuildSettings | None = None
+    events: _contracts.EventBus
+    scheduler: _contracts.Scheduler
+    storage: _contracts.ModuleStorage
+    health: _contracts.HealthReporter
+    discord: _contracts.DiscordActions
+    interactions: _contracts.InteractionRouter
+    http: _contracts.ModuleHttp
+    services: _contracts.ServiceRegistry
+    trust: _contracts.TrustLookup
+    guild_settings: _contracts.GuildSettings | None = None
     proposals: ProposalService | None = None
     raw_bot: Any = None
     raw_storage: Any = None

@@ -100,15 +100,6 @@ class MemberLookup:
 
 
 @dataclass(frozen=True)
-class TurnSourceSnapshot:
-    """Primitives-only view of the bound trigger message; no ``discord.*`` types leak out."""
-
-    content: str
-    author_id: str
-    is_bot: bool
-
-
-@dataclass(frozen=True)
 class TurnSourceBinding:
     """Owner token for one live trigger-message binding."""
 
@@ -173,21 +164,6 @@ class DiscordGateway:
         # one turn's finally block cannot tear down another turn's source.
         newest_id = next(reversed(sources))
         return sources[newest_id]
-
-    def read_turn_source(self, ctx: MessageContext) -> TurnSourceSnapshot | None:
-        """Primitives-only snapshot of the message that triggered this turn, or None.
-
-        Returns None when the source binding is gone (e.g. the turn already finished).
-        """
-        source = self._turn_source(ctx)
-        if source is None:
-            return None
-        author = getattr(source, "author", None)
-        return TurnSourceSnapshot(
-            content=str(getattr(source, "content", "") or ""),
-            author_id=str(getattr(author, "id", "") or ""),
-            is_bot=bool(getattr(author, "bot", False)),
-        )
 
     async def resolve_reference_hints(
         self,

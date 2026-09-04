@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent.attachments import AttachmentStore
 from workspace import ENV_DIR_NAMES, WorkspaceManager
-from app.memory import MemoryManager
 from app.modules import ModuleManager
-from app.plugins import PluginLoadState, build_plugin_context, load_plugins_with_settings
+from app.plugins import build_plugin_context, load_plugins_with_settings
 from app.providers import ProviderManager
 from config.model_config import ModelConfig
 from config.plugin_settings import PluginSettingsRegistry
@@ -96,23 +95,17 @@ def _validate_executable_skill_sandbox(skills_store: Path, limits: ScriptSandbox
 @dataclass
 class RuntimeTools:
     registry: ToolRegistry
-    skills_store: Path
     skill_catalog: SharedSkillCatalog
     workspace_dir: Path
-    attachment_dir: Path
     workspace_manager: WorkspaceManager
     workspace_locks: UserLocks
     workspace_config: WorkspaceToolConfig
     attachment_store: AttachmentStore
     personal_skill_manager: PersonalSkillManager
-    skill_admin_service: SkillAdminService
-    script_semaphore: asyncio.Semaphore
-    reload_executable_skill_tools: Callable[[], int]
     browser_service: BrowserService
     video_service: VideoUnderstandingService
     code_sandbox_config: SandboxConfig | None = None
     code_exec_guards: CodeExecRuntimeGuards | None = None
-    plugin_load_state: PluginLoadState = field(default_factory=PluginLoadState)
     plugin_settings: PluginSettingsRegistry | None = None
     module_manager: ModuleManager = field(default_factory=ModuleManager)
 
@@ -121,7 +114,6 @@ def build_runtime_tools(
     settings: Settings,
     gateway: DiscordGateway,
     provider_manager: ProviderManager,
-    memory_manager: MemoryManager,
     *,
     get_preference_store: Callable[[], PersonaPreferenceStore | None] | None = None,
     get_blocked_user_store: Callable[[], BlockedUserStoreProtocol | None] | None = None,
@@ -242,12 +234,11 @@ def build_runtime_tools(
     # Operator plugins load after every core tool, so a duplicate name raises
     # inside the plugin and resolves in core's favor.
     plugin_context = build_plugin_context(settings, registry, gateway)
-    loaded_plugins, plugin_settings = load_plugins_with_settings(
+    plugin_settings = load_plugins_with_settings(
         settings.plugin_module_list,
         plugin_context,
         settings_registry=PluginSettingsRegistry(config_dir=Path(settings.config_dir)),
     )
-    plugin_load_state = PluginLoadState.from_loaded(settings.plugin_module_list, loaded_plugins)
     module_manager = ModuleManager.load(
         settings.kimi_module_list,
         core_settings=settings,
@@ -284,7 +275,7 @@ def build_runtime_tools(
         skill_catalog=skill_catalog,
         on_learn=on_learn,
     )
-    # Deliberately outside the compatibility wrapper below: if executable tools
+    # Deliberately outside the best-effort extension reload below: if executable tools
     # are configured, failure to create their isolation boundary aborts startup
     # instead of silently leaving an unsafe or half-configured deployment.
     ensure_executable_skill_sandbox()
@@ -293,23 +284,17 @@ def build_runtime_tools(
 
     return RuntimeTools(
         registry=registry,
-        skills_store=skills_store,
         skill_catalog=skill_catalog,
         workspace_dir=workspace_dir,
-        attachment_dir=attachment_dir,
         workspace_manager=workspace_manager,
         workspace_locks=workspace_locks,
         workspace_config=workspace_config,
         attachment_store=attachment_store,
         personal_skill_manager=personal_skill_manager,
-        skill_admin_service=skill_admin_service,
-        script_semaphore=script_semaphore,
-        reload_executable_skill_tools=reload_executable_skill_tools,
         browser_service=browser_service,
         video_service=video_service,
         code_sandbox_config=code_sandbox_config,
         code_exec_guards=code_exec_guards if code_sandbox_config is not None else None,
-        plugin_load_state=plugin_load_state,
         plugin_settings=plugin_settings,
         module_manager=module_manager,
     )
@@ -884,7 +869,7 @@ def _register_persona_tools(
     get_preference_store: Callable[[], PersonaPreferenceStore | None],
 ) -> None:
     model_config = provider_manager.model_config
-    model = model_config.roles.persona if model_config is not None else None
+    model = model_config.roles.persona
     if model is None:
         log.info("Persona tools disabled; config/models.yaml assigns no persona role")
         return

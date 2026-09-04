@@ -7,7 +7,6 @@ sandbox; this is the persistence layer alone.
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import os
 from pathlib import Path
@@ -24,9 +23,6 @@ from storage.memory_banks import UserMemoryBankStateStore
 from storage.module_commands import GuildCommandScopeStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
-
-
-_CORE_SCHEMA_V1_FIXTURE = Path(__file__).with_name("fixtures") / "core_schema_v1.sql"
 
 
 def _quote_identifier(value: str) -> str:
@@ -104,10 +100,28 @@ async def _schema_fingerprint(database: Database) -> list[str]:
     return json.dumps(fingerprint, indent=2, sort_keys=True).splitlines()
 
 
-def _create_v1_fixture_database(path: Path) -> None:
+def _create_v6_database(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
-        conn.executescript(_CORE_SCHEMA_V1_FIXTURE.read_text(encoding="utf-8"))
+        schema_path = Path(__file__).parent / "fixtures" / "core_schema_v6.sql"
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+        conn.executemany(
+            "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, 'now')",
+            (
+                (1, "initial_schema"),
+                (2, "coding_task_context_inputs"),
+                (3, "video_understanding_sessions"),
+                (4, "provider_circuit_breakers"),
+                (5, "core_runtime_tables"),
+                (6, "video_session_catalog_model"),
+            ),
+        )
+        conn.executescript(
+            """
+            CREATE TABLE control_proposals (proposal_id TEXT PRIMARY KEY);
+            CREATE TABLE control_proposal_events (event_id INTEGER PRIMARY KEY);
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -168,8 +182,12 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "video_session_catalog_model"
+        assert version_row["name"] == "core_v7_baseline"
         assert version_row["applied_at"]
+        async with db.conn.execute(
+            "SELECT version, name FROM schema_version ORDER BY version"
+        ) as cur:
+            assert [tuple(item) for item in await cur.fetchall()] == [(7, "core_v7_baseline")]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_tasks'"
@@ -186,10 +204,10 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_database_matches_oldest_supported_migration_schema(tmp_path) -> None:
+async def test_fresh_database_matches_migrated_v6_schema(tmp_path) -> None:
     fresh = Database(tmp_path / "fresh.db")
     migrated_path = tmp_path / "migrated.db"
-    _create_v1_fixture_database(migrated_path)
+    _create_v6_database(migrated_path)
     migrated = Database(migrated_path)
 
     await fresh.connect()
@@ -201,18 +219,7 @@ async def test_fresh_database_matches_oldest_supported_migration_schema(tmp_path
         await fresh.close()
         await migrated.close()
 
-    difference = "\n".join(
-        difflib.unified_diff(
-            fresh_fingerprint,
-            migrated_fingerprint,
-            fromfile="fresh schema",
-            tofile="migrated v1 schema",
-            lineterm="",
-        )
-    )
-    assert fresh_fingerprint == migrated_fingerprint, (
-        "Fresh and oldest-supported migrated schemas differ:\n" + difference
-    )
+    assert fresh_fingerprint == migrated_fingerprint
 
 
 @pytest.mark.asyncio
@@ -252,179 +259,304 @@ async def _baseline_database_with_data(path) -> None:
         conn.close()
 
 
-async def _v1_database_with_coding_task(path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE schema_version (
-                version INTEGER PRIMARY KEY,
-                name TEXT,
-                applied_at TEXT
-            );
-            INSERT INTO schema_version VALUES (1, 'initial_schema', 'now');
-
-            CREATE TABLE coding_tasks (
-                id TEXT PRIMARY KEY,
-                conversation_id INTEGER,
-                root_key TEXT NOT NULL,
-                workspace_key TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                user_name TEXT NOT NULL DEFAULT '',
-                guild_id TEXT,
-                channel_id TEXT NOT NULL,
-                thread_id TEXT,
-                handoff_pending INTEGER NOT NULL DEFAULT 0
-                    CHECK (handoff_pending IN (0, 1)),
-                trigger_discord_message_id TEXT NOT NULL DEFAULT '',
-                objective TEXT NOT NULL,
-                acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-                context_text TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL CHECK (status IN (
-                    'queued','recovering','running','waiting_for_job',
-                    'waiting_for_input','cancelling','completed','failed',
-                    'cancelled','timed_out'
-                )),
-                plan_json TEXT NOT NULL DEFAULT '[]',
-                milestone TEXT NOT NULL DEFAULT '',
-                checkpoint_json TEXT NOT NULL DEFAULT '{}',
-                result_text TEXT NOT NULL DEFAULT '',
-                error_text TEXT NOT NULL DEFAULT '',
-                cancel_requested INTEGER NOT NULL DEFAULT 0
-                    CHECK (cancel_requested IN (0, 1)),
-                status_discord_message_id TEXT,
-                final_discord_message_id TEXT,
-                delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (delivery_state IN (
-                    'pending','status_sent','final_pending','delivered','failed'
-                )),
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                started_at REAL,
-                finished_at REAL,
-                deadline_at REAL NOT NULL,
-                heartbeat_at REAL NOT NULL
-            );
-            INSERT INTO coding_tasks (
-                id, root_key, workspace_key, user_id, channel_id, objective,
-                status, created_at, updated_at, deadline_at, heartbeat_at
-            ) VALUES (
-                'existing-task', 'root', 'workspace', 'user', 'channel',
-                'Keep me', 'queued', 1.0, 1.0, 60.0, 1.0
-            );
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-async def _legacy_v2_database_with_control_tables(path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE schema_version (
-                version INTEGER PRIMARY KEY,
-                name TEXT,
-                applied_at TEXT
-            );
-            INSERT INTO schema_version VALUES (1, 'initial_schema', 'now');
-            INSERT INTO schema_version VALUES (2, 'coding_task_context_inputs', 'now');
-            CREATE TABLE control_proposals (proposal_id TEXT PRIMARY KEY);
-            CREATE TABLE control_proposal_events (event_id INTEGER PRIMARY KEY);
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 @pytest.mark.asyncio
-async def test_existing_v2_database_adopts_proposals_and_keeps_legacy_tables(tmp_path) -> None:
-    path = tmp_path / "legacy-v2.db"
-    await _legacy_v2_database_with_control_tables(path)
+async def test_v6_to_v7_canonicalizes_messages_in_batches_and_drops_control_tables(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(storage.db, "_MESSAGE_MIGRATION_BATCH_SIZE", 2)
+    path = tmp_path / "v6.db"
+    _create_v6_database(path)
+    conn = sqlite3.connect(path)
+    try:
+        conversation_id = conn.execute(
+            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
+            ("migration-test",),
+        ).lastrowid
+        rows = [
+            (
+                conversation_id,
+                "user",
+                "legacy string",
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": "legacy string",
+                        "raw_provider_data": {"keep": True},
+                    }
+                ),
+                1.0,
+            ),
+            (
+                conversation_id,
+                "assistant",
+                "provider parts",
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "input_text", "text": "provider text", "cache": "keep"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                                "media_type": "image/png",
+                                "provider_key": "keep",
+                            },
+                            {"type": "input_text", "text": ""},
+                            "invalid part",
+                        ],
+                        "reasoning_content": "keep this too",
+                    }
+                ),
+                2.0,
+            ),
+            (
+                conversation_id,
+                "assistant",
+                "fallback column",
+                json.dumps({"role": "assistant", "metadata": {"keep": 1}}),
+                3.0,
+            ),
+            (
+                conversation_id,
+                "assistant",
+                "must not become fallback",
+                json.dumps({"role": "assistant", "content": []}),
+                4.0,
+            ),
+        ]
+        conn.executemany(
+            "INSERT INTO messages "
+            "(conversation_id, role, content, message_data, created_at) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     db = Database(path)
     await db.connect()
     try:
+        async with db.conn.execute("SELECT message_data FROM messages ORDER BY id") as cursor:
+            migrated = [json.loads(row["message_data"]) for row in await cursor.fetchall()]
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name IN ('config_proposals','control_proposals','control_proposal_events') "
-            "ORDER BY name"
-        ) as cur:
-            assert [row["name"] for row in await cur.fetchall()] == [
-                "config_proposals",
-                "control_proposal_events",
-                "control_proposals",
-            ]
+            "AND name IN ('control_proposals', 'control_proposal_events')"
+        ) as cursor:
+            obsolete_tables = await cursor.fetchall()
+        async with db.conn.execute(
+            "SELECT version, name FROM schema_version ORDER BY version"
+        ) as cursor:
+            versions = [tuple(row) for row in await cursor.fetchall()]
     finally:
         await db.close()
 
+    assert migrated == [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "legacy string"}],
+            "raw_provider_data": {"keep": True},
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "provider text", "cache": "keep"},
+                {
+                    "type": "image",
+                    "image_url": "data:image/png;base64,abc",
+                    "media_type": "image/png",
+                    "provider_key": "keep",
+                    "detail": "auto",
+                },
+            ],
+            "reasoning_content": "keep this too",
+        },
+        {
+            "role": "assistant",
+            "metadata": {"keep": 1},
+            "content": [{"type": "text", "text": "fallback column"}],
+        },
+        {"role": "assistant", "content": []},
+    ]
+    assert obsolete_tables == []
+    assert versions == [
+        (1, "initial_schema"),
+        (2, "coding_task_context_inputs"),
+        (3, "video_understanding_sessions"),
+        (4, "provider_circuit_breakers"),
+        (5, "core_runtime_tables"),
+        (6, "video_session_catalog_model"),
+        (7, "core_v7_baseline"),
+    ]
+
 
 @pytest.mark.asyncio
-async def test_v4_adoption_migration_preserves_existing_runtime_rows(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "v4-with-runtime-tables.db"
-    current_version = storage.db.SCHEMA_VERSION
-    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", 4)
-    legacy = Database(path)
-    await legacy.connect()
+async def test_v7_upgrade_expires_v6_video_sessions_and_queues_provider_cleanup(tmp_path) -> None:
+    path = tmp_path / "v6-video.db"
+    _create_v6_database(path)
+    conn = sqlite3.connect(path)
     try:
-        async with legacy.write_transaction() as conn:
-            await conn.execute(
-                """INSERT INTO config_proposals (
-                    proposal_id, module_name, guild_id, target, content, content_revision,
-                    base_exists, base_content, base_revision, summary, actor_json, state,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    "existing-proposal",
-                    "example",
-                    "guild-1",
-                    "servers/guild-1.md",
-                    "new content",
-                    "new-revision",
-                    1,
-                    "old content",
-                    "old-revision",
-                    "keep this proposal",
-                    "{}",
-                    "pending",
-                    1.0,
-                    2.0,
-                ),
-            )
-            await conn.execute(
-                """UPDATE module_scheduler_runner
-                   SET token = ?, leased_until = ?
-                   WHERE id = 1""",
-                ("existing-runner", 42.5),
-            )
+        conversation_id = conn.execute(
+            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
+            ("video-migration-test",),
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO video_sessions (
+                handle, conversation_id, actor_user_id, guild_id, source_kind,
+                source_display_name, source_locator, source_byte_size, model,
+                latest_interaction_id, interaction_count, created_at, last_active_at,
+                expires_at, catalog_model
+            ) VALUES (?, ?, ?, ?, 'attachment', ?, ?, ?, ?, ?, 1, 1, 1, 999, ?)""",
+            (
+                "vid-old",
+                conversation_id,
+                "user-1",
+                "guild-1",
+                "clip.mp4",
+                "clip.mp4",
+                42,
+                "gemini-upstream-id",
+                "interaction-1",
+                "gemini-upstream-id",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO video_interactions "
+            "(interaction_id, session_handle, actor_user_id, created_at) VALUES (?, ?, ?, 1)",
+            ("interaction-1", "vid-old", "user-1"),
+        )
+        conn.execute(
+            """INSERT INTO video_provider_files (
+                file_name, conversation_id, actor_user_id, guild_id, mime_type,
+                byte_size, session_handle, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+            (
+                "files/attached",
+                conversation_id,
+                "user-1",
+                "guild-1",
+                "video/mp4",
+                42,
+                "vid-old",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO video_provider_files (
+                file_name, conversation_id, actor_user_id, guild_id, mime_type,
+                byte_size, session_handle, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 1)""",
+            ("files/unattached", conversation_id, "user-1", "guild-1", "video/mp4", 7),
+        )
+        conn.commit()
     finally:
-        await legacy.close()
+        conn.close()
 
-    monkeypatch.setattr(storage.db, "SCHEMA_VERSION", current_version)
-    migrated = Database(path)
-    await migrated.connect()
+    db = Database(path)
+    await db.connect()
     try:
-        async with migrated.conn.execute(
-            "SELECT content, state FROM config_proposals WHERE proposal_id = ?",
-            ("existing-proposal",),
+        async with db.conn.execute("SELECT handle FROM video_sessions") as cursor:
+            assert await cursor.fetchall() == []
+        async with db.conn.execute("SELECT interaction_id FROM video_interactions") as cursor:
+            assert await cursor.fetchall() == []
+        async with db.conn.execute(
+            "SELECT file_name FROM video_provider_files ORDER BY file_name"
         ) as cursor:
-            proposal = await cursor.fetchone()
-        async with migrated.conn.execute(
-            "SELECT id, token, leased_until FROM module_scheduler_runner ORDER BY id"
+            assert [row["file_name"] for row in await cursor.fetchall()] == ["files/unattached"]
+        async with db.conn.execute(
+            "SELECT interaction_id, actor_user_id, session_handle FROM video_interaction_deletions"
         ) as cursor:
-            runner_rows = [tuple(row) for row in await cursor.fetchall()]
-        async with migrated.conn.execute("SELECT MAX(version) FROM schema_version") as cursor:
-            version = await cursor.fetchone()
+            interaction_cleanup = [tuple(row) for row in await cursor.fetchall()]
+        async with db.conn.execute(
+            "SELECT file_name, actor_user_id, session_handle FROM video_provider_file_deletions"
+        ) as cursor:
+            file_cleanup = [tuple(row) for row in await cursor.fetchall()]
     finally:
-        await migrated.close()
+        await db.close()
 
-    assert proposal is not None
-    assert tuple(proposal) == ("new content", "pending")
-    assert runner_rows == [(1, "existing-runner", 42.5)]
-    assert version is not None
-    assert version[0] == current_version
+    assert interaction_cleanup == [("interaction-1", "user-1", "vid-old")]
+    assert file_cleanup == [("files/attached", "user-1", "vid-old")]
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        ("not-json", "not valid JSON"),
+        (b"\xff", "not valid JSON"),
+        (json.dumps(["not", "an", "object"]), "must be a JSON object"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_v7_migration_rejects_malformed_message_data_atomically(
+    tmp_path, monkeypatch, payload, error
+) -> None:
+    # The first batch is written before the malformed second row is read. The
+    # outer migration transaction must still roll that first update back.
+    monkeypatch.setattr(storage.db, "_MESSAGE_MIGRATION_BATCH_SIZE", 1)
+    path = tmp_path / "malformed-v6.db"
+    _create_v6_database(path)
+    conn = sqlite3.connect(path)
+    try:
+        conversation_id = conn.execute(
+            "INSERT INTO conversations (key, created_at, last_active_at) VALUES (?, 1, 1)",
+            ("malformed-migration-test",),
+        ).lastrowid
+        conn.executemany(
+            "INSERT INTO messages "
+            "(conversation_id, role, content, message_data, created_at) VALUES (?, 'user', ?, ?, ?)",
+            [
+                (conversation_id, "first", json.dumps({"content": "first"}), 1.0),
+                (conversation_id, "broken", payload, 2.0),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    try:
+        with pytest.raises(RuntimeError, match=error):
+            await db.connect()
+    finally:
+        await db.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        first_payload = conn.execute("SELECT message_data FROM messages WHERE id = 1").fetchone()
+        control_tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('control_proposals', 'control_proposal_events') ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert version == (6,)
+    assert first_payload == (json.dumps({"content": "first"}),)
+    assert control_tables == [("control_proposal_events",), ("control_proposals",)]
+
+
+@pytest.mark.parametrize("version", range(1, 6))
+@pytest.mark.asyncio
+async def test_pre_v6_database_requires_intermediate_1x_upgrade(tmp_path, version) -> None:
+    path = tmp_path / f"v{version}.db"
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO schema_version (version, name, applied_at) VALUES (?, 'old', 'now')",
+            (version,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    try:
+        with pytest.raises(RuntimeError, match=r"audited v1 bridge revision [0-9a-f]{40}"):
+            await db.connect()
+    finally:
+        await db.close()
 
 
 async def _add_note_column(conn) -> None:
@@ -458,13 +590,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         await db.close()
 
     assert [(row["version"], row["name"]) for row in versions] == [
-        (1, "initial_schema"),
-        (2, "coding_task_context_inputs"),
-        (3, "video_understanding_sessions"),
-        (4, "provider_circuit_breakers"),
-        (5, "core_runtime_tables"),
-        (6, "video_session_catalog_model"),
-        (7, "add_note"),
+        (7, "core_v7_baseline"),
+        (8, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -476,7 +603,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 7
+        assert row[0] == 2
     finally:
         await reopened.close()
 
@@ -504,68 +631,9 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
     upgraded_history = await history(upgraded_path)
     assert await history(tmp_path / "fresh.db") == upgraded_history
     assert upgraded_history == [
-        (1, "initial_schema"),
-        (2, "coding_task_context_inputs"),
-        (3, "video_understanding_sessions"),
-        (4, "provider_circuit_breakers"),
-        (5, "core_runtime_tables"),
-        (6, "video_session_catalog_model"),
-        (7, "add_note"),
+        (7, "core_v7_baseline"),
+        (8, "add_note"),
     ]
-
-
-@pytest.mark.asyncio
-async def test_v1_coding_task_migration_preserves_data_and_matches_fresh_schema(tmp_path) -> None:
-    upgraded_path = tmp_path / "upgraded.db"
-    fresh_path = tmp_path / "fresh.db"
-    await _v1_database_with_coding_task(upgraded_path)
-
-    upgraded = Database(upgraded_path)
-    await upgraded.connect()
-    try:
-        async with upgraded.conn.execute("PRAGMA table_info(coding_tasks)") as cur:
-            upgraded_columns = [tuple(row) for row in await cur.fetchall()]
-        async with upgraded.conn.execute(
-            """SELECT objective, display_summary, context_messages_json, input_files_json
-               FROM coding_tasks WHERE id = 'existing-task'"""
-        ) as cur:
-            task = await cur.fetchone()
-        async with upgraded.conn.execute(
-            "SELECT version, name, applied_at FROM schema_version ORDER BY version"
-        ) as cur:
-            history = list(await cur.fetchall())
-    finally:
-        await upgraded.close()
-
-    assert task is not None
-    assert tuple(task) == ("Keep me", "", "[]", "[]")
-    assert [(row["version"], row["name"]) for row in history] == [
-        (1, "initial_schema"),
-        (2, "coding_task_context_inputs"),
-        (3, "video_understanding_sessions"),
-        (4, "provider_circuit_breakers"),
-        (5, "core_runtime_tables"),
-        (6, "video_session_catalog_model"),
-    ]
-    assert all(row["applied_at"] for row in history)
-
-    reopened = Database(upgraded_path)
-    await reopened.connect()
-    await reopened.close()
-    conn = sqlite3.connect(upgraded_path)
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone() == (6,)
-    finally:
-        conn.close()
-
-    fresh = Database(fresh_path)
-    await fresh.connect()
-    try:
-        async with fresh.conn.execute("PRAGMA table_info(coding_tasks)") as cur:
-            fresh_columns = [tuple(row) for row in await cur.fetchall()]
-    finally:
-        await fresh.close()
-    assert upgraded_columns == fresh_columns
 
 
 @pytest.mark.asyncio
@@ -612,7 +680,7 @@ async def test_failed_schema_migration_rolls_back(tmp_path, monkeypatch) -> None
         conn.close()
 
     assert columns == {"id", "value"}
-    assert version == (6,)
+    assert version == (7,)
     assert preserved == ("keep me",)
 
 
@@ -811,7 +879,12 @@ async def test_load_recent_conversation_messages_excludes_tool_turn_internals(
                     "u1",
                     "webhead",
                     "look this up",
-                    json.dumps({"role": "user", "content": "look this up"}),
+                    json.dumps(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "look this up"}],
+                        }
+                    ),
                     1.0,
                 ),
                 (
@@ -823,7 +896,7 @@ async def test_load_recent_conversation_messages_excludes_tool_turn_internals(
                     json.dumps(
                         {
                             "role": "assistant",
-                            "content": "",
+                            "content": [],
                             "tool_calls": [
                                 {
                                     "id": "call_1",
@@ -848,7 +921,7 @@ async def test_load_recent_conversation_messages_excludes_tool_turn_internals(
                         {
                             "role": "tool",
                             "tool_call_id": "call_1",
-                            "content": '{"value": "vr"}',
+                            "content": [{"type": "text", "text": '{"value": "vr"}'}],
                         }
                     ),
                     3.0,
@@ -862,7 +935,7 @@ async def test_load_recent_conversation_messages_excludes_tool_turn_internals(
                     json.dumps(
                         {
                             "role": "assistant",
-                            "content": "Here is the answer.",
+                            "content": [{"type": "text", "text": "Here is the answer."}],
                             "reasoning_content": "Tool result is enough.",
                         }
                     ),

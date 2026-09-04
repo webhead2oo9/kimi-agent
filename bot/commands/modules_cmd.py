@@ -101,11 +101,6 @@ def render_manifest(
             escapes.append("override_target_policy")
         if escapes:
             lines.append(f"  ⚠️ escape hatches: {', '.join(escapes)}")
-        if spec.table_aliases:
-            lines.append(
-                "  table aliases: "
-                + ", ".join(f"{k}→{v}" for k, v in sorted(spec.table_aliases.items()))
-            )
         if spec.guild_settings is not None:
             fields = ", ".join(f.name for f in spec.guild_settings.fields) or "none"
             lines.append(

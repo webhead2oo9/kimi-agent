@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from hindsight_client import Hindsight
-import contextlib
+from hindsight_client_api.models import BankConfigUpdate
 
 log = logging.getLogger(__name__)
+_HINDSIGHT_TIMEOUT_SECONDS = 120.0
 
 
 class UserMemoryBankStateWriter(Protocol):
@@ -22,43 +24,7 @@ class MemoryBackendError(RuntimeError):
 class RecalledMemory:
     text: str
     type: str
-    context: str | None = None
     tags: list[str] | None = None
-    id: str | None = None
-    document_id: str | None = None
-    metadata: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class MemoryRecord:
-    id: str
-    text: str
-    type: str
-    document_id: str | None = None
-    context: str | None = None
-    tags: list[str] | None = None
-    metadata: dict[str, Any] | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-@dataclass(frozen=True)
-class MemoryPage:
-    items: list[MemoryRecord]
-    total: int
-    limit: int
-    offset: int
-
-
-@dataclass(frozen=True)
-class DocumentRecord:
-    id: str
-    original_text: str
-    memory_unit_count: int
-    tags: list[str] | None = None
-    metadata: dict[str, Any] | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
 
 
 class MemoryClient:
@@ -71,7 +37,10 @@ class MemoryClient:
         *,
         user_bank_state_store: UserMemoryBankStateWriter | None = None,
     ) -> None:
-        kwargs: dict = {"base_url": url, "timeout": 120.0}
+        kwargs: dict = {
+            "base_url": url.rstrip("/"),
+            "timeout": _HINDSIGHT_TIMEOUT_SECONDS,
+        }
         if api_key:
             kwargs["api_key"] = api_key
         self._client = Hindsight(**kwargs)
@@ -89,7 +58,7 @@ class MemoryClient:
         prefix, separator, user_id = bank_id.partition(":")
         if prefix != "user" or separator != ":" or not user_id:
             return True
-        store = getattr(self, "_user_bank_state_store", None)
+        store = self._user_bank_state_store
         if store is None:
             return True
         try:
@@ -163,7 +132,7 @@ class MemoryClient:
             log.exception("Failed to retain to bank %s", bank_id)
             return False
 
-    async def recall_strict(
+    async def recall(
         self,
         bank_id: str,
         query: str,
@@ -173,7 +142,6 @@ class MemoryClient:
         tags: list[str] | None = None,
         tags_match: str = "any",
     ) -> list[RecalledMemory]:
-        """Like :meth:`recall`, but raises :class:`MemoryBackendError` on failure."""
         try:
             kwargs: dict = {
                 "bank_id": bank_id,
@@ -189,41 +157,14 @@ class MemoryClient:
             result = await self._client.arecall(**kwargs)
             return [
                 RecalledMemory(
-                    text=r.text,
-                    type=r.type or "memory",
-                    context=getattr(r, "context", None),
-                    tags=getattr(r, "tags", None),
-                    id=getattr(r, "id", None),
-                    document_id=getattr(r, "document_id", None),
-                    metadata=_optional_dict(getattr(r, "metadata", None)),
+                    text=item.text,
+                    type=item.type or "memory",
+                    tags=getattr(item, "tags", None),
                 )
-                for r in result.results
+                for item in result.results
             ]
-        except Exception as exc:
+        except Exception:
             log.exception("Failed to recall from bank %s", bank_id)
-            raise MemoryBackendError(f"recall failed for bank {bank_id}") from exc
-
-    async def recall(
-        self,
-        bank_id: str,
-        query: str,
-        budget: str = "mid",
-        max_tokens: int = 4096,
-        types: list[str] | None = None,
-        tags: list[str] | None = None,
-        tags_match: str = "any",
-    ) -> list[RecalledMemory]:
-        try:
-            return await self.recall_strict(
-                bank_id=bank_id,
-                query=query,
-                budget=budget,
-                max_tokens=max_tokens,
-                types=types,
-                tags=tags,
-                tags_match=tags_match,
-            )
-        except MemoryBackendError:
             return []
 
     async def reflect(
@@ -249,126 +190,6 @@ class MemoryClient:
             log.exception("Failed to reflect from bank %s", bank_id)
             return ""
 
-    async def list_memories_strict(
-        self,
-        bank_id: str,
-        query: str | None = None,
-        memory_type: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> MemoryPage:
-        """Like :meth:`list_memories`, but raises :class:`MemoryBackendError` on failure."""
-        try:
-            result = await self._client.memory.list_memories(
-                bank_id=bank_id,
-                q=query,
-                type=memory_type,
-                limit=limit,
-                offset=offset,
-            )
-            return MemoryPage(
-                items=[_memory_record(item) for item in result.items],
-                total=int(result.total),
-                limit=int(result.limit),
-                offset=int(result.offset),
-            )
-        except Exception as exc:
-            log.exception("Failed to list memories from bank %s", bank_id)
-            raise MemoryBackendError(f"list_memories failed for bank {bank_id}") from exc
-
-    async def list_memories(
-        self,
-        bank_id: str,
-        query: str | None = None,
-        memory_type: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> MemoryPage:
-        try:
-            return await self.list_memories_strict(
-                bank_id=bank_id,
-                query=query,
-                memory_type=memory_type,
-                limit=limit,
-                offset=offset,
-            )
-        except MemoryBackendError:
-            return MemoryPage(items=[], total=0, limit=limit, offset=offset)
-
-    async def list_documents_strict(
-        self,
-        bank_id: str,
-        query: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[DocumentRecord]:
-        """Like :meth:`list_documents`, but raises :class:`MemoryBackendError` on failure."""
-        try:
-            result = await self._client.documents.list_documents(
-                bank_id=bank_id,
-                q=query,
-                limit=limit,
-                offset=offset,
-            )
-            return [_document_record(item) for item in result.items]
-        except Exception as exc:
-            log.exception("Failed to list documents from bank %s", bank_id)
-            raise MemoryBackendError(f"list_documents failed for bank {bank_id}") from exc
-
-    async def list_documents(
-        self,
-        bank_id: str,
-        query: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[DocumentRecord]:
-        try:
-            return await self.list_documents_strict(
-                bank_id=bank_id,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
-        except MemoryBackendError:
-            return []
-
-    async def delete_document_strict(self, bank_id: str, document_id: str) -> bool:
-        """Delete one document.
-
-        Returns ``False`` only when the backend confirms the document is absent.
-        Any other failure raises :class:`MemoryBackendError`, allowing destructive
-        admin surfaces to avoid presenting an outage as a successful no-op.
-        """
-        try:
-            result = await self._client.documents.delete_document(
-                bank_id=bank_id,
-                document_id=document_id,
-            )
-        except Exception as exc:
-            if _exception_status(exc) == 404:
-                return False
-            log.exception("Failed to delete document %s from bank %s", document_id, bank_id)
-            raise MemoryBackendError(f"delete_document failed for bank {bank_id}") from exc
-        if getattr(result, "success", None) is not True:
-            log.error(
-                "Document delete was not confirmed for document %s in bank %s",
-                document_id,
-                bank_id,
-            )
-            raise MemoryBackendError(f"delete_document failed for bank {bank_id}")
-        return True
-
-    async def delete_document(self, bank_id: str, document_id: str) -> bool:
-        """Best-effort compatibility wrapper around :meth:`delete_document_strict`."""
-
-        try:
-            return await self.delete_document_strict(
-                bank_id=bank_id,
-                document_id=document_id,
-            )
-        except MemoryBackendError:
-            return False
-
     async def delete_bank_strict(self, bank_id: str) -> bool:
         """Delete a bank, treating an already-absent bank as success.
 
@@ -389,14 +210,6 @@ class MemoryClient:
             log.error("Bank delete was not confirmed for bank %s", bank_id)
             raise MemoryBackendError(f"delete_bank failed for bank {bank_id}")
         return True
-
-    async def delete_bank(self, bank_id: str) -> bool:
-        """Best-effort compatibility wrapper around :meth:`delete_bank_strict`."""
-
-        try:
-            return await self.delete_bank_strict(bank_id)
-        except MemoryBackendError:
-            return False
 
     async def create_bank(
         self,
@@ -446,12 +259,11 @@ class MemoryClient:
         if not clean:
             return True
         try:
-            # The public ``update_bank_config`` is sync (wraps its own event loop),
-            # and the generated ``banks.*`` async API builds host-less URLs in this
-            # SDK build. The hand-written private ``_aupdate_bank_config`` constructs
-            # the full URL itself (like ``acreate_bank``), so it is the reliable async
-            # path; revisit if the SDK is bumped.
-            await self._client._aupdate_bank_config(bank_id, clean)
+            await self._client.banks.update_bank_config(
+                bank_id=bank_id,
+                bank_config_update=BankConfigUpdate(updates=clean),
+                _request_timeout=_HINDSIGHT_TIMEOUT_SECONDS,
+            )
             return True
         except Exception:
             log.exception("Failed to update bank config for %s", bank_id)
@@ -460,71 +272,6 @@ class MemoryClient:
     def close(self) -> None:
         with contextlib.suppress(Exception):
             self._client.close()
-
-
-def _memory_record(item: object) -> MemoryRecord:
-    return MemoryRecord(
-        id=str(_value(item, "id", "memory_id") or ""),
-        text=str(_value(item, "text", "content", "fact") or ""),
-        type=str(_value(item, "type", "fact_type") or "memory"),
-        document_id=_optional_str(_value(item, "document_id")),
-        context=_optional_str(_value(item, "context")),
-        tags=_optional_str_list(_value(item, "tags")),
-        metadata=_optional_dict(_value(item, "metadata", "document_metadata")),
-        created_at=_optional_str(_value(item, "created_at")),
-        updated_at=_optional_str(_value(item, "updated_at")),
-    )
-
-
-def _document_record(item: object) -> DocumentRecord:
-    return DocumentRecord(
-        id=str(_value(item, "id", "document_id") or ""),
-        original_text=str(_value(item, "original_text", "text", "content") or ""),
-        memory_unit_count=_optional_int(_value(item, "memory_unit_count")),
-        tags=_optional_str_list(_value(item, "tags")),
-        metadata=_optional_dict(_value(item, "document_metadata", "metadata")),
-        created_at=_optional_str(_value(item, "created_at")),
-        updated_at=_optional_str(_value(item, "updated_at")),
-    )
-
-
-def _value(item: object, *names: str) -> object:
-    if isinstance(item, dict):
-        for name in names:
-            if name in item:
-                return item[name]
-        return None
-    for name in names:
-        value = getattr(item, name, None)
-        if value is not None:
-            return value
-    return None
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(value)
-
-
-def _optional_int(value: object) -> int:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        return int(value)
-    return 0
-
-
-def _optional_str_list(value: object) -> list[str] | None:
-    if not isinstance(value, list):
-        return None
-    return [str(item) for item in value]
-
-
-def _optional_dict(value: object) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    return value
 
 
 def _exception_status(exc: Exception) -> int | None:

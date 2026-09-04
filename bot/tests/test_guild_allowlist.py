@@ -46,10 +46,6 @@ def test_unapproved_guild_is_rejected():
     assert is_eligible_to_respond(_message(999), bot_user=_BOT, allowed_guilds=_ALLOW) is False
 
 
-def test_none_disables_the_guild_gate_for_isolated_callers():
-    assert is_eligible_to_respond(_message(999), bot_user=_BOT, allowed_guilds=None) is True
-
-
 def test_empty_active_set_rejects_every_guild():
     assert is_eligible_to_respond(_message(999), bot_user=_BOT, allowed_guilds=set()) is False
 
@@ -98,11 +94,6 @@ def test_interaction_with_partial_integration_markers_falls_back_to_allowlist():
     # counterpart is incomplete information; require BOTH before exempting.
     interaction = SimpleNamespace(guild_id=999, is_user_integration=lambda: True)
     assert is_allowed_guild_interaction(interaction, allowed_guilds=_ALLOW) is False
-
-
-def test_none_allows_user_and_guild_installs():
-    interaction = _interaction(999, user_install=False, guild_install=True)
-    assert is_allowed_guild_interaction(interaction, allowed_guilds=None) is True
 
 
 def test_empty_active_set_rejects_a_guild_install():

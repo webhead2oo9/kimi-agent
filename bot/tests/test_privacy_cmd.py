@@ -89,7 +89,7 @@ class _FakeMemoryClient:
         self._deleted = deleted
         self.deleted_banks: list[str] = []
 
-    async def delete_bank(self, bank_id: str) -> bool:
+    async def delete_bank_strict(self, bank_id: str) -> bool:
         self.deleted_banks.append(bank_id)
         return self._deleted
 
@@ -723,7 +723,6 @@ async def test_newer_durable_generation_is_not_reported_as_completed() -> None:
     )
 
     assert outcome.ok is True
-    assert outcome.effective_scope == "memory"
     assert outcome.durable_request_completed is False
     assert any("newer deletion request is still pending" in line for line in outcome.lines)
     with pytest.raises(PrivacyDeletionPendingError):
@@ -982,7 +981,7 @@ async def test_newer_all_request_survives_memory_worker_completion(
         def __init__(self) -> None:
             self.calls = 0
 
-        async def delete_bank(self, bank_id: str) -> bool:
+        async def delete_bank_strict(self, bank_id: str) -> bool:
             self.calls += 1
             if self.calls == 1:
                 first_memory_delete_entered.set()

@@ -252,84 +252,33 @@ def test_internet_search_replay_preserves_and_enforces_backend_budget(tmp_path):
     assert registry.sink[-1].source == "replay"
 
 
-def test_legacy_internet_search_entry_refreshes_live_with_budget_metadata(tmp_path):
+def test_load_rejects_unsupported_cassette_version(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"version": 999, "entries": []}))
+
+    with pytest.raises(ValueError, match="Unsupported cassette version"):
+        Cassette.load(path)
+
+
+def test_load_rejects_search_entry_without_budget_metadata(tmp_path):
     path = tmp_path / "s.json"
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "entries": [
                     {
                         "tool": "internet_search",
-                        "args": {"query": "old"},
-                        "results": [json.dumps({"stale": True})],
-                    }
-                ],
-            }
-        )
-    )
-    cassette = Cassette.load(path)
-    registry, calls = _registry_with_search_probe(backend_calls=2)
-    registry.configure_cassette(cassette, "replay")
-
-    ctx = _ctx()
-    result = asyncio.run(registry.dispatch("internet_search", {"query": "old"}, ctx))
-    assert json.loads(result) == {"query": "old", "live": 1}
-    assert calls["live"] == 1
-    assert registry.sink[-1].source == "live"
-    cassette.save()
-
-    refreshed = json.loads(path.read_text())
-    assert refreshed["version"] == 2
-    assert refreshed["entries"][0]["internet_search_backend_calls"] == [2]
-
-
-def test_legacy_only_search_tape_reports_none_and_record_mode_wipes_it(tmp_path):
-    path = cassette_path(tmp_path, "s", "m")
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "entries": [
-                    {
-                        "tool": "internet_search",
-                        "args": {"query": "old"},
-                        "results": [json.dumps({"stale": True})],
+                        "args": {"query": "missing-budget"},
+                        "results": [json.dumps({"results": []})],
                     }
                 ],
             }
         )
     )
 
-    cassette, provenance = load_cassette(tmp_path, "s", "m")
-    assert provenance == "none"
-    cassette.clear()
-    cassette.save()
-
-    assert json.loads(path.read_text()) == {"version": 2, "entries": []}
-
-
-def test_legacy_only_shared_search_tape_is_not_reported_as_replayable(tmp_path):
-    path = tmp_path / "s.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "entries": [
-                    {
-                        "tool": "internet_search",
-                        "args": {"query": "old"},
-                        "results": [json.dumps({"stale": True})],
-                    }
-                ],
-            }
-        )
-    )
-
-    cassette, provenance = load_cassette(tmp_path, "s", "m")
-    assert provenance == "none"
-    assert cassette.replay("internet_search", {"query": "old"}) is None
+    with pytest.raises(ValueError, match="invalid backend-call metadata"):
+        Cassette.load(path)
 
 
 def test_registry_replay_mode_records_misses_live(tmp_path):

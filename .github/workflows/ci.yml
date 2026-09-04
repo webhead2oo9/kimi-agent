@@ -52,8 +52,8 @@ jobs:
   check:
     name: lint + types + tests
     runs-on: ubuntu-latest
-    # The suite runs in well under a minute; anything past this is a hang.
-    timeout-minutes: 10
+    # Leave enough headroom for transient registry latency before the test suite.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: bot

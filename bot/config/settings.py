@@ -451,6 +451,8 @@ class Settings(BaseSettings):
     # ``kimi_agent.modules`` entry points. A configured module that cannot load
     # aborts startup rather than silently removing a deployment capability.
     kimi_modules: str = ""
+    # Subset of KIMI_MODULES allowed to fail without preventing startup.
+    kimi_optional_modules: str = ""
     # Lifecycle ceilings for each configured module. A start() that exceeds its
     # ceiling aborts startup like any other module failure; a close() that
     # exceeds its ceiling is logged and shutdown moves on to the next module.

@@ -85,13 +85,13 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 
 ## Design choices that matter
 
-**Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Kimi logs it and keeps going. Installed modules (`app/modules.py`) are required: missing or incompatible ones stop startup.
+**Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Kimi logs it and keeps going. Installed modules (`app/modules.py`) are required by default; explicitly optional modules can be disabled after recoverable failures.
 
 **Each server keeps its own stuff.** Every stored record carries the server (guild) id. A server has to be explicitly allowed. Trust, prompts, pins, and denylists come from `config/servers/<id>.md`. Workspaces and community memory are per server. `/chat` is the exception so using it inside a server cannot pull that server's private config.
 
 **Config is files.** `models.yaml` and `settings.md` are checked once at startup, so changing them means a restart. Prompt and policy files are re-read every turn, so you can edit those and see the change on the next message.
 
-**Refuse by default.** Tools check trust and denylists when they run. Moderation blocks a bad reply before it hits Discord. A configured module that is missing or incompatible stops the process. Hindsight is the exception: if it is down, the bot keeps running without memory.
+**Refuse by default.** Tools check trust and denylists when they run. Moderation blocks a bad reply before it hits Discord. A required module that is missing or incompatible stops the process. Hindsight is the exception: if it is down, the bot keeps running without memory.
 
 ## Where to go next
 

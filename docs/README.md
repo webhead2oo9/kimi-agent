@@ -73,6 +73,7 @@ The rest is reference material.
 - [Application modules](modules.md): versioned optional commands, listeners,
   schema, background work, and LLM tools.
 - [Observability](observability.md): structured local event output.
+- [Plugin migration](plugin-migration.md): move deployment tools to the module SDK.
 - [Operator plugins](plugins.md): deployment-owned Python extensions.
 - [Evals](evals.md): offline model qualification and cassette behavior.
 

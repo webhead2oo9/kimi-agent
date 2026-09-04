@@ -259,17 +259,19 @@ class EventBusImpl:
 
     # ---- lifecycle ------------------------------------------------------
 
-    async def close_module(self, module_name: str) -> None:
+    async def close_module(self, module_name: str) -> bool:
         """Cancel in-flight handlers, then drop the module's subscriptions."""
+        stopped = True
         lane = self._lanes.pop(module_name, None)
         if lane is not None:
-            await cancel_with_grace(
+            stopped = await cancel_with_grace(
                 lane.workers,
                 grace=DEFAULT_CANCEL_GRACE_SECONDS,
                 what=f"module {module_name} event handler",
             )
             lane.queue.clear()
         self._subscriptions = [s for s in self._subscriptions if s.module_name != module_name]
+        return stopped
 
     async def close(self) -> None:
         self._closed = True

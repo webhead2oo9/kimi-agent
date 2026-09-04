@@ -1016,3 +1016,222 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
     finally:
         await manager.close()
         await database.close()
+
+
+def _optional_manager(tmp_path, names, installed, optional, registry=None):
+    settings = _settings(tmp_path)
+    settings.kimi_optional_modules = optional
+    return ModuleManager.load(
+        names, core_settings=settings, installed=installed, registry=registry or ToolRegistry()
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing", "api", "dependency", "create", "import"])
+def test_optional_load_failure_is_visible_and_preserves_other_modules(
+    tmp_path, monkeypatch, failure
+):
+    from commands.modules_cmd import render_status
+
+    events = []
+    good = _spec("good", FakeModule("good", events))
+    broken = _spec("broken", FakeModule("broken", events), api_version=-1)
+    installed = {"good": good}
+    if failure == "api":
+        installed["broken"] = broken
+    elif failure == "dependency":
+        installed["broken"] = _spec(
+            "broken", FakeModule("broken", events), dependencies=("absent",)
+        )
+    elif failure == "create":
+
+        def create(ctx):
+            ctx.registry.register("partial", "partial", {}, lambda *_: None)
+            raise RuntimeError("construction failed")
+
+        installed["broken"] = ModuleSpec(name="broken", version="1", api_version=2, create=create)
+    elif failure == "import":
+
+        def discover(names):
+            if names == ("broken",):
+                raise ImportError("broken import")
+            return {"good": good}
+
+        monkeypatch.setattr(module_runtime, "_installed_specs", discover)
+        installed = None
+    registry = ToolRegistry()
+    manager = _optional_manager(tmp_path, ("broken", "good"), installed, "broken", registry)
+    assert manager.load_state.loaded == ("good",)
+    assert "broken" in manager.disabled_modules
+    assert "partial" not in registry.registered_names()
+    status = render_status(
+        manager.load_state.requested,
+        manager.specs,
+        manager.health_snapshot(),
+        disabled=manager.disabled_modules,
+    )
+    assert "`broken`" in status and "disabled:" in status
+
+
+def test_optional_selection_must_be_configured(tmp_path):
+    with pytest.raises(RuntimeError, match="subset"):
+        _optional_manager(tmp_path, (), {}, "typo")
+
+
+@pytest.mark.parametrize("phase", ["load", "start"])
+@pytest.mark.parametrize("required_consumer", [False, True])
+@pytest.mark.asyncio
+async def test_optional_dependency_failure_propagates(tmp_path, phase, required_consumer):
+    events = []
+    installed = {
+        "base": _spec("base", FakeModule("base", events, fail_start=True)),
+        "consumer": _spec("consumer", FakeModule("consumer", events), dependencies=("base",)),
+        "good": _spec("good", FakeModule("good", events)),
+    }
+    if phase == "load":
+        installed.pop("base")
+    optional = "base" if required_consumer else "base,consumer"
+    if phase == "load" and required_consumer:
+        with pytest.raises(RuntimeError, match="not installed"):
+            _optional_manager(tmp_path, ("base", "consumer", "good"), installed, optional)
+        return
+    manager = _optional_manager(tmp_path, ("base", "consumer", "good"), installed, optional)
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    try:
+        if required_consumer:
+            with pytest.raises(RuntimeError, match="dependency unavailable"):
+                await start_test_manager(manager, _base(database, manager))
+        else:
+            await start_test_manager(manager, _base(database, manager))
+            assert manager.load_state.loaded == ("good",)
+            assert set(manager.disabled_modules) == {"base", "consumer"}
+            assert "start:good" in events
+        assert "start:consumer" not in events
+    finally:
+        await manager.close()
+        await database.close()
+
+
+@pytest.mark.parametrize("failure", ["migration", "cleanup", "timeout"])
+@pytest.mark.asyncio
+async def test_unsafe_optional_failures_still_abort(tmp_path, failure):
+    events = []
+
+    async def migrate(_ctx):
+        raise RuntimeError("migration failed")
+
+    class Broken(FakeModule):
+        async def start(self, ctx):
+            if failure == "timeout":
+                await asyncio.sleep(60)
+            await super().start(ctx)
+
+        async def close(self):
+            if failure == "cleanup":
+                raise RuntimeError("cleanup failed")
+            await super().close()
+
+    instance = Broken(
+        "broken", events, (("initial", migrate),) if failure == "migration" else (), fail_start=True
+    )
+    manager = _optional_manager(
+        tmp_path, ("broken",), {"broken": _spec("broken", instance)}, "broken"
+    )
+    manager.start_timeout_seconds = 0.01
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    try:
+        with pytest.raises(RuntimeError, match="migration failed|cleanup failed|exceeded"):
+            await start_test_manager(manager, _base(database, manager))
+    finally:
+        await manager.close()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_optional_start_failure_retires_host_registrations(tmp_path):
+    from dataclasses import replace
+    from kimi_agent_module_api.contracts import CommandSpec
+    from modules.scheduler import DurableScheduler
+
+    events = []
+    contexts = {}
+
+    class Partial(FakeModule):
+        async def start(self, ctx):
+            contexts[self.name] = ctx
+            ctx.interactions.add_command(
+                CommandSpec(name="partial", description="Partial"), command
+            )
+            ctx.scheduler.register("job", job)
+            ctx.services.provide("board", 1, object())
+            ctx.events.subscribe(ev.TOPIC_MEMBER_REMOVE, listener)
+            raise RuntimeError("partial startup")
+
+    async def command(ctx):
+        pass
+
+    async def job(ctx):
+        pass
+
+    async def listener(event):
+        events.append("unexpected event")
+
+    async def handler(args, ctx):
+        return "should not run"
+
+    def create(ctx):
+        ctx.registry.register("partial_tool", "Partial", {}, handler)
+        return Partial("partial", events)
+
+    spec = ModuleSpec(
+        name="partial",
+        version="1",
+        api_version=2,
+        create=create,
+        provides=(ServiceDeclaration("board", 1),),
+        permissions=ModulePermissions(event_topics=(ev.TOPIC_MEMBER_REMOVE,)),
+        guild_settings=GuildSettingsSchema(
+            fields=(GuildSettingField("channel", "id", required=True),)
+        ),
+    )
+    registry = ToolRegistry()
+    manager = _optional_manager(
+        tmp_path,
+        ("partial", "good"),
+        {
+            "partial": spec,
+            "good": _spec("good", FakeModule("good", events)),
+        },
+        "partial",
+        registry,
+    )
+    database = Database(str(tmp_path / "bot.db"))
+    await database.connect()
+    manager.events = EventBusImpl()
+    manager.scheduler = DurableScheduler(database)
+    manager.guild_settings = GuildSettingsService(
+        config_dir=lambda: tmp_path,
+        schemas=manager.guild_settings_schemas,
+    )
+    manager.guild_settings.refresh([123])
+    assert manager.guild_settings.blocked_guilds() == frozenset({123})
+    try:
+        await start_test_manager(
+            manager, replace(_base(database, manager), is_guild_active=lambda _: True)
+        )
+        assert registry.registered_names() == frozenset()
+        assert contexts["partial"].interactions.commands == {}
+        assert manager.services.provided_by("partial") == ()
+        assert manager.guild_settings.blocked_guilds() == frozenset()
+        assert manager.guild_settings.schemas == {}
+        assert manager.load_state.loaded == ("good",)
+        assert "close:partial" in events
+        assert ("partial", "job") not in manager.scheduler._handlers
+        manager.events.publish_core(ev.TOPIC_MEMBER_REMOVE, object())
+        await drain_event_bus(manager.events)
+        assert "unexpected event" not in events
+    finally:
+        await manager.close()
+        await manager.events.close()
+        await database.close()

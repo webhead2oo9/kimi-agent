@@ -136,6 +136,7 @@ def test_code_loading_settings_are_environment_only() -> None:
     managed = {spec.field for spec in SETTINGS_SPEC}
     assert "plugin_modules" not in managed
     assert "kimi_modules" not in managed
+    assert "kimi_optional_modules" not in managed
 
 
 def test_sensitive_observability_content_mode_is_environment_only() -> None:

@@ -1,0 +1,32 @@
+[project]
+name = "kimi-hello-module"
+version = "1.0.0"
+requires-python = ">=3.14"
+dependencies = ["kimi-agent-module-api>=2,<3"]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.entry-points."kimi_agent.modules"]
+hello = "hello_module:SPEC"
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["hello_module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+mypy_path = "$MYPY_CONFIG_FILE_DIR"
+explicit_package_bases = true
+check_untyped_defs = true

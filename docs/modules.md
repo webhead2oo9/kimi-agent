@@ -2,19 +2,55 @@
 
 Application modules are separately installed Python packages that add a whole feature to the bot: commands, event listeners, their own database tables, background jobs, and optionally LLM tools. Core does not ship a catalog of them, download them at runtime, or test repositories that happen to contain them. You choose which packages to install and which installed entry points to switch on.
 
-Use a module when an extension needs lifecycle hooks, migrations, durable data, events, background jobs, Discord interactions, or host services. If it only registers LLM tools for one deployment, an [operator plugin](plugins.md) is the smaller interface.
+Use application modules for new extensions, including a single LLM tool. Start with the [one-tool example](../bot/modules/minimal/README.md), then use the full reference when you need more services. Existing [operator plugins](plugins.md) remain supported for deployment-local tools; see the [migration guide](plugin-migration.md).
 
 | | Operator plugin | Application module |
 |---|---|---|
 | Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `KIMI_MODULES` |
 | Discovery | Direct Python import | Installed `kimi_agent.modules` entry point |
-| Failure | Logged and skipped | Aborts startup |
+| Failure | Logged and skipped | Required by default; explicit optional policy |
 | Best for | A few deployment-owned tools | A versioned application capability with state/lifecycle |
 | Packaging | Any importable code | Installable Python distribution |
 
+## Required and optional modules
+
+`KIMI_MODULES` selects installed entry-point names. Modules remain required by
+default. `KIMI_OPTIONAL_MODULES` is a subset of that list, not another enable
+list; a name absent from `KIMI_MODULES` is a configuration error. Both lists
+are environment-only and take effect after restart.
+
+```dotenv
+KIMI_MODULES=moderation,hello
+KIMI_OPTIONAL_MODULES=hello
+```
+
+An optional module with a missing package, incompatible API, invalid settings,
+invalid dependency closure, or failed `create()` is disabled and logged. If
+`start()` raises an ordinary exception, the host calls `close()` and removes
+its tools, interactions, event subscriptions, scheduler handlers, services,
+and guild-settings activation blocks before continuing. `/modules status`
+shows the disabled module and reason. Persisted data and scheduled jobs remain;
+jobs cannot run without their module's registered handlers. Successful earlier
+migrations are not undone. Changing code or configuration and restarting retries
+the module.
+
+Dependencies must still be explicitly selected. An optional dependent is
+disabled when a dependency fails; a required dependent stops startup even if
+the failed dependency was optional. This policy does not make a required
+feature silently optional. Existing activation-capability gating still applies.
+
+Migration failures, shared namespace collisions, missing host ports, startup
+timeouts/cancellation, and unsuccessful cleanup still stop startup. The host
+cannot safely recover from uncertain schema state or work that may still be
+running. This policy handles startup failures, not automatic recovery from
+later runtime health problems. It does not isolate arbitrary in-process Python
+side effects; `create()` must remain pure wiring and `close()` must release
+resources even after a partial start. Activity labels are cosmetic process-wide
+metadata and may remain until restart after a failed module.
+
 ## Try the reference module
 
-This repository maintains one example at [`bot/modules/example`](../bot/modules/example/README.md). It is executable documentation and a CI fixture, not a production dependency or a default-enabled feature.
+The full example lives at [`bot/modules/example`](../bot/modules/example/README.md). It is executable documentation and a CI fixture, not a production dependency or a default-enabled feature.
 
 From `bot/`:
 
@@ -28,7 +64,7 @@ Then set the installed entry-point name and start normally:
 KIMI_MODULES=reference_kudos
 ```
 
-The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Copy its package structure to begin a module of your own.
+The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Use its individual features as references when extending the minimal example.
 
 For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
 
@@ -49,8 +85,8 @@ module is its own package in [OUTPUT DIR], never a file inside the checkout.
 
 Before writing any code, read in this order:
 1. docs/modules.md (the contract: lifecycle, declarations, every runtime port)
-2. bot/modules/example/README.md, then the whole bot/modules/example package
-   in the order its README gives, including pyproject.toml and tests/
+2. bot/modules/minimal/README.md and hello_module.py, then the relevant
+   features in bot/modules/example/README.md and their implementations
 3. bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/ (the only
    Kimi host package the module may import at runtime)
 4. CLAUDE.md, for code style and conventions
@@ -89,9 +125,8 @@ they leave). Make the routine engineering calls yourself.
 
 Deliver:
 - The package: `pyproject.toml` with the entry point and the dev extra,
-  `src/<package>/` with `py.typed`, a license file, and `README.md`, following the
-  reference module's file split (spec, settings, guild_settings, migrations,
-  storage, module).
+  `src/<package>/` with `py.typed`, a license file, and `README.md`, using the minimal example for a one-tool feature and splitting settings,
+  migrations, storage, and handlers into files only as needed.
 - Tests over the SDK fakes (`load_context()`, `FakeInteraction`,
   `FakeScheduler.run_due()`, `MemoryStorage`, and the rest) covering each
   tool, command, component, job, and event handler, plus a test that the spec
@@ -164,13 +199,13 @@ Install it using whatever source your deployment controls (a local path, wheel, 
 KIMI_MODULES=my_module
 ```
 
-Installing a package never activates it on its own; only a name in `KIMI_MODULES` does that, and core never installs a name it finds there. Once a name is listed it is part of the deployment: startup fails if the module is missing, has an incompatible API, depends on a module that is not listed, has invalid settings, or fails to start. Modules start after their dependencies and close in reverse order.
+Installing a package never activates it on its own; only a name in `KIMI_MODULES` does that, and core never installs a name it finds there. Listed modules are required by default; the [optional failure policy](#required-and-optional-modules) allows operators to disable a nonessential module after a recoverable failure. Modules start after their dependencies and close in reverse order.
 
 After installation, activation, and any deployment or per-guild configuration, restart the Kimi process. Check startup logs for the module's composed, migrated, and started messages plus a successful slash-command sync. Then run `/modules status` and smoke-test the module's user-facing command or event path. Reinstall deployment-owned modules whenever the core environment is recreated. If you use the optional uv path, a later `uv sync` can remove pip, Kimi's editable root metadata, and packages not owned by the core lock. Repeat the `ensurepip` and editable core install commands in setup step 5 before reinstalling the modules. Pip normally retains them.
 
 An empty `KIMI_MODULES` doesn't import module entry points or run module migrations. Existing module tables remain in the shared database while their modules are disabled or absent; disabling isn't data deletion.
 
-A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a hard compatibility check. The core also advertises `discord.guild_commands.v1` for live guild-scoped command replacement, `discord.modals.v1` for modal forms, and `discord.components_v2.v1` for typed Components V2 layouts. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
+A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a compatibility check: failure prevents loading and aborts startup for required modules. The core also advertises `discord.guild_commands.v1` for live guild-scoped command replacement, `discord.modals.v1` for modal forms, and `discord.components_v2.v1` for typed Components V2 layouts. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
 
 ## Package and schema contract
 
@@ -206,12 +241,12 @@ Core drives every configured module through the same phases, in this order:
 2. **Settings.** The module's settings model is built from the environment and the dotenv, then overlaid from `<CONFIG_DIR>/modules/<name>.md`.
 3. **Create.** `ModuleSpec.create(ctx)` runs with a `ModuleLoadContext`. This is pure wiring: read prepared settings, register LLM tools, construct the module object. No migration has run and no dependency has started, so the context offers no storage, services, or Discord. The tool registry is sealed when loading finishes; registering a tool later (for example from `start()`) raises.
 4. **Migrate.** Every module's `scoped_migrations` run, in dependency order, before any module starts.
-5. **Start.** `start(ctx)` runs in dependency order with the full `ModuleRuntimeContext`. Return to proceed; raise to abort startup. A `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled, given five seconds to unwind, then abandoned if it ignores cancellation; all three count as a failed start.
+5. **Start.** `start(ctx)` runs in dependency order with the full `ModuleRuntimeContext`. Return to proceed; an exception follows the required/optional failure policy. A `start()` that exceeds `MODULE_START_TIMEOUT_SECONDS` (60) is cancelled, given five seconds to unwind, then abandoned if it ignores cancellation; all three count as a failed start.
 6. **Close.** On shutdown, modules close newest-first. `close()` should be idempotent and release what `start()` acquired. A `close()` that exceeds `MODULE_CLOSE_TIMEOUT_SECONDS` (15) is cancelled, given five seconds to unwind, then abandoned; shutdown moves on to the next module. Core then releases the module's commands, components, event lane, scheduler handlers, and services regardless. Cancellation is cooperative: a module should let `CancelledError` propagate rather than catch it, since a coroutine that refuses to stop is leaked, not killed. After a start timeout the abandoned `start()` may still be running when `close()` is called on the same instance, so `close()` must tolerate that.
 
 ## Declarations
 
-A `ModuleSpec` can declare what the module intends to use. After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs, so a malformed declaration aborts startup with a named reason:
+A `ModuleSpec` can declare what the module intends to use. After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs, so a malformed declaration prevents loading with a named reason (and aborts startup for a required module):
 
 - `api_version`: required keyword pinned to the literal host API contract the
   module source implements.
@@ -247,9 +282,10 @@ the ports are a contract and an audit surface, not a sandbox.
   visible state is the worst across its unkeyed report, its keyed concerns,
   and core's own constraints (scheduler, services, guild settings), which a
   module cannot clear. A keyed `healthy` with no detail or metrics clears
-  that concern. Core sets `starting` before `start()`, `failed` (and aborts
-  startup) if `start()` raises or times out, and `healthy` after a clean
-  return unless the module already reported otherwise. A module that
+  that concern. Core sets `starting` before `start()`, `failed` if it raises or times out,
+  and `healthy` after a clean return unless the module already reported
+  otherwise. Recoverable optional failures then appear as disabled; other
+  startup failures abort. A module that
   declares a service in `provides` but never provides it is marked
   `degraded`. Detail is truncated, metrics are capped and secret-looking
   keys dropped. Each change is emitted as a best-effort `module_health`
@@ -467,4 +503,4 @@ retry reconcile a process interruption without an eight-state workflow.
 
 ## Modules versus operator plugins
 
-Reach for an application module when you need a required, versioned capability with a lifecycle or a schema. Reach for an [operator plugin](plugins.md) when you want a best-effort, deployment-local LLM tool extension. The failure modes follow from that split: a broken configured module aborts startup, while a broken plugin is logged, rolled back, and skipped.
+Application modules are the recommended path for new extensions. [Operator plugins](plugins.md) remain a convenience for existing deployment-local tools. Module authors use the public SDK and managed lifecycle; operators choose whether a module is required. See the [migration guide](plugin-migration.md) for moving an existing plugin.

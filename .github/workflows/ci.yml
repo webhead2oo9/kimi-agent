@@ -122,6 +122,8 @@ jobs:
           uv run mypy .
           uv run mypy --config-file modules/example/pyproject.toml \
             modules/example/src modules/example/tests
+          uv run mypy --config-file modules/minimal/pyproject.toml \
+            modules/minimal/hello_module.py modules/minimal/tests
 
       - name: Test module API package standalone
         working-directory: bot/packages/kimi-agent-module-api

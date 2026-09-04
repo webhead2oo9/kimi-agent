@@ -43,7 +43,7 @@ dependencies = [
 dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-cov"]
 
 # This repo is an application, not an importable library: code is run via
-# `.venv/bin/python bot.py` and tests import it through `pythonpath = ["."]`, so
+# `.venv/bin/python bot.py` and tests import it through the local Python path, so
 # nothing needs the project installed as a package. Declare a build backend
 # that packages *nothing* (metadata + dependencies only) so editable installs
 # like `python -m pip install -e ".[dev]"` don't trip setuptools' auto-discovery on
@@ -70,7 +70,7 @@ members = ["packages/kimi-agent-module-api", "modules/example"]
 # Skill scripts run as subprocesses against the bot's environment, so their
 # runtime-only imports are not type-checked here. Workspaces may use the default
 # root or a deployment's data/<instance>/workspaces layout.
-exclude = "^(?:modules/example|(?:data/(?:[^/]+/)*)?workspaces|skills/store/.*/scripts)/"
+exclude = "^(?:modules/(?:example|minimal)|(?:data/(?:[^/]+/)*)?workspaces|skills/store/.*/scripts)/"
 # Production runs on Linux and sqlcipher3-binary is a Linux-only dependency;
 # keep type checking deterministic on non-Linux dev hosts.
 platform = "linux"
@@ -143,8 +143,8 @@ ignore = [
 "evals/**" = ["ASYNC240", "RUF012", "RUF043", "RUF059"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "modules/example/tests"]
-pythonpath = ["."]
+testpaths = ["tests", "modules/example/tests", "modules/minimal/tests"]
+pythonpath = [".", "modules/minimal"]
 markers = [
   "uses_live_settings_env: allow a test to read the operator's Settings environment",
 ]

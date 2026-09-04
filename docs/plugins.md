@@ -2,7 +2,7 @@
 
 A plugin is how one deployment adds tools that only make sense for its own community, without the public core ever learning that community's name. The plugin brings its own API clients, its own settings, its own guild scoping, and its own docs. The core brings one thing: the loading contract in `app/plugins.py`.
 
-Plugins and application modules are different extension surfaces. Choose a plugin for deployment-owned LLM tools that can be imported directly. Choose an [application module](modules.md) when the package needs installed-package discovery, hard startup guarantees, migrations, durable jobs, events, Discord interactions, or lifecycle-managed services. Neither surface scans a directory or downloads code at runtime.
+Use [application modules](modules.md) for new extensions, starting with the [one-tool example](../bot/modules/minimal/README.md). Operator plugins remain supported as a convenience for deployment-owned tools that import directly. Modules offer a public SDK and managed lifecycle; see the [migration guide](plugin-migration.md) when moving a plugin. Neither surface scans a directory or downloads code at runtime.
 
 ## Nothing loads unless you list it
 

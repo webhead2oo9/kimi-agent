@@ -1,11 +1,11 @@
-"""Required, lifecycle-aware application modules.
+"""Lifecycle-aware application modules, required unless explicitly optional.
 
 Unlike operator plugins, application modules may own Discord commands/listeners,
 database schema, background work, and optional LLM tools.  Installed packages
 are discovered through Python entry points, but only names explicitly listed in
 ``KIMI_MODULES`` are loaded.  A requested module is part of the deployment
-contract: any load or startup failure aborts startup instead of silently
-removing the capability.
+contract by default. Explicitly optional modules can be disabled after
+recoverable failures; migrations, timeouts, and failed cleanup remain fatal.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.activity import register_tool_labels
-from app.tool_surfaces import declare_surface_tools
+from app.tool_surfaces import declare_surface_tools, restore_surface_tools, snapshot_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
 from kimi_agent_module_api.contracts import (
     DiscordActions,
@@ -106,6 +106,15 @@ class _LoadTimeToolRegistry:
 
     def forget_module(self, module_name: str) -> None:
         self._module_tools.pop(module_name, None)
+
+    def remove_module(self, module_name: str) -> None:
+        names = set(self.names_for(module_name))
+        self._registry.remove_tools(names)
+        restore_surface_tools(
+            {surface: members - names for surface, members in snapshot_surface_tools().items()}
+        )
+        self.forget_module(module_name)
+        self.guild_active.pop(module_name, None)
 
     def register(
         self,
@@ -450,6 +459,7 @@ class ModuleManager:
     start_timeout_seconds: float = 60.0
     close_timeout_seconds: float = 15.0
     _host_rules: dict[str, tuple[ResolvedHostRule, ...]] = field(default_factory=dict)
+    _optional: frozenset[str] = frozenset()
 
     @classmethod
     def load(
@@ -468,15 +478,62 @@ class ModuleManager:
             start_timeout_seconds=float(core_settings.module_start_timeout_seconds),
             close_timeout_seconds=float(core_settings.module_close_timeout_seconds),
         )
+        manager._optional = frozenset(
+            name.strip() for name in core_settings.kimi_optional_modules.split(",") if name.strip()
+        )
+        if manager._optional - set(names):
+            raise RuntimeError("KIMI_OPTIONAL_MODULES must be a subset of KIMI_MODULES")
+        if len(set(names)) != len(names):
+            raise RuntimeError("KIMI_MODULES contains a duplicate module name")
         if not names:
             return manager
         resolved_capabilities = (
             capabilities if capabilities is not None else module_capabilities(core_settings)
         )
+        # Resolve each root independently so a broken optional entry point or
+        # dependency closure cannot prevent unrelated modules from composing.
+        discovered: dict[str, ModuleSpec] = {}
+        failures: dict[str, Exception] = {}
+        for name in names:
+            try:
+                if installed is None:
+                    discovered.update(_installed_specs((name,)))
+                elif name in installed:
+                    discovered[name] = installed[name]
+            except Exception as exc:
+                failures[name] = exc
+
+        def collect(current: str, closure: list[str]) -> None:
+            if current in failures:
+                raise failures[current]
+            if current in closure or current not in names:
+                return
+            closure.append(current)
+            if current in discovered:
+                for dependency in discovered[current].dependencies:
+                    collect(dependency, closure)
+
+        selected: dict[str, ModuleSpec] = {}
+        for name in names:
+            try:
+                closure: list[str] = []
+                collect(name, closure)
+                validated = validate_module_selection(
+                    closure,
+                    core_settings=core_settings,
+                    installed=discovered,
+                    capabilities=resolved_capabilities,
+                )
+                selected.update((spec.name, spec) for spec in validated)
+            except Exception as exc:
+                if name not in manager._optional:
+                    raise
+                spec = discovered.get(name)
+                manager._disable(name, spec.version if spec else "unknown", _summarize(exc))
         specs = validate_module_selection(
-            names,
+            tuple(selected),
             core_settings=core_settings,
-            installed=installed,
+            installed=selected,
             capabilities=resolved_capabilities,
         )
         disabled = _activation_disabled(specs, resolved_capabilities)
@@ -499,11 +556,12 @@ class ModuleManager:
         for spec in specs:
             if reason := disabled.get(spec.name):
                 log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
-        manager._specs = active_specs
+        manager._specs = tuple(spec for spec in active_specs if spec.name in manager._modules)
         manager.load_state = ModuleLoadState(
             requested=tuple(names),
-            loaded=tuple(spec.name for spec in active_specs),
-            disabled=tuple(
+            loaded=tuple(spec.name for spec in manager._specs),
+            disabled=manager.load_state.disabled
+            + tuple(
                 (spec.name, spec.version, disabled[spec.name])
                 for spec in specs
                 if spec.name in disabled
@@ -521,6 +579,14 @@ class ModuleManager:
         registry: ToolRegistry,
     ) -> None:
         for spec in active_specs:
+            unavailable = [name for name in spec.dependencies if name not in manager._modules]
+            if unavailable:
+                reason = "dependency unavailable: " + ", ".join(unavailable)
+                if spec.name not in manager._optional:
+                    raise RuntimeError(f"Kimi module {spec.name!r}: {reason}")
+                manager._disable(spec.name, spec.version, reason)
+                continue
+            surfaces_before = snapshot_surface_tools()
             before = registry.registered_names()
             try:
                 prepared = (
@@ -540,12 +606,30 @@ class ModuleManager:
                     spec.name, spec.permissions.http_hosts, settings_values
                 )
                 instance = spec.create(ctx)
-            except Exception:
+            except Exception as exc:
+                restore_surface_tools(surfaces_before)
+                manager._host_rules.pop(spec.name, None)
                 registry.remove_tools(set(registry.registered_names() - before))
                 tool_registry.forget_module(spec.name)
-                raise
+                if spec.name not in manager._optional:
+                    raise
+                manager._disable(spec.name, spec.version, _summarize(exc))
+                continue
             manager._modules[spec.name] = instance
             log.info("Kimi module composed: %s %s", spec.name, spec.version)
+
+    def _disable(self, name: str, version: str, reason: str) -> None:
+        log.error("Kimi module unavailable: %s %s (%s)", name, version, reason)
+        self.load_state = ModuleLoadState(
+            requested=self.load_state.requested,
+            loaded=tuple(item for item in self.load_state.loaded if item != name),
+            disabled=(*self.load_state.disabled, (name, version, reason)),
+        )
+        if self._tool_registry is not None:
+            self._tool_registry.remove_module(name)
+        self._host_rules.pop(name, None)
+        if self.guild_settings is not None:
+            self.guild_settings.remove_module(name)
 
     @property
     def specs(self) -> Mapping[str, ModuleSpec]:
@@ -591,6 +675,13 @@ class ModuleManager:
                     spec.name, _migrations_for(instance, storage)
                 )
             for spec in self._specs:
+                unavailable = [name for name in spec.dependencies if name in self.disabled_modules]
+                if unavailable:
+                    reason = "dependency unavailable: " + ", ".join(unavailable)
+                    if spec.name not in self._optional:
+                        raise RuntimeError(f"Kimi module {spec.name!r}: {reason}")
+                    self._disable(spec.name, spec.version, reason)
+                    continue
                 instance = self._modules[spec.name]
                 ports = self._ports_for(spec, base)
                 if _customize is not None:
@@ -622,7 +713,12 @@ class ModuleManager:
                     raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
                 if outcome.error is not None:
                     self.health.set(spec.name, "failed", _summarize(outcome.error))
-                    raise outcome.error
+                    if spec.name not in self._optional or not isinstance(outcome.error, Exception):
+                        raise outcome.error
+                    await self._close_module(spec.name, strict=True)
+                    self._started.remove(spec.name)
+                    self._disable(spec.name, spec.version, _summarize(outcome.error))
+                    continue
                 self._settle_health(spec)
                 if self._tool_registry is not None:
                     # Only now are the module's tools visible; before this line
@@ -738,42 +834,53 @@ class ModuleManager:
         """
         while self._started:
             name = self._started.pop()
-            try:
-                outcome = await run_bounded(
-                    self._modules[name].close(),
-                    timeout=self.close_timeout_seconds,
-                    what=f"Kimi module {name} close()",
+            await self._close_module(name)
+
+    async def _close_module(self, name: str, *, strict: bool = False) -> None:
+        clean = False
+        try:
+            outcome = await run_bounded(
+                self._modules[name].close(),
+                timeout=self.close_timeout_seconds,
+                what=f"Kimi module {name} close()",
+            )
+            if outcome.timed_out:
+                log.error(
+                    "Kimi module %s close() exceeded %gs%s; continuing shutdown",
+                    name,
+                    self.close_timeout_seconds,
+                    " and ignored cancellation" if outcome.abandoned else "",
                 )
-                if outcome.timed_out:
-                    log.error(
-                        "Kimi module %s close() exceeded %gs%s; continuing shutdown",
-                        name,
-                        self.close_timeout_seconds,
-                        " and ignored cancellation" if outcome.abandoned else "",
-                    )
-                elif outcome.cancelled:
-                    log.error("Kimi module %s close() was cancelled before it finished", name)
-                elif outcome.error is not None:
-                    log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
-            except Exception:
-                log.exception("Error closing Kimi module %s", name)
-            finally:
-                router = getattr(self._contexts.get(name), "interactions", None)
-                close_router = getattr(router, "close", None)
-                if callable(close_router):
-                    try:
-                        close_router()
-                    except Exception:
-                        log.exception("Error closing interactions for Kimi module %s", name)
-                if self.events is not None:
-                    await self.events.close_module(name)
-                if self.scheduler is not None:
-                    self.scheduler.unregister_module(name)
-                self.services.retire_module(name)
-                self.health.forget(name)
-                if self._tool_registry is not None:
-                    self._tool_registry.guild_active.pop(name, None)
-                self._contexts.pop(name, None)
+            elif outcome.cancelled:
+                log.error("Kimi module %s close() was cancelled before it finished", name)
+            elif outcome.error is not None:
+                log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
+            else:
+                clean = True
+        except Exception:
+            log.exception("Error closing Kimi module %s", name)
+        finally:
+            router = getattr(self._contexts.get(name), "interactions", None)
+            close_router = getattr(router, "close", None)
+            if callable(close_router):
+                try:
+                    close_router()
+                except Exception:
+                    clean = False
+                    log.exception("Error closing interactions for Kimi module %s", name)
+            if self.events is not None:
+                stopped = await self.events.close_module(name)
+                if strict and not stopped:
+                    clean = False
+            if self.scheduler is not None:
+                self.scheduler.unregister_module(name)
+            self.services.retire_module(name)
+            self.health.forget(name)
+            if self._tool_registry is not None:
+                self._tool_registry.guild_active.pop(name, None)
+            self._contexts.pop(name, None)
+        if strict and not clean:
+            raise RuntimeError(f"Kimi module {name!r} cleanup failed; cannot continue startup")
 
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:

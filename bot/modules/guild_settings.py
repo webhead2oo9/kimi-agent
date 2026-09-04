@@ -92,10 +92,26 @@ class GuildSettingsService:
     _reported: dict[str, str] = field(default_factory=dict)
     _refresh_versions: dict[_RefreshKey, int] = field(default_factory=dict)
 
+    def remove_module(self, module_name: str) -> None:
+        """Retire a failed optional module, including any guild activation blocks."""
+        with self._lock:
+            self.schemas = {
+                name: schema for name, schema in self.schemas.items() if name != module_name
+            }
+            self._entries = {
+                key: value for key, value in self._entries.items() if key[1] != module_name
+            }
+            self._refresh_versions = {
+                key: value for key, value in self._refresh_versions.items() if key[1] != module_name
+            }
+            self._callbacks.pop(module_name, None)
+            self._reported.pop(module_name, None)
+
     # ---- reading --------------------------------------------------------------
 
-    def _read(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
-        schema = self.schemas[module_name]
+    def _read(
+        self, guild_id: int, module_name: str, schema: GuildSettingsSchema
+    ) -> GuildSettingsSnapshot:
         base = self.config_dir()
         namespaced = base / GUILD_MODULES_DIR / str(guild_id) / f"{module_name}.md"
         try:
@@ -125,20 +141,26 @@ class GuildSettingsService:
 
     def build_refresh(self, guild_ids: Iterable[int]) -> _RefreshBatch:
         """Read and validate snapshots without holding the cache lock."""
-        keys = tuple(
-            (guild_id, module_name)
-            for guild_id in dict.fromkeys(guild_ids)
-            for module_name in self.schemas
-        )
+        guilds = tuple(dict.fromkeys(guild_ids))
         versioned_keys: list[tuple[int, str, int]] = []
         with self._lock:
+            # Retirement may run while disk reads are in flight. Capture the
+            # schema and reserve versions atomically so it invalidates the
+            # entire old batch without readers touching retired schemas.
+            schemas = dict(self.schemas)
+            keys = tuple((guild_id, name) for guild_id in guilds for name in schemas)
             for guild_id, module_name in keys:
                 key = (guild_id, module_name)
                 version = self._refresh_versions.get(key, 0) + 1
                 self._refresh_versions[key] = version
                 versioned_keys.append((guild_id, module_name, version))
         return tuple(
-            (guild_id, module_name, version, self._read(guild_id, module_name))
+            (
+                guild_id,
+                module_name,
+                version,
+                self._read(guild_id, module_name, schemas[module_name]),
+            )
             for guild_id, module_name, version in versioned_keys
         )
 
@@ -208,10 +230,12 @@ class GuildSettingsService:
     def get(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
         with self._lock:
             entry = self._entries.get((guild_id, module_name))
+            schema = self.schemas[module_name]
         if entry is None:
-            snapshot = self._read(guild_id, module_name)
+            snapshot = self._read(guild_id, module_name, schema)
             with self._lock:
-                self._entries[(guild_id, module_name)] = _Entry(snapshot, self.clock())
+                if self.schemas.get(module_name) is schema:
+                    self._entries[(guild_id, module_name)] = _Entry(snapshot, self.clock())
             return snapshot
         return entry.snapshot
 

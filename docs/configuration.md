@@ -86,7 +86,7 @@ Once the core `Settings` object exists, `build_app` applies an overlay from `<CO
 - No paths, binaries, scripts, or files (`*_dir`, `*_directory`, `*_path`, `*_bin`, `*_script`, `*_file`).
 - No service URLs or endpoints (`*_uri`, `*_url`, `*_base`, `*_endpoint`, `*_host`, `*_port`, `*_ip`).
 - No `database_*` settings.
-- Neither `plugin_modules` nor `kimi_modules`.
+- Neither `plugin_modules`, `kimi_modules`, nor `kimi_optional_modules`.
 
 The `*_ids` allowlists are written as YAML lists in the operator file rather than the comma-separated strings used in `.env`.
 
@@ -953,7 +953,8 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `CONFIG_DIR` | path | `config` | Operator config root: `prompt.md`, `persona.md`, `models.yaml`, `settings.md`, `tools.md`, and the `channels/`, `channel_threads/`, `threads/`, `servers/`, `prompts/`, `modules/`, `plugins/`, and `tools/` fragment trees. Consumed by prompt construction, guild/channel fragment loaders, core, module, and plugin settings overlays, tool policy/config, and model routing. |
 | `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is deployment data and is not stored in the repository; a missing store contributes no private skills, while shipped built-ins remain available. |
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
-| `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Missing dependencies, incompatible APIs, invalid settings, or lifecycle failures abort startup. See [modules.md](modules.md). |
+| `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Modules are required unless explicitly listed in `KIMI_OPTIONAL_MODULES`. See [modules.md](modules.md). |
+| `KIMI_OPTIONAL_MODULES` | CSV subset of `KIMI_MODULES` | _(empty)_ | Allow recoverable module load/start failures to disable that module. Required dependents, migrations, timeouts, and unsuccessful cleanup still abort startup. Environment-only; restart required. See [failure policy](modules.md#required-and-optional-modules). |
 | `MODULE_START_TIMEOUT_SECONDS` | int | `60` | Ceiling for one module's `start()`. Exceeding it fails that module and aborts startup, like any other module start failure. Must be ≥ 1. See [modules.md](modules.md#lifecycle-contract). |
 | `MODULE_CLOSE_TIMEOUT_SECONDS` | int | `15` | Ceiling for one module's `close()` during shutdown. Exceeding it cancels that close, logs an error, and continues with the next module. Must be ≥ 1. |
 | `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` | int | `4` | How many module scheduler jobs may run at once across all modules; at most one job per module runs at a time. Must be ≥ 1. |

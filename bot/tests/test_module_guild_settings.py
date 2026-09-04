@@ -201,10 +201,12 @@ def test_refresh_does_not_hold_cache_lock_while_reading(tmp_path: Path) -> None:
     allow_read = Event()
 
     class BlockingReadService(GuildSettingsService):
-        def _read(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
+        def _read(
+            self, guild_id: int, module_name: str, schema: GuildSettingsSchema
+        ) -> GuildSettingsSnapshot:
             read_started.set()
             allow_read.wait()
-            return super()._read(guild_id, module_name)
+            return super()._read(guild_id, module_name, schema)
 
     service = BlockingReadService(config_dir=lambda: tmp_path, schemas={"mod": OPTIONAL})
     worker = Thread(target=service.refresh, args=([GUILD],))
@@ -229,7 +231,9 @@ def test_stale_refresh_cannot_override_newer_enforcement_snapshot(tmp_path: Path
     other_guild = GUILD + 1
 
     class OutOfOrderReadService(GuildSettingsService):
-        def _read(self, guild_id: int, module_name: str) -> GuildSettingsSnapshot:
+        def _read(
+            self, guild_id: int, module_name: str, schema: GuildSettingsSchema
+        ) -> GuildSettingsSnapshot:
             nonlocal guild_calls
             assert module_name == "mod"
             if guild_id == other_guild:
@@ -316,3 +320,46 @@ def test_render_guild_settings_rejects_values_no_schema_kind_holds() -> None:
         render_guild_settings({"x": 1.5})
     with pytest.raises(TypeError):
         render_guild_settings({"x": {"nested": 1}})
+
+
+@pytest.mark.parametrize("operation", ["refresh", "get"])
+def test_retirement_during_read_cannot_restore_guild_blocks(tmp_path: Path, operation: str) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    read_started = Event()
+    allow_read = Event()
+
+    class BlockingReadService(GuildSettingsService):
+        def _read(
+            self, guild_id: int, module_name: str, schema: GuildSettingsSchema
+        ) -> GuildSettingsSnapshot:
+            if module_name == "retiring":
+                read_started.set()
+                assert allow_read.wait(timeout=5)
+            return super()._read(guild_id, module_name, schema)
+
+    service = BlockingReadService(
+        config_dir=lambda: tmp_path,
+        schemas={"retiring": SCHEMA, "healthy": OPTIONAL},
+    )
+    changes: list[int] = []
+    service.subscribe("retiring", changes.append)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = (
+            executor.submit(service.refresh, [GUILD])
+            if operation == "refresh"
+            else executor.submit(service.get, GUILD, "retiring")
+        )
+        try:
+            assert read_started.wait(timeout=5)
+            service.remove_module("retiring")
+        finally:
+            allow_read.set()
+        future.result(timeout=5)
+
+    assert service.blocked_guilds() == frozenset()
+    assert changes == []
+    assert "retiring" not in service.schemas
+    assert (GUILD, "retiring") not in service._entries
+    service.refresh([GUILD])
+    assert service.get(GUILD, "healthy").valid

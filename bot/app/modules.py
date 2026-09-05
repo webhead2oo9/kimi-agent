@@ -48,7 +48,6 @@ from kimi_agent_module_api import (
     TrustTier,
 )
 
-from tools.registry import USER_APP_SCOPE_CHANNEL_ID
 
 if TYPE_CHECKING:
     from config.settings import Settings
@@ -75,6 +74,12 @@ def _snowflake(value: str | None) -> int | None:
     if not text.isdecimal():
         raise ValueError(f"module tools require numeric Discord ids, got {value!r}")
     return int(text)
+
+
+def _optional_snowflake(value: str | None) -> int | None:
+    if value is None or not str(value).strip():
+        return None
+    return _snowflake(value)
 
 
 class _LoadTimeToolRegistry:
@@ -151,10 +156,9 @@ class _LoadTimeToolRegistry:
 
         async def dispatch(arguments: dict[str, Any], ctx: MessageContext) -> str:
             guild_id = _snowflake(ctx.guild_id)
-            # Personal chat is a slash interaction with no channel of its own.
-            channel_id = (
-                None if ctx.channel_id == USER_APP_SCOPE_CHANNEL_ID else _snowflake(ctx.channel_id)
-            )
+            # Personal chat is a slash interaction with no channel or source message of its own.
+            personal_chat = ctx.personal_chat
+            channel_id = None if personal_chat else _snowflake(ctx.channel_id)
             user_id = _snowflake(ctx.user_id)
             if user_id is None:
                 raise ValueError("module tools require a user id")
@@ -168,6 +172,11 @@ class _LoadTimeToolRegistry:
                     thread_id=_snowflake(ctx.thread_id),
                     trust_tier=ctx.trust_tier,
                     tool_configs=ctx.tool_configs,
+                    trigger_discord_message_id=(
+                        None
+                        if personal_chat
+                        else _optional_snowflake(ctx.trigger_discord_message_id)
+                    ),
                 ),
             )
 

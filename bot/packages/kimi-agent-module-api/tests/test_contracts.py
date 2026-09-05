@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 import dataclasses
 from typing import Any
 
@@ -80,6 +81,10 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
         if field.default is dataclasses.MISSING
     }
     assert {"events", "scheduler", "storage", "discord", "interactions", "services"} <= required
+
+
+def test_distribution_version_includes_trigger_message_contract() -> None:
+    assert version("kimi-agent-module-api") == "2.1.0"
 
 
 def test_spec_requires_an_explicit_keyword_api_version() -> None:

@@ -65,6 +65,12 @@ Message-deletion events include cached author classification:
 `MessageDeleteEvent.author_is_bot` and `MessageBulkDeleteEvent.bot_message_ids`.
 The values remain unknown for messages that were absent from Discord's cache.
 
+SDK 2.1 adds `ModuleToolContext.trigger_discord_message_id`. Mention-path tool
+calls receive the exact source Discord message snowflake; other surfaces receive
+`None`. Modules that act on a user's source message should require
+`kimi-agent-module-api>=2.1,<3`, reject `None`, fetch that exact message through
+`ctx.discord`, and verify its author before acting.
+
 Modules use namespaced guild documents and the physical table names returned
 by `ctx.storage.table()`.
 

@@ -29,6 +29,9 @@ class ModuleToolContext:
     trust_tier: TrustTier
     # Operator per-tool configuration from ``<CONFIG_DIR>/tools/<tool>.md``.
     tool_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # Discord message that initiated this model turn. It is absent for personal
+    # app commands and other surfaces that are not rooted in a Discord message.
+    trigger_discord_message_id: int | None = None
 
 
 type ModuleToolHandler = Callable[[dict[str, Any], ModuleToolContext], Coroutine[Any, Any, str]]

@@ -748,6 +748,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
                 channel_id="34",
                 thread_id="56",
                 trust_tier=CoreTier.REGULAR,
+                trigger_discord_message_id="78",
             )
 
         assert await registry.dispatch("echo", {}, ctx("7")) == "ok"
@@ -759,6 +760,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
             56,
         )
         assert sdk_ctx.trust_tier.value == "regular"
+        assert sdk_ctx.trigger_discord_message_id == 78
         # Scoped to guild 7 at the registry, so 8 is masked as unknown before the handler.
         assert "Unknown tool" in str(await registry.dispatch("echo", {}, ctx("8")))
         assert len(seen) == 1
@@ -1000,19 +1002,22 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
     await database.connect()
     await start_test_manager(manager, _base(database, manager))
     try:
-        from tools.registry import USER_APP_SCOPE_CHANNEL_ID, MessageContext
+        from tools.registry import MessageContext
         from trust.tiers import TrustTier as CoreTier
 
         ctx = MessageContext(
             user_id="12",
             user_name="u",
             guild_id=None,
-            channel_id=USER_APP_SCOPE_CHANNEL_ID,
+            channel_id="999",
             thread_id=None,
             trust_tier=CoreTier.MEMBER,
+            trigger_discord_message_id="1234",
+            personal_chat=True,
         )
         assert await registry.dispatch("echo", {}, ctx) == "ok"
         assert seen[-1].channel_id is None and seen[-1].guild_id is None
+        assert seen[-1].trigger_discord_message_id is None
     finally:
         await manager.close()
         await database.close()

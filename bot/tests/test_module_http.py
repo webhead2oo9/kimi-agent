@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import socket
 from collections.abc import AsyncIterator
 
 import pytest
@@ -16,6 +18,7 @@ from kimi_agent_module_api.contracts import (
     ResponseTooLarge,
 )
 from modules.http import (
+    MetadataSafeResolver,
     ModuleHttpError,
     ModuleHttpRuntime,
     ResolvedHostRule,
@@ -50,6 +53,149 @@ def test_resolve_host_rules_expands_cdn_and_settings() -> None:
         resolve_host_rules("img", (HttpHostRule(host="169.254.169.254", network="private"),), {})
 
 
+def test_resolve_host_rules_expands_sequence_setting() -> None:
+    rules = resolve_host_rules(
+        "bridge",
+        (HttpHostRule(host="${backend_urls}", network="private"),),
+        {
+            "backend_urls": (
+                "http://127.0.0.1:9000/api/",
+                "https://commands.example.org/v1",
+            )
+        },
+    )
+
+    assert rules == (
+        ResolvedHostRule("127.0.0.1", frozenset({"http"}), frozenset({9000}), True),
+        ResolvedHostRule("commands.example.org", frozenset({"https"}), frozenset(), True),
+    )
+    assert (
+        resolve_host_rules(
+            "bridge",
+            (HttpHostRule(host="${backend_urls}", network="private"),),
+            {"backend_urls": ()},
+        )
+        == ()
+    )
+
+
+def test_module_http_keeps_each_declared_port_for_the_same_host() -> None:
+    rules = resolve_host_rules(
+        "bridge",
+        (HttpHostRule(host="${backend_urls}", network="private"),),
+        {
+            "backend_urls": (
+                "http://127.0.0.1:58749",
+                "http://127.0.0.1:58750",
+            )
+        },
+    )
+    client = ModuleHttpRuntime().client_for("bridge", rules)
+
+    first, _ = client._check("http://127.0.0.1:58749/health")
+    second, _ = client._check("http://127.0.0.1:58750/health")
+
+    assert first.ports == frozenset({58749})
+    assert second.ports == frozenset({58750})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias", ["2852039166", "0xA9FEA9FE"])
+async def test_private_resolver_blocks_numeric_metadata_aliases(alias: str) -> None:
+    with pytest.raises(HostNotAllowed, match="metadata"):
+        await MetadataSafeResolver().resolve(alias, 80)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", ["169.254.0.23", "fe80::1234"])
+async def test_private_resolver_blocks_all_link_local_addresses(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    loop = asyncio.get_running_loop()
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+
+    async def link_local_result(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 80))]
+
+    monkeypatch.setattr(loop, "getaddrinfo", link_local_result)
+    with pytest.raises(HostNotAllowed, match="metadata"):
+        await MetadataSafeResolver().resolve("owned.internal", 80)
+
+
+@pytest.mark.asyncio
+async def test_private_resolver_blocks_dns_alias_to_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+
+    async def metadata_result(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("169.254.169.254", 80),
+            )
+        ]
+
+    monkeypatch.setattr(loop, "getaddrinfo", metadata_result)
+    with pytest.raises(HostNotAllowed, match="metadata"):
+        await MetadataSafeResolver().resolve("owned.internal", 80)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "::ffff:169.254.169.254",
+        "::ffff:a9fe:a9fe",
+        "fd00:0ec2:0000:0000:0000:0000:0000:0254",
+        "fe80::1234",
+    ],
+)
+async def test_private_http_blocks_metadata_ipv6_literals_before_connect(alias: str) -> None:
+    with pytest.raises(ModuleContractError, match="may not target"):
+        resolve_host_rules(
+            "bridge",
+            (HttpHostRule(host="${backend}", network="private"),),
+            {"backend": f"http://[{alias}]:8080"},
+        )
+
+    runtime = ModuleHttpRuntime()
+    client = runtime.client_for(
+        "bridge",
+        (ResolvedHostRule(alias, frozenset({"http"}), frozenset({8080}), True),),
+    )
+    try:
+        with pytest.raises(HostNotAllowed, match="metadata"):
+            await client.get(f"http://[{alias}]:8080/health")
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_private_http_blocks_ipv4_link_local_literal_before_connect() -> None:
+    alias = "169.254.0.23"
+    with pytest.raises(ModuleContractError, match="may not target"):
+        resolve_host_rules(
+            "bridge",
+            (HttpHostRule(host="${backend}", network="private"),),
+            {"backend": f"http://{alias}:8080"},
+        )
+
+    runtime = ModuleHttpRuntime()
+    client = runtime.client_for(
+        "bridge",
+        (ResolvedHostRule(alias, frozenset({"http"}), frozenset({8080}), True),),
+    )
+    try:
+        with pytest.raises(HostNotAllowed, match="metadata"):
+            await client.get(f"http://{alias}:8080/health")
+    finally:
+        await runtime.close()
+
+
 @pytest_asyncio.fixture
 async def server() -> AsyncIterator[TestServer]:
     app = web.Application()
@@ -81,6 +227,7 @@ async def server() -> AsyncIterator[TestServer]:
                 "authorization": request.headers.get("Authorization"),
                 "cookie": request.headers.get("Cookie"),
                 "proxy_authorization": request.headers.get("Proxy-Authorization"),
+                "x_api_key": request.headers.get("X-API-Key"),
                 "x_test": request.headers.get("X-Test"),
             }
         )
@@ -184,6 +331,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
                 "Authorization": "Bearer secret",
                 "Cookie": "session=secret",
                 "Proxy-Authorization": "Basic secret",
+                "X-API-Key": "secret-key",
                 "X-Test": "kept",
             },
         )
@@ -191,6 +339,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
             "authorization": None,
             "cookie": None,
             "proxy_authorization": None,
+            "x_api_key": None,
             "x_test": "kept",
         }
     finally:

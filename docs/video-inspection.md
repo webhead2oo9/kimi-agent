@@ -13,6 +13,24 @@ Install FFmpeg (`ffmpeg` and `ffprobe` on PATH) and satisfy the offline Linux
 startup probe fails. Enabling `CODE_EXEC_ENABLED` is not required; the inspector
 uses the same sandbox implementation with a separate, always-offline profile.
 
+FFmpeg is a host dependency, not a Python package. On the supported Ubuntu
+deployment, install the distribution package; it provides both required
+executables and their shared libraries:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes --no-install-recommends ffmpeg
+command -v ffmpeg
+command -v ffprobe
+ffmpeg -version
+ffprobe -version
+```
+
+Both `command -v` checks must print absolute paths. Run the decoder test below
+as the bot service user after satisfying the sandbox prerequisites; a missing
+binary, shared library, user systemd bus, or workspace causes the tool to stay
+unregistered at startup.
+
 ```dotenv
 VIDEO_INSPECTION_ENABLED=true
 ```
@@ -189,6 +207,13 @@ Automated checks:
 
 ```bash
 .venv/bin/python -m pytest tests/test_video_inspection.py tests/test_video_inspection_local.py tests/test_core_smoke.py -q
+```
+
+To require the real offline FFmpeg sandbox test instead of allowing a local
+prerequisite skip, run:
+
+```bash
+KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest tests/test_video_inspection_local.py -q
 ```
 
 Real FFmpeg fixtures cover variable frame rates, nonzero start timestamps,

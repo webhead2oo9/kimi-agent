@@ -121,6 +121,21 @@ These features run inside isolated sandboxes, so we need a few extra tools:
 sudo apt-get install --yes bubblewrap util-linux
 ```
 
+### Local video inspection package (optional)
+
+The experimental local video inspector requires the host FFmpeg package. It is
+not installed by the Python environment setup:
+
+```sh
+sudo apt-get install --yes --no-install-recommends ffmpeg
+command -v ffmpeg
+command -v ffprobe
+```
+
+The package must provide both executables. Complete the sandbox setup in
+section 6 before enabling `VIDEO_INSPECTION_ENABLED`; the tool fails closed
+when either FFmpeg or the offline sandbox is unavailable.
+
 ### Browser + visual rendering packages
 The browser and chart tools also need Node 22.18+, npm, unzip, and some shared libraries:
 

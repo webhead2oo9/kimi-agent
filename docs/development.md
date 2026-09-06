@@ -239,6 +239,11 @@ has actually loaded.
   configured profile; the CI `sandbox` job provisions all of them and runs
   those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
   counts as failure.
+- **Experimental local video inspection** additionally needs the host FFmpeg
+  package, which supplies both `ffmpeg` and `ffprobe`. It reuses the offline
+  Linux sandbox even when code execution is disabled. See
+  [video inspection](video-inspection.md) for installation, verification, and
+  the required live decoder test.
 - **Persistent browser and visual rendering** also need the Linux isolation
   stack and pinned BetterWright/Mermaid runtime. They are off unless
   `BROWSER_ENABLED=true`, so a Windows/macOS dev host needs no change and can

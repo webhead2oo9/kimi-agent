@@ -30,6 +30,8 @@ import stat as stat_module
 import subprocess
 import sys
 
+from scripts.runtime_env import merge_runtime_env
+
 _USER_MANAGER_TIMEOUT_SECONDS = 10.0
 _NAME_WIDTH = len("kernel.core_pattern is a file pattern")
 
@@ -42,38 +44,6 @@ _USERNS_SYSCTLS = (
     "kernel.apparmor_restrict_unprivileged_userns",
     "user.max_user_namespaces",
 )
-
-
-def _merge_runtime_env() -> str | None:
-    """Overlay RUNTIME_ENV exactly the way scripts/preflight does.
-
-    The systemd unit reads a second EnvironmentFile the plain dotenv path never
-    sees; without this merge the probe would certify a different profile than
-    the service runs. Must happen before config.settings is imported, because
-    that module constructs Settings at import time.
-    """
-
-    raw = os.environ.get("RUNTIME_ENV")
-    if raw:
-        runtime_env = Path(raw)
-    else:
-        # The shipped unit consumes this file via EnvironmentFile= without
-        # exporting a RUNTIME_ENV variable, so default the way
-        # scripts/preflight does rather than silently probing without it.
-        config_home = os.environ.get(
-            "KIMI_CONFIG_HOME", str(Path.home() / ".config" / "kimi-agent")
-        )
-        runtime_env = Path(config_home) / "runtime.env"
-    if not runtime_env.is_file():
-        return f"no runtime.env overlay ({runtime_env} absent)"
-    from dotenv import dotenv_values
-
-    values = dotenv_values(runtime_env, interpolate=False)
-    malformed = sorted(key for key, value in values.items() if value is None)
-    if malformed:
-        raise SystemExit(f"invalid assignment(s) in {runtime_env}: {', '.join(malformed)}")
-    os.environ.update({key: value for key, value in values.items() if value is not None})
-    return f"merged RUNTIME_ENV={runtime_env}"
 
 
 def _report(name: str, check: Callable[[], tuple[bool, str]]) -> bool:
@@ -100,7 +70,7 @@ def _userns_sysctls() -> str:
 
 
 def main() -> int:
-    runtime_env_note = _merge_runtime_env()
+    runtime_env_note = merge_runtime_env()
 
     from pydantic import ValidationError
 

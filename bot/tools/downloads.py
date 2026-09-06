@@ -14,13 +14,17 @@ import asyncio
 import ipaddress
 import re
 import socket
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from email.message import Message
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import unquote, urljoin, urlparse
 
 import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
+
+from utils.asyncio import await_uncancellable
 
 DEFAULT_MAX_REDIRECTS = 5
 MAX_FILENAME_LENGTH = 120
@@ -143,6 +147,45 @@ def validate_fetch_url(
         raise FetchUrlError("Private or internal URLs are not allowed")
 
 
+async def _write_download(
+    chunks: AsyncIterable[bytes], destination: Path, *, max_bytes: int
+) -> int:
+    handle: BinaryIO | None = None
+    complete = False
+
+    def open_destination() -> BinaryIO:
+        nonlocal handle
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        handle = destination.open("wb")
+        return handle
+
+    def close_destination() -> None:
+        if handle is None:
+            return
+        closed = False
+        try:
+            handle.close()
+            closed = True
+        finally:
+            if not (complete and closed):
+                destination.unlink(missing_ok=True)
+
+    try:
+        # Keep ownership even if cancellation arrives while opening the file,
+        # and finish each disk operation before closing or deleting its file.
+        stream = await await_uncancellable(asyncio.to_thread(open_destination))
+        size = 0
+        async for chunk in chunks:
+            size += len(chunk)
+            if size > max_bytes:
+                raise FetchUrlError(f"Download exceeds maximum size of {max_bytes} bytes")
+            await await_uncancellable(asyncio.to_thread(stream.write, chunk))
+        complete = True
+        return size
+    finally:
+        await await_uncancellable(asyncio.to_thread(close_destination))
+
+
 async def fetch_url_to_file(
     url: str,
     destination: Path,
@@ -189,16 +232,11 @@ async def fetch_url_to_file(
                         response.headers.get("Content-Disposition")
                     )
                     content_type = response.headers.get("Content-Type", "")
-                    size = 0
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    with destination.open("wb") as handle:
-                        async for chunk in response.content.iter_chunked(64 * 1024):
-                            size += len(chunk)
-                            if size > max_bytes:
-                                raise FetchUrlError(
-                                    f"Download exceeds maximum size of {max_bytes} bytes"
-                                )
-                            handle.write(chunk)
+                    size = await _write_download(
+                        response.content.iter_chunked(64 * 1024),
+                        destination,
+                        max_bytes=max_bytes,
+                    )
                     return FetchResult(
                         size_bytes=size,
                         content_type=content_type,
@@ -207,8 +245,3 @@ async def fetch_url_to_file(
             raise FetchUrlError(f"Too many redirects; maximum is {max_redirects}")
     except TimeoutError as e:
         raise FetchUrlError(f"URL fetch timed out after {timeout_seconds}s") from e
-    finally:
-        # Cold error/cleanup path: the bounded sync stat/unlink never runs in the
-        # hot streaming loop, so the event-loop block is negligible.
-        if destination.exists() and destination.stat().st_size > max_bytes:  # noqa: ASYNC240
-            destination.unlink(missing_ok=True)  # noqa: ASYNC240

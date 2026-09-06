@@ -2878,3 +2878,53 @@ async def test_close_drains_delayed_terminal_publication(tmp_path) -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await pending
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_scheduler_does_not_abort_worker_and_job_shutdown(caplog) -> None:
+    jobs_closed = False
+    stopped = asyncio.Event()
+
+    class Jobs:
+        uses_netns = False
+
+        async def close(self):
+            nonlocal jobs_closed
+            jobs_closed = True
+
+    async def fail():
+        raise RuntimeError("scheduler failed")
+
+    async def worker():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    service = CodingTaskService(
+        cast(
+            Any,
+            SimpleNamespace(
+                store=object(),
+                source_registry=ToolRegistry(),
+                jobs=Jobs(),
+            ),
+        )
+    )
+    scheduler = asyncio.create_task(fail())
+    service._scheduler = scheduler
+    with pytest.raises(RuntimeError, match="scheduler failed"):
+        await scheduler
+    running = asyncio.create_task(worker())
+    service._workers["task"] = running
+    await asyncio.sleep(0)
+    try:
+        await service.close()
+        assert stopped.is_set()
+        assert jobs_closed
+        assert not service._workers
+        assert service._scheduler is None
+        assert "scheduler" in caplog.text.lower()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)

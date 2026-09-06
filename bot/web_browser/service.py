@@ -23,6 +23,7 @@ from sandbox.netns_lease import (
     NetnsLeaseSafetyError,
 )
 from sandbox.seccomp import SeccompUnavailableError, open_bpf_fd, seccomp_bpf_bytes
+from utils.asyncio import await_uncancellable
 
 log = logging.getLogger(__name__)
 
@@ -501,6 +502,7 @@ class BrowserService:
         self._worker_factory = worker_factory or _SubprocessBrowserWorker.create
         self._netns_lease = netns_lease or NetnsLease()
         self._lease_held = False
+        self._lease_acquisition: asyncio.Task[None] | None = None
         self._condition = asyncio.Condition()
         self._worker_lock = asyncio.Lock()
         self._worker: BrowserWorker | None = None
@@ -513,6 +515,7 @@ class BrowserService:
         self._closed = False
         self._fatal_teardown = False
         self._idle_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     @staticmethod
     def owner_dir_name(user_id: str) -> str:
@@ -601,13 +604,24 @@ class BrowserService:
     async def _acquire_physical_lease(self) -> None:
         if not self.uses_netns() or self._lease_held:
             return
-        try:
+
+        async def acquire() -> None:
             await self._netns_lease.acquire()
+            self._lease_held = True
+
+        self._lease_acquisition = asyncio.create_task(acquire())
+        try:
+            await self._lease_acquisition
+        except asyncio.CancelledError:
+            if self._closed:
+                raise BrowserServiceError("The browser service is shutting down.") from None
+            raise
         except NetnsLeasePoisonedError as exc:
             raise BrowserServiceError(
                 "The browser VPN namespace is unavailable until restart."
             ) from exc
-        self._lease_held = True
+        finally:
+            self._lease_acquisition = None
 
     async def _release_physical_lease(self) -> None:
         if not self._lease_held:
@@ -637,6 +651,8 @@ class BrowserService:
                 )
             ):
                 await self._condition.wait()
+                if self._closed:
+                    raise BrowserServiceError("The browser service is shutting down.")
             old_worker = None
             if self._active_owner not in (None, owner_id):
                 self._switching = True
@@ -645,6 +661,8 @@ class BrowserService:
             else:
                 if self._active_owner is None:
                     await self._acquire_physical_lease()
+                if self._closed:
+                    raise BrowserServiceError("The browser service is shutting down.")
                 self._active_owner = owner_id
                 self._active_turns[turn_id] = owner_id
                 self._cancel_idle()
@@ -660,6 +678,10 @@ class BrowserService:
                 self._condition.notify_all()
             raise
         async with self._condition:
+            if self._closed:
+                self._switching = False
+                self._condition.notify_all()
+                raise BrowserServiceError("The browser service is shutting down.")
             self._active_owner = owner_id
             self._active_turns[turn_id] = owner_id
             self._switching = False
@@ -737,6 +759,8 @@ class BrowserService:
 
     async def _ensure_worker(self, owner_id: str) -> BrowserWorker:
         async with self._worker_lock:
+            if self._closed:
+                raise BrowserServiceError("The browser service is shutting down.")
             if self._worker is not None and self._worker.alive:
                 age = time.monotonic() - self._worker_started_at
                 if age < self.config.worker_max_lifetime_seconds:
@@ -758,6 +782,8 @@ class BrowserService:
                 home = await asyncio.to_thread(self._ensure_profile_home, owner_id)
             self._worker = await self._worker_factory(self.config, owner_id, home)
             self._worker_started_at = time.monotonic()
+            if self._closed:
+                raise BrowserServiceError("The browser service is shutting down.")
             return self._worker
 
     async def _close_worker(self, worker: BrowserWorker) -> None:
@@ -900,14 +926,24 @@ class BrowserService:
                 self._condition.notify_all()
 
     async def close(self) -> None:
-        async with self._condition:
-            if self._closed:
-                return
+        if self._close_task is None:
             self._closed = True
+            # A namespace waiter holds the condition but owns no lease yet.
+            # Wake it before teardown tries to acquire that same condition.
+            if self._lease_acquisition is not None:
+                self._lease_acquisition.cancel()
+            self._close_task = asyncio.create_task(self._finish_close())
+        await await_uncancellable(self._close_task)
+
+    async def _finish_close(self) -> None:
+        async with self._condition:
             self._active_turns.clear()
             self._cancel_idle()
-            worker = self._worker
             self._condition.notify_all()
+        # A factory that started before shutdown still owns its result. Wait for
+        # it before taking the worker snapshot, then stop that worker as well.
+        async with self._worker_lock:
+            worker = self._worker
         if worker is not None:
             await self._close_worker(worker)
         async with self._condition:

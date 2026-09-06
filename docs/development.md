@@ -31,7 +31,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip check
 ```
 
-If [uv](https://docs.astral.sh/uv/) is already installed, these two commands
+If [uv](https://docs.astral.sh/uv/) is already installed, these commands
 replace the setup block on POSIX hosts:
 
 ```bash
@@ -235,7 +235,7 @@ has actually loaded.
   [code-exec.md](code-exec.md) (Bubblewrap, `prlimit`, libseccomp, a lingering
   user systemd manager, and a file `core_pattern`). Without it the live-jail
   tests skip, and `run_code` does not register.
-  `python -m scripts.sandbox_probe` names the missing prerequisite for the
+  `.venv/bin/python -m scripts.sandbox_probe` names the missing prerequisite for the
   configured profile; the CI `sandbox` job provisions all of them and runs
   those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
   counts as failure.
@@ -266,6 +266,7 @@ checks from `bot/`:
 .venv/bin/ruff format --check .   # line length is the formatter's job, not the linter's
 .venv/bin/mypy .
 .venv/bin/mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests
+.venv/bin/mypy --config-file modules/minimal/pyproject.toml modules/minimal/hello_module.py modules/minimal/tests
 .venv/bin/python -m pytest -q
 npm ci --prefix deploy/betterwright --omit=dev --omit=optional --ignore-scripts
 npm audit --prefix deploy/betterwright --omit=dev
@@ -281,11 +282,19 @@ The equivalent Python checks in Windows PowerShell are:
 .\.venv\Scripts\ruff.exe format --check .
 .\.venv\Scripts\mypy.exe .
 .\.venv\Scripts\mypy.exe --config-file modules/example/pyproject.toml modules/example/src modules/example/tests
+.\.venv\Scripts\mypy.exe --config-file modules/minimal/pyproject.toml modules/minimal/hello_module.py modules/minimal/tests
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-CI also proves the standard venv/pip install. Maintainer lock auditing and
-distribution builds still require uv:
+The application suite includes both example modules. The standalone API has a
+separate suite; run it from `bot/packages/kimi-agent-module-api/`:
+
+```bash
+uv run --isolated --locked --group test python -m pytest -q
+```
+
+CI also proves the standard venv/pip install. From `bot/`, maintainer lock
+auditing and distribution builds still require uv:
 
 ```bash
 uv sync --locked --all-packages --extra dev
@@ -304,6 +313,13 @@ uv run python scripts/verify_module_api_dist.py verify \
 ```
 
 The distribution verifier itself creates isolated environments through uv, so that final maintainer check is not yet a pip-only command.
+
+Architecture checks discover standalone modules, namespace packages, and the
+separate SDK and example source layouts. They prune private instance data,
+test trees, and build output before scanning. The import checks resolve relative
+imports and recognize unambiguous `typing.TYPE_CHECKING` aliases; unknown or
+shadowed conditions retain both branches. These are static checks, so dynamic
+imports still need review.
 
 While you're developing, run the smallest relevant test first:
 

@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 import sqlite3
 import stat
+import threading
 
 import pytest
 
@@ -22,6 +24,31 @@ from storage.memory_banks import UserMemoryBankStateStore
 from storage.module_commands import GuildCommandScopeStore
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
+
+
+@pytest.mark.asyncio
+async def test_database_filesystem_setup_runs_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_thread = threading.get_ident()
+    original_mkdir = Path.mkdir
+    original_chmod = Path.chmod
+
+    def mkdir(path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
+        assert threading.get_ident() != loop_thread
+        original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    def chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        assert threading.get_ident() != loop_thread
+        original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "chmod", chmod)
+    db = Database(tmp_path / "data" / "bot.db")
+    try:
+        await db.connect()
+    finally:
+        await db.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX mode bits")

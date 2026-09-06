@@ -472,6 +472,54 @@ async def test_execute_turn_stages_workspace_outputs_before_delivery(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_execute_turn_stages_colliding_filenames_without_replacing_files(
+    tmp_path: Path,
+) -> None:
+    manager = WorkspaceManager(tmp_path / "workspace")
+    root = manager.user_files_dir(WorkspaceKey("user123__guild"))
+    sources = [root / "3-image.png", root / "image.png", root / "nested" / "image.png"]
+    payloads = [b"first attachment", b"second attachment", VALID_PNG_BYTES]
+    for source, payload in zip(sources, payloads, strict=True):
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(payload)
+    context = ConversationContext(key="guild:100:main")
+    context.pending_outbox = TurnOutbox(
+        output_files=tuple(str(source) for source in sources),
+        output_file_descriptions={str(source): f"Image {i}" for i, source in enumerate(sources)},
+        output_file_remove_ids={f"attachment:{i}": str(source) for i, source in enumerate(sources)},
+        allowed_file_roots=(str(root),),
+        embed=EmbedSpec(image="attachment://image.png"),
+        embed_attachment=EmbedAttachment(
+            path=str(sources[-1]), root=str(root), filename=sources[-1].name
+        ),
+    )
+
+    result = await execute_turn(
+        _turn_request(context),
+        dependencies=_dependencies(
+            workspace_dir=tmp_path / "workspace",
+            workspace_manager=manager,
+            run_conversation=RecordingRunConversation(ConversationRunResult(text="attached")),
+        ),
+        config=_config(),
+    )
+
+    staged = [Path(path) for path in result.outbox.output_files]
+    assert len(set(staged)) == len(sources)
+    assert [path.read_bytes() for path in staged] == payloads
+    assert result.outbox.output_file_descriptions == {
+        str(path): f"Image {i}" for i, path in enumerate(staged)
+    }
+    assert result.outbox.output_file_remove_ids == {
+        f"attachment:{i}": str(path) for i, path in enumerate(staged)
+    }
+    assert result.outbox.embed_attachment == EmbedAttachment(
+        path=str(staged[-1]), root=str(staged[-1].parent.resolve()), filename=staged[-1].name
+    )
+    assert result.outbox.embed == EmbedSpec(image=f"attachment://{staged[-1].name}")
+
+
+@pytest.mark.asyncio
 async def test_execute_turn_preserves_non_success_termination_reason(tmp_path: Path) -> None:
     result = await execute_turn(
         _turn_request(ConversationContext(key="guild:100:main")),

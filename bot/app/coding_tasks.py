@@ -141,8 +141,12 @@ class CodingTaskService:
         self._closed = True
         if self._scheduler is not None:
             self._scheduler.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._scheduler
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Error stopping coding task scheduler")
             self._scheduler = None
         for worker in list(self._workers.values()):
             worker.cancel()

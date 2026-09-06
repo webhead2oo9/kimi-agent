@@ -916,3 +916,126 @@ async def test_idle_eviction_skipped_while_request_holds_lock() -> None:
     # Once released, the re-armed timer evicts normally.
     assert "session-1" not in transport._sessions
     assert ws.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["evict", "close_all"])
+async def test_cancelled_eviction_finishes_closing_owned_resources(operation: str) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingSocket(SlowClosingWebSocket):
+        async def close(self, *, code: int, message: bytes) -> None:
+            started.set()
+            await release.wait()
+            self.closed = True
+
+    transport = CodexTransport(auth_manager=cast(Any, object()), idle_timeout=3000)
+    session = transport._get_session("session-1")
+    ws = BlockingSocket()
+    client = SlowClosingClientSession()
+    session.ws = cast(Any, ws)
+    session.client_session = cast(Any, client)
+    second = transport._get_session("session-2")
+    second_client = SlowClosingClientSession()
+    second.client_session = cast(Any, second_client)
+    operation_task = asyncio.create_task(
+        transport.evict_session("session-1") if operation == "evict" else transport.close_all()
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        operation_task.cancel()
+        await asyncio.sleep(0)
+        operation_task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation_task
+        assert ws.closed
+        assert client.closed
+        assert session.client_session is None
+        if operation == "close_all":
+            assert second_client.closed
+            assert not transport._sessions
+    finally:
+        release.set()
+        await transport.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_all_joins_an_eviction_already_removed_from_the_cache() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingClient(SlowClosingClientSession):
+        async def close(self) -> None:
+            started.set()
+            await release.wait()
+            self.closed = True
+
+    transport = CodexTransport(auth_manager=cast(Any, object()), idle_timeout=3000)
+    client = BlockingClient()
+    transport._get_session("session").client_session = cast(Any, client)
+    evicting = asyncio.create_task(transport.evict_session("session"))
+    closing = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert "session" not in transport._sessions
+        closing = asyncio.create_task(transport.close_all())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        release.set()
+        await closing
+        await evicting
+        assert client.closed
+    finally:
+        release.set()
+        await asyncio.gather(
+            evicting, *([closing] if closing is not None else []), return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_all_calls_join_the_same_teardown() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingClient(SlowClosingClientSession):
+        async def close(self) -> None:
+            started.set()
+            await release.wait()
+            self.closed = True
+
+    transport = CodexTransport(auth_manager=cast(Any, object()), idle_timeout=3000)
+    client = BlockingClient()
+    transport._get_session("session").client_session = cast(Any, client)
+    first = asyncio.create_task(transport.close_all())
+    second = asyncio.create_task(transport.close_all())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        done, _ = await asyncio.wait({second}, timeout=0.05)
+        assert not done
+        release.set()
+        await asyncio.gather(first, second)
+        assert client.closed
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_socket_close_failure_still_closes_clients_and_other_sessions() -> None:
+    class FailingSocket(SlowClosingWebSocket):
+        async def close(self, *, code: int, message: bytes) -> None:
+            raise OSError("socket close failed")
+
+    transport = CodexTransport(auth_manager=cast(Any, object()), idle_timeout=3000)
+    clients = [SlowClosingClientSession(), SlowClosingClientSession()]
+    first = transport._get_session("first")
+    first.ws = cast(Any, FailingSocket())
+    first.client_session = cast(Any, clients[0])
+    transport._get_session("second").client_session = cast(Any, clients[1])
+    with pytest.raises(OSError, match="socket close failed"):
+        await transport.close_all()
+    assert all(client.closed for client in clients)
+    assert not transport._sessions

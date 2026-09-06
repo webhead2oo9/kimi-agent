@@ -25,13 +25,18 @@ _LIVE_DOC_PAGES: tuple[Path, ...] = (
     PROJECT_ROOT / "README.md",
     PROJECT_ROOT / "config" / "prompts" / "README.md",
     PROJECT_ROOT / "deploy" / "README.md",
+    PROJECT_ROOT / "deploy" / "betterwright" / "README.md",
+    PROJECT_ROOT / "deploy" / "code-exec-netns" / "README.md",
     PROJECT_ROOT / "deploy" / "hindsight" / "README.md",
+    PROJECT_ROOT / "modules" / "example" / "README.md",
+    PROJECT_ROOT / "modules" / "minimal" / "README.md",
+    PROJECT_ROOT / "packages" / "kimi-agent-module-api" / "README.md",
     PROJECT_ROOT / "skills" / "README.md",
+    PROJECT_ROOT / "skills" / "builtin" / "README.md",
+    REPO_ROOT / "AGENTS.md",
     REPO_ROOT / "README.md",
     REPO_ROOT / "CLAUDE.md",
 )
-
-_DOC_PAGES: tuple[Path, ...] = _LIVE_DOC_PAGES
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
@@ -61,6 +66,8 @@ _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
         # service; they are not consumed by the bot's Settings model.
         "HINDSIGHT_API_BIND_ADDRESS",
         "HINDSIGHT_CONTROL_BIND_ADDRESS",
+        # Dependency pin in deploy/betterwright/install.sh, not a bot setting.
+        "MERMAID_VERSION",
         # Module-level declaration a plugin exports; lives in plugin code.
         "PLUGIN_SETTINGS",
         # Documented in providers.md precisely as a value that is no longer
@@ -159,9 +166,9 @@ def _builtin_tool_names() -> set[str]:
 
 def test_relative_doc_links_resolve() -> None:
     broken: list[str] = []
-    for page in _DOC_PAGES:
+    for page in _LIVE_DOC_PAGES:
         if not page.exists():
-            broken.append(f"{page}: page listed in _DOC_PAGES does not exist")
+            broken.append(f"{page}: page listed in _LIVE_DOC_PAGES does not exist")
             continue
         for target in _MARKDOWN_LINK_RE.findall(page.read_text(encoding="utf-8")):
             if target.startswith(("http://", "https://", "mailto:", "#")):

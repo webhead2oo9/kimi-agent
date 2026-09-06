@@ -77,6 +77,23 @@ async def test_blend_is_exa_first_and_exa_wins_even_late_duplicates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_blend_keeps_distinct_ipv6_hosts_and_ports() -> None:
+    urls = ["https://[2001:db8::1]:8080/page", "https://[2001:db8::1:8080]/page"]
+    backends = [
+        FakeBackend(name, _response(name, url))
+        for name, url in zip(("exa", "brave"), urls, strict=True)
+    ]
+
+    result = await SearchChain(backends, timeout_seconds=1).search(
+        SearchRequest(query="q", num_results=10),
+        strategy="blend",
+        consume_call=lambda: None,
+    )
+
+    assert [item.url for item in result.results] == urls
+
+
+@pytest.mark.asyncio
 async def test_blend_returns_partial_success_and_failover_stops_on_zero_matches() -> None:
     broken = FakeBackend("exa", SearchProviderError("down"))
     empty = FakeBackend("brave", _response("brave"))

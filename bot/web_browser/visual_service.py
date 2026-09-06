@@ -14,6 +14,7 @@ from typing import Literal
 from uuid import uuid4
 
 from sandbox.seccomp import SeccompUnavailableError, open_bpf_fd, seccomp_bpf_bytes
+from utils.asyncio import await_uncancellable
 from web_browser.service import BrowserService, BrowserServiceConfig, _runtime_env, _stop_unit
 
 type VisualKind = Literal["chart", "mermaid"]
@@ -279,15 +280,8 @@ class VisualService:
 
 
 async def _stop_unit_shielded(config: BrowserServiceConfig, unit_name: str) -> None:
-    stop_task = asyncio.create_task(_stop_unit(config, unit_name))
-    try:
-        await asyncio.shield(stop_task)
-    except asyncio.CancelledError:
-        # Unit confirmation is a security boundary, not optional cleanup. Finish
-        # it before propagating cancellation to the outer Discord turn.
-        with contextlib.suppress(asyncio.CancelledError):
-            await stop_task
-        raise
+    # Repeated STOP/shutdown cancellation must not interrupt unit confirmation.
+    await await_uncancellable(_stop_unit(config, unit_name))
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

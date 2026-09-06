@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.source_inspection import python_sources, runtime_imports, source_module
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,26 +82,10 @@ def _runtime_imported_modules(path: str) -> set[str]:
     nothing at runtime and exists so a signature can name the platform type.
     """
 
-    tree = _parse(path)
-    type_checking_nodes: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If):
-            test = node.test
-            is_type_checking = (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-                isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-            )
-            if is_type_checking:
-                type_checking_nodes.update(id(child) for child in ast.walk(node))
-
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if id(node) in type_checking_nodes:
-            continue
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            modules.add(node.module)
-    return modules
+    source = PROJECT_ROOT / path
+    module = source_module(source, PROJECT_ROOT)
+    package = module if source.stem == "__init__" else module.rpartition(".")[0]
+    return runtime_imports(_parse(path), package=package)
 
 
 def test_the_discord_sdk_is_confined_to_the_adapter_and_composition_root() -> None:
@@ -112,9 +98,9 @@ def test_the_discord_sdk_is_confined_to_the_adapter_and_composition_root() -> No
 
     allowed_prefixes = ("discord_adapter/", "app/", "commands/")
     offenders: list[str] = []
-    for path in PROJECT_ROOT.rglob("*.py"):
+    for path in python_sources(PROJECT_ROOT):
         relative = path.relative_to(PROJECT_ROOT).as_posix()
-        if relative.startswith(("tests/", "evals/", ".venv/", "workspaces/")):
+        if relative.startswith("evals/"):
             continue
         if relative.startswith(allowed_prefixes):
             continue

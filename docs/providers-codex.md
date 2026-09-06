@@ -41,6 +41,10 @@ The remaining Codex transport settings live in `.env` rather than
 `CODEX_VERBOSE`. The model is always taken from the selected model entry in
 `models.yaml`.
 
+Session eviction finishes closing both the WebSocket and its HTTP client before
+propagating cancellation. Shutdown also waits for evictions already in progress
+and attempts to close every session if one socket reports a teardown error.
+
 ## Authentication
 
 ```bash

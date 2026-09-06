@@ -38,21 +38,11 @@ fi
 echo "Checking provider credentials and model routing..."
 ENV_FILE="$ENV_FILE" RUNTIME_ENV="$RUNTIME_ENV" "$PYTHON_BIN" - <<'PY'
 import asyncio
-import os
 from pathlib import Path
 
-from dotenv import dotenv_values
+from scripts.runtime_env import merge_runtime_env
 
-runtime_env = Path(os.environ["RUNTIME_ENV"])
-if runtime_env.is_file():
-    # Match systemd EnvironmentFile semantics: values are literal and do not
-    # expand references to other variables.
-    values = dotenv_values(runtime_env, interpolate=False)
-    malformed = sorted(key for key, value in values.items() if value is None)
-    if malformed:
-        names = ", ".join(malformed)
-        raise SystemExit(f"invalid assignment(s) in {runtime_env}: {names}")
-    os.environ.update({key: value for key, value in values.items() if value is not None})
+merge_runtime_env()
 
 from app.providers import ProviderManager, codex_startup_check
 from config.model_config import load_model_config

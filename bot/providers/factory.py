@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from branding import DEFAULT_BOT_NAME
 from providers.base import LLMProvider
@@ -174,8 +175,10 @@ def _openai_service_tier(config: ProviderConfig) -> str | None:
     # api.openai.com.
     if not config.openai_service_tier:
         return None
-    base_url = config.base_url.rstrip("/")
-    if not base_url or base_url.startswith("https://api.openai.com"):
+    if not config.base_url:
+        return config.openai_service_tier
+    endpoint = urlsplit(config.base_url)
+    if endpoint.scheme == "https" and endpoint.hostname == "api.openai.com":
         return config.openai_service_tier
     return None
 

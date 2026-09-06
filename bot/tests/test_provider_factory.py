@@ -52,13 +52,26 @@ def test_factory_forwards_openrouter_routing_tier_and_timeout() -> None:
     assert provider._client.timeout == 123  # type: ignore[attr-defined]
 
 
-def test_factory_does_not_send_flex_to_non_openai_compatible_base_url() -> None:
+@pytest.mark.parametrize("provider_name", ["openai_compat", "openai_responses"])
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.deepseek.com",
+        "https://opencode.ai/zen/go/v1",
+        "https://api.openai.com.gateway.example/v1",
+        "https://api.openai.com@gateway.example/v1",
+        "http://api.openai.com/v1",
+    ],
+)
+def test_factory_does_not_send_flex_to_non_openai_base_url(
+    provider_name: str, base_url: str
+) -> None:
     provider = create_provider(
         ProviderConfig(
-            provider_name="openai_compat",
+            provider_name=provider_name,
             api_key="key",
-            base_url="https://api.deepseek.com",
-            model="test-deepseek-model",
+            base_url=base_url,
+            model="test-model",
             openai_service_tier="flex",
         )
     )
@@ -80,26 +93,14 @@ def test_factory_forwards_timeout_to_openai_compatible_client() -> None:
     assert provider._client.timeout == 123  # type: ignore[attr-defined]
 
 
-def test_factory_does_not_send_flex_to_responses_provider_on_a_gateway() -> None:
+@pytest.mark.parametrize("provider_name", ["openai_compat", "openai_responses"])
+@pytest.mark.parametrize("base_url", ["", "https://api.openai.com/v1"])
+def test_factory_sends_flex_to_real_openai(provider_name: str, base_url: str) -> None:
     provider = create_provider(
         ProviderConfig(
-            provider_name="openai_responses",
+            provider_name=provider_name,
             api_key="key",
-            base_url="https://opencode.ai/zen/go/v1",
-            model="gpt-5.6-luna",
-            openai_service_tier="flex",
-        )
-    )
-
-    assert "flex_service_tier" not in {cap.value for cap in provider.capabilities}
-
-
-def test_factory_sends_flex_to_responses_provider_on_real_openai() -> None:
-    provider = create_provider(
-        ProviderConfig(
-            provider_name="openai_responses",
-            api_key="key",
-            base_url="https://api.openai.com/v1",
+            base_url=base_url,
             model="gpt-5.6",
             openai_service_tier="flex",
         )

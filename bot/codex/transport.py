@@ -229,6 +229,7 @@ class CodexTransport:
         self._verbose = verbose
         self._sessions: dict[str, CodexSession] = {}
         self._closing_sessions: set[asyncio.Task[None]] = set()
+        self._close_all_task: asyncio.Task[None] | None = None
 
     async def send_request(
         self,
@@ -303,6 +304,17 @@ class CodexTransport:
             session.client_session = None
 
     async def close_all(self) -> None:
+        closing_task = self._close_all_task
+        if closing_task is None:
+            closing_task = asyncio.create_task(self._finish_close_all())
+            self._close_all_task = closing_task
+        try:
+            await await_uncancellable(closing_task)
+        finally:
+            if self._close_all_task is closing_task and closing_task.done():
+                self._close_all_task = None
+
+    async def _finish_close_all(self) -> None:
         closing = [asyncio.create_task(self.evict_session(key)) for key in list(self._sessions)]
         closing.extend(self._closing_sessions)
         if closing:

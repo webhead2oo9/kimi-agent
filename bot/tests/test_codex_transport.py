@@ -996,6 +996,34 @@ async def test_close_all_joins_an_eviction_already_removed_from_the_cache() -> N
 
 
 @pytest.mark.asyncio
+async def test_concurrent_close_all_calls_join_the_same_teardown() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingClient(SlowClosingClientSession):
+        async def close(self) -> None:
+            started.set()
+            await release.wait()
+            self.closed = True
+
+    transport = CodexTransport(auth_manager=cast(Any, object()), idle_timeout=3000)
+    client = BlockingClient()
+    transport._get_session("session").client_session = cast(Any, client)
+    first = asyncio.create_task(transport.close_all())
+    second = asyncio.create_task(transport.close_all())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        done, _ = await asyncio.wait({second}, timeout=0.05)
+        assert not done
+        release.set()
+        await asyncio.gather(first, second)
+        assert client.closed
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_socket_close_failure_still_closes_clients_and_other_sessions() -> None:
     class FailingSocket(SlowClosingWebSocket):
         async def close(self, *, code: int, message: bytes) -> None:

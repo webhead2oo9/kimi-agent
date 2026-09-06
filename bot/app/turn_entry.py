@@ -4,10 +4,12 @@ import discord
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.activity import ActivityReporter
+from app.chat_attachments import stage_chat_attachments
 from agent.attachments import (
     AttachmentStore,
     collect_reply_context,
@@ -61,6 +63,8 @@ from tools.coding_tasks import CODING_CONTROL_TOOLS
 from tools.config_spec import ToolConfigField
 from tools.registry import ToolRegistry
 from tools.workspace.common import UserLocks
+from tools.workspace.config import WorkspaceToolConfig
+from tools.workspace.files import FileToolDeps
 from trust.tiers import TrustTier
 from workspace import WorkspaceManager
 
@@ -429,6 +433,19 @@ async def build_turn_dependencies(
         chat_provider_resolver=chat_provider_for_turn,
         chat_model_name_resolver=chat_model_name_for_turn,
         persist_prepared_user_message=persist_prepared_user_message,
+        stage_chat_attachments=partial(
+            stage_chat_attachments,
+            deps=FileToolDeps(
+                workspace_manager=services.workspace_manager,
+                locks=services.workspace_locks,
+                config=WorkspaceToolConfig(
+                    max_import_bytes=services.settings.workspace_tool_max_import_bytes,
+                    max_file_bytes=services.settings.workspace_tool_max_file_bytes,
+                    max_user_bytes=services.settings.workspace_tool_max_user_bytes,
+                    max_workspace_entries=services.settings.workspace_tool_max_entries,
+                ),
+            ),
+        ),
         write_generated_assets=hooks.write_generated_assets,
         compactor=services.provider_manager.build_compactor(services.llm_semaphore),
         activity_reporter=activity_reporter,

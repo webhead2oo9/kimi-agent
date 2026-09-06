@@ -216,8 +216,9 @@ def init_image_gen_tool(
         description=(
             "Generate and attach an image from a prompt, or edit up to five workspace images. "
             "Use this tool whenever the user asks to create, draw, paint, render, or edit an "
-            "image. For edits, provide workspace-relative reference_paths; import current "
-            "Discord attachments into the workspace first. A successful call saves a reusable "
+            "image. For edits, select current uploads by exact filename in reference_attachments, "
+            "or provide workspace-relative reference_paths. Current chat uploads are automatically "
+            "saved when possible; use their supplied paths directly. A successful call saves a reusable "
             "PNG under generated_images/ and queues it for the final Discord reply. The "
             "attachment_description must concisely describe the visual for accessibility."
         ),
@@ -243,8 +244,17 @@ def init_image_gen_tool(
                     "maxItems": MAX_REFERENCE_IMAGES,
                     "description": (
                         "Workspace-relative PNG, JPEG, or WebP paths to edit. Omit for a new "
-                        "image. Do not pass attachment filenames until import_attachment has "
-                        "saved them to the workspace."
+                        "image. Use the saved chat-attachments path for an uploaded image."
+                    ),
+                },
+                "reference_attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_REFERENCE_IMAGES,
+                    "description": (
+                        "Exact filenames of images attached to the current message to edit. "
+                        "Selects their automatically staged workspace files. If names repeat, "
+                        "use the distinct saved reference_paths instead."
                     ),
                 },
             },
@@ -267,7 +277,9 @@ def init_image_gen_tool(
 
 
 def _parse_args(args: dict[str, Any], ctx: MessageContext) -> tuple[str, str, tuple[str, ...]]:
-    unknown = sorted(set(args) - {"prompt", "attachment_description", "reference_paths"})
+    unknown = sorted(
+        set(args) - {"prompt", "attachment_description", "reference_paths", "reference_attachments"}
+    )
     if unknown:
         raise ValueError(f"unknown field(s): {', '.join(unknown)}")
     prompt = _required_text(args.get("prompt"), "prompt", MAX_PROMPT_CHARS)
@@ -285,6 +297,24 @@ def _parse_args(args: dict[str, Any], ctx: MessageContext) -> tuple[str, str, tu
             raise ValueError("reference_paths entries must not be empty")
     else:
         raise ValueError("reference_paths must be an array of workspace paths")
+    raw_attachments = args.get("reference_attachments")
+    if raw_attachments is not None:
+        if not isinstance(raw_attachments, list) or not all(
+            isinstance(name, str) and name.strip() for name in raw_attachments
+        ):
+            raise ValueError("reference_attachments must be an array of non-empty filenames")
+        for name in raw_attachments:
+            matches = [attachment for attachment in ctx.attachments if attachment.filename == name]
+            if not matches:
+                raise ValueError(f"No current image attachment named {name}")
+            if len(matches) != 1:
+                raise ValueError(f"Ambiguous attachment {name}; use its saved reference_paths")
+            attachment = matches[0]
+            if attachment.unavailable_reason or not attachment.workspace_path:
+                raise ValueError(
+                    f"Attachment {name} was not saved; use an available workspace image"
+                )
+            paths = (*paths, attachment.workspace_path)
     configured_max = min(
         _configured_int(ctx, "max_reference_images", default=5), MAX_REFERENCE_IMAGES
     )

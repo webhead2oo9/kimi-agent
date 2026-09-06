@@ -169,7 +169,10 @@ the configured services and tools needed to answer you.
   share to personalize future chats. You can opt out of future use and
   retention with `/memory opt-out`, or wipe existing memory any time with
   `/privacy` (the **Delete memory** button).
-- **Files you create with Kimi: 7 days.** Files in your personal workspace are
+- **Files you create or upload with Kimi: 7 days.** Admitted current-message
+  uploads (including images) are automatically saved in `chat-attachments/`
+  for reuse by tools and later turns; videos retain their explicit import flow.
+  Files in your personal workspace are
   removed after 7 days of inactivity. Guild-chat workspaces are kept separate
   per server, so files you make in one community aren't visible from another.
   The optional personal user app instead uses one workspace shared across that

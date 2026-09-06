@@ -79,7 +79,7 @@ Workspace environment directories named `.venv`, `.pio`, and `.pio-core` (`works
 | `glob_workspace` | Find files by name/glob across the tree (see below). |
 | `grep_workspace` | Search file contents by literal text or explicit regex. |
 | `view_image` | Show a workspace image (png/jpeg/gif/webp) to the vision model (see below). |
-| `import_attachment` | Pull a file attached to the current message into the workspace. |
+| `import_attachment` | Return an automatically saved current attachment's path, or import it explicitly (including images). An explicit `dest` copies it to that destination. |
 | `queue_file` | Manage the reply's attachments: `action: add` (default) attaches an existing workspace file or generated artifact; `action: remove` takes a queued file back off the reply, freeing its slot (see below). |
 | `extract_document_text` | Extract text from a bounded-page PDF or office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, CSV) into the workspace. PDF text accumulation stops at the configured read-output ceiling. |
 | `extract_archive` | Safely extract an archive (registered in `tools/workspace/archive_tools.py`; extractor in `tools/archive.py`). |
@@ -111,6 +111,29 @@ This applies an ordered list of exact-string `edits` to one file in a single cal
 ### Attachment opt-in (`attach: true`)
 
 `write_file`, `edit_file`, and `multi_edit` save the touched file without queueing it by default. Each accepts `attach: true` when the file is already the finished deliverable; `queue_file` can attach any workspace file explicitly later. `zip`, `fetch_url`, and `run_code` never auto-queue their outputs, so a separate `queue_file` call is required. Each write tool's `attached` response field reports whether the file is **queued on the reply after the call**. A file already queued stays queued (`attach: false` or an omitted `attach` skips adding, but does not remove), and changing an already-queued path reports `attached: true`. When a file is saved but not queued, the result includes an `attachment_hint` reminding the model how to deliver it.
+
+### Automatic chat uploads
+
+After input moderation, admitted current-message attachments and validated images
+are saved in the initiating user's workspace as
+`chat-attachments/<message-id>/<filename>`. This is a workspace-relative folder,
+not the host's `/chat-attachments`. Meaningful filenames are preserved after
+sanitization; generic names such as `image.png` become `<message-id>-<index>.png`.
+Duplicate names get suffixes. Replaying a message reuses identical saved bytes;
+changed bytes never overwrite an existing copy.
+
+The model receives both the original filename and saved path. It can select an
+image directly with `generate_image(reference_attachments=["image.png"])`, or
+reuse its `reference_paths` in later turns. Ambiguous original filenames require
+the saved path. No extra import is needed; `import_attachment` without `dest`
+returns the saved path. Saving an upload does not queue it back onto the reply.
+
+Reply/history images are not copied into another user's workspace. Blocked or
+unavailable attachments are not saved; videos keep their explicit streaming and
+inspection gates. Normal import/file/user byte limits, workspace entry limits,
+inactivity retention, and `/privacy` workspace deletion apply. A busy workspace
+writer or exhausted quota produces a staging-unavailable note, not an overwrite
+or a silently missing edit reference.
 
 ### Removing a queued attachment (`queue_file` `action: remove`)
 

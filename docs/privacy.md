@@ -96,8 +96,14 @@ can read them, then deleted in a `finally` block at the end of every turn
 (`agent/turn.py:cleanup_prepared_moderation_artifacts`). This is **not** a
 persistent store. A turn interrupted before cleanup can leave a straggler file
 behind, so a bounded orphan sweeper removes expired stages on startup and at the
-configured interval. Persistent image storage is the inline-base64 cap in the
-`messages` transcript, not this directory.
+configured interval. Persistent image storage includes the inline-base64 cap in
+the `messages` transcript and admitted current-message uploads automatically
+saved to the user's workspace under `chat-attachments/<message-id>/`, not this
+temporary directory. Workspace copies follow workspace quotas, inactivity
+retention, and workspace deletion through `/privacy`; transcript image eviction
+does not delete those copies. Reply/history images are not automatically copied
+into the current author's workspace. Blocked uploads are not saved, and videos
+keep their explicit inspection/import gates.
 
 ### Browser profiles (`data/browser_profiles/`)
 

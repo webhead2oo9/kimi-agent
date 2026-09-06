@@ -72,7 +72,15 @@ class LocalVideoBackend:
     ) -> None:
         if config.network_mode != "none":
             raise ValueError("Video inspection requires the offline sandbox")
-        self.config = config
+        # Debian/Ubuntu BLAS/LAPACK libraries use /etc/alternatives symlinks;
+        # the loader cache also resolves libraries in distro-specific directories.
+        # These system lookup paths are read-only and specific to this profile.
+        self.config = replace(
+            config,
+            extra_ro_binds=tuple(
+                dict.fromkeys((*config.extra_ro_binds, "/etc/alternatives", "/etc/ld.so.cache"))
+            ),
+        )
         self.ffmpeg = ffmpeg
         self.ffprobe = ffprobe
         self.whisper_bin = whisper_bin

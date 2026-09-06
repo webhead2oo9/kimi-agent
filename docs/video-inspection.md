@@ -26,7 +26,8 @@ VIDEO_INSPECTION_WHISPER_BIN=/usr/local/bin/whisper-cli
 VIDEO_INSPECTION_WHISPER_MODEL=/opt/whisper/ggml-base.en.bin
 ```
 
-The binary and model are mounted read-only. Install required shared libraries
+The binary, model, and system library lookup paths (`/etc/alternatives` and
+`/etc/ld.so.cache`, when present) are mounted read-only. Install required shared libraries
 under the normal system library paths. No models or binaries are downloaded at
 runtime. Start with a small CPU model; the process tree has a 2 GiB memory cap.
 With both paths blank, supplied UTF-8 SRT/WebVTT files and visual-only inspection

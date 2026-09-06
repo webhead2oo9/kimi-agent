@@ -8,6 +8,10 @@ Enabling the browser adds real attack surface. It is off by default. Only turn i
 
 Each Discord user gets their own profile. The folder name is a hash of their user id, not the id itself. Cookies and local storage persist in that user's profile across conversations, while tabs stay inside one conversation. Nothing mixes across users. Only one worker runs at a time; switching users closes the current worker before the next one starts.
 
+Shutdown rejects waiting turns and waits for any worker already starting before
+closing it. Concurrent shutdown callers wait for the same teardown; cancelling
+a caller does not abandon the worker or release its namespace lease early.
+
 Each tool call sends one short, size-limited Playwright snippet to the bridge process and gets structured JSON back. Screenshots are accepted only from the current profile's artifact directory. They are checked for path, type, and size, then copied into the user's workspace. If the model can see images, it receives them. When the model takes a proof screenshot (`screenshot({kind:'proof'})`), that image is also attached to the Discord reply so the user can see what the bot saw. All page content is treated as untrusted data.
 
 BetterWright's credential vault, automatic downloads, public-search fallback, and live view are disabled. The bridge blocks loopback and private networks. Cloud and daemon providers are never used.

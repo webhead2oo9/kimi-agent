@@ -12,6 +12,7 @@ import aiohttp
 
 from codex.auth import CodexAuthManager
 from codex.types import CodexSession, CodexSessionState, PreparedCodexWebSocketRequest
+from utils.asyncio import await_uncancellable
 
 CODEX_WS_BETA_HEADER = "responses_websockets=2026-02-06"
 # The generated-asset writer accepts 25 MiB decoded across one response. Base64
@@ -227,6 +228,7 @@ class CodexTransport:
         self._read_timeout = read_timeout
         self._verbose = verbose
         self._sessions: dict[str, CodexSession] = {}
+        self._closing_sessions: set[asyncio.Task[None]] = set()
 
     async def send_request(
         self,
@@ -285,15 +287,29 @@ class CodexTransport:
             idle_task.cancel()
         if idle_task:
             session.idle_task = None
-        await self._close_session_socket(session, code=1000, reason="idle eviction")
-        if session.client_session and not session.client_session.closed:
-            await session.client_session.close()
-        session.client_session = None
+        # The session is no longer discoverable by key. Keep its teardown owned
+        # until both transports close, including when the evicting task is cancelled.
+        closing = asyncio.create_task(self._finish_eviction(session))
+        self._closing_sessions.add(closing)
+        closing.add_done_callback(self._closing_sessions.discard)
+        await await_uncancellable(closing)
+
+    async def _finish_eviction(self, session: CodexSession) -> None:
+        try:
+            await self._close_session_socket(session, code=1000, reason="idle eviction")
+        finally:
+            if session.client_session and not session.client_session.closed:
+                await session.client_session.close()
+            session.client_session = None
 
     async def close_all(self) -> None:
-        keys = list(self._sessions)
-        for key in keys:
-            await self.evict_session(key)
+        closing = [asyncio.create_task(self.evict_session(key)) for key in list(self._sessions)]
+        closing.extend(self._closing_sessions)
+        if closing:
+            results = await await_uncancellable(asyncio.gather(*closing, return_exceptions=True))
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
 
     def _get_session(self, session_key: str) -> CodexSession:
         session = self._sessions.get(session_key)
@@ -523,7 +539,7 @@ class CodexTransport:
         session.ws = None
         if ws is None or ws.closed:
             return
-        await ws.close(code=code, message=reason.encode("utf-8")[:123])
+        await await_uncancellable(ws.close(code=code, message=reason.encode("utf-8")[:123]))
 
     def _commit_session_state(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -666,3 +667,176 @@ async def test_sweep_claims_flag_before_worker_lock(tmp_path: Path) -> None:
         if service._worker_lock.locked():
             service._worker_lock.release()
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_drains_worker_despite_repeated_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closes = 0
+
+    class BlockingWorker(_Worker):
+        async def close(self) -> None:
+            nonlocal closes
+            closes += 1
+            started.set()
+            await release.wait()
+            await super().close()
+
+    worker = BlockingWorker(tmp_path)
+
+    async def factory(*args: object) -> BlockingWorker:
+        return worker
+
+    service = BrowserService(_config(tmp_path), worker_factory=factory)
+    monkeypatch.setattr(service, "availability_error", lambda: None)
+    await service.acquire_turn("user", "turn")
+    await service.run(owner_id="user", turn_id="turn", session="root", code="1")
+    closing = asyncio.create_task(service.close())
+    other = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        other = asyncio.create_task(service.close())
+        closing.cancel()
+        await asyncio.sleep(0)
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not other.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        await other
+        assert worker.closed
+        assert closes == 1
+        assert service._worker is None
+        assert service._active_owner is None
+        assert not service._fatal_teardown
+    finally:
+        release.set()
+        await asyncio.gather(
+            closing, *([other] if other is not None else []), return_exceptions=True
+        )
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_rejects_waiting_turn_admission(tmp_path: Path) -> None:
+    service = BrowserService(_config(tmp_path))
+    await service.acquire_turn("first", "turn-1")
+    waiting = asyncio.create_task(service.acquire_turn("second", "turn-2"))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    await service.close()
+    with pytest.raises(BrowserServiceError, match="shutting down"):
+        await waiting
+    assert not service.has_active_turn("second", "turn-2")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_worker_factory_and_closes_its_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    worker = _Worker(tmp_path)
+
+    async def factory(*args: object) -> _Worker:
+        started.set()
+        await release.wait()
+        return worker
+
+    service = BrowserService(_config(tmp_path), worker_factory=factory)
+    monkeypatch.setattr(service, "availability_error", lambda: None)
+    await service.acquire_turn("user", "turn")
+    running = asyncio.create_task(
+        service.run(owner_id="user", turn_id="turn", session="root", code="1")
+    )
+    closing = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        closing = asyncio.create_task(service.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        release.set()
+        with pytest.raises(BrowserServiceError, match="shutting down"):
+            await running
+        await closing
+        assert worker.closed
+        assert service._worker is None
+    finally:
+        release.set()
+        await asyncio.gather(
+            running, *([closing] if closing is not None else []), return_exceptions=True
+        )
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_rejects_a_turn_switch_already_closing_the_old_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingWorker(_Worker):
+        async def close(self) -> None:
+            started.set()
+            await release.wait()
+            await super().close()
+
+    worker = BlockingWorker(tmp_path)
+
+    async def factory(*args: object) -> BlockingWorker:
+        return worker
+
+    service = BrowserService(_config(tmp_path), worker_factory=factory)
+    monkeypatch.setattr(service, "availability_error", lambda: None)
+    await service.acquire_turn("first", "turn-1")
+    await service.run(owner_id="first", turn_id="turn-1", session="root", code="1")
+    await service.release_turn("first", "turn-1")
+    switching = asyncio.create_task(service.acquire_turn("second", "turn-2"))
+    closing = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        closing = asyncio.create_task(service.close())
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(BrowserServiceError, match="shutting down"):
+            await switching
+        await closing
+        assert not service.has_active_turn("second", "turn-2")
+        assert worker.closed
+    finally:
+        release.set()
+        await asyncio.gather(
+            switching, *([closing] if closing is not None else []), return_exceptions=True
+        )
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_unblocks_namespace_waiter_without_releasing_another_owners_lease(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    lease = NetnsLease()
+    await lease.acquire()
+    service = BrowserService(replace(_config(tmp_path), network_mode="netns"), netns_lease=lease)
+    waiting = asyncio.create_task(service.acquire_turn("user", "turn"))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    closing = asyncio.create_task(service.close())
+    try:
+        done, _ = await asyncio.wait({closing}, timeout=1)
+        assert closing in done, "shutdown waited for a namespace owned by another service"
+        await closing
+        with pytest.raises(BrowserServiceError, match="shutting down"):
+            await waiting
+        assert lease.locked()
+        assert not service._lease_held
+    finally:
+        await lease.release()
+        await asyncio.gather(waiting, closing, return_exceptions=True)

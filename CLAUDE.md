@@ -30,7 +30,8 @@ uv --preview-features audit-command audit --locked  # locked dependency vulnerab
 .venv/bin/ruff format --check .               # formatting: the ONLY line-length enforcement (E501 is unselected)
 .venv/bin/mypy .                              # core types
 .venv/bin/mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests  # example package types
-.venv/bin/python -m pytest -q                 # all tests, including the reference module
+.venv/bin/mypy --config-file modules/minimal/pyproject.toml modules/minimal/hello_module.py modules/minimal/tests  # minimal module types
+.venv/bin/python -m pytest -q                 # application, reference-module, and minimal-module tests
 .venv/bin/python -m pytest tests/test_core_smoke.py -k "test_name"
 git diff --check                              # whitespace
 .venv/bin/python -m pytest tests/test_docs_links.py -q  # after docs-only changes
@@ -42,7 +43,10 @@ That block uses POSIX paths. In Windows PowerShell, map `.venv/bin/python` to
 `.\.venv\Scripts\mypy.exe`; use the PowerShell `ENV_FILE` form in
 `docs/development.md` instead of an inline assignment.
 
-Before handing off Python changes, run the Python checks CI runs (`.github/workflows/ci.yml`): the locked dependency audit, ruff check, ruff format, both mypy commands, pytest, plus `git diff --check`. CI also tests standard venv/pip installation, uv-to-pip interoperability, the pinned Node browser runtime, both module distributions, and the live Linux code-execution sandbox in a separate provisioned job; run those workflow sections when affected files cross either boundary. Python dependencies are declared in `pyproject.toml`; maintainers resolve them in `uv.lock` and must run `uv lock` after a dependency change. Browser-runtime dependencies live in `deploy/betterwright/package.json` and `package-lock.json` and are installed with `npm ci`. For the complete optional uv developer fast path—including restoring pip and installing all local projects—use the copyable block in `docs/development.md`.
+Run the standalone API suite from `bot/packages/kimi-agent-module-api/` with
+`uv run --isolated --locked --group test python -m pytest -q`.
+
+Before handing off Python changes, run the Python checks CI runs (`.github/workflows/ci.yml`): the locked dependency audit, ruff check, ruff format, all three mypy commands, both pytest suites, plus `git diff --check`. CI also tests standard venv/pip installation, uv-to-pip interoperability, the pinned Node browser runtime, both module distributions, and the live Linux code-execution sandbox in a separate provisioned job; run those workflow sections when affected files cross either boundary. Python dependencies are declared in `pyproject.toml`; maintainers resolve them in `uv.lock` and must run `uv lock` after a dependency change. Browser-runtime dependencies live in `deploy/betterwright/package.json` and `package-lock.json` and are installed with `npm ci`. For the complete optional uv developer fast path—including restoring pip and installing all local projects—use the copyable block in `docs/development.md`.
 
 ## Working Practices
 

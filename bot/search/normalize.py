@@ -58,6 +58,8 @@ def canonical_url(value: str) -> str:
     host = parsed.hostname.casefold()
     if host.startswith("www."):
         host = host[4:]
+    if ":" in host:
+        host = f"[{host}]"
     try:
         port = parsed.port
     except ValueError:

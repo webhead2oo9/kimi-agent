@@ -466,6 +466,9 @@ async def test_stop_confirmation_finishes_before_propagating_cancellation(
     task = asyncio.create_task(_stop_unit_shielded(config, "visual-test"))
     await started.wait()
     task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
     release.set()
 
     with pytest.raises(asyncio.CancelledError):

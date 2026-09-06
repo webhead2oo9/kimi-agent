@@ -17,14 +17,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from tests.source_inspection import python_sources, runtime_imports, source_module
 
-_SKIP_PREFIXES = (".venv/", "tests/", "workspaces/", "data/", "skills/store/")
-_EXPLICIT_PACKAGE_ROOTS = {
-    PROJECT_ROOT / "packages" / "kimi-agent-module-api" / "src" / "kimi_agent_module_api": (
-        "kimi_agent_module_api"
-    ),
-}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # Package -> the packages it may import. Leaves map to an empty set.
 #
@@ -89,8 +84,10 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "xai",
     },
     "bot": {"app", "config"},
+    "branding": set(),
     "codex": {"utils"},
     "commands": {
+        "branding",
         "discord_adapter",
         "kimi_agent_module_api",
         "memory",
@@ -100,7 +97,9 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
         "workspace",
     },
-    "config": {"kimi_agent_module_api", "providers", "tools", "trust", "utils"},
+    "community_agent_reference_module": {"kimi_agent_module_api"},
+    "config": {"branding", "kimi_agent_module_api", "providers", "tools", "trust", "utils"},
+    "deploy": {"config", "sandbox", "tools", "web_browser"},
     "discord_adapter": {
         "agent",
         "kimi_agent_module_api",
@@ -125,6 +124,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
     },
     "image_gen": {"codex", "utils"},
+    "hello_module": {"kimi_agent_module_api"},
     # Core may depend on the shared SDK vocabulary, but the standalone SDK may not
     # depend on core. Its broader third-party allowlist is pinned by
     # test_module_api_contracts.py::test_entire_sdk_has_no_core_runtime_imports.
@@ -135,9 +135,10 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     # the harness cycle documented above.
     "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils"},
     "observability": {"utils"},
-    "providers": {"codex", "utils", "xai"},
+    "providers": {"branding", "codex", "utils", "xai"},
     "scripts": {
         "app",
+        "branding",
         "codex",
         "config",
         "kimi_agent_module_api",
@@ -148,7 +149,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     # Sandbox quota enforcement uses workspace's fd-relative ownership boundary.
     "sandbox": {"workspace"},
     "search": {"utils"},
-    "skills": {"config", "tools", "trust", "utils", "workspace"},
+    "skills": {"branding", "config", "tools", "trust", "utils", "workspace"},
     "storage": {"providers", "usage"},
     "tools": {
         "agent",
@@ -173,9 +174,9 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "usage": {"config"},
     "utils": {"kimi_agent_module_api"},
     "video_understanding": {"utils"},
-    "web_browser": {"sandbox"},
+    "web_browser": {"sandbox", "utils"},
     "workspace": set(),
-    "xai": {"utils"},
+    "xai": {"branding", "utils"},
 }
 
 _EXPECTED_NONTRIVIAL_SCCS: frozenset[frozenset[str]] = frozenset(
@@ -197,62 +198,18 @@ _EXPECTED_NONTRIVIAL_SCCS: frozenset[frozenset[str]] = frozenset(
 )
 
 
-def _local_packages() -> set[str]:
-    packages = {
-        path.name
-        for path in PROJECT_ROOT.iterdir()
-        if path.is_dir() and (path / "__init__.py").exists() and path.name != "tests"
-    }
-    # bot.py is a module, not a package, but it is a graph node all the same.
-    return packages | {"bot", *_EXPLICIT_PACKAGE_ROOTS.values()}
-
-
-def _source_package(path: Path, packages: set[str]) -> str | None:
-    for root, package in _EXPLICIT_PACKAGE_ROOTS.items():
-        if path.is_relative_to(root):
-            return package
-    relative = path.relative_to(PROJECT_ROOT).as_posix()
-    source = relative.split("/")[0] if "/" in relative else relative.removesuffix(".py")
-    return source if source in packages else None
-
-
-def _runtime_imports(tree: ast.Module) -> set[str]:
-    type_checking: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If):
-            test = node.test
-            if (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-                isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-            ):
-                type_checking.update(id(child) for child in ast.walk(node))
-
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if id(node) in type_checking:
-            continue
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
-            modules.add(node.module)
-    return modules
-
-
 def _observed_graph() -> tuple[set[str], dict[str, set[str]]]:
-    packages = _local_packages()
-    nodes: set[str] = set()
+    sources = [(path, source_module(path, PROJECT_ROOT)) for path in python_sources(PROJECT_ROOT)]
+    nodes = {module.split(".")[0] for _, module in sources}
     edges: dict[str, set[str]] = {}
-    for path in PROJECT_ROOT.rglob("*.py"):
+    for path, module in sources:
         relative = path.relative_to(PROJECT_ROOT).as_posix()
-        if relative.startswith(_SKIP_PREFIXES):
-            continue
-        source = _source_package(path, packages)
-        if source is None:
-            continue
-        nodes.add(source)
+        source = module.split(".")[0]
+        package = module if path.stem == "__init__" else module.rpartition(".")[0]
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
-        for module in _runtime_imports(tree):
-            target = module.split(".")[0]
-            if target in packages and target != source:
+        for imported in runtime_imports(tree, package=package):
+            target = imported.split(".")[0]
+            if target in nodes and target != source:
                 edges.setdefault(source, set()).add(target)
     return nodes, edges
 
@@ -308,11 +265,13 @@ def _display_components(components: frozenset[frozenset[str]]) -> list[list[str]
 
 
 def test_no_undeclared_package_dependencies() -> None:
-    undeclared: list[str] = []
-    for source, targets in sorted(_observed_edges().items()):
+    nodes, edges = _observed_graph()
+    undeclared = [
+        f"{node} (missing from _ALLOWED_EDGES)" for node in sorted(nodes - _ALLOWED_EDGES.keys())
+    ]
+    for source, targets in sorted(edges.items()):
         allowed = _ALLOWED_EDGES.get(source)
         if allowed is None:
-            undeclared.append(f"{source} (package missing from _ALLOWED_EDGES)")
             continue
         for target in sorted(targets - allowed):
             undeclared.append(f"{source} -> {target}")
@@ -333,7 +292,10 @@ def test_standalone_sdk_is_scanned() -> None:
 def test_declared_edges_still_exist() -> None:
     """Reject stale allowlist entries that weaken the graph constraint."""
 
-    observed = _observed_edges()
+    nodes, observed = _observed_graph()
+    assert not (missing := _ALLOWED_EDGES.keys() - nodes), (
+        f"Declared modules disappeared from source discovery: {sorted(missing)}"
+    )
     stale = [
         f"{source} -> {target}"
         for source, targets in sorted(_ALLOWED_EDGES.items())
@@ -383,3 +345,19 @@ def test_forbidden_dependency_edges_are_absent() -> None:
         "config must not import agent: operator configuration must remain "
         "independent of the ReAct core."
     )
+
+
+def test_graph_discovers_namespace_packages_and_standalone_modules(tmp_path, monkeypatch) -> None:
+    import sys
+
+    import pytest
+
+    (tmp_path / "new_namespace").mkdir()
+    (tmp_path / "new_namespace/client.py").write_text("import standalone\n")
+    (tmp_path / "standalone.py").write_text("")
+    monkeypatch.setattr(sys.modules[__name__], "PROJECT_ROOT", tmp_path)
+    nodes, edges = _observed_graph()
+    assert nodes == {"new_namespace", "standalone"}
+    assert edges == {"new_namespace": {"standalone"}}
+    with pytest.raises(AssertionError, match="standalone .*missing from _ALLOWED_EDGES"):
+        test_no_undeclared_package_dependencies()

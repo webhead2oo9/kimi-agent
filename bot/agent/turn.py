@@ -1479,6 +1479,9 @@ async def _stage_pending_response_files(
         activity_guard=dependencies.user_activity,
     )
     staged_by_source = dict(zip(dict.fromkeys(files), staged_files, strict=True))
+    staged_spec = outbox.embed
+    if staged_spec is not None and staged_embed is not None:
+        staged_spec = replace(staged_spec, image=f"attachment://{staged_embed.filename}")
     context.pending_outbox = replace(
         outbox,
         output_files=tuple(staged_files),
@@ -1489,6 +1492,7 @@ async def _stage_pending_response_files(
             if source in staged_by_source
         },
         allowed_file_roots=(staged_root,),
+        embed=staged_spec,
         embed_attachment=staged_embed,
     )
 
@@ -1520,8 +1524,10 @@ def _stage_response_files_sync(
             if not any(resolved.is_relative_to(root) for root in roots):
                 raise ValueError("Queued output file is outside its allowed workspace")
             destination = job_dir / source.name
-            if destination.exists():
-                destination = job_dir / f"{index}-{source.name}"
+            sequence = index
+            while destination.exists():
+                destination = job_dir / f"{sequence}-{source.name}"
+                sequence += 1
             shutil.copyfile(resolved, destination)
             destination.chmod(0o600)
             destination_text = str(destination)

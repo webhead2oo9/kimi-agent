@@ -150,6 +150,11 @@ that lets a moderator close a managed thread.
   select a Discord attachment or workspace video, Kimi streams those video
   bytes to Google's Files API before analysis. Google temporarily stores the
   File and Interaction chain so follow-ups can continue without re-uploading.
+- **Experimental local video inspection.** If enabled, Kimi temporarily copies
+  the selected video into your private workspace jobs and processes it locally.
+  Selected frames and transcript excerpts go to the configured chat provider.
+  Job files are deleted when the turn finishes; crash leftovers follow workspace
+  expiry and full user-data deletion. This path does not upload the video to Gemini.
 - **Community learning.** Staff can use the process described above to store
   shared knowledge in Hindsight or in a shared skill. This is separate from
   your personal memory and is managed by staff.

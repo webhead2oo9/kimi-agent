@@ -37,7 +37,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `providers/` | How Kimi talks to model APIs, including failover |
 | `image_gen/` | Image generation/editing backend |
 | `search/` | Internet search backends (TinyFish, Exa, Brave) and the chain that blends them |
-| `video_understanding/` | Gemini video sessions |
+| `video_understanding/` | Gemini video sessions and experimental local frame/transcript processing |
 | `xai/` | xAI login and credentials, plus the Responses transport used by Grok models and X search |
 | `config/` | Settings, `models.yaml`, operator overlay |
 | `config/fragments/` | Markdown you can edit without restarting: pins, denylists, prompts, per-tool settings |

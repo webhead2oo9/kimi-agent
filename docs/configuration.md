@@ -732,6 +732,16 @@ See [Video understanding](video-understanding.md) for source streaming, formats,
 hard file/duration limits, root/user/guild scope, SQLite-backed crash recovery,
 provider retention/deletion, caching, and prompt-injection posture.
 
+The separate [local video inspection experiment](video-inspection.md) uses the
+configured chat model with bounded frames and transcript pages. It requires
+FFmpeg and the offline Linux sandbox, with no Gemini key or video role.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `VIDEO_INSPECTION_ENABLED` | bool | `false` | Register the experimental foreground `video_inspect` tool when decoder and sandbox prerequisites pass. |
+| `VIDEO_INSPECTION_WHISPER_BIN` | path | `""` | Optional absolute whisper.cpp CLI path. Environment-only; set together with the model path. |
+| `VIDEO_INSPECTION_WHISPER_MODEL` | path | `""` | Optional absolute local GGML model path. Environment-only; no runtime download. Blank paths permit supplied subtitles and visual inspection. |
+
 ---
 
 ## Image generation (gated)

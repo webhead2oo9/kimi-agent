@@ -2481,6 +2481,81 @@ def test_view_image_rail_injects_synthetic_user_message() -> None:
     assert injected.content[1].media_type == "image/png"
 
 
+def test_video_batches_replace_old_images_but_keep_workspace_images_and_observations() -> None:
+    async def queue_images(args: dict, ctx: MessageContext) -> str:
+        batch = args["batch"]
+        if batch == 1:
+            ctx.pending_view_images.append(
+                ContentPart.from_image_url(
+                    url="data:image/png;base64,workspace", media_type="image/png"
+                )
+            )
+        ctx.pending_video_images.extend(
+            [
+                ContentPart.from_text(f"frame mapping {batch}"),
+                ContentPart.from_image_url(
+                    url=f"data:image/jpeg;base64,batch{batch}", media_type="image/jpeg"
+                ),
+            ]
+        )
+        return json.dumps({"batch": batch})
+
+    registry = ToolRegistry()
+    registry.register(name="inspect", description="test", parameters={}, handler=queue_images)
+    context = ConversationContext(key="test")
+    provider = TypedScriptedProvider(
+        responses=[
+            ProviderResponse(
+                tool_calls=[ToolCall(id="one", name="inspect", arguments={"batch": 1})],
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                content="At 00:02 I saw an error dialog.",
+                tool_calls=[ToolCall(id="two", name="inspect", arguments={"batch": 2})],
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(content="The error reads: example."),
+        ]
+    )
+    asyncio.run(
+        run_conversation(
+            request=ConversationRunRequest(
+                user_message="Inspect video",
+                context=context,
+                trust_tier=TrustTier.MEMBER,
+                user_name="test",
+                user_id="123",
+                provider=provider,
+                registry=registry,
+            )
+        )
+    )
+    request = provider.requests[2]
+    images = [
+        part.image_url
+        for message in request.messages
+        for part in message.content
+        if part.type is ContentPartType.IMAGE
+    ]
+    assert images == ["data:image/png;base64,workspace", "data:image/jpeg;base64,batch2"]
+    text = " ".join(part.text or "" for message in request.messages for part in message.content)
+    assert "At 00:02 I saw an error dialog" in text
+    assert "frame mapping 1" in text
+    assert "Earlier video images removed" in text
+    assert "untrusted evidence" in text
+    assert not any(
+        (part.image_url or "").startswith("data:image/jpeg;base64,batch")
+        for message in context.get_history()
+        for part in message.content
+    )
+    # Requests already sent must not be mutated when the next batch replaces them.
+    assert any(
+        part.image_url == "data:image/jpeg;base64,batch1"
+        for message in provider.requests[1].messages
+        for part in message.content
+    )
+
+
 def test_view_image_rail_not_injected_when_provider_text_only() -> None:
     # On a provider without IMAGE_INPUT, images_supported is False; a well-behaved
     # tool would refuse, so nothing is queued and no image message is injected.

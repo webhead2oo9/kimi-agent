@@ -198,6 +198,12 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)
 
+    # Experimental local transcript/frame inspection. Binaries and model paths
+    # are environment-only; decoder work always uses the offline Linux sandbox.
+    video_inspection_enabled: bool = False
+    video_inspection_whisper_bin: str = ""
+    video_inspection_whisper_model: str = ""
+
     # OpenAI image generation (optional REGULAR-tier core tool). OAuth reuses
     # the Codex token manager; IMAGE_GEN_API_KEY is the dedicated fallback.
     image_gen_enabled: bool = False

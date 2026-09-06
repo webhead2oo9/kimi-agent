@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable
-from dataclasses import dataclass
-import os
-from pathlib import Path, PurePosixPath
+from collections.abc import Awaitable
 import re
-import stat
-from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from tools._common import get_string, tool_error
 from tools.config_spec import KIND_CHOICE, KIND_INT, ToolConfigField
 from tools.registry import BudgetName, MessageContext, ToolBudgetSpec, ToolRegistry
 from tools.workspace.common import UserLocks
+from tools.video_sources import attachment_source, workspace_source
 from trust.tiers import TrustTier
 from utils.asyncio import await_uncancellable
-from utils.video_types import video_media_type
-from workspace import ENV_DIR_NAMES, WorkspaceKey, WorkspaceManager
+from workspace import WorkspaceManager
 from usage.normalization import LLMUsageCall, UsageBreakdown
 from video_understanding.client import VideoInteractionError, VideoUsage
 from video_understanding.service import (
@@ -40,8 +34,6 @@ _MAX_QUESTION_CHARS = 8_000
 _MAX_SESSION_CHARS = 128
 _MAX_PATH_CHARS = 1_024
 _MAX_ATTACHMENT_NAME_CHARS = 512
-_MAX_UPLOAD_BYTES = 500 * 1024 * 1024
-_SOURCE_READ_CHUNK_BYTES = 1024 * 1024
 _CONFIG_SPEC = (
     ToolConfigField(
         field="thinking_level",
@@ -88,74 +80,6 @@ _CONFIG_SPEC = (
         help="Idle lifetime of a rooted video session, capped at 24 hours.",
     ),
 )
-
-
-class _VideoAttachment(Protocol):
-    filename: str
-    size: int
-    content_type: str | None
-
-    def iter_video_chunks(
-        self,
-        *,
-        chunk_size: int,
-        max_bytes: int,
-    ) -> AsyncIterator[bytes]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class _AttachmentBytes:
-    attachment: _VideoAttachment
-
-    def __aiter__(self) -> AsyncIterator[bytes]:
-        return self.attachment.iter_video_chunks(
-            chunk_size=_SOURCE_READ_CHUNK_BYTES,
-            max_bytes=_MAX_UPLOAD_BYTES,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkspaceBytes:
-    manager: WorkspaceManager
-    locks: UserLocks
-    workspace_key: WorkspaceKey
-    path_arg: str
-    expected_size: int
-
-    def __aiter__(self) -> AsyncIterator[bytes]:
-        return self._chunks()
-
-    async def _chunks(self) -> AsyncIterator[bytes]:
-        # Take the workspace lock only while resolving/opening. The no-follow fd
-        # remains bound to that inode while network backpressure pauses reads,
-        # without blocking unrelated workspace maintenance for the whole upload.
-        async with self.locks.activity(self.workspace_key):
-            descriptor, size, _relative = await asyncio.to_thread(
-                _open_workspace_video,
-                self.manager,
-                self.workspace_key,
-                self.path_arg,
-            )
-        try:
-            if size != self.expected_size:
-                raise ValueError("workspace video changed before upload")
-            total = 0
-            while True:
-                chunk = await asyncio.to_thread(
-                    os.read,
-                    descriptor,
-                    _SOURCE_READ_CHUNK_BYTES,
-                )
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > self.expected_size or total > _MAX_UPLOAD_BYTES:
-                    raise ValueError("workspace video exceeded its size limit")
-                yield chunk
-            if total != self.expected_size:
-                raise ValueError("workspace video ended before its declared size")
-        finally:
-            os.close(descriptor)
 
 
 def init_video_tool(
@@ -208,9 +132,9 @@ def init_video_tool(
                 if raw_url:
                     canonical_url, video_id = canonicalize_youtube_url(raw_url)
                 elif attachment_name:
-                    uploaded_source = _attachment_source(ctx, attachment_name)
+                    uploaded_source = attachment_source(ctx, attachment_name)
                 else:
-                    uploaded_source = await _workspace_source(
+                    uploaded_source = await workspace_source(
                         workspace_manager,
                         workspace_locks,
                         ctx.workspace_key,
@@ -374,89 +298,6 @@ def init_video_tool(
         ),
     )
     return True
-
-
-def _attachment_source(ctx: MessageContext, filename: str) -> UploadedVideoSource:
-    matches = [item for item in ctx.attachments if item.filename == filename]
-    if not matches:
-        available = ", ".join(item.filename for item in ctx.attachments) or "none"
-        raise ValueError(f"no attachment named {filename}; available: {available}")
-    if len(matches) > 1:
-        raise ValueError("multiple attachments have that filename; rename and resend one")
-    attachment = matches[0]
-    mime_type = video_media_type(attachment.filename, attachment.content_type)
-    if mime_type is None:
-        raise ValueError("attachment must be a supported video file")
-    if attachment.size <= 0 or attachment.size > _MAX_UPLOAD_BYTES:
-        raise ValueError("video attachment must be between 1 byte and 500 MiB")
-    display_name = _safe_display_name(attachment.filename)
-    return UploadedVideoSource(
-        kind="attachment",
-        display_name=display_name,
-        locator=display_name,
-        mime_type=mime_type,
-        byte_size=attachment.size,
-        bytes=_AttachmentBytes(attachment),
-    )
-
-
-async def _workspace_source(
-    manager: WorkspaceManager,
-    locks: UserLocks,
-    workspace_key: WorkspaceKey,
-    path_arg: str,
-) -> UploadedVideoSource:
-    async with locks.activity(workspace_key):
-        descriptor, size, relative = await asyncio.to_thread(
-            _open_workspace_video,
-            manager,
-            workspace_key,
-            path_arg,
-        )
-        os.close(descriptor)
-    display_name = _safe_display_name(PurePosixPath(relative).name)
-    mime_type = video_media_type(display_name, None)
-    if mime_type is None:
-        raise ValueError("workspace path must identify a supported video file")
-    if size <= 0 or size > _MAX_UPLOAD_BYTES:
-        raise ValueError("workspace video must be between 1 byte and 500 MiB")
-    return UploadedVideoSource(
-        kind="workspace",
-        display_name=display_name,
-        locator=relative,
-        mime_type=mime_type,
-        byte_size=size,
-        bytes=_WorkspaceBytes(manager, locks, workspace_key, path_arg, size),
-    )
-
-
-def _open_workspace_video(
-    manager: WorkspaceManager,
-    workspace_key: WorkspaceKey,
-    path_arg: str,
-) -> tuple[int, int, str]:
-    path = manager.resolve_user_file_path(workspace_key, path_arg)
-    relative = manager.relative_user_file_path(workspace_key, path)
-    parts = PurePosixPath(relative).parts
-    if any(part in ENV_DIR_NAMES for part in parts):
-        raise ValueError("video path cannot be inside a reserved environment directory")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("video path must identify a regular file")
-        if metadata.st_size <= 0 or metadata.st_size > _MAX_UPLOAD_BYTES:
-            raise ValueError("workspace video must be between 1 byte and 500 MiB")
-        return descriptor, metadata.st_size, PurePosixPath(relative).as_posix()
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-def _safe_display_name(value: str) -> str:
-    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", Path(value).name).strip()
-    return (cleaned or "video")[:512]
 
 
 def canonicalize_youtube_url(raw_url: str) -> tuple[str, str]:

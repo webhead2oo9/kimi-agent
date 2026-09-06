@@ -209,7 +209,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bubblewrap libseccomp2 util-linux dbus-user-session \
+            bubblewrap libseccomp2 util-linux dbus-user-session ffmpeg \
             apparmor-profiles
 
       - name: Configure the host like a deployment
@@ -281,3 +281,4 @@ jobs:
           tests/test_sandbox_runner.py
           tests/test_code_exec_tool.py
           tests/test_skill_sandbox.py
+          tests/test_video_inspection_local.py

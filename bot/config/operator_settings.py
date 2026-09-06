@@ -149,6 +149,7 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
         "wolfram_alpha_max_output_chars",
         "wolfram_alpha_call_cost_usd",
         "video_understanding_enabled",
+        "video_inspection_enabled",
         "video_understanding_max_concurrency",
         "image_gen_enabled",
         "image_gen_backend",

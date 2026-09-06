@@ -1,5 +1,8 @@
 # Video understanding
 
+For the separate transcript/frame experiment, see
+[Experimental local video inspection](video-inspection.md).
+
 The optional searchable `video` tool lets Kimi ask a stateful Gemini specialist
 questions about one video. A session may start from:
 

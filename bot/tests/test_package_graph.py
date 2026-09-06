@@ -173,7 +173,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "trust": {"kimi_agent_module_api"},
     "usage": {"config"},
     "utils": {"kimi_agent_module_api"},
-    "video_understanding": {"utils"},
+    "video_understanding": {"sandbox", "utils"},
     "web_browser": {"sandbox", "utils"},
     "workspace": set(),
     "xai": {"branding", "utils"},

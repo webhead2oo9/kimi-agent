@@ -20,6 +20,7 @@ from tools.config_spec import ToolConfigField, validate_config_spec
 from trust.tiers import TrustTier
 
 if TYPE_CHECKING:
+    from tools.video_inspect import VideoInspectionSession
     from agent.attachments import AttachmentRef
     from storage.usage import PaidUsageCall, UsageStore
     from usage.normalization import LLMUsageCall
@@ -121,6 +122,8 @@ class BudgetName(StrEnum):
     X_SEARCH_CALLS = "x_search_calls"
     WOLFRAM_ALPHA_CALLS = "wolfram_alpha_calls"
     VIDEO_CALLS = "video_calls"
+    VIDEO_INSPECTION_CALLS = "video_inspection_calls"
+    VIDEO_INSPECTION_FRAMES = "video_inspection_frames"
     BROWSER_CALLS = "browser_calls"
     BROWSER_SCREENSHOTS = "browser_screenshots"
     VISUAL_RENDERS = "visual_renders"
@@ -247,6 +250,10 @@ class MessageContext:
     # drains them into one synthetic untrusted user message after tool dispatch,
     # then clears the rail. In-turn only, never persisted.
     pending_view_images: list[ContentPart] = field(default_factory=list)
+    # Separate, replaceable batch: video exploration must not accumulate all
+    # sampled frames in the model's context. Core keeps only the latest batch.
+    pending_video_images: list[ContentPart] = field(default_factory=list)
+    video_inspection_session: VideoInspectionSession | None = field(default=None, repr=False)
     activated_tools: set[str] = field(default_factory=set)
     # Searchable tools the model explicitly browse_tools-loaded this turn; kept
     # separate from activated_tools so loads of channel-pinned names persist.

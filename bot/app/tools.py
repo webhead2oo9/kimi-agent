@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -63,6 +64,7 @@ from tools.threads import (
     init_thread_tools,
 )
 from tools.video import init_video_tool
+from tools.video_inspect import init_video_inspection_tool
 from tools.wolfram_alpha import (
     WolframAlphaClient,
     WolframAlphaConfig,
@@ -72,6 +74,7 @@ from tools.x_search import XSearchConfig, init_x_search_tool
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from trust.tiers import trust_tier_from_value
 from video_understanding.client import GeminiVideoClient
+from video_understanding.local import LocalVideoBackend
 from video_understanding.service import VideoUnderstandingService
 from video_understanding.service import VideoSessionRepository
 from web_browser.service import BrowserService, BrowserServiceConfig
@@ -190,6 +193,7 @@ def build_runtime_tools(
         workspace_locks=workspace_locks,
         model_config=provider_manager.model_config,
     )
+    _register_video_inspection(settings, registry, workspace_manager, workspace_locks)
     browser_service = _register_browser(
         settings,
         registry,
@@ -335,6 +339,11 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "video understanding",
         ("video",),
         "VIDEO_UNDERSTANDING_ENABLED + roles.video + GEMINI_API_KEY",
+    ),
+    (
+        "local video inspection (experimental)",
+        ("video_inspect",),
+        "VIDEO_INSPECTION_ENABLED + FFmpeg + offline Linux sandbox",
     ),
     ("code execution", ("run_code",), "CODE_EXEC_ENABLED + Linux sandbox support"),
     ("persistent browser", ("browser",), "BROWSER_ENABLED + BetterWright runtime"),
@@ -629,6 +638,69 @@ def _register_video(
         catalog_model,
     )
     return service
+
+
+def _register_video_inspection(
+    settings: Settings,
+    registry: ToolRegistry,
+    manager: WorkspaceManager,
+    locks: UserLocks,
+) -> None:
+    if not settings.video_inspection_enabled:
+        return
+    ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        log.warning("Local video inspection requires ffmpeg and ffprobe on PATH")
+        return
+    whisper_bin = settings.video_inspection_whisper_bin.strip()
+    whisper_model = settings.video_inspection_whisper_model.strip()
+    if bool(whisper_bin) != bool(whisper_model) or any(
+        not Path(value).is_absolute() or not Path(value).is_file()
+        for value in (whisper_bin, whisper_model)
+        if value
+    ):
+        log.warning("Local video inspection requires both absolute whisper binary and model paths")
+        return
+    binds = tuple(
+        str(Path(value).resolve())
+        for value in (ffmpeg, ffprobe, whisper_bin, whisper_model)
+        if value
+    )
+    config = SandboxConfig(
+        python_bin=settings.code_exec_python_bin,
+        bwrap_bin=settings.code_exec_bwrap_bin,
+        prlimit_bin=settings.code_exec_prlimit_bin,
+        systemd_run_bin=settings.code_exec_systemd_run_bin,
+        network_mode="none",
+        wall_timeout_seconds=60,
+        max_cpu_seconds=45,
+        max_memory_mb=8192,
+        max_total_memory_mb=2048,
+        cpu_quota_percent=200,
+        max_fsize_mb=128,
+        max_workspace_bytes=650 * 1024 * 1024,
+        max_workspace_files=32,
+        max_output_bytes=64 * 1024,
+        workspace_probe_root=str(Path(settings.workspace_dir).resolve()),
+        extra_ro_binds=binds,
+    )
+    if not sandbox_available(config):
+        log.warning("Local video inspection offline sandbox failed its startup probe")
+        return
+    init_video_inspection_tool(
+        registry,
+        LocalVideoBackend(
+            config,
+            ffmpeg=str(Path(ffmpeg).resolve()),
+            ffprobe=str(Path(ffprobe).resolve()),
+            whisper_bin=str(Path(whisper_bin).resolve()) if whisper_bin else "",
+            whisper_model=str(Path(whisper_model).resolve()) if whisper_model else "",
+        ),
+        manager,
+        locks,
+        images_enabled=settings.max_turn_images > 0,
+    )
+    log.info("Local video inspection enabled (automatic transcription: %s)", bool(whisper_bin))
 
 
 def build_sandbox_config(settings: Settings) -> SandboxConfig:

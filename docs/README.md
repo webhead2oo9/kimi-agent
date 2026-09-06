@@ -41,6 +41,7 @@ The rest is reference material.
 - [Memory](memory.md): Hindsight-backed user and community memory.
 - [Workspace tools](workspace.md): file operations sandboxed per user and
   guild.
+- [Experimental local video inspection](video-inspection.md): bounded transcript search, storyboards, and targeted frames.
 - [Video understanding](video-understanding.md): stateful Gemini analysis of
   public YouTube or streamed Discord/workspace videos, session scope, Files API
   lifecycle, caching, limits, and deletion.

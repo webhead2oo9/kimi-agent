@@ -117,6 +117,16 @@ browser](browser.md).
 
 ### Gemini video interactions (optional)
 
+The separate opt-in [local video inspection experiment](video-inspection.md)
+copies a selected attachment/workspace video into the initiating actor's private
+workspace jobs. It decodes frames and optionally transcribes speech locally in
+the offline sandbox. Selected frames and transcript pages are sent to the chat
+provider as untrusted context. The job is deleted at turn end; workspace TTL
+sweeping and full user deletion cover crash leftovers. The experiment creates
+no Gemini Files or Interaction resources. Its last image batch is removed from
+in-memory conversation history at turn completion; provider retention still
+applies to images already sent.
+
 When `VIDEO_UNDERSTANDING_ENABLED`, `GEMINI_API_KEY`, and a valid `roles.video`
 catalog assignment register the searchable `video` tool, `start` sends either a
 public YouTube URL or streamed bytes from an

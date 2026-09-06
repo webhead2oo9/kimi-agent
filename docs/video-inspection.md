@@ -39,9 +39,34 @@ Automatic speech transcription is optional. Install a CPU-capable
 [whisper.cpp CLI](https://github.com/ggml-org/whisper.cpp/tree/master/examples/cli)
 and a compatible GGML model, then set both absolute paths:
 
+The following Ubuntu example builds the tested v1.9.3 CLI statically and
+downloads the multilingual `base` model (142 MiB) through the project's
+official downloader. Review the current upstream release before changing the
+pinned version:
+
+```bash
+sudo apt-get install --yes build-essential cmake git
+sudo git clone --depth 1 --branch v1.9.3 \
+  https://github.com/ggml-org/whisper.cpp.git /opt/kimi/whisper.cpp-v1.9.3
+sudo cmake -S /opt/kimi/whisper.cpp-v1.9.3 \
+  -B /opt/kimi/whisper.cpp-v1.9.3/build \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+  -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF
+sudo cmake --build /opt/kimi/whisper.cpp-v1.9.3/build \
+  --config Release --target whisper-cli -j 2
+sudo bash /opt/kimi/whisper.cpp-v1.9.3/models/download-ggml-model.sh base
+sha1sum /opt/kimi/whisper.cpp-v1.9.3/models/ggml-base.bin
+/opt/kimi/whisper.cpp-v1.9.3/build/bin/whisper-cli --version
+```
+
+The `base` checksum published by whisper.cpp is
+`465707469ff3a37a2b9b8d8f89f2f99de7299dac`. Models without `.en` are
+multilingual; use `tiny` instead when lower latency matters more than accuracy.
+Do not use an unverified model file.
+
 ```dotenv
-VIDEO_INSPECTION_WHISPER_BIN=/usr/local/bin/whisper-cli
-VIDEO_INSPECTION_WHISPER_MODEL=/opt/whisper/ggml-base.en.bin
+VIDEO_INSPECTION_WHISPER_BIN=/opt/kimi/whisper.cpp-v1.9.3/build/bin/whisper-cli
+VIDEO_INSPECTION_WHISPER_MODEL=/opt/kimi/whisper.cpp-v1.9.3/models/ggml-base.bin
 ```
 
 The binary, model, and system library lookup paths (`/etc/alternatives` and
@@ -53,7 +78,8 @@ still work. A request to transcribe speech explains that local transcription
 is unavailable. Both paths are environment-only; the feature flag may also be
 set in the restart-required operator settings overlay.
 
-Restart and confirm startup reports `local video inspection (experimental)`.
+Restart and confirm startup reports `local video inspection (experimental)`
+and `automatic transcription: True` when Whisper is configured.
 Select an image-capable chat model for frame inspection; this tool does not
 switch models. `MAX_TURN_IMAGES=0` also disables video frame output. Text-only
 chat models can still use the transcript operations.

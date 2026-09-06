@@ -136,6 +136,11 @@ The package must provide both executables. Complete the sandbox setup in
 section 6 before enabling `VIDEO_INSPECTION_ENABLED`; the tool fails closed
 when either FFmpeg or the offline sandbox is unavailable.
 
+Automatic speech transcription is optional and additionally requires a local
+whisper.cpp CLI and GGML model. Follow the pinned build, checksum, configuration,
+and smoke-test instructions in [local video inspection](video-inspection.md);
+the application never downloads either artifact at runtime.
+
 ### Browser + visual rendering packages
 The browser and chart tools also need Node 22.18+, npm, unzip, and some shared libraries:
 

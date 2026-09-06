@@ -4,7 +4,7 @@
 
 The Discord assistant lives in `bot/`. Entry point `bot.py` delegates to `app/`; `agent/` owns conversation orchestration, `providers/` model adapters, `tools/` tool dispatch, and `storage/` persistence. Configuration templates and prompts live in `bot/config/`, built-in playbooks in `bot/skills/builtin/`, and deployment resources in `bot/deploy/`.
 
-Tests live in `bot/tests/` and `bot/modules/example/tests/`; the standalone module API has its own tests under `bot/packages/kimi-agent-module-api/`. Browser bridge tests live in `bot/tests/js/`. Subsystem documentation lives in [docs/](docs/README.md).
+Tests live in `bot/tests/`, `bot/modules/example/tests/`, and `bot/modules/minimal/tests/`; the standalone module API has its own tests under `bot/packages/kimi-agent-module-api/tests/`. Browser bridge tests live in `bot/tests/js/`. Subsystem documentation lives in [docs/](docs/README.md).
 
 ## Build, Test, and Development Commands
 
@@ -16,10 +16,14 @@ Use Python 3.14+ and run commands from `bot/`. Follow [development setup](docs/d
 - `.venv/bin/ruff format --check .` — check formatting; omit `--check` to format.
 - `.venv/bin/mypy .` — check core types.
 - `.venv/bin/mypy --config-file modules/example/pyproject.toml modules/example/src modules/example/tests` — check reference-module types.
-- `.venv/bin/python -m pytest -q` — run application and reference-module tests.
+- `.venv/bin/mypy --config-file modules/minimal/pyproject.toml modules/minimal/hello_module.py modules/minimal/tests` — check minimal-module types.
+- `.venv/bin/python -m pytest -q` — run application, reference-module, and minimal-module tests; standalone API tests run separately.
+- `uv run --isolated --locked --group test python -m pytest -q` — run standalone API tests from `bot/packages/kimi-agent-module-api/`.
+- `node --test tests/js/*.test.mjs` — run browser bridge tests; CI uses Node 22.18.0.
 - `uv build --package kimi-agent-module-api --no-sources` — build API distributions.
+- `uv build --package community-agent-reference-module --no-sources` — build reference-module distributions.
 
-After dependency changes, run `uv lock` and `uv --preview-features audit-command audit --locked`. Match applicable checks in `.github/workflows/ci.yml` before submitting.
+After dependency changes, run `uv lock` and `uv --preview-features audit-command audit --locked`. Match applicable checks in [.github/workflows/ci.yml](.github/workflows/ci.yml) before submitting, including browser runtime installation/auditing and syntax checks, pip installation compatibility, and built-distribution verification through `scripts/verify_module_api_dist.py`. See [development setup](docs/development.md) for the commands and live sandbox prerequisites; CI runs a separate sandbox job with `KIMI_REQUIRE_SANDBOX_TESTS=1`.
 
 ## Coding Style & Naming Conventions
 

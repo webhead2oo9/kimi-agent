@@ -11,7 +11,7 @@ import wave
 
 import pytest
 
-from sandbox.runner import SandboxConfig, SandboxResult, sandbox_available
+from sandbox.runner import SandboxConfig, SandboxResult, run_command_in_sandbox, sandbox_available
 from tests.sandbox_gate import sandbox_unavailable
 from video_understanding.inspection import FRAME_BYTES, sample_times
 from video_understanding.local import Crop, LocalVideoBackend
@@ -100,7 +100,9 @@ async def test_real_decoder_preserves_vfr_playback_clock_and_finds_brief_event(
 
 
 @pytest.mark.asyncio
-async def test_live_offline_video_decoder(tmp_path: Path, media_bins: tuple[str, str]) -> None:
+async def test_live_offline_video_decoder(
+    tmp_path: Path, media_bins: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     ffmpeg, ffprobe = media_bins
     config = SandboxConfig(
         max_memory_mb=8192,
@@ -113,6 +115,15 @@ async def test_live_offline_video_decoder(tmp_path: Path, media_bins: tuple[str,
     if not await asyncio.to_thread(sandbox_available, config):
         sandbox_unavailable("offline video sandbox is unavailable on this host")
     await asyncio.to_thread(make_fixture, tmp_path, ffmpeg, offset=7)
+
+    async def run_checked(config: SandboxConfig, root: Path, args: list[str]) -> SandboxResult:
+        result = await run_command_in_sandbox(config, root, args)
+        # Only generated fixture data reaches this test. Keep production errors
+        # sanitized while exposing deployment failures in the required CI test.
+        assert result.exit_code == 0, result
+        return result
+
+    monkeypatch.setattr("video_understanding.local.run_command_in_sandbox", run_checked)
     backend = LocalVideoBackend(config, ffmpeg=ffmpeg, ffprobe=ffprobe)
     metadata = await backend.probe(tmp_path)
     assert metadata.duration == pytest.approx(6)

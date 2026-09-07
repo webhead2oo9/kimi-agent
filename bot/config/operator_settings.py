@@ -215,7 +215,10 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
         "compaction_max_tokens",
         "compaction_max_iteration_tool_output_tokens",
         "attachment_max_bytes",
+        "attachment_source_max_bytes",
         "attachment_max_total_bytes",
+        "image_normalization_timeout_seconds",
+        "image_normalization_max_concurrency",
         "attachment_orphan_ttl_seconds",
         "attachment_orphan_sweep_interval_seconds",
         "attachment_orphan_sweep_max_files",
@@ -331,7 +334,10 @@ _MINIMUMS: dict[str, int | float] = {
     "recent_image_lookback": 0,  # 0 disables image lookback
     "max_turn_images": 0,  # 0 disables image input
     "attachment_max_bytes": 1,
+    "attachment_source_max_bytes": 1,
     "attachment_max_total_bytes": 1,
+    "image_normalization_timeout_seconds": 0.001,
+    "image_normalization_max_concurrency": 1,
     # ── Discord scope ────────────────────────────────────────────────────────
     "discord_search_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,
     "internet_search_backend_timeout_seconds": _FLOAT_TIMEOUT_FLOOR,

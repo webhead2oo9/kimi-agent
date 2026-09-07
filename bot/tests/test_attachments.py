@@ -4,10 +4,12 @@ import hashlib
 import os
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from agent import attachments as attachments_module
 from agent.attachments import (
@@ -24,7 +26,14 @@ from agent.attachments import (
 )
 from providers.types import ContentPart, ConversationMessage
 
-_PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+
+def _tiny_png() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (1, 1), (12, 34, 56)).save(output, format="PNG")
+    return output.getvalue()
+
+
+_PNG_HEADER = _tiny_png()
 
 
 class FakeAttachment:
@@ -87,8 +96,8 @@ def test_collect_turn_images_stores_current_message_images(tmp_path: Path) -> No
 
     assert len(parts) == 1
     assert parts[0].media_type == "image/png"
-    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
-    assert list(tmp_path.rglob("cat.png"))
+    assert parts[0].image_url == f"data:image/png;base64,{base64.b64encode(_PNG_HEADER).decode()}"
+    assert list(tmp_path.rglob("cat.png.*.source"))
 
 
 def test_collect_turn_images_uses_filename_when_content_type_missing(
@@ -110,8 +119,8 @@ def test_collect_turn_images_uses_filename_when_content_type_missing(
 
     assert len(parts) == 1
     assert parts[0].media_type == "image/png"
-    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
-    assert list(tmp_path.rglob("cat.png"))
+    assert parts[0].image_url == f"data:image/png;base64,{base64.b64encode(_PNG_HEADER).decode()}"
+    assert list(tmp_path.rglob("cat.png.*.source"))
 
 
 def test_collect_turn_images_uses_filename_when_content_type_is_generic(
@@ -133,8 +142,8 @@ def test_collect_turn_images_uses_filename_when_content_type_is_generic(
 
     assert len(parts) == 1
     assert parts[0].media_type == "image/png"
-    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
-    assert list(tmp_path.rglob("cat.png"))
+    assert parts[0].image_url == f"data:image/png;base64,{base64.b64encode(_PNG_HEADER).decode()}"
+    assert list(tmp_path.rglob("cat.png.*.source"))
 
 
 def test_collect_turn_images_tracks_validated_current_attachment_identity(
@@ -181,12 +190,12 @@ def test_collect_turn_images_sniffs_actual_media_type(tmp_path: Path) -> None:
 
     assert len(parts) == 1
     assert parts[0].media_type == "image/png"
-    assert parts[0].image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert parts[0].image_url == f"data:image/png;base64,{base64.b64encode(_PNG_HEADER).decode()}"
 
 
 @pytest.mark.asyncio
 async def test_attachment_store_rechecks_payload_size_after_read(tmp_path: Path) -> None:
-    store = AttachmentStore(base_dir=tmp_path, max_bytes=4)
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=4, source_max_bytes=4)
     attachment = FakeAttachment(
         filename="a.png",
         content_type="image/png",
@@ -351,7 +360,7 @@ async def test_attachment_store_removes_partial_stage_when_replace_fails(
 
 
 @pytest.mark.asyncio
-async def test_overwritten_orphan_is_turn_owned_and_cleanup_prunes_directories(
+async def test_existing_orphan_is_not_overwritten_by_new_turn(
     tmp_path: Path,
 ) -> None:
     orphan = tmp_path / "k" / "1" / "a.png"
@@ -379,12 +388,10 @@ async def test_overwritten_orphan_is_turn_owned_and_cleanup_prunes_directories(
         max_images=1,
     )
 
-    assert result.cleanup_paths == [orphan]
-    assert orphan.read_bytes() == _PNG_HEADER
+    assert result.cleanup_paths != [orphan]
+    assert orphan.read_bytes() == b"old orphan"
     await cleanup_attachment_paths(result.cleanup_paths)
-    assert not orphan.exists()
-    assert not orphan.parent.exists()
-    assert not orphan.parent.parent.exists()
+    assert orphan.exists()
 
 
 @pytest.mark.asyncio
@@ -706,8 +713,12 @@ async def test_current_image_cap_prevents_excess_attachment_reads(tmp_path: Path
 async def test_turn_aggregate_byte_budget_prevents_later_read(tmp_path: Path) -> None:
     first = _CountingImageAttachment(b"123456", name="first.png")
     second = _CountingImageAttachment(b"abcdef", name="second.png")
-    assert first.size == second.size == 14
-    store = AttachmentStore(base_dir=tmp_path, max_bytes=20, max_total_bytes=20)
+    assert first.size == second.size
+    store = AttachmentStore(
+        base_dir=tmp_path,
+        max_bytes=200,
+        max_total_bytes=first.size,
+    )
 
     result = await collect_turn_images(
         _FakeMessage(attachments=[first, second]),
@@ -757,7 +768,7 @@ async def test_staging_failure_still_spends_declared_turn_byte_budget(
 
     first = _CountingImageAttachment(b"123456", name="first.png")
     second = _CountingImageAttachment(b"abcdef", name="second.png")
-    assert first.size == second.size == 14
+    assert first.size == second.size
 
     def fail_stage(path: Path, payload: bytes) -> None:
         del path, payload
@@ -766,7 +777,11 @@ async def test_staging_failure_still_spends_declared_turn_byte_budget(
     monkeypatch.setattr(attachments_module, "_stage_payload_sync", fail_stage)
     result = await collect_turn_images(
         _FakeMessage(attachments=[first, second]),
-        store=AttachmentStore(base_dir=tmp_path, max_bytes=20, max_total_bytes=20),
+        store=AttachmentStore(
+            base_dir=tmp_path,
+            max_bytes=200,
+            max_total_bytes=first.size,
+        ),
         conversation_key="k",
         detail="auto",
         images_supported=True,
@@ -794,7 +809,11 @@ async def test_turn_byte_budget_is_shared_with_reply_edit_target(tmp_path: Path)
 
     result = await collect_turn_images(
         message,
-        store=AttachmentStore(base_dir=tmp_path, max_bytes=20, max_total_bytes=20),
+        store=AttachmentStore(
+            base_dir=tmp_path,
+            max_bytes=200,
+            max_total_bytes=current.size,
+        ),
         conversation_key="k",
         detail="auto",
         images_supported=True,
@@ -1744,20 +1763,17 @@ async def test_turn_has_image_input_ignores_cross_channel_reference() -> None:
 
 
 @pytest.mark.asyncio
-async def test_collect_turn_images_skips_oversized_declared_image_without_refusing_the_turn(
+async def test_collect_turn_images_reports_source_oversized_declared_image(
     tmp_path: Path,
 ) -> None:
-    """An image above the attachment cap is never read, so it must not flag the
-    turn as unable to read the image; the user's text still gets answered."""
-
-    store = AttachmentStore(base_dir=tmp_path, max_bytes=16)
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=16, source_max_bytes=16)
     message = SimpleNamespace(
         id=56,
         attachments=[
             FakeAttachment(
                 filename="huge.png",
                 content_type="image/png",
-                payload=b"x" * 64,
+                payload=_PNG_HEADER,
             )
         ],
     )
@@ -1774,4 +1790,5 @@ async def test_collect_turn_images_skips_oversized_declared_image_without_refusi
     )
 
     assert result.vision_parts == []
-    assert result.current_image_unavailable is False
+    assert result.current_image_unavailable is True
+    assert "source download limit" in result.user_feedback

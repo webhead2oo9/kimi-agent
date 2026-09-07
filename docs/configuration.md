@@ -758,19 +758,24 @@ persistence, local file limits, quota errors, and the moderation boundary.
 
 ## Attachments & image input
 
-Image attachments collected from a turn's messages are staged in a private directory, used once, and then cleaned up. These settings cap per-file and aggregate size, define the orphan sweeper, and set the vision detail hint the provider sees.
+Image attachments collected from a turn's messages are streamed into a private temporary directory, validated and, when needed, normalized before moderation and model use. Sources and derivatives are used once and cleaned up on success, error, timeout, or cancellation. The processed image is also the editing input; higher-resolution originals never bypass the image-moderation rail and are not imported into persistent workspaces.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `ATTACHMENT_STORE_DIR` | path | `data/attachments` | Private temporary staging root for image attachments collected from Discord. |
-| `ATTACHMENT_MAX_BYTES` | positive int | `8388608` (8 MiB) | Max accepted size for one staged attachment. |
-| `ATTACHMENT_MAX_TOTAL_BYTES` | positive int | `33554432` (32 MiB) | Aggregate image bytes staged across current, reply, and recent-history candidates in one normal message turn. |
+| `ATTACHMENT_MAX_BYTES` | positive int | `8388608` (8 MiB) | Maximum processed vision-image size. Images above this encoded size are automatically normalized. |
+| `ATTACHMENT_SOURCE_MAX_BYTES` | positive int | `33554432` (32 MiB) | Maximum encoded source bytes downloaded for one image. Streaming enforcement does not trust declared attachment sizes. |
+| `ATTACHMENT_MAX_TOTAL_BYTES` | positive int | `33554432` (32 MiB) | Aggregate encoded source bytes downloaded across current, reply, and recent-history candidates in one normal message turn. |
+| `IMAGE_NORMALIZATION_TIMEOUT_SECONDS` | float | `30` | Wall-clock deadline for one killable image-decoder subprocess; greater than 0 and at most 120 seconds. |
+| `IMAGE_NORMALIZATION_MAX_CONCURRENCY` | int | `2` | Process-wide concurrent image normalization cap, 1–8. |
 | `ATTACHMENT_ORPHAN_TTL_SECONDS` | positive int | `86400` | Age at which a crash-orphaned image stage becomes eligible for deletion. Normal turn cleanup is immediate. |
 | `ATTACHMENT_ORPHAN_SWEEP_INTERVAL_SECONDS` | positive int | `3600` | Interval between bounded orphan scans; one scan also runs on READY startup. |
 | `ATTACHMENT_ORPHAN_SWEEP_MAX_FILES` | positive int | `1000` | Maximum regular files inspected by one orphan scan; directory traversal is bounded proportionally and symlinks are never followed. |
 | `IMAGE_DETAIL` | str | `auto` | Vision detail hint (`low`/`high`/`original`/`auto`); unknown values fall back to `auto`. |
 | `RECENT_IMAGE_LOOKBACK` | int | `10` | How far back to look for a recent image to reference on replies or turns with stored conversation history. Fresh @mentions do not scan ambient channel images. |
 | `MAX_TURN_IMAGES` | int | `10` | Max newly collected current/reply/recent vision images. Persisted history has its own database cap; `0` disables all image input, including persisted images. |
+
+An image is normalized when its encoded source exceeds 8 MiB, its longest edge exceeds 4096 pixels, EXIF orientation requires applying, or it is animated. Resizing preserves aspect ratio, never upscales, and initially targets a 2560-pixel longest edge. Encoding uses a bounded quality/dimension ladder aimed at 4 MiB or less, preferring lossless PNG/WebP for transparency and screenshot-like inputs. GIF and animated WebP inputs are represented by their first composited frame; the model receives trusted source-to-processed dimensions and this first-frame policy without attachment-controlled filenames. Every image is signature/decoder validated with a hard 64 MP decoded-pixel ceiling. Failures and partial batches produce explicit user feedback rather than silently dropping inputs.
 
 ---
 

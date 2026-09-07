@@ -418,6 +418,8 @@ class TurnRequest:
     input_parts: tuple[ContentPart, ...] = ()
     edit_target_image: ContentPart | None = None
     current_images: tuple[CollectedImage, ...] = ()
+    image_normalization_notice: str = ""
+    image_collection_feedback: str = ""
     attachments: tuple[AttachmentRef, ...] = ()
     reply_context: ReplyContext | None = None
     moderation_cleanup_paths: tuple[Path, ...] = ()
@@ -636,7 +638,7 @@ async def handle_turn(
             activity_guard=dependencies.user_activity,
         )
 
-        return await _await_with_deadline(
+        result = await _await_with_deadline(
             execute_turn(
                 captioned_turn,
                 dependencies=dependencies,
@@ -646,9 +648,17 @@ async def handle_turn(
             ),
             deadline,
         )
-    except _CurrentImageUnavailableError:
+        if prepared_turn.image_collection_feedback and not result.blocked_by_moderation:
+            return replace(
+                result,
+                response_text=(
+                    f"{prepared_turn.image_collection_feedback}\n\n{result.response_text}"
+                ).strip(),
+            )
+        return result
+    except _CurrentImageUnavailableError as exc:
         return TurnResult(
-            response_text=_CURRENT_IMAGE_UNAVAILABLE_RESPONSE,
+            response_text=str(exc) or _CURRENT_IMAGE_UNAVAILABLE_RESPONSE,
             termination_reason="attachment_error",
         )
     except ConversationTurnTimeoutError:
@@ -793,7 +803,9 @@ async def prepare_turn(
             deadline,
         )
         if turn_images.current_image_unavailable:
-            raise _CurrentImageUnavailableError
+            raise _CurrentImageUnavailableError(
+                turn_images.user_feedback or _CURRENT_IMAGE_UNAVAILABLE_RESPONSE
+            )
         if turn_images.current_attachment_source_ids:
             # Generic/missing MIME metadata leaves image-suffixed files on the
             # provisional import surface. Once byte validation admits one as a
@@ -854,6 +866,8 @@ async def prepare_turn(
             input_parts=tuple(turn_images.vision_parts),
             edit_target_image=turn_images.edit_target,
             current_images=turn_images.current_images,
+            image_normalization_notice=turn_images.normalization_notice,
+            image_collection_feedback=turn_images.user_feedback,
             attachments=tuple(turn_attachments),
             reply_context=reply_context,
             moderation_cleanup_paths=tuple(turn_images.cleanup_paths),
@@ -1181,6 +1195,7 @@ async def execute_turn(
                     is_new_user=turn.is_new_user,
                     llm_semaphore=run_dependencies.llm_semaphore,
                     input_parts=list(turn.input_parts),
+                    image_normalization_notice=turn.image_normalization_notice,
                     edit_target_image=turn.edit_target_image,
                     attachments=list(turn.attachments),
                     reply_context=turn.reply_context,

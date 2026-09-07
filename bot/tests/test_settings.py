@@ -297,6 +297,7 @@ def test_moderation_output_exempt_tier_rejects_unknown_tier() -> None:
     "field",
     [
         "attachment_max_bytes",
+        "attachment_source_max_bytes",
         "attachment_max_total_bytes",
         "attachment_orphan_ttl_seconds",
         "attachment_orphan_sweep_interval_seconds",
@@ -310,6 +311,25 @@ def test_attachment_lifecycle_values_must_be_positive(field: str, value: int) ->
             _env_file=None,
             **{field: value},  # type: ignore[arg-type]
         )
+
+
+def test_image_normalization_timeout_defaults_to_thirty_seconds() -> None:
+    from agent.attachments import AttachmentStore
+
+    assert Settings.model_fields["image_normalization_timeout_seconds"].default == 30.0
+    assert AttachmentStore.__dataclass_fields__["normalization_timeout_seconds"].default == 30.0
+
+
+@pytest.mark.parametrize("value", [0, -1, 121])
+def test_image_normalization_timeout_is_bounded(value: float) -> None:
+    with pytest.raises(ValidationError, match="IMAGE_NORMALIZATION_TIMEOUT_SECONDS"):
+        Settings(_env_file=None, image_normalization_timeout_seconds=value)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("value", [0, 9])
+def test_image_normalization_concurrency_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError, match="IMAGE_NORMALIZATION_MAX_CONCURRENCY"):
+        Settings(_env_file=None, image_normalization_max_concurrency=value)  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize(

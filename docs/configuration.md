@@ -1277,3 +1277,7 @@ If you want to know where a setting is actually read, this is the map:
 - The Compose stack reads its Hindsight provider route and credential variables
   from the local `.env` beside its compose file. Keep that file outside the repository; see
   `deploy/hindsight/README.md`.
+
+Application modules using the optional `tool_files` permission share admitted uploads
+and bounded caller-workspace reads. This uses the existing workspace byte limits;
+see [module file access](module-files.md) for the SDK and capability requirements.

@@ -1,5 +1,9 @@
 # Workspace tools
 
+Modules declaring `tool_files` can read admitted attachments and caller-owned
+saved files through the [module file API](module-files.md). Reads share the built-in
+resolver and activity locks, have byte budgets, and expose no host paths.
+
 In ordinary guild chat, each user gets a sandboxed workspace directory **per community** (`base_dir/<owner_key>/files`, where `owner_key = <user_id>__<guild_id>`). Personal chat instead uses one `<user_id>__userapp` workspace across locations. Both are managed by `workspace/manager.py:WorkspaceManager`, and the background sweeper in `discord_adapter/lifecycle.py` handles TTL and quota enforcement. The `tools/workspace/` package exposes the file tools the model uses to read, write, search, and package files there. Most are `MEMBER`-tier core tools (always visible). `extract_document_text` and `extract_archive` are searchable and only appear through `browse_tools`.
 
 ## Quick reference

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from kimi_agent_module_api.trust import TrustTier
+from kimi_agent_module_api.files import ToolFiles
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,9 @@ class ModuleToolContext:
     # Discord message that initiated this model turn. It is absent for personal
     # app commands and other surfaces that are not rooted in a Discord message.
     trigger_discord_message_id: int | None = None
+    # Invocation-scoped read-only port. Declare permissions.tool_files and
+    # require tools.files.v1; never retain this port beyond the handler.
+    files: ToolFiles | None = None
 
 
 type ModuleToolHandler = Callable[[dict[str, Any], ModuleToolContext], Coroutine[Any, Any, str]]

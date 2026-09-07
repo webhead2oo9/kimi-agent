@@ -128,7 +128,7 @@ Deliver:
   `src/<package>/` with `py.typed`, a license file, and `README.md`, using the minimal example for a one-tool feature and splitting settings,
   migrations, storage, and handlers into files only as needed.
 - Tests over the SDK fakes (`load_context()`, `FakeInteraction`,
-  `FakeScheduler.run_due()`, `MemoryStorage`, and the rest) covering each
+  `FakeScheduler.run_due()`, `FakeToolFiles`, `MemoryStorage`, and the rest) covering each
   tool, command, component, job, and event handler, plus a test that the spec
   passes `kimi_agent_module_api.contracts` validation.
 - A README that tells an operator how to install into the environment that
@@ -246,6 +246,9 @@ Core drives every configured module through the same phases, in this order:
 
 ## Declarations
 
+`permissions.tool_files` grants admitted-attachment and bounded caller-owned
+workspace reads during tool calls. It is listed in the owner manifest.
+
 A `ModuleSpec` can declare what the module intends to use. After the selected entry points are imported, declarations are validated before `create()` or any lifecycle hook runs, so a malformed declaration prevents loading with a named reason (and aborts startup for a required module):
 
 - `api_version`: required keyword pinned to the literal host API contract the
@@ -259,6 +262,12 @@ A `ModuleSpec` can declare what the module intends to use. After the selected en
 The rules live in `kimi_agent_module_api.contracts`, which imports only the standard library so a package can validate its own declarations in tests. Host preflight runs those checks before `create()` or any lifecycle hook. Every declaration is enforced by the matching runtime service below.
 
 ## Runtime services
+
+Tool handlers can receive invocation-scoped file access through
+`ModuleToolContext.files` by declaring `permissions.tool_files=True`. SDK 2.2 and
+the host capability `tools.files.v1` are required. This shares admitted attachments
+and bounded caller-owned workspace reads with built-in tools. See
+[Files in module tools](module-files.md) for selection, lifetime, limits, and fakes.
 
 Each started module receives its own frozen `ModuleRuntimeContext`: its
 `module_name`, `is_guild_active`, `current_config_dir()`, `capabilities`,

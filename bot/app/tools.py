@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from agent.attachments import AttachmentStore
 from workspace import ENV_DIR_NAMES, WorkspaceManager
 from app.modules import ModuleManager
+from modules.files import ModuleToolFiles
 from app.plugins import build_plugin_context, load_plugins_with_settings
 from app.providers import ProviderManager
 from config.model_config import ModelConfig
@@ -243,6 +244,12 @@ def build_runtime_tools(
         settings.kimi_module_list,
         core_settings=settings,
         registry=registry,
+        tool_files=lambda ctx: ModuleToolFiles(
+            ctx,
+            workspace_manager,
+            workspace_locks,
+            max_bytes=settings.workspace_tool_max_file_bytes,
+        ),
     )
 
     def reload_executable_skill_tools() -> int:

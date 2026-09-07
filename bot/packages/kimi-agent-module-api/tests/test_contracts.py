@@ -83,8 +83,8 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
     assert {"events", "scheduler", "storage", "discord", "interactions", "services"} <= required
 
 
-def test_distribution_version_includes_trigger_message_contract() -> None:
-    assert version("kimi-agent-module-api") == "2.1.0"
+def test_distribution_version_includes_tool_files_contract() -> None:
+    assert version("kimi-agent-module-api") == "2.2.0"
 
 
 def test_spec_requires_an_explicit_keyword_api_version() -> None:

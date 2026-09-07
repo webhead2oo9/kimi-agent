@@ -147,7 +147,10 @@ def build_runtime_tools(
     attachment_store = AttachmentStore(
         base_dir=attachment_dir,
         max_bytes=settings.attachment_max_bytes,
+        source_max_bytes=settings.attachment_source_max_bytes,
         max_total_bytes=settings.attachment_max_total_bytes,
+        normalization_timeout_seconds=settings.image_normalization_timeout_seconds,
+        normalization_max_concurrency=settings.image_normalization_max_concurrency,
     )
     script_semaphore = asyncio.Semaphore(settings.script_max_concurrency)
     netns_lease = NetnsLease()

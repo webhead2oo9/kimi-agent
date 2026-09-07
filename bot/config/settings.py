@@ -342,10 +342,15 @@ class Settings(BaseSettings):
 
     # Attachments and image input
     attachment_store_dir: str = "data/attachments"
+    # Provider-facing processed image ceiling. Sources may be larger and are
+    # normalized before anything reaches moderation, models, or editing tools.
     attachment_max_bytes: int = 8 * 1024 * 1024
-    # Aggregate bytes downloaded/staged by the normal message vision collector
+    attachment_source_max_bytes: int = 32 * 1024 * 1024
+    # Aggregate source bytes downloaded/staged by the normal message vision collector
     # across current, reply, and recent-history candidates in one turn.
     attachment_max_total_bytes: int = 32 * 1024 * 1024
+    image_normalization_timeout_seconds: float = 30.0
+    image_normalization_max_concurrency: int = 2
     # Crash/cancellation fallback for staged images. Normal turn finalizers remove
     # their files immediately; this bounded sweeper handles process-death orphans.
     attachment_orphan_ttl_seconds: int = 24 * 60 * 60
@@ -591,6 +596,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "attachment_max_bytes",
+        "attachment_source_max_bytes",
         "attachment_max_total_bytes",
         "attachment_orphan_ttl_seconds",
         "attachment_orphan_sweep_interval_seconds",
@@ -606,6 +612,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"{(info.field_name or 'value').upper()} must be a positive integer, got {value}"
             )
+        return value
+
+    @field_validator("image_normalization_timeout_seconds")
+    @classmethod
+    def _require_positive_image_normalization_timeout(cls, value: float) -> float:
+        if value <= 0 or value > 120:
+            raise ValueError(
+                "IMAGE_NORMALIZATION_TIMEOUT_SECONDS must be greater than 0 and at most 120"
+            )
+        return value
+
+    @field_validator("image_normalization_max_concurrency")
+    @classmethod
+    def _validate_image_normalization_concurrency(cls, value: int) -> int:
+        if value < 1 or value > 8:
+            raise ValueError("IMAGE_NORMALIZATION_MAX_CONCURRENCY must be between 1 and 8")
         return value
 
     @field_validator(

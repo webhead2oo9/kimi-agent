@@ -3,12 +3,21 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 import agent.turn as turn_module
-from agent.attachments import AttachmentRef, CollectedImage, TurnImages
+from agent.attachments import (
+    AttachmentRef,
+    AttachmentStore,
+    CollectedImage,
+    TurnImages,
+    collect_turn_attachments,
+    collect_turn_images,
+)
+from agent.image_normalization import ImageNormalizationError
 from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.discord_references import DiscordReferenceHint
@@ -254,6 +263,134 @@ async def test_handle_turn_reports_unavailable_current_image_without_running_pro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content_type", [None, "application/octet-stream"])
+async def test_generic_image_suffix_with_non_image_bytes_is_moderated_and_importable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content_type: str | None,
+) -> None:
+    payload = b"plain text bytes"
+
+    class Source:
+        filename = "report.png"
+        size = len(payload)
+
+        def __init__(self) -> None:
+            self.content_type = content_type
+            self.read_calls = 0
+
+        async def read(self) -> bytes:
+            self.read_calls += 1
+            return payload
+
+    source = Source()
+    message = SimpleNamespace(
+        id=1,
+        attachments=[source],
+        reference=None,
+        channel=SimpleNamespace(id=100),
+        author=SimpleNamespace(id=123, bot=False, display_name="Alice"),
+    )
+    service = RecordingModerationService()
+    staged: list[TurnRequest] = []
+    executed: list[TurnRequest] = []
+
+    async def stage(turn: TurnRequest) -> TurnRequest:
+        assert len(turn.attachments) == 1
+        attachment = turn.attachments[0]
+        assert attachment.source is None
+        assert await attachment.read() == payload
+        staged_turn = turn_module.replace(
+            turn,
+            attachments=(turn_module.replace(attachment, workspace_path="imports/report.png"),),
+        )
+        staged.append(staged_turn)
+        return staged_turn
+
+    async def execute(turn: TurnRequest, *args: Any, **kwargs: Any) -> TurnResult:
+        del args, kwargs
+        executed.append(turn)
+        return TurnResult(response_text="ok")
+
+    monkeypatch.setattr(turn_module, "execute_turn", execute)
+    dependencies = turn_module.replace(
+        _dependencies(),
+        attachment_store=AttachmentStore(base_dir=tmp_path / "attachments", max_bytes=1024),
+        collect_turn_images=collect_turn_images,
+        collect_turn_attachments=collect_turn_attachments,
+        moderation_service=service,
+        stage_chat_attachments=stage,
+    )
+
+    result = await handle_turn(
+        turn_module.replace(_source(), source_message=message),
+        dependencies=dependencies,
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None
+    assert result.termination_reason == "completed"
+    assert result.response_text == "ok"
+    assert len(service.calls) == 2
+    assert service.calls[1]["text"] == "Attachment report.png:\nplain text bytes"
+    assert staged[0].attachments[0].workspace_path == "imports/report.png"
+    assert executed == staged
+    assert source.read_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_generic_image_candidate_processing_failure_cannot_fall_back_to_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"\x89PNG\r\n\x1a\nvalid-looking-image"
+
+    class Source:
+        filename = "photo.png"
+        content_type = "application/octet-stream"
+        size = len(payload)
+
+        async def read(self) -> bytes:
+            return payload
+
+    async def fail_normalization(*args: Any, **kwargs: Any):
+        del args, kwargs
+        raise ImageNormalizationError("processing_failed")
+
+    async def fail_stage(turn: TurnRequest) -> TurnRequest:
+        raise AssertionError(f"failed image reached generic staging: {turn.attachments!r}")
+
+    service = RecordingModerationService()
+    monkeypatch.setattr("agent.attachments.normalize_image_file", fail_normalization)
+    dependencies = turn_module.replace(
+        _dependencies(),
+        attachment_store=AttachmentStore(base_dir=tmp_path / "attachments", max_bytes=1024),
+        collect_turn_images=collect_turn_images,
+        collect_turn_attachments=collect_turn_attachments,
+        moderation_service=service,
+        stage_chat_attachments=fail_stage,
+    )
+    message = SimpleNamespace(
+        id=1,
+        attachments=[Source()],
+        reference=None,
+        channel=SimpleNamespace(id=100),
+        author=SimpleNamespace(id=123, bot=False, display_name="Alice"),
+    )
+
+    result = await handle_turn(
+        turn_module.replace(_source(), source_message=message),
+        dependencies=dependencies,
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None
+    assert result.termination_reason == "attachment_error"
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_handle_turn_calls_prepare_and_execute_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -291,6 +428,40 @@ async def test_handle_turn_calls_prepare_and_execute_in_order(
     assert result.response_text == "final response"
     assert result.outbox.output_files == ("workspaces/u/out.txt",)
     assert result.outbox.allowed_file_roots == (Path("workspaces/u"),)
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_prepends_partial_image_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = turn_module.replace(
+        _prepared(),
+        image_collection_feedback=(
+            "One or more images exceeded the aggregate source download budget."
+        ),
+    )
+
+    async def fake_prepare_turn(*args: Any, **kwargs: Any) -> TurnRequest:
+        return prepared
+
+    async def fake_execute_turn(*args: Any, **kwargs: Any) -> TurnResult:
+        return TurnResult(response_text="I used the remaining image.")
+
+    monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
+    monkeypatch.setattr(turn_module, "execute_turn", fake_execute_turn)
+
+    result = await handle_turn(
+        _source(),
+        dependencies=_dependencies(),
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None
+    assert result.response_text == (
+        "One or more images exceeded the aggregate source download budget.\n\n"
+        "I used the remaining image."
+    )
 
 
 @pytest.mark.asyncio

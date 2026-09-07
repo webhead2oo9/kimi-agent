@@ -262,7 +262,7 @@ class AttachmentStore:
     # Encoded source bytes accepted from Discord before normalization.
     source_max_bytes: int = 32 * 1024 * 1024
     max_total_bytes: int = 32 * 1024 * 1024
-    normalization_timeout_seconds: float = 15.0
+    normalization_timeout_seconds: float = 30.0
     normalization_max_concurrency: int = 2
     _normalization_semaphore: asyncio.Semaphore = field(init=False, repr=False, compare=False)
 

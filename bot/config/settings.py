@@ -349,7 +349,7 @@ class Settings(BaseSettings):
     # Aggregate source bytes downloaded/staged by the normal message vision collector
     # across current, reply, and recent-history candidates in one turn.
     attachment_max_total_bytes: int = 32 * 1024 * 1024
-    image_normalization_timeout_seconds: float = 15.0
+    image_normalization_timeout_seconds: float = 30.0
     image_normalization_max_concurrency: int = 2
     # Crash/cancellation fallback for staged images. Normal turn finalizers remove
     # their files immediately; this bounded sweeper handles process-death orphans.

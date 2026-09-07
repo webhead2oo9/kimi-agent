@@ -313,6 +313,13 @@ def test_attachment_lifecycle_values_must_be_positive(field: str, value: int) ->
         )
 
 
+def test_image_normalization_timeout_defaults_to_thirty_seconds() -> None:
+    from agent.attachments import AttachmentStore
+
+    assert Settings.model_fields["image_normalization_timeout_seconds"].default == 30.0
+    assert AttachmentStore.__dataclass_fields__["normalization_timeout_seconds"].default == 30.0
+
+
 @pytest.mark.parametrize("value", [0, -1, 121])
 def test_image_normalization_timeout_is_bounded(value: float) -> None:
     with pytest.raises(ValidationError, match="IMAGE_NORMALIZATION_TIMEOUT_SECONDS"):

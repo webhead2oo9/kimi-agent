@@ -766,7 +766,7 @@ Image attachments collected from a turn's messages are streamed into a private t
 | `ATTACHMENT_MAX_BYTES` | positive int | `8388608` (8 MiB) | Maximum processed vision-image size. Images above this encoded size are automatically normalized. |
 | `ATTACHMENT_SOURCE_MAX_BYTES` | positive int | `33554432` (32 MiB) | Maximum encoded source bytes downloaded for one image. Streaming enforcement does not trust declared attachment sizes. |
 | `ATTACHMENT_MAX_TOTAL_BYTES` | positive int | `33554432` (32 MiB) | Aggregate encoded source bytes downloaded across current, reply, and recent-history candidates in one normal message turn. |
-| `IMAGE_NORMALIZATION_TIMEOUT_SECONDS` | float | `15` | Wall-clock deadline for one killable image-decoder subprocess; greater than 0 and at most 120 seconds. |
+| `IMAGE_NORMALIZATION_TIMEOUT_SECONDS` | float | `30` | Wall-clock deadline for one killable image-decoder subprocess; greater than 0 and at most 120 seconds. |
 | `IMAGE_NORMALIZATION_MAX_CONCURRENCY` | int | `2` | Process-wide concurrent image normalization cap, 1–8. |
 | `ATTACHMENT_ORPHAN_TTL_SECONDS` | positive int | `86400` | Age at which a crash-orphaned image stage becomes eligible for deletion. Normal turn cleanup is immediate. |
 | `ATTACHMENT_ORPHAN_SWEEP_INTERVAL_SECONDS` | positive int | `3600` | Interval between bounded orphan scans; one scan also runs on READY startup. |

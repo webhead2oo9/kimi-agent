@@ -296,6 +296,7 @@ class ConversationRunRequest:
     is_new_user: bool = False
     llm_semaphore: asyncio.Semaphore | None = None
     input_parts: list[ContentPart] | None = None
+    image_normalization_notice: str = ""
     reply_context: ReplyContext | None = None
     discord_reference_hints: tuple[ResolvedDiscordReferenceHint, ...] = ()
     provider_state: dict | None = None
@@ -439,6 +440,7 @@ class _ConversationRunner:
         input_parts = request.input_parts
         reply_context = request.reply_context
         discord_reference_hints = request.discord_reference_hints
+        image_normalization_notice = request.image_normalization_notice
         provider_state = request.provider_state
         compactor = request.compactor
         activity_reporter = request.activity_reporter
@@ -502,11 +504,13 @@ class _ConversationRunner:
         msg_ctx = self._build_message_context(turn_id, state)
         self._message_context = msg_ctx
         attachments_context_msg = _attachments_context_message(msg_ctx.attachments)
+        image_normalization_msg = _image_normalization_context_message(image_normalization_notice)
         continuation_context_messages = [
             msg
             for msg in (
                 recalled_context_msg,
                 attachments_context_msg,
+                image_normalization_msg,
                 reply_context_msg,
                 discord_reference_msg,
             )
@@ -1731,6 +1735,12 @@ def _attachments_context_message(
     if not text:
         return None
     return ConversationMessage(role="user", content=[ContentPart.from_text(text)])
+
+
+def _image_normalization_context_message(notice: str) -> ConversationMessage | None:
+    if not notice:
+        return None
+    return ConversationMessage(role="user", content=[ContentPart.from_text(notice)])
 
 
 _VIEW_IMAGE_NOTE = (

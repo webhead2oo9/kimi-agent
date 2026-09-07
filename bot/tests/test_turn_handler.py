@@ -294,6 +294,40 @@ async def test_handle_turn_calls_prepare_and_execute_in_order(
 
 
 @pytest.mark.asyncio
+async def test_handle_turn_prepends_partial_image_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = turn_module.replace(
+        _prepared(),
+        image_collection_feedback=(
+            "One or more images exceeded the aggregate source download budget."
+        ),
+    )
+
+    async def fake_prepare_turn(*args: Any, **kwargs: Any) -> TurnRequest:
+        return prepared
+
+    async def fake_execute_turn(*args: Any, **kwargs: Any) -> TurnResult:
+        return TurnResult(response_text="I used the remaining image.")
+
+    monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
+    monkeypatch.setattr(turn_module, "execute_turn", fake_execute_turn)
+
+    result = await handle_turn(
+        _source(),
+        dependencies=_dependencies(),
+        preparation_config=_preparation_config(),
+        execution_config=_execution_config(),
+    )
+
+    assert result is not None
+    assert result.response_text == (
+        "One or more images exceeded the aggregate source download budget.\n\n"
+        "I used the remaining image."
+    )
+
+
+@pytest.mark.asyncio
 async def test_handle_turn_passes_thread_request_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

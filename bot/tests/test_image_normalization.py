@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import threading
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,8 @@ import pytest
 from PIL import Image
 
 from agent.attachments import AttachmentStore, cleanup_attachment_paths, collect_turn_images
+from agent.image_normalization import ImageNormalizationResult
+from agent import image_normalization as normalization_module
 
 
 def _image_bytes(
@@ -305,6 +309,124 @@ async def test_cancellation_cleans_source_and_derivative_files(
     )
     await asyncio.wait_for(started.wait(), timeout=1)
     task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not list(tmp_path.rglob("*.*"))
+
+
+@pytest.mark.asyncio
+async def test_normalizer_cancellation_after_worker_success_cleans_derivative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "normalized.png"
+    source.write_bytes(_image_bytes("PNG", (32, 32)))
+    post_worker_cleanup = asyncio.Event()
+
+    class Process:
+        pid = 123
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            output.write_bytes(_image_bytes("PNG", (16, 16)))
+            return (
+                json.dumps(
+                    {
+                        "source_width": 32,
+                        "source_height": 32,
+                        "processed_width": 16,
+                        "processed_height": 16,
+                        "media_type": "image/png",
+                        "normalized": True,
+                    }
+                ).encode(),
+                b"",
+            )
+
+    async def create_process(*args: object, **kwargs: object) -> Process:
+        del args, kwargs
+        return Process()
+
+    original_to_thread = normalization_module.asyncio.to_thread
+    held_once = False
+
+    async def hold_first_post_worker_await(function, *args):
+        nonlocal held_once
+        if function is normalization_module._unlink_if_present and not held_once:
+            held_once = True
+            post_worker_cleanup.set()
+            await asyncio.Future()
+        return await original_to_thread(function, *args)
+
+    monkeypatch.setattr(normalization_module.asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(normalization_module.asyncio, "to_thread", hold_first_post_worker_await)
+    task = asyncio.create_task(
+        normalization_module.normalize_image_file(
+            source,
+            output,
+            source_size=source.stat().st_size,
+            processed_max_bytes=1024 * 1024,
+            timeout_seconds=10,
+            semaphore=asyncio.Semaphore(1),
+        )
+    )
+
+    await asyncio.wait_for(post_worker_cleanup.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not output.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("postprocessor", ["read", "payload"])
+async def test_cancellation_during_collector_postprocessing_cleans_derivative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    postprocessor: str,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def normalized(source_path: Path, output_path: Path, **kwargs: object):
+        del source_path, kwargs
+        output_path.write_bytes(_image_bytes("PNG", (16, 16)))
+        return ImageNormalizationResult(
+            source_dimensions=(32, 32),
+            processed_dimensions=(16, 16),
+            media_type="image/png",
+            normalized=True,
+            output_path=output_path,
+        )
+
+    monkeypatch.setattr("agent.attachments.normalize_image_file", normalized)
+    if postprocessor == "read":
+        original = __import__("agent.attachments", fromlist=["_read_bounded_file_sync"])
+        original_function = original._read_bounded_file_sync
+
+        def blocked_read(path: Path, max_bytes: int) -> bytes:
+            entered.set()
+            release.wait(timeout=2)
+            return original_function(path, max_bytes)
+
+        monkeypatch.setattr("agent.attachments._read_bounded_file_sync", blocked_read)
+    else:
+        original = __import__("agent.attachments", fromlist=["_prepare_image_payload"])
+        original_function = original._prepare_image_payload
+
+        def blocked_payload(payload: bytes) -> tuple[str | None, str, str]:
+            entered.set()
+            release.wait(timeout=2)
+            return original_function(payload)
+
+        monkeypatch.setattr("agent.attachments._prepare_image_payload", blocked_payload)
+
+    task = asyncio.create_task(
+        _collect(tmp_path, StreamingAttachment(_image_bytes("PNG", (32, 32))))
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not list(tmp_path.rglob("*.*"))

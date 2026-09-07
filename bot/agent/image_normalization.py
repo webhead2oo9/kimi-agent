@@ -70,61 +70,65 @@ async def normalize_image_file(
         str(processed_max_bytes),
         str(max(1, math.ceil(timeout_seconds))),
     ]
-    async with semaphore:
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={"PATH": os.defpath, "PYTHONIOENCODING": "utf-8"},
-        )
-        worker_temporary = output_path.with_name(f".{output_path.name}.{process.pid}.tmp")
-        try:
-            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-                await _wait_for_killed_process(process)
-            await asyncio.to_thread(_unlink_paths, (output_path, worker_temporary))
-            raise
-        finally:
-            await asyncio.to_thread(_unlink_if_present, worker_temporary)
-    if process.returncode != 0:
-        await asyncio.to_thread(_unlink_if_present, output_path)
-        try:
-            error = json.loads(stdout.decode("utf-8"))
-            code = str(error.get("error", "processing_failed"))
-        except UnicodeDecodeError, json.JSONDecodeError, AttributeError:
-            code = "processing_failed"
-        raise ImageNormalizationError(code)
+    worker_temporary: Path | None = None
     try:
-        data = json.loads(stdout.decode("utf-8"))
-        normalized = bool(data["normalized"])
-        result = ImageNormalizationResult(
-            source_dimensions=(int(data["source_width"]), int(data["source_height"])),
-            processed_dimensions=(
-                int(data["processed_width"]),
-                int(data["processed_height"]),
-            ),
-            media_type=str(data["media_type"]),
-            normalized=normalized,
-            animation_first_frame=bool(data.get("animation_first_frame", False)),
-            output_path=output_path if normalized else None,
-        )
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        await asyncio.to_thread(_unlink_if_present, output_path)
-        raise ImageNormalizationError("processing_failed") from exc
-    if normalized:
+        async with semaphore:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={"PATH": os.defpath, "PYTHONIOENCODING": "utf-8"},
+            )
+            worker_temporary = output_path.with_name(f".{output_path.name}.{process.pid}.tmp")
+            try:
+                stdout, _stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout_seconds
+                )
+            except BaseException:
+                if process.returncode is None:
+                    process.kill()
+                    await _wait_for_killed_process(process)
+                raise
+            finally:
+                await asyncio.to_thread(_unlink_if_present, worker_temporary)
+        if process.returncode != 0:
+            try:
+                error = json.loads(stdout.decode("utf-8"))
+                code = str(error.get("error", "processing_failed"))
+            except UnicodeDecodeError, json.JSONDecodeError, AttributeError:
+                code = "processing_failed"
+            raise ImageNormalizationError(code)
         try:
-            output_size = await asyncio.to_thread(_file_size, output_path)
-        except OSError as exc:
+            data = json.loads(stdout.decode("utf-8"))
+            normalized = bool(data["normalized"])
+            result = ImageNormalizationResult(
+                source_dimensions=(int(data["source_width"]), int(data["source_height"])),
+                processed_dimensions=(
+                    int(data["processed_width"]),
+                    int(data["processed_height"]),
+                ),
+                media_type=str(data["media_type"]),
+                normalized=normalized,
+                animation_first_frame=bool(data.get("animation_first_frame", False)),
+                output_path=output_path if normalized else None,
+            )
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ImageNormalizationError("processing_failed") from exc
-        if output_size <= 0 or output_size > min(TARGET_ENCODED_BYTES, processed_max_bytes):
+        if normalized:
+            try:
+                output_size = await asyncio.to_thread(_file_size, output_path)
+            except OSError as exc:
+                raise ImageNormalizationError("processing_failed") from exc
+            if output_size <= 0 or output_size > min(TARGET_ENCODED_BYTES, processed_max_bytes):
+                raise ImageNormalizationError("processed_too_large")
+        elif await asyncio.to_thread(output_path.exists):
             await asyncio.to_thread(_unlink_if_present, output_path)
-            raise ImageNormalizationError("processed_too_large")
-    elif await asyncio.to_thread(output_path.exists):
-        await asyncio.to_thread(_unlink_if_present, output_path)
-    return result
+        return result
+    except BaseException:
+        paths = (output_path,) if worker_temporary is None else (output_path, worker_temporary)
+        await asyncio.to_thread(_unlink_paths, paths)
+        raise
 
 
 def _unlink_if_present(path: Path) -> None:

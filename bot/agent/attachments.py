@@ -62,6 +62,12 @@ def is_image_attachment_candidate(attachment: Any) -> bool:
     return _attachment_image_media_type(attachment) is not None
 
 
+def _attachment_declares_image(attachment: Any) -> bool:
+    declared = getattr(attachment, "content_type", None)
+    normalized = str(declared).partition(";")[0].strip().lower() if declared else ""
+    return supported_image_media_type(normalized) is not None
+
+
 @dataclass
 class TurnImages:
     vision_parts: list[ContentPart]
@@ -69,9 +75,9 @@ class TurnImages:
     cleanup_paths: list[Path] = field(default_factory=list)
     vision_hashes: frozenset[str] = frozenset()
     reply_images: tuple[CollectedImage, ...] = ()
-    # Object identities for current-message attachments successfully admitted
-    # as vision images. Turn preparation uses these to remove the same upload
-    # from the generic import_attachment surface after byte validation.
+    # Object identities for current-message attachments admitted as vision
+    # images, or ruled image-path failures after provisional MIME routing. Turn
+    # preparation removes them from the generic import_attachment surface.
     current_attachment_source_ids: frozenset[int] = frozenset()
     # The trigger carried image-like metadata, but none of its candidates could
     # be read, staged, or validated. Turn orchestration surfaces this to the user
@@ -419,9 +425,9 @@ def _finish_stream_target_sync(temporary: Path, path: Path) -> None:
 class _ImageScan:
     """What ``_images_from_message`` actually tried, beyond what it returned."""
 
-    # True once a candidate passed the free metadata checks and was read. A
-    # candidate skipped on declared size never counts: the bot could not have
-    # used it, so the turn proceeds text-only instead of refusing the message.
+    # True once a definitive image was attempted, or a provisional candidate
+    # could not be ruled out as an image. Only decoder-confirmed malformed
+    # suffix candidates stay on the generic path.
     attempted: bool = False
     collected_source_ids: set[int] = field(default_factory=set)
     issues: set[str] = field(default_factory=set)
@@ -457,16 +463,23 @@ async def _images_from_message(
             media_type = _attachment_image_media_type(attachment)
             if media_type is None:
                 continue
+            definitive_image = _attachment_declares_image(attachment)
             declared_size = max(0, int(getattr(attachment, "size", 0) or 0))
             budget.remaining_candidates -= 1
-            if scan is not None:
+            if scan is not None and definitive_image:
                 scan.attempted = True
             if declared_size > store.source_max_bytes:
                 if scan is not None:
+                    scan.attempted = True
+                    if not definitive_image:
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(_ISSUE_SOURCE_LIMIT)
                 continue
             if budget.remaining_bytes <= 0 or declared_size > budget.remaining_bytes:
                 if scan is not None:
+                    scan.attempted = True
+                    if not definitive_image:
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(_ISSUE_AGGREGATE_LIMIT)
                 continue
             available_before_read = budget.remaining_bytes
@@ -485,6 +498,9 @@ async def _images_from_message(
             except AttachmentPayloadTooLarge as exc:
                 budget.consume_bytes(min(exc.downloaded_bytes, budget.remaining_bytes))
                 if scan is not None:
+                    scan.attempted = True
+                    if not definitive_image:
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(
                         _ISSUE_SOURCE_LIMIT
                         if available_before_read >= store.source_max_bytes
@@ -495,19 +511,28 @@ async def _images_from_message(
             except AttachmentDownloadError as exc:
                 budget.consume_bytes(min(exc.downloaded_bytes, budget.remaining_bytes))
                 if scan is not None:
+                    scan.attempted = True
+                    if not definitive_image:
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(_ISSUE_UNREADABLE)
                 log.warning("Skipping unreadable streamed attachment", exc_info=True)
                 continue
             except Exception:
                 budget.consume_bytes(min(declared_size, budget.remaining_bytes))
                 if scan is not None:
+                    scan.attempted = True
+                    if not definitive_image:
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(_ISSUE_UNREADABLE)
                 log.warning("Skipping unreadable/oversized attachment", exc_info=True)
                 continue
             budget.consume_bytes(downloaded_bytes)
             assert expected_path is not None
             assert derivative_path is not None
-            created_paths.append(expected_path)
+            # The worker receives this exact derivative path and may create it
+            # before its coroutine returns. Register both paths before that await
+            # so cancellation anywhere afterward rolls both back immediately.
+            created_paths.extend((expected_path, derivative_path))
             try:
                 normalized = await normalize_image_file(
                     expected_path,
@@ -519,12 +544,21 @@ async def _images_from_message(
                 )
             except TimeoutError:
                 if scan is not None:
+                    if not definitive_image:
+                        scan.attempted = True
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(_ISSUE_PROCESSING)
                 await cleanup_attachment_paths([expected_path, derivative_path])
-                created_paths.remove(expected_path)
                 continue
             except ImageNormalizationError as exc:
-                if scan is not None:
+                # A suffix-only candidate that fails decoding is an ordinary
+                # generic attachment. Any later failure has crossed image
+                # validation and must not regain access through import_attachment.
+                generic_fallback = not definitive_image and exc.code == "malformed"
+                if scan is not None and not generic_fallback:
+                    if not definitive_image:
+                        scan.attempted = True
+                        scan.collected_source_ids.add(id(attachment))
                     scan.issues.add(
                         _ISSUE_PIXEL_LIMIT
                         if exc.code == "pixel_limit"
@@ -533,8 +567,10 @@ async def _images_from_message(
                         else _ISSUE_PROCESSING
                     )
                 await cleanup_attachment_paths([expected_path, derivative_path])
-                created_paths.remove(expected_path)
                 continue
+            if scan is not None:
+                scan.attempted = True
+                scan.collected_source_ids.add(id(attachment))
             selected_path = normalized.output_path or expected_path
             try:
                 payload = await asyncio.to_thread(
@@ -546,7 +582,6 @@ async def _images_from_message(
                 if scan is not None:
                     scan.issues.add(_ISSUE_PROCESSING)
                 await cleanup_attachment_paths([expected_path, derivative_path])
-                created_paths.remove(expected_path)
                 continue
             sniffed_media_type, encoded, byte_hash = await asyncio.to_thread(
                 _prepare_image_payload, payload
@@ -555,10 +590,7 @@ async def _images_from_message(
                 if scan is not None:
                     scan.issues.add(_ISSUE_PROCESSING)
                 await cleanup_attachment_paths([expected_path, derivative_path])
-                created_paths.remove(expected_path)
                 continue
-            if normalized.output_path is not None:
-                created_paths.append(normalized.output_path)
             part = ContentPart.from_image_url(
                 url=f"data:{normalized.media_type};base64,{encoded}",
                 media_type=normalized.media_type,
@@ -577,8 +609,6 @@ async def _images_from_message(
                     animation_first_frame=normalized.animation_first_frame,
                 )
             )
-            if scan is not None:
-                scan.collected_source_ids.add(id(attachment))
             budget.remaining_results -= 1
     except BaseException:
         # A turn deadline can cancel a later attachment read after earlier images

@@ -8,6 +8,7 @@ import mimetypes
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
 from tools.registry import MessageContext
@@ -35,12 +36,13 @@ class ModuleToolFiles:
         self._remaining = min(max_bytes, MAX_TOOL_FILE_BYTES)
         self._read_lock = asyncio.Lock()
         self._encoded: dict[str, str] = {}
+        invocation_id = uuid4().hex
         entries: list[ToolAttachment] = []
         for index, attachment in enumerate(ctx.attachments):
             available = not attachment.unavailable_reason and bool(attachment.workspace_path)
             entries.append(
                 ToolAttachment(
-                    id=f"current:{index}",
+                    id=f"{invocation_id}:current:{index}",
                     filename=attachment.filename,
                     size=attachment.size,
                     media_type=attachment.content_type,
@@ -61,7 +63,7 @@ class ModuleToolFiles:
             )
             if extension is None:
                 continue
-            identifier = f"reply:{index}"
+            identifier = f"{invocation_id}:reply:{index}"
             # Exact decoded size for canonical padded base64, without allocating bytes.
             size = len(encoded) // 4 * 3 - (len(encoded) - len(encoded.rstrip("=")))
             entries.append(

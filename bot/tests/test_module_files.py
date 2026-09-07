@@ -265,6 +265,22 @@ async def test_cannot_read_another_users_saved_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_attachment_ids_cannot_be_reused_in_a_later_invocation(tmp_path: Path) -> None:
+    ctx = context(
+        attachments=[AttachmentRef("a.txt", 3, "text/plain", None, workspace_path="a.txt")]
+    )
+    manager = WorkspaceManager(tmp_path)
+    save(manager, ctx, "a.txt", b"raw")
+    first = ModuleToolFiles(ctx, manager, UserLocks())
+    identifier = first.attachments[0].id
+    first.close()
+    second = ModuleToolFiles(ctx, manager, UserLocks())
+    with pytest.raises(FileAccessError) as error:
+        await second.read_attachment(identifier, max_bytes=3)
+    assert error.value.code == "unknown_attachment"
+
+
+@pytest.mark.asyncio
 async def test_reader_expires_on_failed_dispatch(tmp_path: Path) -> None:
     seen = []
 

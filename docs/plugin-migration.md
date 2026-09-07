@@ -1,5 +1,9 @@
 # Move an operator plugin to a module
 
+For attachment-processing tools, SDK 2.2 provides [caller-scoped file access](module-files.md).
+Declare `tool_files=True`, require `tools.files.v1`, and use `ModuleToolContext.files`
+instead of importing workspace internals or re-fetching Discord uploads.
+
 Use application modules for new extensions. Existing operator plugins remain
 supported for deployment-local tools; migration is useful when you want the
 public SDK, lifecycle management, or additional host services.

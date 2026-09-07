@@ -25,6 +25,7 @@ The rest is reference material.
 ## Agent capabilities
 
 - [Tool catalog](tools.md): all built-in model-callable tools and their gates.
+- [Files in module tools](module-files.md): admitted attachments, workspace reads, and SDK fakes.
 - [Providers](providers.md): model profiles, routing, fallback, and image
   capability. Backend guides: [Z.AI GLM Coding Plan](providers-zai.md),
   [xAI Grok](providers-grok.md), [X search](x-search.md),

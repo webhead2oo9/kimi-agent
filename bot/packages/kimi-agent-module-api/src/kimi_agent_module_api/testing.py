@@ -23,6 +23,7 @@ from typing import Any, TypeVar, overload
 from pydantic_settings import BaseSettings
 
 from kimi_agent_module_api.trust import TrustTier
+from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
@@ -1313,6 +1314,70 @@ def load_context(
     return context, recorder
 
 
+class FakeToolFiles:
+    """In-memory invocation files; paths and IDs are exact fixture keys.
+
+    ``close()`` simulates handler return. Bounds and aggregate accounting match
+    the host. This fake never reads the test process's filesystem or network.
+    """
+
+    def __init__(
+        self,
+        attachments: tuple[ToolAttachment, ...] = (),
+        *,
+        attachment_files: Mapping[str, ToolFile] | None = None,
+        workspace_files: Mapping[str, ToolFile] | None = None,
+        max_bytes: int = 50 * 1024 * 1024,
+    ) -> None:
+        self._attachments = attachments
+        self.attachment_files = dict(attachment_files or {})
+        self.workspace_files = dict(workspace_files or {})
+        self.reads: list[tuple[str, str, int]] = []
+        self._remaining = min(max_bytes, 50 * 1024 * 1024)
+        self._active = True
+
+    def close(self) -> None:
+        self._active = False
+
+    def _check_active(self) -> None:
+        if not self._active:
+            raise FileAccessError("expired", "File access expired when the tool invocation ended.")
+
+    @property
+    def attachments(self) -> tuple[ToolAttachment, ...]:
+        self._check_active()
+        return self._attachments
+
+    def _read(self, file: ToolFile | None, max_bytes: int) -> ToolFile:
+        self._check_active()
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise FileAccessError("invalid_limit", "max_bytes must be a positive integer.")
+        if self._remaining <= 0:
+            raise FileAccessError(
+                "budget_exhausted", "The invocation's file read budget is exhausted."
+            )
+        if file is None:
+            raise FileAccessError("unavailable", "File is not available in this fixture.")
+        if len(file.data) > min(max_bytes, self._remaining):
+            raise FileAccessError("too_large", "File exceeds the file read limit.")
+        self._remaining -= len(file.data)
+        return file
+
+    async def read_attachment(self, attachment_id: str, *, max_bytes: int) -> ToolFile:
+        self._check_active()
+        entry = next((item for item in self.attachments if item.id == attachment_id), None)
+        if entry is None:
+            raise FileAccessError("unknown_attachment", "Unknown attachment for this invocation.")
+        if entry.unavailable_reason:
+            raise FileAccessError("unavailable", entry.unavailable_reason)
+        self.reads.append(("attachment", attachment_id, max_bytes))
+        return self._read(self.attachment_files.get(attachment_id), max_bytes)
+
+    async def read_workspace(self, path: str, *, max_bytes: int) -> ToolFile:
+        self.reads.append(("workspace", path, max_bytes))
+        return self._read(self.workspace_files.get(path), max_bytes)
+
+
 __all__ = [
     "DiscordCall",
     "FakeDiscordActions",
@@ -1327,6 +1392,7 @@ __all__ = [
     "FakeResponse",
     "FakeScheduler",
     "FakeServiceRegistry",
+    "FakeToolFiles",
     "FakeTrust",
     "LoadContextRecorder",
     "MemoryStorage",

@@ -1,5 +1,9 @@
 # Image generation
 
+Application modules can reuse admitted uploads and workspace files through the
+[module file API](module-files.md). Current attachment reads select the same saved
+files as `reference_attachments`; this grants no image-generation credentials.
+
 `generate_image` is a REGULAR-tier **core** tool for generating and editing
 images through OpenAI. The model calls it deliberately, like any other tool;
 nothing in the bot watches the user's wording for verbs such as "draw" or

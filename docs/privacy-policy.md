@@ -1,5 +1,10 @@
 # Kimi privacy policy
 
+Installed application modules with declared file access can read admitted uploads
+and files in your own workspace during a tool call. Any upload to another service
+or additional storage by a module is covered by that module's privacy notice.
+The file API itself makes no network requests.
+
 _Last updated: 2026-09-01_
 
 > **Deployment template.** Before publishing this policy, check that the

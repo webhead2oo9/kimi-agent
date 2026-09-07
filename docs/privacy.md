@@ -1,5 +1,10 @@
 # Privacy
 
+Modules declaring `tool_files` may read admitted attachments and caller-owned
+workspace files during tool calls. The host makes no new network request for these
+reads. A module may upload or retain returned bytes according to its own declared
+permissions and privacy documentation. See [module file access](module-files.md).
+
 This is the technical account of what the bot stores, where that data can go,
 how long it is kept, who can see it, and which controls users have. The
 plain-language version written for community members is

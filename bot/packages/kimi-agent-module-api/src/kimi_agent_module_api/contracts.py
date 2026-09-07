@@ -143,6 +143,8 @@ class ModulePermissions:
     override_target_policy: bool = False
     raw_bot: bool = False
     raw_storage: bool = False
+    # Read admitted attachments and caller-owned workspace files in tool handlers.
+    tool_files: bool = False
 
 
 @dataclass(frozen=True, slots=True)

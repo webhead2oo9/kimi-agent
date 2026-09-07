@@ -1,5 +1,9 @@
 # Reference module: kudos
 
+For tools that process uploaded media or saved workspace files, see the
+[SDK 2.2 file access guide](../../../docs/module-files.md) and `FakeToolFiles`.
+The kudos example itself needs no file permission.
+
 A complete, small Kimi application module. Members thank each other, each
 guild gets a leaderboard, and a digest is posted on a schedule. Every file
 covers one part of the module API, with comments on why the host works that

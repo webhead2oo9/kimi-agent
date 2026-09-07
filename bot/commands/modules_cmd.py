@@ -86,6 +86,8 @@ def render_manifest(
         )
         if perms.event_topics:
             lines.append(f"  event topics: {', '.join(perms.event_topics)}")
+        if perms.tool_files:
+            lines.append("  tool files: admitted attachments and caller-owned workspace reads")
         if perms.http_hosts:
             hosts = ", ".join(
                 f"{rule.host} ({rule.network}, {'/'.join(rule.schemes)})"

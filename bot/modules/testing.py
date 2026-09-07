@@ -41,6 +41,9 @@ from kimi_agent_module_api.testing import (
 )
 from storage.db import Database
 from tools.registry import ToolRegistry
+from modules.files import ModuleToolFiles
+from tools.workspace.common import UserLocks
+from workspace import WorkspaceManager
 
 
 def manager_config_dir(manager: ModuleManager) -> Path:
@@ -157,6 +160,7 @@ async def build_test_runtime(
     ``capabilities`` overrides what the host advertises, for a test that needs to
     simulate a narrower deployment than the one these settings describe.
     """
+    file_locks = UserLocks()
     config_dir = tmp_path / "config"
     config_dir.mkdir(exist_ok=True)
     for guild_id, frontmatter in (guild_config or {}).items():
@@ -176,6 +180,11 @@ async def build_test_runtime(
             registry=registry,
             installed=installed,
             capabilities=resolved_capabilities,
+            tool_files=lambda ctx: ModuleToolFiles(
+                ctx,
+                WorkspaceManager(tmp_path / "workspaces"),
+                file_locks,
+            ),
         )
     finally:
         for key, value in previous.items():

@@ -7,8 +7,10 @@ import time
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+import discord
 from PIL import Image
 
 from agent import attachments as attachments_module
@@ -23,6 +25,7 @@ from agent.attachments import (
     image_byte_hashes,
     message_has_image_attachment,
     turn_has_image_input,
+    AttachmentPayloadTooLarge,
 )
 from providers.types import ContentPart, ConversationMessage
 
@@ -1652,6 +1655,81 @@ async def test_video_stream_reads_discord_source_in_bounded_chunks(
     chunks = [chunk async for chunk in ref.iter_video_chunks(chunk_size=2, max_bytes=10)]
 
     assert chunks == [b"ab", b"cde"]
+
+
+@pytest.mark.asyncio
+async def test_real_discord_attachment_uses_bounded_cdn_stream_without_read_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    yielded = 0
+    requested_chunk_sizes: list[int] = []
+
+    class Content:
+        async def iter_chunked(self, chunk_size: int):
+            nonlocal yielded
+            requested_chunk_sizes.append(chunk_size)
+            for chunk in (b"abcd", b"efgh", b"unreached"):
+                yielded += 1
+                yield chunk
+
+    class Response:
+        status = 200
+        content_length = None
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, *, allow_redirects: bool):
+            assert url == "https://cdn.discordapp.com/attachments/1/2/photo.png"
+            assert allow_redirects is False
+            return Response()
+
+    class Http:
+        read_calls = 0
+
+        async def get_from_cdn(self, url: str) -> bytes:
+            del url
+            self.read_calls += 1
+            raise AssertionError("discord.Attachment.read() fallback must not run")
+
+    http = Http()
+    attachment = discord.Attachment(
+        data={
+            "id": "2",
+            "size": 4,
+            "filename": "photo.png",
+            "url": "https://cdn.discordapp.com/attachments/1/2/photo.png",
+            "proxy_url": "https://media.discordapp.net/attachments/1/2/photo.png",
+            "content_type": "image/png",
+        },
+        state=cast(Any, SimpleNamespace(http=http)),
+    )
+    monkeypatch.setattr(attachments_module.aiohttp, "ClientSession", lambda **kwargs: Session())
+    store = AttachmentStore(base_dir=tmp_path, max_bytes=1024, source_max_bytes=5)
+
+    with pytest.raises(AttachmentPayloadTooLarge):
+        await store.save(
+            conversation_key="guild:channel",
+            message_id=1,
+            attachment=attachment,
+            max_bytes=5,
+        )
+
+    assert requested_chunk_sizes == [64 * 1024]
+    assert yielded == 2
+    assert http.read_calls == 0
+    assert not list(tmp_path.rglob("*.*"))
 
 
 @pytest.mark.asyncio

@@ -539,6 +539,23 @@ async def _import_attachment(deps: FileToolDeps, args: dict, ctx: MessageContext
         )
     attachment = matches[0]
     try:
+        if attachment.workspace_path and not dest_arg:
+            async with workspace_activity(deps.locks, ctx):
+                path = await asyncio.to_thread(
+                    deps.workspace_manager.resolve_user_file_path,
+                    ctx.workspace_key,
+                    attachment.workspace_path,
+                    must_exist=True,
+                )
+                if await asyncio.to_thread(path.is_file):
+                    size = (await asyncio.to_thread(path.stat)).st_size
+                    return json.dumps(
+                        {
+                            "path": attachment.workspace_path,
+                            "size_bytes": size,
+                            "already_saved": True,
+                        }
+                    )
         # Network read happens before the lease: holding every workspace's
         # maintenance barrier hostage to a slow Discord CDN read stalls
         # unrelated users' tools.

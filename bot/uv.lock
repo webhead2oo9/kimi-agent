@@ -677,7 +677,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "kimi-agent-module-api"
-version = "2.1.0"
+version = "2.2.0"
 source = { editable = "packages/kimi-agent-module-api" }
 dependencies = [
     { name = "pydantic-settings" },

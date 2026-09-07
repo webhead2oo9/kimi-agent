@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from tools.registry import MessageContext, ToolRegistry
 
 from modules.actions import DeclaredDiscordActions
+from modules.files import ModuleToolFiles
 from storage.db import Database
 from modules.events import EventBusImpl, ModuleEventView
 from modules.guild_settings import GuildSettingsService
@@ -94,11 +95,17 @@ class _LoadTimeToolRegistry:
     wherever the module is inactive.
     """
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        tool_files: Callable[[MessageContext], ModuleToolFiles] | None = None,
+    ) -> None:
         self._registry = registry
         self._sealed = False
         self._module_tools: dict[str, list[str]] = {}
         self.guild_active: dict[str, Callable[[int], bool]] = {}
+        self.tool_files = tool_files
+        self.file_modules: set[str] = set()
 
     def seal(self) -> None:
         self._sealed = True
@@ -111,6 +118,7 @@ class _LoadTimeToolRegistry:
 
     def forget_module(self, module_name: str) -> None:
         self._module_tools.pop(module_name, None)
+        self.file_modules.discard(module_name)
 
     def remove_module(self, module_name: str) -> None:
         names = set(self.names_for(module_name))
@@ -162,23 +170,33 @@ class _LoadTimeToolRegistry:
             user_id = _snowflake(ctx.user_id)
             if user_id is None:
                 raise ValueError("module tools require a user id")
-            return await handler(
-                arguments,
-                ModuleToolContext(
-                    user_id=user_id,
-                    user_name=ctx.user_name,
-                    guild_id=guild_id,
-                    channel_id=channel_id,
-                    thread_id=_snowflake(ctx.thread_id),
-                    trust_tier=ctx.trust_tier,
-                    tool_configs=ctx.tool_configs,
-                    trigger_discord_message_id=(
-                        None
-                        if personal_chat
-                        else _optional_snowflake(ctx.trigger_discord_message_id)
-                    ),
-                ),
+            files = (
+                self.tool_files(ctx)
+                if module_name in self.file_modules and self.tool_files
+                else None
             )
+            try:
+                return await handler(
+                    arguments,
+                    ModuleToolContext(
+                        user_id=user_id,
+                        user_name=ctx.user_name,
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        thread_id=_snowflake(ctx.thread_id),
+                        trust_tier=ctx.trust_tier,
+                        tool_configs=ctx.tool_configs,
+                        trigger_discord_message_id=(
+                            None
+                            if personal_chat
+                            else _optional_snowflake(ctx.trigger_discord_message_id)
+                        ),
+                        files=files,
+                    ),
+                )
+            finally:
+                if files is not None:
+                    files.close()
 
         self._registry.register(
             name,
@@ -239,6 +257,7 @@ def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     available.add("discord.guild_commands.v1")
     available.add("discord.modals.v1")
     available.add("discord.components_v2.v1")
+    available.add("tools.files.v1")
     if core_settings.members_intent:
         available.add("discord.members.v1")
     if core_settings.message_content_intent:
@@ -479,6 +498,7 @@ class ModuleManager:
         registry: ToolRegistry,
         installed: Mapping[str, ModuleSpec] | None = None,
         capabilities: ModuleCapabilities | None = None,
+        tool_files: Callable[[MessageContext], ModuleToolFiles] | None = None,
     ) -> ModuleManager:
         settings_registry = ModuleSettingsRegistry(config_dir=Path(core_settings.config_dir))
         manager = cls(
@@ -547,7 +567,7 @@ class ModuleManager:
         )
         disabled = _activation_disabled(specs, resolved_capabilities)
         active_specs = tuple(spec for spec in specs if spec.name not in disabled)
-        tool_registry = _LoadTimeToolRegistry(registry)
+        tool_registry = _LoadTimeToolRegistry(registry, tool_files)
         manager._tool_registry = tool_registry
         try:
             cls._create_all(
@@ -598,6 +618,10 @@ class ModuleManager:
             surfaces_before = snapshot_surface_tools()
             before = registry.registered_names()
             try:
+                if spec.permissions.tool_files:
+                    if tool_registry.tool_files is None:
+                        raise RuntimeError("Module tool file access is unavailable on this host.")
+                    tool_registry.file_modules.add(spec.name)
                 prepared = (
                     settings_registry.prepare_module(spec.settings) if spec.settings else None
                 )

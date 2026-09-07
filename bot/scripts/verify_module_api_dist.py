@@ -18,6 +18,7 @@ _EXPECTED_API_FILES = frozenset(
         "kimi_agent_module_api/__init__.py",
         "kimi_agent_module_api/contracts.py",
         "kimi_agent_module_api/events.py",
+        "kimi_agent_module_api/files.py",
         "kimi_agent_module_api/images.py",
         "kimi_agent_module_api/py.typed",
         "kimi_agent_module_api/settings.py",
@@ -29,6 +30,7 @@ _EXPECTED_API_FILES = frozenset(
 _EXPECTED_API_MODULES = (
     "contracts",
     "events",
+    "files",
     "images",
     "settings",
     "testing",
@@ -73,6 +75,9 @@ def _verify_consumer() -> None:
     assert hasattr(contracts, "OutgoingLayout")
 
     assert api.MODULE_API_VERSION == 2
+    assert hasattr(api, "ToolFiles")
+    assert hasattr(api, "ToolAttachment")
+    assert hasattr(api, "FileAccessError")
     matches = [
         point
         for point in entry_points(group=api.MODULE_ENTRYPOINT_GROUP)

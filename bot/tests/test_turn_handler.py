@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 import agent.turn as turn_module
-from agent.attachments import AttachmentRef, TurnImages
+from agent.attachments import AttachmentRef, CollectedImage, TurnImages
 from agent.context import ConversationContext
 from agent.core import ConversationRunResult
 from agent.discord_references import DiscordReferenceHint
@@ -370,11 +370,15 @@ async def test_handle_turn_blocks_input_before_persist_execute_and_cleans_prepar
     async def fail_execute(*args: Any, **kwargs: Any) -> TurnResult:
         raise AssertionError("execute should not run for moderated input")
 
+    async def fail_stage(turn: TurnRequest) -> TurnRequest:
+        raise AssertionError("blocked input must not be saved to the workspace")
+
     monkeypatch.setattr(turn_module, "prepare_turn", fake_prepare_turn)
     monkeypatch.setattr(turn_module, "execute_turn", fail_execute)
     dependencies = turn_module.replace(
         dependencies,
         persist_prepared_user_message=fail_persist,
+        stage_chat_attachments=fail_stage,
     )
 
     result = await handle_turn(
@@ -610,6 +614,15 @@ async def test_handle_turn_filters_images_that_failed_moderation(
     service = FilteringModerationService(
         checked_image_urls=(kept_current.image_url or "", kept_reply.image_url or "")
     )
+    current = CollectedImage(kept_current, "kept", Path("unused"), "keep.png")
+    dropped = CollectedImage(dropped_current, "dropped", Path("unused"), "drop.png")
+    prepared = turn_module.replace(prepared, current_images=(current, dropped))
+    staged: list[TurnRequest] = []
+
+    async def stage_filtered(turn: TurnRequest) -> TurnRequest:
+        staged.append(turn)
+        return turn
+
     persisted: list[TurnRequest] = []
     executed: list[TurnRequest] = []
 
@@ -619,6 +632,7 @@ async def test_handle_turn_filters_images_that_failed_moderation(
     dependencies = turn_module.replace(
         _dependencies(),
         moderation_service=service,
+        stage_chat_attachments=stage_filtered,
         persist_prepared_user_message=cast(
             turn_module.PersistPreparedUserMessage,
             persist_filtered,
@@ -653,6 +667,7 @@ async def test_handle_turn_filters_images_that_failed_moderation(
     assert persisted[0].edit_target_image is None
     assert persisted[0].reply_context is not None
     assert persisted[0].reply_context.image_parts == (kept_reply,)
+    assert staged[0].current_images == (current,)
     assert executed[0] is persisted[0]
 
 

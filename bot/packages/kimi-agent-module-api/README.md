@@ -13,6 +13,8 @@ implementation, or module loader. It exports:
   (storage, scheduler, events, Discord actions, interactions, HTTP, services,
   trust, proposals, health) plus the validators the host runs at preflight.
 - `kimi_agent_module_api.events`: the normalized `discord.*` event payloads.
+- `kimi_agent_module_api.files`: `ToolFiles`, `ToolAttachment`, `ToolFile`, and
+  `FileAccessError` for invocation-scoped attachment and workspace reads.
 - `kimi_agent_module_api.testing`: a fake for every port, `load_context()` for
   exercising `create()`, and `MemoryStorage` (install the `testing` extra) so a
   module can unit test itself with only this package installed.
@@ -73,6 +75,18 @@ calls receive the exact source Discord message snowflake; other surfaces receive
 
 Modules use namespaced guild documents and the physical table names returned
 by `ctx.storage.table()`.
+
+SDK 2.2 adds optional `ModuleToolContext.files`. Declare
+`ModulePermissions(tool_files=True)`, depend on `kimi-agent-module-api>=2.2,<3`,
+and require `tools.files.v1` in `ModuleSpec.requires_capabilities`. Existing modules
+keep `api_version=2` and receive `files=None` without the permission.
+`ctx.files.attachments` lists admitted current/reply entries;
+`read_attachment(id, max_bytes=...)` and `read_workspace(path, max_bytes=...)`
+return bounded bytes without network downloads. The reader expires when the handler
+returns and is scoped to the actual caller. `testing.FakeToolFiles` supports
+independent tests. See the
+[file access guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/module-files.md)
+for moderation, reply-image availability, privacy, and limits.
 
 ## Testing the SDK
 

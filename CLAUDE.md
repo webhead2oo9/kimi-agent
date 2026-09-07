@@ -212,6 +212,11 @@ Tool calls, turn summaries, compaction, and moderation decisions emit structured
 
 ### Configuration and Plugins
 
+Module API 2.2 exposes admitted attachments and caller workspace files through
+`ModuleToolContext.files` (`modules/files.py`). Modules opt in with `tool_files`
+and require `tools.files.v1`; readers are bounded, read-only, and expire after
+tool dispatch. See [`docs/module-files.md`](docs/module-files.md).
+
 `config/settings.py` is the single `pydantic-settings` `Settings` class, loaded from env and `.env`. `config/operator_settings.py` overlays `<CONFIG_DIR>/settings.md` at `build_app`; only fields explicitly opted into `OPERATOR_EDITABLE_FIELDS` join `SETTINGS_SPEC`, so new settings stay environment-only by default. A malformed file stops startup. `CONFIG_DIR` and `SKILLS_DIR` have in-checkout defaults but production points both outside the checkout; [`docs/instance-data.md`](docs/instance-data.md) is the public/private boundary. `config/paths.py` holds the process-wide config-dir default and is stdlib-only. See [`docs/configuration.md`](docs/configuration.md).
 
 Operator plugins (`app/plugins.py`): `PLUGIN_MODULES` is an explicit allowlist of modules exposing `register(ctx: PluginContext)`; no auto-discovery. Loaded after every core tool, so duplicate names resolve in core's favor; per-plugin failure is skip + rollback, never a boot abort. Plugins classify their own settings via `PLUGIN_SETTINGS`, contribute labels via `agent/activity.py:register_tool_labels`, and declare eval surfaces via `ctx.declare_surface_tools`. See [`docs/plugins.md`](docs/plugins.md).

@@ -1,5 +1,9 @@
 # Image generation
 
+Application modules can reuse admitted uploads and workspace files through the
+[module file API](module-files.md). Current attachment reads select the same saved
+files as `reference_attachments`; this grants no image-generation credentials.
+
 `generate_image` is a REGULAR-tier **core** tool for generating and editing
 images through OpenAI. The model calls it deliberately, like any other tool;
 nothing in the bot watches the user's wording for verbs such as "draw" or
@@ -66,13 +70,20 @@ with repeated binary `image[]` parts, as required by OpenAI's Images API.
   characters;
 - `attachment_description` — required Discord accessibility text, capped at
   1,000 characters; and
-- `reference_paths` — optional workspace-relative PNG, JPEG, or WebP paths.
-  Omitting it generates a new image; providing one to five paths edits those
-  images.
+- `reference_paths` — optional workspace-relative PNG, JPEG, or WebP paths;
+- `reference_attachments` — optional exact filenames of current-message images
+  automatically saved in the caller's workspace. Duplicate filenames require
+  selecting the saved path instead.
 
-Current-message Discord attachments are not implicit edit targets. The model
-must first call `import_attachment`, then pass the resulting workspace path.
-This keeps every model-supplied path behind
+Omitting both reference fields generates a new image. Providing references edits
+those images, with one combined limit of five references (or the configured lower
+limit). The model must explicitly select the images; an upload does not silently
+turn every generation request into an edit.
+
+Admitted current-message images are automatically saved under
+`chat-attachments/<message-id>/` (see [workspace storage](workspace.md)). No
+separate import is needed. If saving fails, filename selection returns an error
+instead of generating without the requested reference. All selected paths stay behind
 `WorkspaceManager.resolve_user_file_path`, which rejects absolute paths,
 traversal, and symlink chains.
 

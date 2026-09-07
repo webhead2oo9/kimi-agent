@@ -761,6 +761,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         )
         assert sdk_ctx.trust_tier.value == "regular"
         assert sdk_ctx.trigger_discord_message_id == 78
+        assert sdk_ctx.files is None  # File access requires an explicit module permission.
         # Scoped to guild 7 at the registry, so 8 is masked as unknown before the handler.
         assert "Unknown tool" in str(await registry.dispatch("echo", {}, ctx("8")))
         assert len(seen) == 1

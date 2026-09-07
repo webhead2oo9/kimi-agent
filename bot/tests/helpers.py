@@ -570,6 +570,9 @@ def make_turn_dependencies(
     def _chat_model_name_resolver(**_kwargs: Any) -> str:
         return str(resolved_model_name)
 
+    async def _stage_chat_attachments(turn: Any) -> Any:
+        return turn
+
     defaults: dict[str, Any] = {
         "context_manager": StubContextManager(),
         "provider": StubProvider(),
@@ -599,6 +602,7 @@ def make_turn_dependencies(
         "chat_provider_resolver": lambda **_kwargs: StubProvider(),
         "chat_model_name_resolver": _chat_model_name_resolver,
         "persist_prepared_user_message": _persist_prepared_user_message,
+        "stage_chat_attachments": _stage_chat_attachments,
         "write_generated_assets": write_generated_assets,
         "compactor": None,
         "activity_reporter": None,

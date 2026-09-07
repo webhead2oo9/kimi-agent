@@ -37,6 +37,7 @@ from kimi_agent_module_api.contracts import (
     TextInputStyle,
 )
 from kimi_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
+from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile, ToolFiles
 from kimi_agent_module_api.tools import (
     ModuleToolContext,
     ModuleToolHandler,
@@ -152,6 +153,7 @@ __all__ = [
     "MODULE_ENTRYPOINT_GROUP",
     "AppModule",
     "ConfigSnapshot",
+    "FileAccessError",
     "GuildSettingsSchema",
     "InviteSnapshot",
     "LayoutGallery",
@@ -183,6 +185,9 @@ __all__ = [
     "ServiceRequirement",
     "TextInputSpec",
     "TextInputStyle",
+    "ToolAttachment",
+    "ToolFile",
+    "ToolFiles",
     "TrustTier",
     "render_guild_settings",
 ]

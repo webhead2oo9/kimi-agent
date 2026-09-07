@@ -63,3 +63,9 @@ For HTTP clients, settings, storage, commands, events, and scheduled work,
 consult the [full kudos example](../example/README.md) and the
 [module guide](../../../docs/modules.md). Existing plugins can follow the
 [migration guide](../../../docs/plugin-migration.md).
+
+For a media-processing tool, use the SDK 2.2
+[file access port](../../../docs/module-files.md): declare `tool_files=True`,
+require `tools.files.v1`, and read through the handler's `ctx.files`. This supports
+admitted uploads and caller-owned saved files without importing core or downloading
+Discord attachments again. Tests can supply the SDK's `FakeToolFiles`.

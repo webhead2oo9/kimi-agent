@@ -1,5 +1,9 @@
 # Development
 
+When changing module file access, run `tests/test_module_files.py`, the standalone
+SDK tests, and the built-distribution checks alongside the normal CI checks.
+[The file API guide](module-files.md) documents the contract and `FakeToolFiles`.
+
 This page covers first-time setup and running an isolated dev instance. The
 maintainer sections on lock auditing, distribution builds, and module lifecycle
 ceilings are kept short; follow the linked pages for the full procedures.

@@ -417,6 +417,7 @@ class TurnRequest:
     discord_reference_hints: tuple[ResolvedDiscordReferenceHint, ...] = ()
     input_parts: tuple[ContentPart, ...] = ()
     edit_target_image: ContentPart | None = None
+    current_images: tuple[CollectedImage, ...] = ()
     attachments: tuple[AttachmentRef, ...] = ()
     reply_context: ReplyContext | None = None
     moderation_cleanup_paths: tuple[Path, ...] = ()
@@ -502,6 +503,7 @@ class TurnDependencies:
     chat_provider_resolver: ChatProviderResolver
     chat_model_name_resolver: ChatModelNameResolver
     persist_prepared_user_message: PersistPreparedUserMessage
+    stage_chat_attachments: StageChatAttachments
     write_generated_assets: WriteGeneratedAssets
     compactor: Compactor | None
     activity_reporter: ActivityReporter | None
@@ -515,6 +517,10 @@ class TurnDependencies:
     # worker can finish before an exclusive deletion begins.
     user_activity: UserActivityGuard
     stop_event: asyncio.Event | None = None
+
+
+class StageChatAttachments(Protocol):
+    async def __call__(self, turn: TurnRequest) -> TurnRequest: ...
 
 
 async def handle_turn(
@@ -583,6 +589,14 @@ async def handle_turn(
                     blocked_by_moderation=True,
                     termination_reason="moderation_blocked",
                 )
+
+        staging_turn = prepared_turn
+        prepared_turn = await _await_guarded_with_deadline(
+            lambda: dependencies.stage_chat_attachments(staging_turn),
+            deadline=deadline,
+            user_id=prepared_turn.user_id,
+            activity_guard=dependencies.user_activity,
+        )
 
         prepared_turn = await _await_guarded_with_deadline(
             lambda: _hydrate_recalled_memories_for_turn(
@@ -839,6 +853,7 @@ async def prepare_turn(
             discord_reference_hints=discord_reference_hints,
             input_parts=tuple(turn_images.vision_parts),
             edit_target_image=turn_images.edit_target,
+            current_images=turn_images.current_images,
             attachments=tuple(turn_attachments),
             reply_context=reply_context,
             moderation_cleanup_paths=tuple(turn_images.cleanup_paths),
@@ -2162,6 +2177,9 @@ def _filter_turn_images_after_moderation(
     if checked_image_urls is None:
         return turn
     allowed = set(checked_image_urls)
+    current_images = tuple(
+        image for image in turn.current_images if _content_part_image_urls(image.part) & allowed
+    )
     input_parts = tuple(
         part for part in turn.input_parts if _content_part_image_urls(part) & allowed
     )
@@ -2178,6 +2196,7 @@ def _filter_turn_images_after_moderation(
         reply_context = replace(reply_context, image_parts=reply_images)
     if (
         input_parts == turn.input_parts
+        and current_images == turn.current_images
         and edit_target_image == turn.edit_target_image
         and reply_context == turn.reply_context
     ):
@@ -2186,6 +2205,7 @@ def _filter_turn_images_after_moderation(
         turn,
         input_parts=input_parts,
         edit_target_image=edit_target_image,
+        current_images=current_images,
         reply_context=reply_context,
     )
 

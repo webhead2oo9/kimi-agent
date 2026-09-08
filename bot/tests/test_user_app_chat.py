@@ -1506,7 +1506,7 @@ async def test_dm_registers_provisional_work_in_personal_scope(
         with original_register(**kwargs):  # type: ignore[arg-type]
             yield
 
-    async def stop_after_registration(_message: object) -> None:
+    async def stop_after_registration(_message: object, **_kwargs: object) -> None:
         return None
 
     monkeypatch.setattr(app.active_operations, "register_provisional", record_registration)

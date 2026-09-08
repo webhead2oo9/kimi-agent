@@ -16,7 +16,9 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import socket
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +52,27 @@ _CROSS_ORIGIN_SENSITIVE_HEADERS = frozenset(
 
 class ModuleHttpError(RuntimeError):
     """Transport-level failure; the message is safe to show staff."""
+
+
+def _deadline(timeout_seconds: float) -> float:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ModuleContractError("timeout_seconds must be finite and positive")
+    return time.monotonic() + timeout_seconds
+
+
+def _validated_max_bytes(max_bytes: int) -> int:
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+        raise ModuleContractError("max_bytes must be an integer")
+    if max_bytes <= 0 or max_bytes > DEFAULT_MAX_BYTES:
+        raise ModuleContractError(f"max_bytes must be between 1 and {DEFAULT_MAX_BYTES}")
+    return max_bytes
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ModuleHttpError("request timed out")
+    return remaining
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +314,7 @@ class ModuleHttpImpl:
         url: str,
         *,
         headers: Mapping[str, str] | None,
-        timeout_seconds: float,
+        deadline: float,
         json_body: Any = None,
     ) -> tuple[aiohttp.ClientResponse, ResolvedHostRule]:
         current = url
@@ -300,18 +323,26 @@ class ModuleHttpImpl:
             rule, current = self._check(current)
             session = self._runtime.session(private=rule.private)
             try:
-                response = await session.request(
-                    method,
-                    current,
-                    headers=request_headers,
-                    json=json_body,
-                    allow_redirects=False,
-                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                )
-            except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+                async with asyncio.timeout(_remaining(deadline)):
+                    response = await session.request(
+                        method,
+                        current,
+                        headers=request_headers,
+                        json=json_body,
+                        allow_redirects=False,
+                        timeout=aiohttp.ClientTimeout(total=_remaining(deadline)),
+                    )
+            except TimeoutError as exc:
+                raise ModuleHttpError("request timed out") from exc
+            except (aiohttp.ClientError, OSError) as exc:
                 raise ModuleHttpError(
                     f"request to {rule.host} failed: {type(exc).__name__}"
                 ) from exc
+            try:
+                _remaining(deadline)
+            except ModuleHttpError:
+                response.release()
+                raise
             if response.status in (301, 302, 303, 307, 308):
                 location = response.headers.get("Location")
                 response.release()
@@ -331,17 +362,32 @@ class ModuleHttpImpl:
             return response, rule
         raise ModuleHttpError(f"too many redirects from {urlsplit(url).hostname}")
 
-    async def _read_capped(self, response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    async def _read_capped(
+        self,
+        response: aiohttp.ClientResponse,
+        max_bytes: int,
+        deadline: float,
+    ) -> bytes:
         declared = response.content_length
         if declared is not None and declared > max_bytes:
             response.release()
             raise ResponseTooLarge(f"response declares {declared} bytes; limit is {max_bytes}")
         body = bytearray()
         try:
-            async for chunk in response.content.iter_chunked(_CHUNK):
+            chunks = response.content.iter_chunked(_CHUNK).__aiter__()
+            while True:
+                try:
+                    async with asyncio.timeout(_remaining(deadline)):
+                        chunk = await anext(chunks)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as exc:
+                    raise ModuleHttpError("request timed out") from exc
+                _remaining(deadline)
                 body.extend(chunk)
                 if len(body) > max_bytes:
                     raise ResponseTooLarge(f"response exceeded {max_bytes} bytes")
+            _remaining(deadline)
         finally:
             response.release()
         return bytes(body)
@@ -354,10 +400,10 @@ class ModuleHttpImpl:
         timeout_seconds: float = 20.0,
         max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> HttpResponse:
-        response, _ = await self._request(
-            "GET", url, headers=headers, timeout_seconds=timeout_seconds
-        )
-        body = await self._read_capped(response, max_bytes)
+        max_bytes = _validated_max_bytes(max_bytes)
+        deadline = _deadline(timeout_seconds)
+        response, _ = await self._request("GET", url, headers=headers, deadline=deadline)
+        body = await self._read_capped(response, max_bytes, deadline)
         return HttpResponse(response.status, dict(response.headers), body)
 
     async def post_json(
@@ -373,10 +419,12 @@ class ModuleHttpImpl:
             json.dumps(payload)
         except (TypeError, ValueError) as exc:
             raise ModuleContractError("post_json payload is not JSON-serializable") from exc
+        max_bytes = _validated_max_bytes(max_bytes)
+        deadline = _deadline(timeout_seconds)
         response, _ = await self._request(
-            "POST", url, headers=headers, timeout_seconds=timeout_seconds, json_body=payload
+            "POST", url, headers=headers, deadline=deadline, json_body=payload
         )
-        body = await self._read_capped(response, max_bytes)
+        body = await self._read_capped(response, max_bytes, deadline)
         return HttpResponse(response.status, dict(response.headers), body)
 
     async def download(
@@ -387,25 +435,15 @@ class ModuleHttpImpl:
         timeout_seconds: float = 30.0,
         max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> AsyncIterator[bytes]:
-        response, _ = await self._request(
-            "GET", url, headers=headers, timeout_seconds=timeout_seconds
-        )
+        max_bytes = _validated_max_bytes(max_bytes)
+        deadline = _deadline(timeout_seconds)
+        response, _ = await self._request("GET", url, headers=headers, deadline=deadline)
         if response.status != 200:
             response.release()
             raise ModuleHttpError(f"download returned HTTP {response.status}")
-        declared = response.content_length
-        if declared is not None and declared > max_bytes:
-            response.release()
-            raise ResponseTooLarge(f"download declares {declared} bytes; limit is {max_bytes}")
-        received = 0
-        try:
-            async for chunk in response.content.iter_chunked(_CHUNK):
-                received += len(chunk)
-                if received > max_bytes:
-                    raise ResponseTooLarge(f"download exceeded {max_bytes} bytes")
-                yield chunk
-        finally:
-            response.release()
+        body = await self._read_capped(response, max_bytes, deadline)
+        for offset in range(0, len(body), _CHUNK):
+            yield body[offset : offset + _CHUNK]
 
 
 __all__ = [

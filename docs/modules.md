@@ -214,7 +214,7 @@ A module may separately declare `activation_capabilities` for an optional featur
 - A module can depend on another named module. Every dependency must also be present in `KIMI_MODULES`, because dependencies are never activated implicitly.
 - Module settings use the same selected dotenv as the core. Explicitly exposed, non-secret operator overrides live under `<CONFIG_DIR>/modules/<module_name>.md`.
 - A module's runtime context is the only thing it needs from core; the `kimi_agent_module_api` package exports contracts, event dataclasses, image helpers, and test fakes, never core implementation types.
-- A module can register ordinary tools on the shared registry and declare its activity labels and evaluation surfaces. This is optional; a module that only provides commands or listeners need not expose anything to the LLM. A tool handler receives a `ModuleToolContext` whose ids are `int` snowflakes. On mention-path turns, `trigger_discord_message_id` identifies the exact Discord message that initiated the turn; it is `None` on other surfaces. Modules must still fetch and verify that message before acting on it. A module's tools are hidden (masked, like any other gate) until the module has started and wherever the module is inactive; with `guild_only` (the default) they are hidden from DMs and personal chat as well, so `guild_id` is `None` only for a tool registered with `guild_only=False`, and `channel_id` is `None` only in personal chat. Module tool results default to `untrusted=True`; opt out only when the output is wholly controlled by the installed module and cannot contain Discord, network, file, or user-authored data.
+- A module can register ordinary tools on the shared registry and declare its activity labels and evaluation surfaces. This is optional; a module that only provides commands or listeners need not expose anything to the LLM. A tool handler receives a `ModuleToolContext` whose ids are `int` snowflakes. On mention-path turns, `trigger_discord_message_id` identifies the exact Discord message that initiated the turn and `trigger_discord_message_snapshot` contains the host-owned immutable message, guild, channel, author, content, and bot-status evidence captured at turn entry; both are `None` on personal and non-message surfaces. Modules that act on triggering-message evidence should use the snapshot rather than re-fetch mutable Discord state. A module's tools are hidden (masked, like any other gate) until the module has started and wherever the module is inactive; with `guild_only` (the default) they are hidden from DMs and personal chat as well, so `guild_id` is `None` only for a tool registered with `guild_only=False`, and `channel_id` is `None` only in personal chat. Module tool results default to `untrusted=True`; opt out only when the output is wholly controlled by the installed module and cannot contain Discord, network, file, or user-authored data.
 
 For repeatable deployments, keep third-party module requirements in
 deployment-owned lock data and install them after the core environment. Private
@@ -229,7 +229,7 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.1.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.3.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
 If the `kimi-agent-module-api` project has not yet been reserved on PyPI, use PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi` before the next tag. A name lookup isn't a reservation, so confirm availability again immediately before a release.
 
@@ -455,10 +455,14 @@ the ports are a contract and an audit surface, not a sandbox.
   a private or metadata address; `private` allows exactly that host, including
   private addresses, but still rejects cloud-metadata literals, DNS aliases,
   and all link-local destinations.
-  `get`, `post_json` (no retry), and streaming `download` re-check every redirect
+  `get`, `post_json` (no retry), and `download` re-check every redirect
   hop, strip authorization, cookie, proxy authorization, and `X-API-Key` headers
-  when the origin changes, cap bodies while streaming, bound timeouts, and never
-  put headers or credentials in errors. Wildcard hosts are not supported.
+  when the origin changes, cap bodies while reading, bound timeouts, and never
+  put headers or credentials in errors. `download` validates and buffers the
+  complete response before yielding chunks so the host releases the connection
+  deterministically even when a consumer stops early. Every method enforces the
+  host's 8 MiB ceiling; callers may select only a smaller positive `max_bytes`.
+  Wildcard hosts are not supported.
 - `ctx.trust.tier(guild_id, user_id)`: read-only trust lookup (`member`,
   `regular`, `staff`) for modules that keep their own protections.
 - `ctx.proposals`: a `proposals.v2` port already bound to this module. Its

@@ -72,6 +72,7 @@ from tools.wolfram_alpha import (
 from tools.x_search import XSearchConfig, init_x_search_tool
 from tools.workspace import UserLocks, WorkspaceToolConfig, init_workspace_tools
 from trust.tiers import trust_tier_from_value
+from utils.plugin_privacy import PrivacyDeletionCallbackRegistry
 from video_understanding.client import GeminiVideoClient
 from video_understanding.service import VideoUnderstandingService
 from video_understanding.service import VideoSessionRepository
@@ -108,6 +109,9 @@ class RuntimeTools:
     code_sandbox_config: SandboxConfig | None = None
     code_exec_guards: CodeExecRuntimeGuards | None = None
     plugin_settings: PluginSettingsRegistry | None = None
+    plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry = field(
+        default_factory=PrivacyDeletionCallbackRegistry
+    )
     module_manager: ModuleManager = field(default_factory=ModuleManager)
 
 
@@ -237,7 +241,13 @@ def build_runtime_tools(
 
     # Operator plugins load after every core tool, so a duplicate name raises
     # inside the plugin and resolves in core's favor.
-    plugin_context = build_plugin_context(settings, registry, gateway)
+    plugin_privacy_callbacks = PrivacyDeletionCallbackRegistry()
+    plugin_context = build_plugin_context(
+        settings,
+        registry,
+        gateway,
+        privacy_deletion_callbacks=plugin_privacy_callbacks,
+    )
     plugin_settings = load_plugins_with_settings(
         settings.plugin_module_list,
         plugin_context,
@@ -306,6 +316,7 @@ def build_runtime_tools(
         code_sandbox_config=code_sandbox_config,
         code_exec_guards=code_exec_guards if code_sandbox_config is not None else None,
         plugin_settings=plugin_settings,
+        plugin_privacy_callbacks=plugin_privacy_callbacks,
         module_manager=module_manager,
     )
 

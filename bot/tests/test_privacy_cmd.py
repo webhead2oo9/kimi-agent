@@ -29,6 +29,10 @@ from storage.db import Database
 from storage.memory_banks import UserMemoryBankStateStore
 from storage.privacy import PrivacyDeletionRequest, PrivacyDeletionRequestStore
 from tools.workspace.common import UserLocks
+from utils.plugin_privacy import (
+    PrivacyDeletionCallbackRegistry,
+    PrivacyDeletionCallbackResult,
+)
 
 
 class _UnusedWorkspace:
@@ -219,6 +223,236 @@ async def test_provider_video_cleanup_queue_does_not_keep_privacy_barrier_pendin
             ),
             "No long-term memory backend is configured, so there was none to wipe.",
         ]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_full_deletion_callback_failure_is_truthful_and_keeps_durable_barrier(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        callbacks = PrivacyDeletionCallbackRegistry()
+        calls: list[tuple[str, str]] = []
+
+        async def fail_pages(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+            calls.append((user_id, scope))
+            return PrivacyDeletionCallbackResult(
+                ok=False,
+                lines=("Published Pages deletion remains durably queued for retry.",),
+            )
+
+        callbacks.register(
+            "published_pages.user_data",
+            fail_pages,
+            scopes=frozenset({"all"}),
+        )
+        requests = PrivacyDeletionRequestStore(db)
+        barrier = UserPrivacyBarrier()
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope="all",
+            user_id="42",
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=barrier,
+            deletion_request_store=requests,
+            plugin_privacy_callbacks=callbacks,
+        )
+
+        assert outcome.ok is False
+        assert calls == [("42", "all")]
+        assert outcome.lines[-2:] == [
+            "Published Pages deletion remains durably queued for retry.",
+            "No long-term memory backend is configured, so there was none to wipe.",
+        ]
+        pending = await requests.list_pending()
+        assert len(pending) == 1
+        assert pending[0].plugin_callback_names == ("published_pages.user_data",)
+        with pytest.raises(PrivacyDeletionPendingError):
+            async with barrier.activity(WorkspaceKey("42")):
+                pass
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_only_deletion_does_not_require_full_scope_plugin_callback(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        callbacks = PrivacyDeletionCallbackRegistry()
+        calls: list[str] = []
+
+        async def delete_pages(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+            calls.append(f"{user_id}:{scope}")
+            return PrivacyDeletionCallbackResult(ok=True, lines=("Deleted pages.",))
+
+        callbacks.register(
+            "published_pages.user_data",
+            delete_pages,
+            scopes=frozenset({"all"}),
+        )
+        requests = PrivacyDeletionRequestStore(db)
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope="memory",
+            user_id="42",
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=UserPrivacyBarrier(),
+            deletion_request_store=requests,
+            plugin_privacy_callbacks=callbacks,
+        )
+
+        assert outcome.ok is True
+        assert calls == []
+        assert await requests.list_pending() == []
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_retry_fails_closed_when_authorized_plugin_callback_is_missing(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        requests = PrivacyDeletionRequestStore(db)
+        request = await requests.request(
+            user_id="42",
+            scope="all",
+            memory_backend_required=False,
+            plugin_callback_names=("published_pages.user_data",),
+        )
+        barrier = UserPrivacyBarrier()
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope=request.scope,
+            user_id=request.user_id,
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=barrier,
+            deletion_request_store=requests,
+            pending_request=request,
+            plugin_privacy_callbacks=PrivacyDeletionCallbackRegistry(),
+        )
+
+        assert outcome.ok is False
+        assert any(
+            "plugin-managed data" in line and "unavailable" in line for line in outcome.lines
+        )
+        assert await requests.list_pending() == [request]
+        with pytest.raises(PrivacyDeletionPendingError):
+            async with barrier.activity(WorkspaceKey("42")):
+                pass
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_retry_invokes_authorized_plugin_callback_and_completes_request(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        requests = PrivacyDeletionRequestStore(db)
+        request = await requests.request(
+            user_id="42",
+            scope="all",
+            memory_backend_required=False,
+            plugin_callback_names=("published_pages.user_data",),
+        )
+        callbacks = PrivacyDeletionCallbackRegistry()
+        calls: list[tuple[str, str]] = []
+
+        async def delete_pages(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+            calls.append((user_id, scope))
+            return PrivacyDeletionCallbackResult(
+                ok=True,
+                lines=("Deleted **2** Published Pages remote objects.",),
+            )
+
+        callbacks.register(
+            "published_pages.user_data",
+            delete_pages,
+            scopes=frozenset({"all"}),
+        )
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope=request.scope,
+            user_id=request.user_id,
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=UserPrivacyBarrier(),
+            deletion_request_store=requests,
+            pending_request=request,
+            plugin_privacy_callbacks=callbacks,
+        )
+
+        assert outcome.ok is True
+        assert calls == [("42", "all")]
+        assert "Deleted **2** Published Pages remote objects." in outcome.lines
+        assert await requests.list_pending() == []
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_callback_exception_is_partial_and_durably_retried(tmp_path: Path) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    try:
+        callbacks = PrivacyDeletionCallbackRegistry()
+
+        async def explode(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+            del user_id, scope
+            raise RuntimeError("synthetic callback failure")
+
+        callbacks.register("example.private_data", explode, scopes=frozenset({"all"}))
+        requests = PrivacyDeletionRequestStore(db)
+
+        outcome = await run_privacy_deletion(
+            workspace_manager=_UNUSED_WORKSPACE.manager,
+            workspace_locks=_UNUSED_WORKSPACE.locks,
+            scope="all",
+            user_id="42",
+            conversation_store=cast(Any, _FakeConversationStore()),
+            preference_store=cast(Any, _FakePreferenceStore()),
+            memory_client=None,
+            auto_retain_watermarks=None,
+            privacy_barrier=UserPrivacyBarrier(),
+            deletion_request_store=requests,
+            plugin_privacy_callbacks=callbacks,
+        )
+
+        assert outcome.ok is False
+        assert any("plugin-managed data could not be deleted" in line for line in outcome.lines)
+        pending = await requests.list_pending()
+        assert len(pending) == 1
+        assert pending[0].plugin_callback_names == ("example.private_data",)
     finally:
         await db.close()
 

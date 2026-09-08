@@ -754,6 +754,7 @@ def build_app(settings: Settings) -> KimiApplication:
                 ),
                 run_learn=application.message_controller.run_learn_turn,
                 is_user_blocked=application.user_blocked,
+                channel_access_allowed=application.message_controller.channel_access_allowed,
                 model_log_label=application.message_controller.model_log_label,
             ),
         )

@@ -84,8 +84,7 @@ async def recall_current_user_context(
 
     # Recall the user's global facts plus this guild's scoped memory; another
     # guild's conversation-derived memory is tagged with its own guild and so is
-    # excluded. ``any`` (OR, includes untagged) is safe because every write path
-    # tags its memory, so there are no untagged facts to leak across guilds.
+    # excluded. Strict OR also excludes untagged facts from legacy banks.
     recall_tags = ["scope:global"]
     if guild_id:
         recall_tags.append(f"guild:{guild_id}")
@@ -98,7 +97,7 @@ async def recall_current_user_context(
             max_tokens=max_tokens,
             types=list(types or DEFAULT_USER_RECALL_TYPES),
             tags=recall_tags,
-            tags_match="any",
+            tags_match="any_strict",
         )
     except Exception:
         log.exception("Failed to recall user memory for user %s", user_id)

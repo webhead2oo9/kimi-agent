@@ -194,7 +194,7 @@ async def _recall_user(args: dict, ctx: MessageContext) -> str:
         max_tokens=DEFAULT_USER_RECALL_MAX_TOKENS,
         types=list(_recall_types),
         tags=_recall_scope_tags(ctx),
-        tags_match="any",
+        tags_match="any_strict",
     )
 
     if not memories:
@@ -221,7 +221,7 @@ async def _reflect_user(args: dict, ctx: MessageContext) -> str:
         query=query,
         budget="mid",
         tags=_recall_scope_tags(ctx),
-        tags_match="any",
+        tags_match="any_strict",
     )
 
     if not answer:

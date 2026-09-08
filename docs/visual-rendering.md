@@ -186,7 +186,7 @@ sudo sh ./deploy/betterwright/install.sh
 ```
 
 The installer consumes the committed npm lock with `npm ci`, installs exactly
-BetterWright 1.10.2 and Mermaid 11.17.2 into a staging tree, runs the explicit
+BetterWright 2.3.0 and Mermaid 11.17.2 into a staging tree, runs the explicit
 BetterChromium setup, verifies versions, files, imports, shared libraries, and
 permissions, then atomically renames the completed root-owned tree into place.
 A failed install leaves the installed runtime in place. npm and network access

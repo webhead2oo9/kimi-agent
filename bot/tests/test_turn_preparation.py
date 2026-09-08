@@ -19,6 +19,7 @@ from agent.turn import (
 from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage, ProviderCapability
 from tests.helpers import RecordingEnsureUserBank, RecordingRecall, make_turn_dependencies
+from tools.registry import TurnDiscordMessageSnapshot
 from trust.tiers import TrustTier
 
 
@@ -221,6 +222,21 @@ async def test_prepare_turn_resolves_discord_hints_without_changing_user_content
     assert prepared.content == "hello"
     assert prepared.discord_reference_hints == (hint,)
     assert seen == ["hello"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_turn_carries_immutable_trigger_snapshot() -> None:
+    snapshot = TurnDiscordMessageSnapshot(555, 999, 100, 123, "original", False)
+    dependencies, _manager = _dependencies()
+
+    prepared = await prepare_turn(
+        replace(_input(), trigger_discord_message_snapshot=snapshot),
+        dependencies=dependencies,
+        config=_config(),
+    )
+
+    assert prepared is not None
+    assert prepared.trigger_discord_message_snapshot is snapshot
 
 
 @pytest.mark.asyncio

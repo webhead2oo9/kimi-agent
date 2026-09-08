@@ -898,7 +898,7 @@ async def test_application_close_drains_active_message_before_resources(
     events: list[str] = []
     entered = asyncio.Event()
 
-    async def active_message(_message: object) -> None:
+    async def active_message(_message: object, **_kwargs: object) -> None:
         events.append("turn-start")
         entered.set()
         try:

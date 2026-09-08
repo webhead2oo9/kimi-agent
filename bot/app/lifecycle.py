@@ -133,6 +133,7 @@ class LifecycleCallbacks:
     lock_user_conversations: UserConversationLock
     run_learn: LearnTurn
     is_user_blocked: Callable[[str], Awaitable[bool]]
+    channel_access_allowed: Callable[[object, object], bool]
     model_log_label: Callable[[str], str]
 
 
@@ -668,6 +669,7 @@ class ApplicationLifecycle:
             resources.trust_resolver,
             run_learn=callbacks.run_learn,
             is_blocked=callbacks.is_user_blocked,
+            channel_access_check=callbacks.channel_access_allowed,
             request_consent=lambda interaction, resume: resources.user_app_consent.prompt_if_needed(
                 interaction,
                 on_accept=resume,
@@ -692,6 +694,7 @@ class ApplicationLifecycle:
             policy_url=settings.privacy_policy_url,
             browser_data_store=resources.tools.browser_service,
             video_data_store=resources.tools.video_service,
+            plugin_privacy_callbacks=resources.tools.plugin_privacy_callbacks,
             cancel_user_work=resources.work_cancellation.cancel_for_privacy,
             is_available=callbacks.gateway_interactions_ready,
             user_install_enabled=settings.user_app_chat_enabled,
@@ -850,6 +853,7 @@ class ApplicationLifecycle:
                     conversation_turn_lock=resources.callbacks.lock_user_conversations,
                     browser_data_store=resources.tools.browser_service,
                     video_data_store=resources.tools.video_service,
+                    plugin_privacy_callbacks=resources.tools.plugin_privacy_callbacks,
                 )
             except Exception:
                 log.exception(

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import socket
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -24,6 +27,7 @@ from modules.http import (
     ResolvedHostRule,
     resolve_host_rules,
 )
+from modules import http as module_http
 
 
 def test_resolve_host_rules_expands_cdn_and_settings() -> None:
@@ -228,6 +232,7 @@ async def server() -> AsyncIterator[TestServer]:
                 "cookie": request.headers.get("Cookie"),
                 "proxy_authorization": request.headers.get("Proxy-Authorization"),
                 "x_api_key": request.headers.get("X-API-Key"),
+                "x_google_api_key": request.headers.get("X-Goog-Api-Key"),
                 "x_test": request.headers.get("X-Test"),
             }
         )
@@ -332,6 +337,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
                 "Cookie": "session=secret",
                 "Proxy-Authorization": "Basic secret",
                 "X-API-Key": "secret-key",
+                "X-Goog-Api-Key": "gemini-secret-key",
                 "X-Test": "kept",
             },
         )
@@ -340,6 +346,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
             "cookie": None,
             "proxy_authorization": None,
             "x_api_key": None,
+            "x_google_api_key": None,
             "x_test": "kept",
         }
     finally:
@@ -368,3 +375,242 @@ async def test_transport_failures_are_wrapped() -> None:
             await client.get("http://127.0.0.1:9/nothing", timeout_seconds=1)
     finally:
         await runtime.close()
+
+
+class _DeadlineClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _DeadlineContent:
+    def __init__(self, clock: _DeadlineClock, delays: tuple[float, ...]) -> None:
+        self._clock = clock
+        self._delays = delays
+
+    async def iter_chunked(self, _size: int) -> AsyncIterator[bytes]:
+        for delay in self._delays:
+            self._clock.now += delay
+            yield b"chunk"
+
+
+class _DeadlineResponse:
+    def __init__(
+        self,
+        clock: _DeadlineClock,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        body_delays: tuple[float, ...] = (),
+    ) -> None:
+        self.status = status
+        self.headers = headers or {}
+        self.content_length = None
+        self.content = _DeadlineContent(clock, body_delays)
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _DeadlineSession:
+    def __init__(self, clock: _DeadlineClock, responses: list[_DeadlineResponse]) -> None:
+        self.clock = clock
+        self.responses = responses
+        self.timeouts: list[float] = []
+
+    async def request(self, *_args: Any, **kwargs: Any) -> _DeadlineResponse:
+        timeout = kwargs["timeout"].total
+        assert isinstance(timeout, float)
+        self.timeouts.append(timeout)
+        request_delay = 0.6
+        self.clock.now += request_delay
+        if timeout < request_delay:
+            raise TimeoutError
+        return self.responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_redirect_hops_share_one_total_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _DeadlineClock()
+    responses = [
+        _DeadlineResponse(clock, status=302, headers={"Location": "/next"}),
+        _DeadlineResponse(clock),
+    ]
+    session = _DeadlineSession(clock, responses)
+    runtime = SimpleNamespace(session=lambda *, private: session)
+    client = module_http.ModuleHttpImpl(
+        cast(ModuleHttpRuntime, runtime),
+        "mod",
+        (ResolvedHostRule("example.org", frozenset({"https"}), frozenset(), False),),
+    )
+    monkeypatch.setattr(module_http.time, "monotonic", clock.monotonic)
+
+    with pytest.raises(ModuleHttpError, match="timed out"):
+        await client.get("https://example.org/start", timeout_seconds=1.0)
+
+    assert session.timeouts == pytest.approx([1.0, 0.4])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("download", [False, True])
+async def test_streamed_bodies_share_the_request_deadline(
+    monkeypatch: pytest.MonkeyPatch, download: bool
+) -> None:
+    clock = _DeadlineClock()
+    response = _DeadlineResponse(clock, body_delays=(0.6, 0.6))
+    session = _DeadlineSession(clock, [response])
+
+    # Headers arrive immediately in this case; only the streamed body advances time.
+    async def immediate_request(*_args: Any, **kwargs: Any) -> _DeadlineResponse:
+        return session.responses.pop(0)
+
+    session.request = immediate_request  # type: ignore[method-assign]
+    runtime = SimpleNamespace(session=lambda *, private: session)
+    client = module_http.ModuleHttpImpl(
+        cast(ModuleHttpRuntime, runtime),
+        "mod",
+        (ResolvedHostRule("example.org", frozenset({"https"}), frozenset(), False),),
+    )
+    monkeypatch.setattr(module_http.time, "monotonic", clock.monotonic)
+
+    with pytest.raises(ModuleHttpError, match="timed out"):
+        if download:
+            async for _chunk in client.download("https://example.org/body", timeout_seconds=1.0):
+                pass
+        else:
+            await client.get("https://example.org/body", timeout_seconds=1.0)
+
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds", [math.nan, math.inf, -math.inf])
+async def test_nonfinite_deadlines_are_rejected(timeout_seconds: float) -> None:
+    runtime = SimpleNamespace(
+        session=lambda *, private: (_ for _ in ()).throw(AssertionError("request started"))
+    )
+    client = module_http.ModuleHttpImpl(
+        cast(ModuleHttpRuntime, runtime),
+        "mod",
+        (ResolvedHostRule("example.org", frozenset({"https"}), frozenset(), False),),
+    )
+
+    with pytest.raises(ModuleContractError, match="finite and positive"):
+        await client.get("https://example.org/data", timeout_seconds=timeout_seconds)
+
+
+class _StalledHeaderSession:
+    def __init__(self, *, redirect_first: bool) -> None:
+        self.redirect_first = redirect_first
+        self.calls = 0
+        self.redirect_response: _DeadlineResponse | None = None
+
+    async def request(self, *_args: Any, **_kwargs: Any) -> _DeadlineResponse:
+        self.calls += 1
+        if self.redirect_first and self.calls == 1:
+            self.redirect_response = _DeadlineResponse(
+                _DeadlineClock(),
+                status=302,
+                headers={"Location": "/stalled"},
+            )
+            return self.redirect_response
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redirect_first", [False, True])
+async def test_exact_deadline_bounds_stalled_header_acquisition_and_redirects(
+    redirect_first: bool,
+) -> None:
+    session = _StalledHeaderSession(redirect_first=redirect_first)
+    runtime = SimpleNamespace(session=lambda *, private: session)
+    client = module_http.ModuleHttpImpl(
+        cast(ModuleHttpRuntime, runtime),
+        "mod",
+        (ResolvedHostRule("example.org", frozenset({"https"}), frozenset(), False),),
+    )
+
+    with pytest.raises(ModuleHttpError, match="timed out"):
+        await asyncio.wait_for(
+            client.get("https://example.org/start", timeout_seconds=0.01),
+            timeout=0.25,
+        )
+
+    assert session.calls == (2 if redirect_first else 1)
+    if session.redirect_response is not None:
+        assert session.redirect_response.released is True
+
+
+def _buffering_client(
+    response: _DeadlineResponse,
+) -> tuple[module_http.ModuleHttpImpl, _DeadlineSession]:
+    session = _DeadlineSession(_DeadlineClock(), [response])
+
+    async def immediate_request(*_args: Any, **_kwargs: Any) -> _DeadlineResponse:
+        return session.responses.pop(0)
+
+    session.request = immediate_request  # type: ignore[method-assign]
+    runtime = SimpleNamespace(session=lambda *, private: session)
+    return (
+        module_http.ModuleHttpImpl(
+            cast(ModuleHttpRuntime, runtime),
+            "mod",
+            (ResolvedHostRule("example.org", frozenset({"https"}), frozenset(), False),),
+        ),
+        session,
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_releases_response_before_consumer_stops_early() -> None:
+    response = _DeadlineResponse(_DeadlineClock(), body_delays=(0.0, 0.0))
+    client, _session = _buffering_client(response)
+
+    async for chunk in client.download("https://example.org/file"):
+        assert chunk
+        break
+
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["get", "post_json", "download"])
+async def test_http_rejects_caps_above_host_limit(method_name: str) -> None:
+    response = _DeadlineResponse(_DeadlineClock(), body_delays=(0.0,))
+    client, session = _buffering_client(response)
+    max_bytes = module_http.DEFAULT_MAX_BYTES + 1
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        if method_name == "get":
+            await client.get("https://example.org/file", max_bytes=max_bytes)
+        elif method_name == "post_json":
+            await client.post_json("https://example.org/file", {}, max_bytes=max_bytes)
+        else:
+            async for _chunk in client.download("https://example.org/file", max_bytes=max_bytes):
+                pass
+
+    assert session.responses == [response]
+
+
+@pytest.mark.asyncio
+async def test_download_releases_response_when_consumer_is_cancelled_between_chunks() -> None:
+    response = _DeadlineResponse(_DeadlineClock(), body_delays=(0.0, 0.0))
+    client, _session = _buffering_client(response)
+    first_chunk_seen = asyncio.Event()
+
+    async def consume() -> None:
+        async for _chunk in client.download("https://example.org/file"):
+            first_chunk_seen.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(consume())
+    await first_chunk_seen.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert response.released is True

@@ -46,7 +46,7 @@ _METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "instance-d
 _METADATA_ADDRESSES = ("169.254.169.254", "fd00:ec2::254", "100.100.100.200")
 _METADATA_IPS = frozenset(ipaddress.ip_address(address) for address in _METADATA_ADDRESSES)
 _CROSS_ORIGIN_SENSITIVE_HEADERS = frozenset(
-    {"authorization", "cookie", "proxy-authorization", "x-api-key"}
+    {"authorization", "cookie", "proxy-authorization", "x-api-key", "x-goog-api-key"}
 )
 
 

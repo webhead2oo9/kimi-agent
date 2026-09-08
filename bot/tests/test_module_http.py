@@ -232,6 +232,7 @@ async def server() -> AsyncIterator[TestServer]:
                 "cookie": request.headers.get("Cookie"),
                 "proxy_authorization": request.headers.get("Proxy-Authorization"),
                 "x_api_key": request.headers.get("X-API-Key"),
+                "x_google_api_key": request.headers.get("X-Goog-Api-Key"),
                 "x_test": request.headers.get("X-Test"),
             }
         )
@@ -336,6 +337,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
                 "Cookie": "session=secret",
                 "Proxy-Authorization": "Basic secret",
                 "X-API-Key": "secret-key",
+                "X-Goog-Api-Key": "gemini-secret-key",
                 "X-Test": "kept",
             },
         )
@@ -344,6 +346,7 @@ async def test_cross_origin_redirect_strips_sensitive_headers(server: TestServer
             "cookie": None,
             "proxy_authorization": None,
             "x_api_key": None,
+            "x_google_api_key": None,
             "x_test": "kept",
         }
     finally:

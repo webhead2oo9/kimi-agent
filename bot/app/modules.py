@@ -45,6 +45,7 @@ from kimi_agent_module_api import (
     ModuleToolContext,
     ModuleToolHandler,
     ProposalService,
+    TriggeringDiscordMessageSnapshot,
     TrustTier,
 )
 
@@ -190,6 +191,18 @@ class _LoadTimeToolRegistry:
                             None
                             if personal_chat
                             else _optional_snowflake(ctx.trigger_discord_message_id)
+                        ),
+                        trigger_discord_message_snapshot=(
+                            None
+                            if personal_chat or ctx.trigger_discord_message_snapshot is None
+                            else TriggeringDiscordMessageSnapshot(
+                                message_id=ctx.trigger_discord_message_snapshot.message_id,
+                                guild_id=ctx.trigger_discord_message_snapshot.guild_id,
+                                channel_id=ctx.trigger_discord_message_snapshot.channel_id,
+                                author_id=ctx.trigger_discord_message_snapshot.author_id,
+                                content=ctx.trigger_discord_message_snapshot.content,
+                                author_is_bot=ctx.trigger_discord_message_snapshot.author_is_bot,
+                            )
                         ),
                         files=files,
                     ),

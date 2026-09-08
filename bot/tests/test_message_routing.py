@@ -26,7 +26,7 @@ from app.conversation_routing import ResolvedConversation, resolve_conversation_
 from config.fragments.tool_policy import THREAD_STATE_TOOLS
 from app.threads import ThreadHandoffManager
 from agent.turn import TurnResult, handle_turn
-from tools.registry import TurnHandoff, TurnOutbox
+from tools.registry import TurnDiscordMessageSnapshot, TurnHandoff, TurnOutbox
 from tools.threads import ThreadCloseRequest, ThreadRequest
 from config.model_config import ModelConfig
 from config.settings import Settings
@@ -321,6 +321,41 @@ async def test_handle_message_outside_a_thread_has_no_parent_to_resolve(
     assert captured["thread_id"] is None
     # A plain channel is its own parent, so the two agree and nothing changes.
     assert captured["parent_channel_id"] == "100"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_captures_trigger_snapshot_at_entry(
+    monkeypatch, routing_database: Database
+):
+    app = _build_test_app(monkeypatch)
+    message = _text_message(channel_id=100, content="original evidence")
+    resolve = app.message_controller.resolve_conversation_for_message
+
+    async def edit_during_first_await(*args: Any, **kwargs: Any) -> ResolvedConversation | None:
+        message.content = "edited evidence"
+        return await resolve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        app.message_controller,
+        "resolve_conversation_for_message",
+        edit_during_first_await,
+    )
+
+    captured = await _capture_conversation_call(
+        monkeypatch,
+        app,
+        message,
+        ConversationStore(routing_database),
+    )
+
+    assert captured["trigger_discord_message_snapshot"] == TurnDiscordMessageSnapshot(
+        message_id=555,
+        guild_id=999,
+        channel_id=100,
+        author_id=123,
+        content="original evidence",
+        author_is_bot=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -1478,6 +1513,84 @@ async def _drive_on_message_root_concurrency(
 
 
 @pytest.mark.asyncio
+async def test_on_message_queued_edit_cannot_change_turn_content_or_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    routing_database: Database,
+) -> None:
+    app = _build_test_app(monkeypatch)
+    store = ConversationStore(routing_database)
+    _wire_handle_message(monkeypatch, app, store)
+    app.settings.allowed_channel_ids = ""
+    monkeypatch.setattr(app.message_controller, "_should_respond", lambda *args, **kwargs: True)
+
+    conversation_id = await store.get_or_create(
+        "guild:999:channel:100:thread:main:root:900",
+        "general",
+        guild_id="999",
+        channel_id="100",
+        thread_id=None,
+        root_discord_message_id="900",
+    )
+    await store.save_channel_messages(
+        conversation_id,
+        [ChannelMessageRecord("901", "assistant", None, None, "previous reply")],
+        context_channel_id="100",
+    )
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls: list[dict[str, Any]] = []
+
+    async def run_conversation(**kwargs: Any) -> ConversationRunResult:
+        call = _conversation_call_kwargs(kwargs)
+        calls.append(call)
+        if call["user_id"] == "123":
+            first_started.set()
+            await release_first.wait()
+        return ConversationRunResult(text="ok")
+
+    monkeypatch.setattr(message_runtime, "run_conversation", run_conversation)
+    first = _trigger_message(
+        content="<@999> hold the root",
+        author_id=123,
+        author_name="Alice",
+        message_id=902,
+        reference_message_id=901,
+    )
+    queued = _trigger_message(
+        content="original turn",
+        author_id=456,
+        author_name="Bob",
+        message_id=903,
+        reference_message_id=901,
+    )
+
+    first_task = asyncio.create_task(app.on_message(first))
+    await first_started.wait()
+    queued_task = asyncio.create_task(app.on_message(queued))
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not any(count >= 2 for count in RootLockProbe(app).snapshot().refcounts.values()):
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("second message never queued on the root lock")
+        await asyncio.sleep(0.005)
+
+    queued.content = "edited turn"
+    release_first.set()
+    await asyncio.gather(first_task, queued_task)
+
+    queued_call = next(call for call in calls if call["user_id"] == "456")
+    assert queued_call["user_message"] == "original turn"
+    assert queued_call["trigger_discord_message_snapshot"] == TurnDiscordMessageSnapshot(
+        message_id=903,
+        guild_id=999,
+        channel_id=100,
+        author_id=456,
+        content="original turn",
+        author_is_bot=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_replies_to_different_roots_run_in_parallel(monkeypatch, routing_database: Database):
     first = _trigger_message(
         content="a follow-up",
@@ -1559,7 +1672,7 @@ async def test_on_message_admission_rejects_same_user_distinct_root_but_allows_p
     release_alice = asyncio.Event()
     starts: list[int] = []
 
-    async def fake_on_message_for_user(message: Any) -> None:
+    async def fake_on_message_for_user(message: Any, **_kwargs: Any) -> None:
         starts.append(message.id)
         if message.id == 1:
             alice_started.set()

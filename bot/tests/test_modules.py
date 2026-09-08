@@ -20,7 +20,11 @@ from app.modules import (
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api import ModuleCapabilities, events as ev
+from kimi_agent_module_api import (
+    ModuleCapabilities,
+    TriggeringDiscordMessageSnapshot,
+    events as ev,
+)
 from kimi_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
@@ -49,7 +53,7 @@ from modules.testing import (
 from config.settings import Settings
 from storage.db import Database
 from tests.module_event_helpers import drain_event_bus
-from tools.registry import ToolRegistry
+from tools.registry import TurnDiscordMessageSnapshot, ToolRegistry
 
 
 class FakeModule:
@@ -741,6 +745,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         from trust.tiers import TrustTier as CoreTier
 
         def ctx(guild: str | None) -> MessageContext:
+            snapshot = TurnDiscordMessageSnapshot(78, 7, 34, 12, "original", False)
             return MessageContext(
                 user_id="12",
                 user_name="u",
@@ -749,6 +754,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
                 thread_id="56",
                 trust_tier=CoreTier.REGULAR,
                 trigger_discord_message_id="78",
+                trigger_discord_message_snapshot=snapshot,
             )
 
         assert await registry.dispatch("echo", {}, ctx("7")) == "ok"
@@ -761,6 +767,9 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         )
         assert sdk_ctx.trust_tier.value == "regular"
         assert sdk_ctx.trigger_discord_message_id == 78
+        assert sdk_ctx.trigger_discord_message_snapshot == TriggeringDiscordMessageSnapshot(
+            78, 7, 34, 12, "original", False
+        )
         assert sdk_ctx.files is None  # File access requires an explicit module permission.
         # Scoped to guild 7 at the registry, so 8 is masked as unknown before the handler.
         assert "Unknown tool" in str(await registry.dispatch("echo", {}, ctx("8")))
@@ -1019,6 +1028,7 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
         assert await registry.dispatch("echo", {}, ctx) == "ok"
         assert seen[-1].channel_id is None and seen[-1].guild_id is None
         assert seen[-1].trigger_discord_message_id is None
+        assert seen[-1].trigger_discord_message_snapshot is None
     finally:
         await manager.close()
         await database.close()

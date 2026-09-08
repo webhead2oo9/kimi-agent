@@ -34,7 +34,8 @@ technical version is [`privacy.md`](privacy.md).
   wipe it any time with `/privacy`.
 - Your data is **never sold or used for ads**.
 - `/privacy` deletes Kimi's local conversation history, workspace files,
-  persistent browser profile, video sessions, and personal memory. For video
+  persistent browser profile, video sessions, enabled operator-plugin data,
+  and personal memory. For video
   sessions Kimi also requests deletion of every known Gemini Interaction and
   uploaded File; it cannot erase Discord messages or guarantee removal from a
   provider's safety logs or backups.
@@ -224,7 +225,10 @@ the configured services and tools needed to answer you.
 - **`/privacy` → Delete my data**: does everything above and also immediately
   deletes Kimi's local copy of conversations you started, your messages in
   conversations started by someone else, your workspace files, browser profile,
-  and video sessions. For those sessions Kimi also requests deletion of every
+  video sessions, and user data managed by enabled operator plugins that register
+  a deletion handler. A failed or unavailable required plugin handler keeps the
+  durable request pending and pauses new activity until a retry succeeds. For
+  video sessions Kimi also requests deletion of every
   known stored Gemini Interaction and Files API upload, and keeps retrying if
   Google is temporarily unreachable; your local deletion finishes either way
   and does not keep you blocked while that retry runs. If you started a shared

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -703,13 +705,36 @@ def test_tool_registry_is_sealed_even_when_a_later_create_fails(tmp_path: Path) 
         captured[0].registry.register("late", "no", {"type": "object"}, _noop_tool)
 
 
+def test_module_turn_budget_is_thread_safe_namespaced_and_validated() -> None:
+    usage: dict[tuple[str, str], int] = {}
+    lock = threading.Lock()
+    first = module_runtime._ModuleTurnBudget("first", usage, lock)
+    second = module_runtime._ModuleTurnBudget("second", usage, lock)
+
+    def consume_many() -> int:
+        return sum(first.consume("media", 10_000) for _ in range(5_000))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        admitted = sum(pool.map(lambda _index: consume_many(), range(8)))
+
+    assert admitted == 10_000
+    assert usage[("first", "media")] == 10_000
+    assert second.consume("media", 1) is True
+    assert second.consume("media", 1) is False
+    with pytest.raises(ValueError):
+        first.consume(b"media", 1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        first.consume("media", True)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
 async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path: Path) -> None:
     seen: list[Any] = []
 
     async def echo(_arguments: dict[str, Any], ctx: Any) -> str:
         seen.append(ctx)
-        return "ok"
+        assert ctx.turn_budget is not None
+        return str(ctx.turn_budget.consume("posted_media", 2))
 
     def create(ctx: ModuleLoadContext) -> FakeModule:
         ctx.registry.register(
@@ -757,7 +782,10 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
                 trigger_discord_message_snapshot=snapshot,
             )
 
-        assert await registry.dispatch("echo", {}, ctx("7")) == "ok"
+        turn_ctx = ctx("7")
+        assert await registry.dispatch("echo", {}, turn_ctx) == "True"
+        assert await registry.dispatch("echo", {}, turn_ctx) == "True"
+        assert await registry.dispatch("echo", {}, turn_ctx) == "False"
         sdk_ctx = seen[-1]
         assert (sdk_ctx.user_id, sdk_ctx.guild_id, sdk_ctx.channel_id, sdk_ctx.thread_id) == (
             12,
@@ -773,7 +801,7 @@ async def test_module_tools_receive_int_ids_and_refuse_inactive_guilds(tmp_path:
         assert sdk_ctx.files is None  # File access requires an explicit module permission.
         # Scoped to guild 7 at the registry, so 8 is masked as unknown before the handler.
         assert "Unknown tool" in str(await registry.dispatch("echo", {}, ctx("8")))
-        assert len(seen) == 1
+        assert len(seen) == 3
     finally:
         await manager.close()
         await database.close()

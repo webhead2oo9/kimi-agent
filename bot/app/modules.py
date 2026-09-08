@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from config.settings import Settings
     from tools.registry import MessageContext, ToolRegistry
 
+
 from modules.actions import DeclaredDiscordActions
 from modules.files import ModuleToolFiles
 from storage.db import Database
@@ -65,6 +67,27 @@ from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl
 from modules.tasks import run_bounded
+
+
+@dataclass(slots=True)
+class _ModuleTurnBudget:
+    module_name: str
+    usage: dict[tuple[str, str], int]
+    lock: threading.Lock
+
+    def consume(self, name: str, limit: int) -> bool:
+        if not isinstance(name, str) or not name or len(name) > 100:
+            raise ValueError("module budget name must contain 1-100 characters")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("module budget limit must be a positive integer")
+        key = (self.module_name, name)
+        with self.lock:
+            used = self.usage.get(key, 0)
+            if used >= limit:
+                return False
+            self.usage[key] = used + 1
+            return True
+
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +228,9 @@ class _LoadTimeToolRegistry:
                             )
                         ),
                         files=files,
+                        turn_budget=_ModuleTurnBudget(
+                            module_name, ctx.module_budget_usage, ctx.module_budget_lock
+                        ),
                     ),
                 )
             finally:

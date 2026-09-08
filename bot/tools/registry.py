@@ -228,6 +228,10 @@ class MessageContext:
     trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     context_key: str = ""
     tool_event_turn_id: str = ""
+    # Mutable module-specific counters shared by all child dispatch tasks in this
+    # outer turn. Keys are (module name, module-local counter name).
+    module_budget_usage: dict[tuple[str, str], int] = field(default_factory=dict)
+    module_budget_lock: threading.Lock = field(default_factory=threading.Lock)
     # One allowance table covers every turn-metered tool operation. Production
     # resolves caps from the registered tools and current operator fragments when
     # the context is created. An absent cap fails closed.

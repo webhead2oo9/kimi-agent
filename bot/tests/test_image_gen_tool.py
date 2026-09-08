@@ -110,6 +110,20 @@ def _args(**extra: object) -> dict[str, object]:
     }
 
 
+@pytest.mark.asyncio
+async def test_sunburst_config_is_selectable_and_reaches_backend(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    entry = next(t for t in registry.get_tools_for_tier(TrustTier.REGULAR) if t.name == TOOL_NAME)
+    model_field = next(field for field in entry.config_spec if field.field == "model")
+    assert "gpt-image-2.5-sunburst" in model_field.choices
+    assert "gpt-image-2" in model_field.choices
+    ctx = _context(tool_config={"model": "gpt-image-2.5-sunburst", "size": "1536x1024"})
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+    assert result["ok"] is True
+    assert service.generate_requests[0].model == "gpt-image-2.5-sunburst"
+    assert service.generate_requests[0].size == "1536x1024"
+
+
 def test_tool_is_core_and_regular_tier(tmp_path: Path) -> None:
     registry, _service, _manager = _registered(tmp_path)
 

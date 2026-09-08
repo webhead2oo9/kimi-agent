@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import discord
@@ -60,6 +61,7 @@ from app.turn_entry import (
     resolve_parent_channel_id,
 )
 from config.fragments.channel_pins import (
+    channel_access_allowed,
     filter_pins_to_searchable,
     load_channel_blocked_tools,
     load_channel_pinned_tools,
@@ -84,7 +86,7 @@ from storage.image_distillations import ImageDistillationStore
 from storage.preferences import PreferenceStore
 from storage.usage import UsageStore
 from tools.learn import LearnTarget
-from tools.registry import USER_APP_SCOPE_CHANNEL_ID
+from tools.registry import TurnDiscordMessageSnapshot, USER_APP_SCOPE_CHANNEL_ID
 from trust.resolver import TrustResolver
 from trust.tiers import TrustTier
 from utils.privacy_barrier import PrivacyDeletionPendingError, UserPrivacyBarrier
@@ -230,6 +232,35 @@ class DiscordMessageController:
         if not personal_dm and not self._should_respond(message, active_guilds=active_guilds):
             return
 
+        # Channel admission is an additive guild policy, distinct from trust
+        # tiers and personal chat. Keep it before every await and every mutable
+        # downstream boundary, including blocked-user storage and consent.
+        if not personal_dm and not self.channel_access_allowed(message.channel, message.author):
+            log.info(
+                "Ignoring user %s outside the admission policy for channel %s",
+                message.author.id,
+                resolve_parent_channel_id(message.channel),
+            )
+            return
+
+        # Discord mutates cached Message objects in place for later edit events.
+        # Copy the turn's raw text and evidence before the first await, but do not
+        # attach either to retained turn state until the privacy and admission
+        # gates below have accepted the message.
+        raw_turn_content = str(message.content)
+        trigger_snapshot = (
+            TurnDiscordMessageSnapshot(
+                message_id=int(message.id),
+                guild_id=int(message.guild.id),
+                channel_id=int(message.channel.id),
+                author_id=int(message.author.id),
+                content=raw_turn_content,
+                author_is_bot=bool(message.author.bot),
+            )
+            if message.guild is not None and not personal_dm
+            else None
+        )
+
         # Hard block gate precedes reactions, transcript writes, every lock or
         # privacy lease, tools, and provider calls.
         if await self._blocked_user(str(message.author.id)):
@@ -284,7 +315,11 @@ class DiscordMessageController:
             ):
                 async with admission.lease:
                     async with self._bindings.privacy_barrier().activity(str(message.author.id)):
-                        await self._on_message_for_user(message)
+                        await self._on_message_for_user(
+                            message,
+                            raw_turn_content=raw_turn_content,
+                            trigger_snapshot=trigger_snapshot,
+                        )
         except PrivacyDeletionPendingError:
             log.info(
                 "Ignoring user %s while their privacy deletion remains pending",
@@ -295,7 +330,13 @@ class DiscordMessageController:
                 raise
             log.info("Stopped active response for user %s", message.author.id)
 
-    async def _on_message_for_user(self, message: discord.Message) -> None:
+    async def _on_message_for_user(
+        self,
+        message: discord.Message,
+        *,
+        raw_turn_content: str,
+        trigger_snapshot: TurnDiscordMessageSnapshot | None,
+    ) -> None:
         # First-interaction privacy gate. Sits before conversation resolution, the
         # lock, and the model turn, so an un-consented message never reaches the
         # provider or SQLite (resolve_conversation_for_message persists a
@@ -346,6 +387,8 @@ class DiscordMessageController:
                         message,
                         lock_acquired=True,
                         resolved_conversation=resolved,
+                        raw_turn_content=raw_turn_content,
+                        trigger_snapshot=trigger_snapshot,
                     )
                     if result is None:
                         # No turn ran: a bare @mention with no text/attachment to act
@@ -374,6 +417,8 @@ class DiscordMessageController:
         *,
         lock_acquired: bool = False,
         resolved_conversation: ResolvedConversation | None = None,
+        raw_turn_content: str | None = None,
+        trigger_snapshot: TurnDiscordMessageSnapshot | None = None,
     ) -> TurnResult | None:
         assert self._bindings.context_manager() is not None
         personal_chat = self._bindings.personal_chat()
@@ -387,6 +432,21 @@ class DiscordMessageController:
             else None
         )
         personal_dm = personal_dm_tier is not None
+
+        if raw_turn_content is None:
+            raw_turn_content = str(message.content)
+            trigger_snapshot = (
+                TurnDiscordMessageSnapshot(
+                    message_id=int(message.id),
+                    guild_id=int(message.guild.id),
+                    channel_id=int(message.channel.id),
+                    author_id=int(message.author.id),
+                    content=raw_turn_content,
+                    author_is_bot=bool(message.author.bot),
+                )
+                if message.guild is not None and not personal_dm
+                else None
+            )
 
         context_channel_id = USER_APP_SCOPE_CHANNEL_ID if personal_dm else str(message.channel.id)
         context_thread_id = (
@@ -440,7 +500,7 @@ class DiscordMessageController:
             )
 
         turn_input = TurnPreparationInput(
-            raw_content=clean_message_text(message.content),
+            raw_content=clean_message_text(raw_turn_content),
             source_message=message,
             bot_user=self._bot.user,
             guild_id=guild_id,
@@ -454,6 +514,7 @@ class DiscordMessageController:
             trust_tier=trust_tier,
             conversation_key=conversation_key,
             trigger_discord_message_id=str(message.id),
+            trigger_discord_message_snapshot=trigger_snapshot,
             referenced_message_id=referenced_message_id(message),
             conversation_owner_user_id=resolved_conversation.owner_user_id,
             conversation_access_scope=resolved_conversation.access_scope,
@@ -652,6 +713,14 @@ class DiscordMessageController:
         entry = model_config.models[model_name]
         profile = model_config.profile_for_model(model_name)
         return f"{model_name}={profile.type}/{entry.model}"
+
+    def channel_access_allowed(self, channel: object, user: object) -> bool:
+        """Apply the hot-read parent-channel admission policy to a guild user."""
+        return channel_access_allowed(
+            channel,
+            user,
+            config_dir=Path(self._turn_settings.config_dir),
+        )
 
     async def run_learn_turn(
         self,

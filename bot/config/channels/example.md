@@ -2,6 +2,15 @@
 # Optional frontmatter is read fresh each turn and stripped before this fragment
 # fills <channel_instructions>.
 #
+# Optional admission allowlists. If either key is present, a guild user must
+# match one listed user ID OR hold one listed role. Empty or malformed lists
+# deny everyone, staff has no implicit bypass, and threads inherit the parent
+# channel's policy. Omit both keys to preserve unrestricted channel behavior.
+# The entire frontmatter must be one valid YAML mapping: unreadable or invalid
+# policy blocks the channel until the fragment is corrected.
+allowed_user_ids: [700000000000000101]
+allowed_role_ids: [700000000000000102, 700000000000000103]
+#
 # Pre-activate searchable tools in this channel without browse_tools. Pins never
 # widen privileges, and a blocked tool always wins over a pin.
 pinned_tools: [discord_text_search]

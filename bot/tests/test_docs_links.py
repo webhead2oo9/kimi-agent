@@ -227,6 +227,15 @@ def test_source_and_docs_do_not_reference_missing_spec_tree() -> None:
     assert not offenders, f"References to the missing docs/superpowers tree: {offenders}"
 
 
+def test_channel_admission_documentation_states_channel_only_scope() -> None:
+    configuration = (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+
+    assert "Admission keys are supported only in channel fragments" in configuration
+    assert "Server fragments do not provide guild-wide admission" in configuration
+    assert "Invalid policy blocks the channel until corrected" in configuration
+    assert "does not cache a last-known-good policy" in configuration
+
+
 def test_builtin_tools_have_activity_labels_and_catalog_documentation() -> None:
     """Every static built-in registration stays mirrored in UI labels and tools docs."""
 

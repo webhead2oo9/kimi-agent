@@ -47,6 +47,12 @@ from config.plugin_settings import (
 )
 from config.settings import Settings
 from tools.registry import ToolRegistry
+from utils.plugin_privacy import (
+    PrivacyDeletionCallback,
+    PrivacyDeletionCallbackRegistry,
+    PrivacyDeletionCallbackResult,
+    PrivacyDeletionScope,
+)
 
 if TYPE_CHECKING:
     from discord_adapter.gateway import DiscordGateway
@@ -61,6 +67,8 @@ __all__ = [
     "PluginContext",
     "PluginSetting",
     "PluginSettingsDefinition",
+    "PrivacyDeletionCallbackResult",
+    "PrivacyDeletionScope",
     "build_plugin_context",
     "load_plugins_with_settings",
 ]
@@ -77,16 +85,30 @@ class PluginContext:
     activity labels for the plugin's tools (first-wins; core is authoritative).
     ``declare_surface_tools`` adds the plugin's own tools to the eval-harness
     surfaces (see ``app/tool_surfaces.py``), because public core cannot name them.
+    ``register_privacy_deletion_callback`` adds an idempotent plugin-owned data
+    cleanup to the host's durable user-deletion barrier without core importing
+    or naming the plugin.
     """
 
     settings: Settings
     registry: ToolRegistry
     gateway: DiscordGateway
     register_tool_labels: Callable[[Mapping[str, str]], None]
+    privacy_deletion_callbacks: PrivacyDeletionCallbackRegistry
     plugin_settings: BaseSettings | None = None
 
     def declare_surface_tools(self, surface: str, names: Sequence[str]) -> None:
         declare_surface_tools(surface, names)
+
+    def register_privacy_deletion_callback(
+        self,
+        name: str,
+        callback: PrivacyDeletionCallback,
+        *,
+        scopes: frozenset[PrivacyDeletionScope],
+    ) -> None:
+        """Register plugin-owned data deletion for the declared user scopes."""
+        self.privacy_deletion_callbacks.register(name, callback, scopes=scopes)
 
     def settings_for(self, settings_type: type[_SettingsT]) -> _SettingsT:
         """Return the prepared settings instance for this plugin.
@@ -105,12 +127,17 @@ def build_plugin_context(
     settings: Settings,
     registry: ToolRegistry,
     gateway: DiscordGateway,
+    *,
+    privacy_deletion_callbacks: PrivacyDeletionCallbackRegistry | None = None,
 ) -> PluginContext:
     return PluginContext(
         settings=settings,
         registry=registry,
         gateway=gateway,
         register_tool_labels=register_tool_labels,
+        privacy_deletion_callbacks=(
+            privacy_deletion_callbacks or PrivacyDeletionCallbackRegistry()
+        ),
     )
 
 
@@ -125,6 +152,7 @@ def load_plugins_with_settings(
     for name in module_names:
         before = ctx.registry.registered_names()
         surfaces_before = snapshot_surface_tools()
+        privacy_callbacks_before = ctx.privacy_deletion_callbacks.snapshot()
         try:
             module = importlib.import_module(name)
             version = getattr(module, "PLUGIN_API_VERSION", None)
@@ -169,6 +197,7 @@ def load_plugins_with_settings(
             # A failed plugin's surface declarations roll back with it, so it
             # leaves nothing behind at all.
             restore_surface_tools(surfaces_before)
+            ctx.privacy_deletion_callbacks.restore(privacy_callbacks_before)
             continue
         log.info("Plugin registered: %s", name)
     return registry

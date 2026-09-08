@@ -48,7 +48,13 @@ from providers.types import (
     ToolCall,
 )
 from tools._common import tool_error
-from tools.registry import MessageContext, ToolEntry, ToolRegistry, TurnOutbox
+from tools.registry import (
+    MessageContext,
+    ToolEntry,
+    ToolRegistry,
+    TurnDiscordMessageSnapshot,
+    TurnOutbox,
+)
 from trust.tiers import TrustTier
 from usage.normalization import LLMUsageCall, UsageBreakdown, normalize_usage
 from workspace import WorkspaceKey
@@ -286,6 +292,7 @@ class ConversationRunRequest:
     thread_id: str | None = None
     parent_channel_id: str = ""
     trigger_discord_message_id: str = ""
+    trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     bot_name: str = ""
     command_template: str | None = None
     recalled_memories: str = ""
@@ -790,6 +797,7 @@ class _ConversationRunner:
             channel_name=request.channel_name,
             platform_member=request.platform_member,
             trigger_discord_message_id=request.trigger_discord_message_id,
+            trigger_discord_message_snapshot=request.trigger_discord_message_snapshot,
             trust_tier=request.trust_tier,
             context_key=request.context.key,
             tool_event_turn_id=turn_id,

@@ -186,6 +186,7 @@ def _bind_teach_consent(
         trust_resolver or app.trust_resolver,
         run_learn=capture_learn,
         is_blocked=is_blocked,
+        channel_access_check=app.message_controller.channel_access_allowed,
         request_consent=lambda interaction, resume: prompter.prompt_if_needed(
             interaction,
             on_accept=resume,

@@ -22,6 +22,7 @@ from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from tools.registry import MessageContext, ToolRegistry
 from trust.tiers import TrustTier
+from utils.plugin_privacy import PrivacyDeletionCallbackResult
 
 
 def _settings(**kwargs: object) -> Settings:
@@ -104,6 +105,40 @@ def test_failed_plugin_is_skipped_and_rolled_back(
     assert not registry.is_registered("broken_tool_b")
     assert registry.is_registered("good_tool")
     assert registry.is_registered("core_tool")
+
+
+def test_plugin_privacy_callback_registration_and_failure_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ToolRegistry()
+
+    async def delete_private_data(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+        del user_id, scope
+        return PrivacyDeletionCallbackResult(ok=True, lines=("Deleted plugin data.",))
+
+    def broken_register(ctx: PluginContext) -> None:
+        ctx.register_privacy_deletion_callback(
+            "broken.private_data",
+            delete_private_data,
+            scopes=frozenset({"all"}),
+        )
+        raise RuntimeError("boom")
+
+    def good_register(ctx: PluginContext) -> None:
+        ctx.register_privacy_deletion_callback(
+            "good.private_data",
+            delete_private_data,
+            scopes=frozenset({"all"}),
+        )
+
+    _fake_module(monkeypatch, "broken_privacy_plugin", register=broken_register)
+    _fake_module(monkeypatch, "good_privacy_plugin", register=good_register)
+    ctx = _ctx(registry)
+
+    _load(("broken_privacy_plugin", "good_privacy_plugin"), ctx)
+
+    assert ctx.privacy_deletion_callbacks.names_for("all") == ("good.private_data",)
+    assert ctx.privacy_deletion_callbacks.names_for("memory") == ()
 
 
 def test_plugin_declares_surface_tools(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,9 +265,18 @@ def test_build_runtime_tools_loads_configured_plugins(
 
     seen: dict[str, Any] = {}
 
+    async def delete_private_data(user_id: str, scope: str) -> PrivacyDeletionCallbackResult:
+        del user_id, scope
+        return PrivacyDeletionCallbackResult(ok=True, lines=("Deleted plugin data.",))
+
     def register(ctx: PluginContext) -> None:
         seen["gateway"] = ctx.gateway
         _register_tool(ctx.registry, "wired_plugin_tool")
+        ctx.register_privacy_deletion_callback(
+            "wired.private_data",
+            delete_private_data,
+            scopes=frozenset({"all"}),
+        )
 
     _fake_module(monkeypatch, "wired_plugin", register=register)
 
@@ -254,6 +298,7 @@ def test_build_runtime_tools_loads_configured_plugins(
 
     assert runtime_tools.registry.is_registered("wired_plugin_tool")
     assert seen["gateway"] is gateway
+    assert runtime_tools.plugin_privacy_callbacks.names_for("all") == ("wired.private_data",)
 
 
 def test_core_imports_without_any_plugin_package_installed() -> None:

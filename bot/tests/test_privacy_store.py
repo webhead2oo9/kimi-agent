@@ -16,6 +16,7 @@ async def test_privacy_deletion_request_survives_database_reopen(tmp_path) -> No
         user_id="42",
         scope="memory",
         memory_backend_required=True,
+        plugin_callback_names=("example.private_data",),
         now=10.0,
     )
     await db.close()
@@ -28,6 +29,7 @@ async def test_privacy_deletion_request_survives_database_reopen(tmp_path) -> No
         await reopened.close()
 
     assert pending == [request]
+    assert pending[0].plugin_callback_names == ("example.private_data",)
 
 
 @pytest.mark.asyncio
@@ -42,18 +44,21 @@ async def test_repeated_request_keeps_widest_scope_and_backend_requirement(
             user_id="42",
             scope="memory",
             memory_backend_required=True,
+            plugin_callback_names=("first.callback",),
             now=10.0,
         )
         second = await store.request(
             user_id="42",
             scope="all",
             memory_backend_required=False,
+            plugin_callback_names=("second.callback",),
             now=20.0,
         )
         third = await store.request(
             user_id="42",
             scope="memory",
             memory_backend_required=False,
+            plugin_callback_names=(),
             now=30.0,
         )
 
@@ -62,6 +67,7 @@ async def test_repeated_request_keeps_widest_scope_and_backend_requirement(
         assert third.generation == 3
         assert third.scope == "all"
         assert third.memory_backend_required is True
+        assert third.plugin_callback_names == ("first.callback", "second.callback")
         assert third.requested_at == 10.0
         assert third.updated_at == 30.0
         assert len({first.request_token, second.request_token, third.request_token}) == 3

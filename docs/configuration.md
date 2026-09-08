@@ -335,6 +335,31 @@ only when addressed?). Only literal YAML booleans count, so a typo falls back to
 scope instead of flipping the whole guild. See
 [`docs/thread-handoff.md`](thread-handoff.md).
 
+A channel fragment can also restrict who may invoke conversational behavior with
+`allowed_user_ids:` and `allowed_role_ids:`. Omit both keys for the existing unrestricted
+behavior. If either key is present, the speaker must match a listed user ID **or** hold at least
+one listed role. The two lists and their entries therefore combine with OR semantics. An explicit
+empty list, a non-list value, or a configured list with no valid numeric IDs denies everyone;
+mixed lists retain only their valid numeric IDs. Staff, owner, administrator permissions, and
+trust tier do not bypass this check. This is channel admission, not a Discord ACL or a tool-trust
+grant.
+
+The policy is hot-read before conversational work. Threads, including forum posts, inherit the
+parent channel's policy; missing parent or required member/role evidence fails closed. It covers
+message mentions/replies and managed-thread automatic replies, plus the staff teaching context
+menu. Personal `/chat` and enabled DMs remain logically guildless and use only the explicit
+`USER_APP_*` user scope.
+
+Every existing channel fragment is parsed as one mapping by the shared strict safe YAML parser.
+Valid mappings with neither admission key preserve unrestricted behavior, and supported YAML
+merges are resolved by that parser before the admission keys are read. An unreadable fragment,
+invalid YAML, a nonmapping root, or multiple YAML documents denies everyone in the channel for
+that invocation, regardless of any previously loaded policy or whether the invalid content is
+unrelated to admission. Invalid policy blocks the channel until corrected; the next invocation
+uses the corrected valid file immediately. Admission does not cache a last-known-good policy and
+does not attempt token/regex recovery, partial interpretation, or custom YAML reconstruction. A
+genuinely absent fragment retains the normal missing-file behavior and is unrestricted.
+
 `learn_log_channel_id:` is the audit feed for staff-taught knowledge. Whenever a Staff
 member teaches the bot something shared, whether a fact into community memory with `teach`
 or a procedure into a skill with `skill_create`/`skill_edit`, the bot posts a card there
@@ -888,10 +913,13 @@ the file) restores inheritance, since an empty body falls through to the next
 scope. A thread with no thread-scoped fragment inherits its parent channel's
 instructions; before these scopes existed it silently got an empty slot.
 
-The two thread scopes are **body only**. `pinned_tools`, `blocked_tools`,
-`thread_handoff`, `thread_auto_respond`, and the `auto_thread_*` keys are read
-at channel and guild scope only, and inside a thread they resolve against the
-parent channel. Everything is read fresh each turn, with no restart needed.
+The two thread scopes are **body only**. Admission keys are supported only in channel fragments:
+`allowed_user_ids` and `allowed_role_ids` in `channels/<channel_id>.md` apply to that channel, and
+inside a thread they resolve against the parent channel.
+Server fragments do not provide guild-wide admission. `pinned_tools`, `blocked_tools`,
+`thread_handoff`, and
+`thread_auto_respond` have both channel and guild loaders; the `auto_thread_*` keys are channel
+only. Everything is read fresh each turn, with no restart needed.
 
 In a forum channel every post is a thread, so `channel_threads/<forum_id>.md` is
 the fragment that actually gets used there.

@@ -67,11 +67,13 @@ Message-deletion events include cached author classification:
 `MessageDeleteEvent.author_is_bot` and `MessageBulkDeleteEvent.bot_message_ids`.
 The values remain unknown for messages that were absent from Discord's cache.
 
-SDK 2.1 adds `ModuleToolContext.trigger_discord_message_id`. Mention-path tool
-calls receive the exact source Discord message snowflake; other surfaces receive
-`None`. Modules that act on a user's source message should require
-`kimi-agent-module-api>=2.1,<3`, reject `None`, fetch that exact message through
-`ctx.discord`, and verify its author before acting.
+SDK 2.1 adds `ModuleToolContext.trigger_discord_message_id`. SDK 2.3 adds
+`trigger_discord_message_snapshot`, an immutable host-owned capture of the
+message, guild, channel, author, content, and bot status made at turn entry.
+Mention-path tool calls receive both; personal and non-message surfaces receive
+`None`. Modules that need authoritative evidence from the triggering message
+should require `kimi-agent-module-api>=2.3,<3` and use the snapshot instead of
+re-fetching mutable or deletable Discord state.
 
 Modules use namespaced guild documents and the physical table names returned
 by `ctx.storage.table()`.
@@ -84,7 +86,9 @@ keep `api_version=2` and receive `files=None` without the permission.
 `read_attachment(id, max_bytes=...)` and `read_workspace(path, max_bytes=...)`
 return bounded bytes without network downloads. The reader expires when the handler
 returns and is scoped to the actual caller. `testing.FakeToolFiles` supports
-independent tests. See the
+independent tests. Module `ctx.http` methods apply an 8 MiB host ceiling even when
+callers supply `max_bytes`; `download` buffers and validates the bounded response
+before yielding chunks so connections are released on early consumer exit. See the
 [file access guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/module-files.md)
 for moderation, reply-image availability, privacy, and limits.
 

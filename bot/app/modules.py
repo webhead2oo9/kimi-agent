@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -45,6 +46,7 @@ from kimi_agent_module_api import (
     ModuleToolContext,
     ModuleToolHandler,
     ProposalService,
+    TriggeringDiscordMessageSnapshot,
     TrustTier,
 )
 
@@ -52,6 +54,7 @@ from kimi_agent_module_api import (
 if TYPE_CHECKING:
     from config.settings import Settings
     from tools.registry import MessageContext, ToolRegistry
+
 
 from modules.actions import DeclaredDiscordActions
 from modules.files import ModuleToolFiles
@@ -64,6 +67,27 @@ from modules.scheduler import DurableScheduler
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl
 from modules.tasks import run_bounded
+
+
+@dataclass(slots=True)
+class _ModuleTurnBudget:
+    module_name: str
+    usage: dict[tuple[str, str], int]
+    lock: threading.Lock
+
+    def consume(self, name: str, limit: int) -> bool:
+        if not isinstance(name, str) or not name or len(name) > 100:
+            raise ValueError("module budget name must contain 1-100 characters")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("module budget limit must be a positive integer")
+        key = (self.module_name, name)
+        with self.lock:
+            used = self.usage.get(key, 0)
+            if used >= limit:
+                return False
+            self.usage[key] = used + 1
+            return True
+
 
 log = logging.getLogger(__name__)
 
@@ -191,7 +215,22 @@ class _LoadTimeToolRegistry:
                             if personal_chat
                             else _optional_snowflake(ctx.trigger_discord_message_id)
                         ),
+                        trigger_discord_message_snapshot=(
+                            None
+                            if personal_chat or ctx.trigger_discord_message_snapshot is None
+                            else TriggeringDiscordMessageSnapshot(
+                                message_id=ctx.trigger_discord_message_snapshot.message_id,
+                                guild_id=ctx.trigger_discord_message_snapshot.guild_id,
+                                channel_id=ctx.trigger_discord_message_snapshot.channel_id,
+                                author_id=ctx.trigger_discord_message_snapshot.author_id,
+                                content=ctx.trigger_discord_message_snapshot.content,
+                                author_is_bot=ctx.trigger_discord_message_snapshot.author_is_bot,
+                            )
+                        ),
                         files=files,
+                        turn_budget=_ModuleTurnBudget(
+                            module_name, ctx.module_budget_usage, ctx.module_budget_lock
+                        ),
                     ),
                 )
             finally:

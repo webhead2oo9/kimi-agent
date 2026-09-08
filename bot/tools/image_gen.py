@@ -58,7 +58,7 @@ _CONFIG_SPEC = (
         label="Image model",
         kind=KIND_CHOICE,
         default="gpt-image-2",
-        choices=("gpt-image-2",),
+        choices=("gpt-image-2", "gpt-image-2.5-sunburst"),
         help="Image model used for generation and editing.",
     ),
     ToolConfigField(

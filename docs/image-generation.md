@@ -128,7 +128,7 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
 
 ## Resource and safety boundaries
 
-- Model: fixed to `gpt-image-2`.
+- Model: `gpt-image-2` (default) or `gpt-image-2.5-sunburst`.
 - Logical calls: default two per outer turn, configurable 1–8. Failed
   provider calls count once; invalid local references fail before the billable
   counter increments.

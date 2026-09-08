@@ -37,11 +37,26 @@ class RecordingMemory:
         return self.answer
 
 
-def _ctx() -> MessageContext:
+class SyntheticScopedMemory(RecordingMemory):
+    """Apply the documented Hindsight tag modes to synthetic memories."""
+
+    async def recall(self, **kwargs):
+        self.calls.append(kwargs)
+        selected_tags = set(kwargs.get("tags") or [])
+        tags_match = kwargs.get("tags_match", "any")
+        return [
+            memory
+            for memory in self.memories
+            if (not memory.tags and tags_match == "any")
+            or bool(selected_tags.intersection(memory.tags or []))
+        ]
+
+
+def _ctx(*, guild_id: str | None = "999") -> MessageContext:
     return MessageContext(
         user_id="123",
         user_name="webhead",
-        guild_id="999",
+        guild_id=guild_id,
         channel_id="111",
         thread_id=None,
         trust_tier=TrustTier.MEMBER,
@@ -108,6 +123,51 @@ def test_recall_user_returns_saved_memory_without_source_metadata(monkeypatch) -
     ]
 
 
+def test_recall_user_excludes_legacy_untagged_and_other_guild(monkeypatch) -> None:
+    memory = SyntheticScopedMemory(
+        [
+            SimpleNamespace(text="global", type="observation", tags=["scope:global"]),
+            SimpleNamespace(text="current guild", type="observation", tags=["guild:999"]),
+            SimpleNamespace(text="other guild", type="observation", tags=["guild:888"]),
+            SimpleNamespace(text="legacy untagged", type="observation", tags=None),
+        ]
+    )
+    monkeypatch.setattr(user_memory, "_memory", memory)
+    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
+
+    raw = asyncio.run(_registry(memory).dispatch("recall_user", {"query": "facts"}, _ctx()))
+
+    payload = json.loads(raw)
+    assert payload["results"] == [
+        {"text": "global", "type": "observation"},
+        {"text": "current guild", "type": "observation"},
+    ]
+    assert memory.calls[0]["bank_id"] == "user:123"
+    assert memory.calls[0]["tags"] == ["scope:global", "guild:999"]
+    assert memory.calls[0]["tags_match"] == "any_strict"
+
+
+def test_recall_user_guildless_selects_only_global(monkeypatch) -> None:
+    memory = SyntheticScopedMemory(
+        [
+            SimpleNamespace(text="global", type="observation", tags=["scope:global"]),
+            SimpleNamespace(text="guild", type="observation", tags=["guild:999"]),
+            SimpleNamespace(text="legacy untagged", type="observation", tags=[]),
+        ]
+    )
+    monkeypatch.setattr(user_memory, "_memory", memory)
+    monkeypatch.setattr(user_memory, "_preference_store", EnabledPreferenceStore())
+
+    raw = asyncio.run(
+        _registry(memory).dispatch("recall_user", {"query": "facts"}, _ctx(guild_id=None))
+    )
+
+    payload = json.loads(raw)
+    assert payload["results"] == [{"text": "global", "type": "observation"}]
+    assert memory.calls[0]["tags"] == ["scope:global"]
+    assert memory.calls[0]["tags_match"] == "any_strict"
+
+
 def test_reflect_user_returns_answer_for_memory_enabled_user(monkeypatch) -> None:
     memory = RecordingMemory(answer="webhead favors a tethered PCVR setup.")
     monkeypatch.setattr(user_memory, "_memory", memory)
@@ -124,6 +184,8 @@ def test_reflect_user_returns_answer_for_memory_enabled_user(monkeypatch) -> Non
     assert len(memory.reflect_calls) == 1
     assert memory.reflect_calls[0]["bank_id"] == "user:123"
     assert memory.reflect_calls[0]["budget"] == "mid"
+    assert memory.reflect_calls[0]["tags"] == ["scope:global", "guild:999"]
+    assert memory.reflect_calls[0]["tags_match"] == "any_strict"
 
 
 def test_reflect_user_blocks_opted_out_user(monkeypatch) -> None:

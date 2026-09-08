@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from importlib.metadata import version
 import dataclasses
+from importlib.metadata import version
 from typing import Any
 
 import pytest
@@ -19,6 +19,7 @@ from kimi_agent_module_api import (
     ModuleRuntimeContext,
     ModuleSpec,
     ModuleToolContext,
+    TriggeringDiscordMessageSnapshot,
     TrustTier,
     render_guild_settings,
 )
@@ -83,8 +84,66 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
     assert {"events", "scheduler", "storage", "discord", "interactions", "services"} <= required
 
 
-def test_distribution_version_includes_tool_files_contract() -> None:
-    assert version("kimi-agent-module-api") == "2.2.0"
+def test_distribution_version_includes_triggering_message_snapshot_contract() -> None:
+    assert version("kimi-agent-module-api") == "2.3.0"
+
+
+def test_triggering_discord_message_snapshot_is_immutable() -> None:
+    snapshot = TriggeringDiscordMessageSnapshot(
+        message_id=11,
+        guild_id=22,
+        channel_id=33,
+        author_id=44,
+        content="original",
+        author_is_bot=False,
+    )
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        snapshot.content = "edited"  # type: ignore[misc]
+
+
+def test_module_tool_context_preserves_api_2_2_nine_positional_arguments() -> None:
+    files = object()
+
+    context = ModuleToolContext(
+        11,
+        "Alice",
+        22,
+        33,
+        44,
+        TrustTier.REGULAR,
+        {"demo": {"enabled": True}},
+        55,
+        files,  # type: ignore[arg-type]
+    )
+
+    assert context.files is files
+    assert context.trigger_discord_message_snapshot is None
+
+
+def test_module_tool_context_adds_turn_budget_after_prior_positional_fields() -> None:
+    class Budget:
+        def consume(self, name: str, limit: int) -> bool:
+            return bool(name) and limit > 0
+
+    snapshot = TriggeringDiscordMessageSnapshot(55, 22, 33, 11, "content", False)
+    budget = Budget()
+    context = ModuleToolContext(
+        11,
+        "Alice",
+        22,
+        33,
+        44,
+        TrustTier.REGULAR,
+        {},
+        55,
+        None,
+        snapshot,
+        budget,
+    )
+
+    assert context.trigger_discord_message_snapshot is snapshot
+    assert context.turn_budget is budget
 
 
 def test_spec_requires_an_explicit_keyword_api_version() -> None:

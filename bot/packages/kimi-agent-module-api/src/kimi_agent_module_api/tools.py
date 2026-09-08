@@ -6,8 +6,29 @@ from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from kimi_agent_module_api.trust import TrustTier
 from kimi_agent_module_api.files import ToolFiles
+from kimi_agent_module_api.trust import TrustTier
+
+
+class ModuleTurnBudget(Protocol):
+    """Host-owned counters shared by every module call in one outer model turn."""
+
+    def consume(self, name: str, limit: int) -> bool:
+        """Consume one named allowance, or return ``False`` without changing it."""
+
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TriggeringDiscordMessageSnapshot:
+    """Immutable evidence captured from the Discord message at turn entry."""
+
+    message_id: int
+    guild_id: int
+    channel_id: int
+    author_id: int
+    content: str
+    author_is_bot: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +57,13 @@ class ModuleToolContext:
     # Invocation-scoped read-only port. Declare permissions.tool_files and
     # require tools.files.v1; never retain this port beyond the handler.
     files: ToolFiles | None = None
+    # Host-owned values captured before turn preparation can await. Unlike a
+    # later Discord fetch, this evidence cannot change or disappear mid-turn.
+    # Added after all API 2.2 fields to preserve positional construction.
+    trigger_discord_message_snapshot: TriggeringDiscordMessageSnapshot | None = None
+    # Mutable host-owned port whose lifetime is the complete outer model turn.
+    # Counters are automatically namespaced to the installed module.
+    turn_budget: ModuleTurnBudget | None = None
 
 
 type ModuleToolHandler = Callable[[dict[str, Any], ModuleToolContext], Coroutine[Any, Any, str]]
@@ -71,4 +99,10 @@ class ModuleToolRegistry(Protocol):
     ) -> None: ...
 
 
-__all__ = ["ModuleToolContext", "ModuleToolHandler", "ModuleToolRegistry"]
+__all__ = [
+    "ModuleToolContext",
+    "ModuleToolHandler",
+    "ModuleToolRegistry",
+    "ModuleTurnBudget",
+    "TriggeringDiscordMessageSnapshot",
+]

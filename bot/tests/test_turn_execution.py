@@ -56,7 +56,7 @@ from tests.helpers import (
     make_turn_dependencies,
 )
 from tools.embeds import EmbedAttachment, EmbedSpec
-from tools.registry import TurnHandoff, TurnOutbox
+from tools.registry import TurnDiscordMessageSnapshot, TurnHandoff, TurnOutbox
 from tools.threads import ThreadRequest
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
@@ -180,6 +180,7 @@ def _turn_request(
     channel_id: str = "100",
     thread_id: str | None = None,
     parent_channel_id: str = "",
+    trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None,
 ) -> TurnRequest:
     return TurnRequest(
         content="draw this",
@@ -193,6 +194,7 @@ def _turn_request(
         parent_channel_id=parent_channel_id,
         channel_name="general",
         trigger_discord_message_id="777",
+        trigger_discord_message_snapshot=trigger_discord_message_snapshot,
         recalled_memories="- Alice likes concise replies.",
         skills_index="## Skills",
         personal_skills_index="## Personal Skills",
@@ -834,6 +836,23 @@ async def test_execute_turn_passes_prepared_state_to_run_conversation(
     assert call["max_tokens"] == 1234
     assert call["thread_handoff_suggest_after_tool_calls"] == 9
     assert call["trigger_discord_message_id"] == "777"
+
+
+@pytest.mark.asyncio
+async def test_execute_turn_forwards_immutable_trigger_snapshot(tmp_path: Path) -> None:
+    snapshot = TurnDiscordMessageSnapshot(777, 999, 100, 123, "original", False)
+    run_conversation = RecordingRunConversation(ConversationRunResult(text="ok"))
+
+    await execute_turn(
+        _turn_request(
+            ConversationContext(key="guild:100:main", db_conversation_id=55),
+            trigger_discord_message_snapshot=snapshot,
+        ),
+        dependencies=_dependencies(workspace_dir=tmp_path, run_conversation=run_conversation),
+        config=_config(),
+    )
+
+    assert run_conversation.calls[0]["trigger_discord_message_snapshot"] is snapshot
 
 
 @pytest.mark.asyncio

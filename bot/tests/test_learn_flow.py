@@ -505,6 +505,7 @@ def _menu(
     bot_name: str = "Kimi",
     blocked_ids: frozenset[str] = frozenset(),
     request_consent=None,
+    channel_access_check=lambda _channel, _user: True,
 ):
     from commands.learn_cmd import register_learn_command
     from trust.resolver import TrustResolver
@@ -529,6 +530,7 @@ def _menu(
         run_learn=run_learn,
         is_blocked=is_blocked,
         request_consent=request_consent or consent_not_required,
+        channel_access_check=channel_access_check,
         bot_name=bot_name,
     )
     return added[0]
@@ -564,6 +566,35 @@ async def test_context_menu_refuses_blocked_staff() -> None:
     interaction = _Interaction(user_id=999)
     await menu.callback(cast(Any, interaction), cast(Any, _message()))
     assert interaction.response.sent == ["You can't use this right now."]
+    assert not interaction.response.deferred
+
+
+@pytest.mark.asyncio
+async def test_context_menu_channel_gate_precedes_block_consent_and_learn() -> None:
+    downstream: list[str] = []
+    checked: list[tuple[object, object]] = []
+
+    async def request_consent(interaction, resume) -> bool:
+        downstream.append("consent")
+        return False
+
+    def channel_access_check(channel: object, user: object) -> bool:
+        checked.append((channel, user))
+        return False
+
+    menu = _menu(
+        _never_runs,
+        request_consent=request_consent,
+        channel_access_check=channel_access_check,
+    )
+    interaction = _Interaction()
+    message = _message()
+
+    await menu.callback(cast(Any, interaction), cast(Any, message))
+
+    assert checked == [(message.channel, interaction.user)]
+    assert downstream == []
+    assert interaction.response.sent == ["Kimi isn't available to you in this channel."]
     assert not interaction.response.deferred
 
 

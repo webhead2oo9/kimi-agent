@@ -2,7 +2,7 @@
 # Atomically install the reviewed browser and visual-rendering runtime.
 set -eu
 
-VERSION=1.10.2
+VERSION=2.3.0
 MERMAID_VERSION=11.17.2
 RUNTIME_DIR=/opt/kimi/betterwright
 NODE_BIN=${NODE_BIN:-/usr/bin/node}

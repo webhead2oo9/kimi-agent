@@ -42,6 +42,7 @@ from kimi_agent_module_api.tools import (
     ModuleToolContext,
     ModuleToolHandler,
     ModuleToolRegistry,
+    ModuleTurnBudget,
     TriggeringDiscordMessageSnapshot,
 )
 from kimi_agent_module_api.trust import TrustTier
@@ -174,6 +175,7 @@ __all__ = [
     "ModuleToolContext",
     "ModuleToolHandler",
     "ModuleToolRegistry",
+    "ModuleTurnBudget",
     "OutgoingLayout",
     "ProposalActor",
     "ProposalError",

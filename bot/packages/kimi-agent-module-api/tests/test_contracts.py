@@ -121,6 +121,31 @@ def test_module_tool_context_preserves_api_2_2_nine_positional_arguments() -> No
     assert context.trigger_discord_message_snapshot is None
 
 
+def test_module_tool_context_adds_turn_budget_after_prior_positional_fields() -> None:
+    class Budget:
+        def consume(self, name: str, limit: int) -> bool:
+            return bool(name) and limit > 0
+
+    snapshot = TriggeringDiscordMessageSnapshot(55, 22, 33, 11, "content", False)
+    budget = Budget()
+    context = ModuleToolContext(
+        11,
+        "Alice",
+        22,
+        33,
+        44,
+        TrustTier.REGULAR,
+        {},
+        55,
+        None,
+        snapshot,
+        budget,
+    )
+
+    assert context.trigger_discord_message_snapshot is snapshot
+    assert context.turn_budget is budget
+
+
 def test_spec_requires_an_explicit_keyword_api_version() -> None:
     def create(_ctx: ModuleLoadContext) -> AppModule:
         raise AssertionError("not called")

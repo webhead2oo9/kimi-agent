@@ -1758,6 +1758,86 @@ async def test_blocked_user_is_ignored_before_status_and_turn(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "channel_id", "parent_channel_id", "content", "reference_message_id"),
+    [
+        ("mention", 100, None, "<@999> hello", None),
+        ("reply", 100, None, "<@999> follow-up", 901),
+        ("managed-thread-auto-response", 200, 100, "still broken", None),
+        ("forum-post", 201, 100, "<@999> forum question", None),
+    ],
+)
+async def test_channel_admission_denies_every_guild_conversation_route_before_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    routing_database: Database,
+    route: str,
+    channel_id: int,
+    parent_channel_id: int | None,
+    content: str,
+    reference_message_id: int | None,
+) -> None:
+    del route
+    channels = tmp_path / "channels"
+    channels.mkdir()
+    (channels / "100.md").write_text(
+        "---\nallowed_role_ids: [20]\n---\nprotected\n",
+        encoding="utf-8",
+    )
+    app = _build_test_app(
+        monkeypatch,
+        config_dir=str(tmp_path),
+        staff_user_ids="456",
+    )
+    replace_lifecycle_resources(
+        app,
+        context_manager=ContextManager(ConversationStore(routing_database)),
+    )
+    blocked = AsyncMock(return_value=False)
+    app.message_controller._blocked_user = blocked
+    consent = AsyncMock(return_value=False)
+    replace_lifecycle_resources(
+        app,
+        consent_gate=SimpleNamespace(maybe_prompt=consent),
+    )
+    work_cancellation = MagicMock()
+    work_cancellation.is_stop_message.return_value = False
+    replace_lifecycle_resources(app, work_cancellation=work_cancellation)
+    turn_admission = AsyncMock(side_effect=AssertionError("turn admission must not run"))
+    monkeypatch.setattr(app.turn_admission, "try_acquire", turn_admission)
+    provisional_work = MagicMock(side_effect=AssertionError("work registration must not run"))
+    monkeypatch.setattr(app.active_operations, "register_provisional", provisional_work)
+    monkeypatch.setattr(message_runtime, "is_eligible_to_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(message_runtime, "should_respond", lambda *args, **kwargs: True)
+    monkeypatch.setattr(app.message_controller, "handle_message", AsyncMock())
+
+    message = _text_message(
+        channel_id=channel_id,
+        content=content,
+        parent_channel_id=parent_channel_id,
+    )
+    message.author.id = 456
+    message.author.roles = [SimpleNamespace(id=99)]
+    message.reference = (
+        _Reference(reference_message_id, channel_id=channel_id)
+        if reference_message_id is not None
+        else None
+    )
+
+    await app.on_message(message)
+
+    blocked.assert_not_awaited()
+    work_cancellation.is_stop_message.assert_not_called()
+    turn_admission.assert_not_awaited()
+    provisional_work.assert_not_called()
+    consent.assert_not_awaited()
+    app.message_controller.handle_message.assert_not_awaited()
+    message.add_reaction.assert_not_awaited()
+    assert await _conversation_keys(routing_database) == set()
+    assert (await admission_state(app.turn_admission)).active_total == 0
+
+
+@pytest.mark.asyncio
 async def test_gate_is_rechecked_under_the_root_lock(monkeypatch, routing_database: Database):
     """A message that queued behind a pausing turn must be dropped, not answered.
 

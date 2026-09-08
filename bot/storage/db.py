@@ -10,7 +10,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -384,12 +384,15 @@ CREATE TABLE IF NOT EXISTS auto_retain_watermarks (
 -- Durable authorization for user-requested privacy deletion. One row per user
 -- coalesces repeated requests; a unique token prevents an older worker from
 -- completing a newer or wider request after a crash/race (including ABA).
+-- Callback names make plugin-owned deletion requirements survive restart and
+-- fail closed when a previously registered plugin is temporarily unavailable.
 CREATE TABLE IF NOT EXISTS privacy_deletion_requests (
     user_id                 TEXT PRIMARY KEY,
     scope                   TEXT NOT NULL CHECK (scope IN ('memory', 'all')),
     generation              INTEGER NOT NULL,
     request_token           TEXT NOT NULL,
     memory_backend_required INTEGER NOT NULL DEFAULT 0,
+    plugin_callbacks_json   TEXT NOT NULL DEFAULT '[]',
     requested_at            REAL NOT NULL,
     updated_at              REAL NOT NULL
 );
@@ -590,7 +593,17 @@ async def _has_existing_user_tables(conn: aiosqlite.Connection) -> bool:
 
 type Migration = tuple[str, Callable[[aiosqlite.Connection], Awaitable[None]]]
 
-_MIGRATIONS: dict[int, Migration] = {}
+
+async def _add_privacy_plugin_callbacks(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "ALTER TABLE privacy_deletion_requests "
+        "ADD COLUMN plugin_callbacks_json TEXT NOT NULL DEFAULT '[]'"
+    )
+
+
+_MIGRATIONS: dict[int, Migration] = {
+    8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
+}
 
 
 async def _record_schema_version(

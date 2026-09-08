@@ -47,6 +47,7 @@ LearnRunner = Callable[[LearnTarget, discord.Interaction], Awaitable[str]]
 BlockedUserCheck = Callable[[str], Awaitable[bool]]
 LearnResume = Callable[[discord.Interaction], Awaitable[None]]
 ConsentRequest = Callable[[discord.Interaction, LearnResume], Awaitable[bool]]
+ChannelAccessCheck = Callable[[object, object], bool]
 
 
 def learn_menu_name(bot_name: str) -> str:
@@ -63,6 +64,7 @@ def register_learn_command(
     run_learn: LearnRunner,
     is_blocked: BlockedUserCheck,
     request_consent: ConsentRequest,
+    channel_access_check: ChannelAccessCheck,
     bot_name: str = DEFAULT_BOT_NAME,
 ) -> None:
     """Install the context menu.
@@ -72,12 +74,18 @@ def register_learn_command(
     blocked-user store, and shared privacy-consent flow.
     """
 
-    async def authorized(interaction: discord.Interaction) -> bool:
+    async def authorized(interaction: discord.Interaction, channel: object) -> bool:
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
         tier = trust_resolver.resolve(member, str(interaction.user.id), guild_id)
         if tier < TrustTier.STAFF:
             await _send_message(interaction, _NO_STANDING)
+            return False
+        if guild_id is None:
+            await _send_message(interaction, _NO_GUILD)
+            return False
+        if not channel_access_check(channel, interaction.user):
+            await _send_message(interaction, "Kimi isn't available to you in this channel.")
             return False
         try:
             blocked = await is_blocked(str(interaction.user.id))
@@ -91,9 +99,6 @@ def register_learn_command(
         if blocked:
             await _send_message(interaction, _BLOCKED)
             return False
-        if guild_id is None:
-            await _send_message(interaction, _NO_GUILD)
-            return False
         return True
 
     @app_commands.context_menu(name=learn_menu_name(bot_name))
@@ -101,7 +106,7 @@ def register_learn_command(
         interaction: discord.Interaction,
         message: discord.Message,
     ) -> None:
-        if not await authorized(interaction):
+        if not await authorized(interaction, message.channel):
             return
         if message.author.bot:
             await _send_message(interaction, _BOT_MESSAGE)
@@ -113,7 +118,7 @@ def register_learn_command(
         async def run(resume_interaction: discord.Interaction) -> None:
             # Consent can leave this callback pending while standing or a block
             # changes, so authorize the component interaction again at use time.
-            if not await authorized(resume_interaction):
+            if not await authorized(resume_interaction, message.channel):
                 return
             target = LearnTarget(
                 content=message.content or "",

@@ -58,7 +58,7 @@ This is the primary store: SQLite in WAL mode, with the schema owned by
 | `usage_markers` | Short-lived rate-limit metadata for bounded tools: user/channel/guild attribution, surface, operation, unit count, and timestamp. Code-exec markers contain no source code, arguments, output, or cost. |
 | `blocked_users` | Moderation blocks: `user_id`, `blocked_by`, `reason`, timestamps. |
 | `auto_retain_watermarks` | Per-(conversation, user) high-water marks for memory auto-retain. |
-| `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, and timestamps. The row contains no message content. |
+| `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, required operator-plugin callback names, and timestamps. The row contains no message content. |
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 
@@ -257,7 +257,12 @@ Everything else keeps its own lifecycle, by design:
   users continue normally. The affected user can retry `/privacy`, or the
   request is retried at the next restart. The row is removed only after every
   step succeeds. Repeated requests coalesce to the widest scope, and a unique
-  request token prevents a stale worker from completing the active authorization:
+  request token prevents a stale worker from completing the active authorization.
+  Scope-matching operator-plugin deletion callbacks are captured by stable name
+  in the same row. Foreground and startup replay invoke them inside the same
+  deletion lease; a failure, invalid result, or missing previously required
+  callback keeps the request and activity barrier pending instead of silently
+  claiming success:
   - **Delete my data** first takes an exclusive per-user deletion lease. It
     waits for already-started turns to finish, cancels foreground responses and
     coding tasks (including managed sandbox teardown), prevents later ones from
@@ -272,8 +277,9 @@ Everything else keeps its own lifecycle, by design:
     and assistant-transcript persistence, so a shared-root reply derived from
     the deleted rows cannot land after deletion. It then purges the SQLite
     transcript, all of the user's per-guild and personal-chat workspace files,
-    their persistent browser profile, and every video-specialist session they
-    initiated, then deletes
+    their persistent browser profile, every video-specialist session they
+    initiated, and user data owned by registered full-deletion plugin callbacks,
+    then deletes
     long-term memory without waiting for automatic expiry. Transcripts go through
     `ConversationStore.delete_user_data`, which deletes whole conversations the
     user rooted (tracked explicitly at root creation, including timeout
@@ -287,8 +293,8 @@ Everything else keeps its own lifecycle, by design:
     generated job directory whose `.owner-user-id` marker names them. Memory
     goes through the same `forget_user_memory` path described below. A
     transcript deletion error aborts before later stores are touched. Workspace,
-    browser-profile, or memory failures leave the durable request pending for
-    retry.
+    browser-profile, required plugin-callback, or memory failures leave the
+    durable request pending for retry.
     A provider-side video deletion failure does not: local video metadata is
     already gone, its content-free deletion outbox remains durable, the result
     reports pending provider cleanup, and the user barrier is released.
@@ -303,8 +309,9 @@ Everything else keeps its own lifecycle, by design:
     the tool-event log, community memory, shared skills, usage ledgers/markers,
     Discord learning messages, blocks, the retained consent choice, or the
     non-content bank-state marker.
-  - **Delete memory** runs `forget_user_memory` only; the transcript is left to
-    the retention sweep.
+  - **Delete memory** runs `forget_user_memory` plus callbacks explicitly
+    registered for memory deletion only; the transcript and callbacks registered
+    only for full deletion are left untouched.
 - **`forget_user_memory`** (`memory/privacy.py`) runs under a shared per-user
   mutation guard. It disables future memory, clears the stored persona,
   fast-forwards the user's auto-retain watermarks, and deletes the user's

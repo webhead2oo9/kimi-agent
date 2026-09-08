@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import discord
@@ -60,6 +61,7 @@ from app.turn_entry import (
     resolve_parent_channel_id,
 )
 from config.fragments.channel_pins import (
+    channel_access_allowed,
     filter_pins_to_searchable,
     load_channel_blocked_tools,
     load_channel_pinned_tools,
@@ -228,6 +230,17 @@ class DiscordMessageController:
         # have no state to coordinate with /privacy. A DM needs no invocation
         # gate: there is nothing else in the channel for it to be addressed to.
         if not personal_dm and not self._should_respond(message, active_guilds=active_guilds):
+            return
+
+        # Channel admission is an additive guild policy, distinct from trust
+        # tiers and personal chat. Keep it before every await and every mutable
+        # downstream boundary, including blocked-user storage and consent.
+        if not personal_dm and not self.channel_access_allowed(message.channel, message.author):
+            log.info(
+                "Ignoring user %s outside the admission policy for channel %s",
+                message.author.id,
+                resolve_parent_channel_id(message.channel),
+            )
             return
 
         # Discord mutates cached Message objects in place for later edit events.
@@ -700,6 +713,14 @@ class DiscordMessageController:
         entry = model_config.models[model_name]
         profile = model_config.profile_for_model(model_name)
         return f"{model_name}={profile.type}/{entry.model}"
+
+    def channel_access_allowed(self, channel: object, user: object) -> bool:
+        """Apply the hot-read parent-channel admission policy to a guild user."""
+        return channel_access_allowed(
+            channel,
+            user,
+            config_dir=Path(self._turn_settings.config_dir),
+        )
 
     async def run_learn_turn(
         self,

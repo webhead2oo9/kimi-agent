@@ -42,6 +42,10 @@ from storage.privacy import (
     PrivacyDeletionScope,
 )
 from tools.workspace.common import UserLocks
+from utils.plugin_privacy import (
+    PrivacyDeletionCallbackRegistry,
+    PrivacyDeletionCallbackResult,
+)
 
 CancelUserWork = Callable[[str], Awaitable[None]]
 InteractionAvailability = Callable[[], bool]
@@ -172,6 +176,44 @@ async def _requires_memory_backend(
     return await memory_bank_state_store.may_exist(user_id)
 
 
+async def _run_plugin_privacy_callbacks(
+    *,
+    user_id: str,
+    scope: DeleteScope,
+    registry: PrivacyDeletionCallbackRegistry | None,
+    required_names: tuple[str, ...],
+) -> tuple[bool, list[str]]:
+    if not required_names:
+        return True, []
+    lines: list[str] = []
+    ok = True
+    for name in required_names:
+        callback = registry.resolve(name, scope) if registry is not None else None
+        if callback is None:
+            ok = False
+            log.error("Privacy deletion callback unavailable for %s: %s", user_id, name)
+            lines.append(
+                "⚠️ Some plugin-managed data could not be deleted because its deletion "
+                "handler is unavailable. Activity remains paused; retry `/privacy` or ask staff."
+            )
+            continue
+        try:
+            result = await callback(user_id, scope)
+            if not isinstance(result, PrivacyDeletionCallbackResult):
+                raise TypeError("privacy deletion callback returned an invalid result")
+        except Exception:
+            ok = False
+            log.exception("Privacy deletion callback failed for %s: %s", user_id, name)
+            lines.append(
+                "⚠️ Some plugin-managed data could not be deleted. Activity remains paused; "
+                "retry `/privacy` or ask staff to check the bot logs."
+            )
+            continue
+        ok = ok and result.ok
+        lines.extend(result.lines)
+    return ok, lines
+
+
 async def run_privacy_deletion(
     *,
     scope: DeleteScope,
@@ -193,6 +235,8 @@ async def run_privacy_deletion(
     memory_backend_required: bool | None = None,
     browser_data_store: BrowserDataStore | None = None,
     video_data_store: VideoDataStore | None = None,
+    plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry | None = None,
+    required_plugin_callback_names: tuple[str, ...] | None = None,
 ) -> PrivacyDeletionOutcome:
     """Run the on-demand deletion for one user, returning summary lines.
 
@@ -233,6 +277,11 @@ async def run_privacy_deletion(
                             user_id=user_id,
                             scope=scope,
                             memory_backend_required=required_memory_backend,
+                            plugin_callback_names=(
+                                plugin_privacy_callbacks.names_for(scope)
+                                if plugin_privacy_callbacks is not None
+                                else ()
+                            ),
                         )
                     except Exception:
                         log.exception(
@@ -282,6 +331,12 @@ async def run_privacy_deletion(
                     memory_backend_required=required_memory_backend,
                     browser_data_store=browser_data_store,
                     video_data_store=video_data_store,
+                    plugin_privacy_callbacks=plugin_privacy_callbacks,
+                    required_plugin_callback_names=(
+                        durable_request.plugin_callback_names
+                        if durable_request is not None
+                        else required_plugin_callback_names
+                    ),
                 )
                 if deletion_request_store is None or durable_request is None:
                     return outcome
@@ -413,6 +468,22 @@ async def run_privacy_deletion(
                         "retry when provider access is available."
                     )
 
+    callback_names = required_plugin_callback_names
+    if callback_names is None:
+        callback_names = (
+            plugin_privacy_callbacks.names_for(scope)
+            if plugin_privacy_callbacks is not None
+            else ()
+        )
+    plugins_ok, plugin_lines = await _run_plugin_privacy_callbacks(
+        user_id=user_id,
+        scope=scope,
+        registry=plugin_privacy_callbacks,
+        required_names=callback_names,
+    )
+    ok = ok and plugins_ok
+    lines.extend(plugin_lines)
+
     memory_ok, memory_line = await _forget_memory_line(
         user_id=user_id,
         preference_store=preference_store,
@@ -486,7 +557,8 @@ def _build_tldr_embed(
             "disable future memory.\n"
             "- **Delete my data** (button below): immediately delete your "
             "local conversation history, workspace files, browser profile, video "
-            "sessions, *and* personal memory, without waiting for automatic expiry. "
+            "sessions, enabled operator-plugin data, *and* personal memory, without "
+            "waiting for automatic expiry. "
             "Known Gemini video Interactions and uploaded Files are also submitted "
             "for deletion.\n"
             "- This cannot erase Discord messages, provider safety logs or backups, "
@@ -567,6 +639,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
         workspace_locks: UserLocks,
         browser_data_store: BrowserDataStore | None = None,
         video_data_store: VideoDataStore | None = None,
+        plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry | None = None,
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 120.0,
@@ -591,6 +664,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
         self._workspace_locks = workspace_locks
         self._browser_data_store = browser_data_store
         self._video_data_store = video_data_store
+        self._plugin_privacy_callbacks = plugin_privacy_callbacks
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
 
@@ -648,6 +722,7 @@ class _DeleteConfirmView(_AuthorGuardedView):
                 conversation_turn_lock=self._conversation_turn_lock,
                 browser_data_store=self._browser_data_store,
                 video_data_store=self._video_data_store,
+                plugin_privacy_callbacks=self._plugin_privacy_callbacks,
             )
 
         authorization_ready = asyncio.Event()
@@ -671,6 +746,11 @@ class _DeleteConfirmView(_AuthorGuardedView):
                         user_id=user_id,
                         scope=self._scope,
                         memory_backend_required=memory_backend_required,
+                        plugin_callback_names=(
+                            self._plugin_privacy_callbacks.names_for(self._scope)
+                            if self._plugin_privacy_callbacks is not None
+                            else ()
+                        ),
                     )
             except Exception as exc:
                 authorization_error = exc
@@ -731,6 +811,7 @@ _CONFIRM_PROMPTS: dict[DeleteScope, str] = {
         "- your messages in conversations someone else started\n"
         "- your workspace files\n"
         "- your persistent browser profile and video sessions\n"
+        "- user data owned by enabled operator plugins\n"
         "- your personal memory and persona (and disables future memory)\n\n"
         "Known Gemini video Interactions and uploaded Files are submitted for provider deletion. "
         "It does **not** delete Discord messages, provider safety or diagnostic logs, "
@@ -766,6 +847,7 @@ class _PrivacyView(_AuthorGuardedView):
         workspace_locks: UserLocks,
         browser_data_store: BrowserDataStore | None = None,
         video_data_store: VideoDataStore | None = None,
+        plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry | None = None,
         privacy_barrier: UserPrivacyBarrier | None = None,
         cancel_user_work: CancelUserWork | None = None,
         timeout: float = 180.0,
@@ -789,6 +871,7 @@ class _PrivacyView(_AuthorGuardedView):
         self._workspace_locks = workspace_locks
         self._browser_data_store = browser_data_store
         self._video_data_store = video_data_store
+        self._plugin_privacy_callbacks = plugin_privacy_callbacks
         self._privacy_barrier = privacy_barrier
         self._cancel_user_work = cancel_user_work
 
@@ -809,6 +892,7 @@ class _PrivacyView(_AuthorGuardedView):
             workspace_locks=self._workspace_locks,
             browser_data_store=self._browser_data_store,
             video_data_store=self._video_data_store,
+            plugin_privacy_callbacks=self._plugin_privacy_callbacks,
             privacy_barrier=self._privacy_barrier,
             cancel_user_work=self._cancel_user_work,
             is_available=self._is_available,
@@ -843,6 +927,7 @@ def register_privacy_command(
     workspace_locks: UserLocks,
     browser_data_store: BrowserDataStore | None = None,
     video_data_store: VideoDataStore | None = None,
+    plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry | None = None,
     privacy_barrier: UserPrivacyBarrier | None = None,
     cancel_user_work: CancelUserWork | None = None,
     retention_days: int = 30,
@@ -871,6 +956,7 @@ def register_privacy_command(
             workspace_locks=workspace_locks,
             browser_data_store=browser_data_store,
             video_data_store=video_data_store,
+            plugin_privacy_callbacks=plugin_privacy_callbacks,
             privacy_barrier=privacy_barrier,
             cancel_user_work=cancel_user_work,
             is_available=is_available,

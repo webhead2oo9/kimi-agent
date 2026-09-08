@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class PrivacyDeletionRequest:
     memory_backend_required: bool
     requested_at: float
     updated_at: float
+    plugin_callback_names: tuple[str, ...] = ()
 
 
 class PrivacyDeletionRequestStore:
@@ -33,6 +35,7 @@ class PrivacyDeletionRequestStore:
         user_id: str,
         scope: PrivacyDeletionScope,
         memory_backend_required: bool,
+        plugin_callback_names: tuple[str, ...] = (),
         now: float | None = None,
     ) -> PrivacyDeletionRequest:
         """Persist authorization and return the effective coalesced request.
@@ -40,6 +43,8 @@ class PrivacyDeletionRequestStore:
         Repeated requests increment ``generation``. Full deletion dominates a
         memory-only request, and a request that was authorized while Hindsight
         was configured keeps requiring a confirmed backend delete on retries.
+        Required plugin callback names are unioned so a later generation cannot
+        silently drop work already authorized by the user.
         """
 
         user_id = str(user_id).strip()
@@ -49,15 +54,30 @@ class PrivacyDeletionRequestStore:
             raise ValueError("Privacy deletion scope must be memory or all.")
         timestamp = time.time() if now is None else float(now)
         request_token = uuid.uuid4().hex
+        normalized_callbacks = tuple(
+            dict.fromkeys(name.strip() for name in plugin_callback_names if name.strip())
+        )
 
         async with self._db.write_transaction() as conn:
+            async with conn.execute(
+                "SELECT plugin_callbacks_json FROM privacy_deletion_requests WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                prior = await cursor.fetchone()
+            prior_callbacks = (
+                _callback_names(prior["plugin_callbacks_json"]) if prior is not None else ()
+            )
+            callbacks_json = json.dumps(
+                tuple(dict.fromkeys((*prior_callbacks, *normalized_callbacks))),
+                separators=(",", ":"),
+            )
             await conn.execute(
                 """
                 INSERT INTO privacy_deletion_requests (
                     user_id, scope, generation, request_token,
-                    memory_backend_required,
+                    memory_backend_required, plugin_callbacks_json,
                     requested_at, updated_at
-                ) VALUES (?, ?, 1, ?, ?, ?, ?)
+                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     scope = CASE
                         WHEN privacy_deletion_requests.scope = 'all'
@@ -73,6 +93,7 @@ class PrivacyDeletionRequestStore:
                         THEN 1
                         ELSE 0
                     END,
+                    plugin_callbacks_json = excluded.plugin_callbacks_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -80,6 +101,7 @@ class PrivacyDeletionRequestStore:
                     scope,
                     request_token,
                     int(memory_backend_required),
+                    callbacks_json,
                     timestamp,
                     timestamp,
                 ),
@@ -88,6 +110,7 @@ class PrivacyDeletionRequestStore:
                 """
                 SELECT user_id, scope, generation, request_token,
                        memory_backend_required,
+                       plugin_callbacks_json,
                        requested_at, updated_at
                 FROM privacy_deletion_requests
                 WHERE user_id = ?
@@ -104,6 +127,7 @@ class PrivacyDeletionRequestStore:
             """
             SELECT user_id, scope, generation, request_token,
                    memory_backend_required,
+                   plugin_callbacks_json,
                    requested_at, updated_at
             FROM privacy_deletion_requests
             ORDER BY requested_at, user_id
@@ -138,4 +162,12 @@ def _request_from_row(row: object) -> PrivacyDeletionRequest:
         memory_backend_required=bool(data["memory_backend_required"]),
         requested_at=float(data["requested_at"]),
         updated_at=float(data["updated_at"]),
+        plugin_callback_names=_callback_names(data["plugin_callbacks_json"]),
     )
+
+
+def _callback_names(value: object) -> tuple[str, ...]:
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, list) or any(not isinstance(name, str) for name in decoded):
+        raise ValueError("Stored privacy plugin callbacks are invalid.")
+    return tuple(dict.fromkeys(name.strip() for name in decoded if name.strip()))

@@ -51,6 +51,21 @@ class RecordingMemoryClient:
         return self.memories
 
 
+class SyntheticScopedMemoryClient(RecordingMemoryClient):
+    """Apply the documented Hindsight tag modes to synthetic memories."""
+
+    async def recall(self, **kwargs: Any) -> list[RecalledMemory]:
+        memories = await super().recall(**kwargs)
+        selected_tags = set(kwargs.get("tags") or [])
+        tags_match = kwargs.get("tags_match", "any")
+        return [
+            memory
+            for memory in memories
+            if (not memory.tags and tags_match == "any")
+            or bool(selected_tags.intersection(memory.tags or []))
+        ]
+
+
 class MemoryPreferences:
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -145,7 +160,7 @@ def test_recall_current_user_context_uses_current_user_bank_and_safe_options() -
             "max_tokens": DEFAULT_USER_RECALL_MAX_TOKENS,
             "types": DEFAULT_USER_RECALL_TYPES,
             "tags": ["scope:global"],
-            "tags_match": "any",
+            "tags_match": "any_strict",
         }
     ]
 
@@ -168,7 +183,53 @@ def test_recall_current_user_context_scopes_tags_to_guild() -> None:
 
     # Global facts plus this guild's scoped memory; other guilds are excluded.
     assert memory.recall_calls[0]["tags"] == ["scope:global", "guild:777"]
-    assert memory.recall_calls[0]["tags_match"] == "any"
+    assert memory.recall_calls[0]["tags_match"] == "any_strict"
+
+
+def test_recall_current_user_context_excludes_legacy_untagged_and_other_guild() -> None:
+    memory = SyntheticScopedMemoryClient(
+        [
+            RecalledMemory(text="global", type="observation", tags=["scope:global"]),
+            RecalledMemory(text="current guild", type="observation", tags=["guild:777"]),
+            RecalledMemory(text="other guild", type="observation", tags=["guild:888"]),
+            RecalledMemory(text="legacy untagged", type="observation", tags=None),
+        ]
+    )
+
+    recalled = asyncio.run(
+        recall_current_user_context(
+            memory_client=memory,
+            preference_store=MemoryPreferences(enabled=True),
+            user_id="123",
+            user_message="What do you remember?",
+            context=ConversationContext(key="k"),
+            guild_id="777",
+        )
+    )
+
+    assert recalled.splitlines() == ["- global [observation]", "- current guild [observation]"]
+
+
+def test_recall_current_user_context_guildless_selects_only_global() -> None:
+    memory = SyntheticScopedMemoryClient(
+        [
+            RecalledMemory(text="global", type="observation", tags=["scope:global"]),
+            RecalledMemory(text="guild", type="observation", tags=["guild:777"]),
+            RecalledMemory(text="legacy untagged", type="observation", tags=[]),
+        ]
+    )
+
+    recalled = asyncio.run(
+        recall_current_user_context(
+            memory_client=memory,
+            preference_store=MemoryPreferences(enabled=True),
+            user_id="123",
+            user_message="What do you remember?",
+            context=ConversationContext(key="k"),
+        )
+    )
+
+    assert recalled.splitlines() == ["- global [observation]"]
 
 
 def test_recall_current_user_context_skips_when_user_opted_out() -> None:

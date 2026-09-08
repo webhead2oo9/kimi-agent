@@ -1509,8 +1509,12 @@ async def test_dm_registers_provisional_work_in_personal_scope(
     async def stop_after_registration(_message: object, **_kwargs: object) -> None:
         return None
 
+    def reject_channel_policy_use(*args: object, **kwargs: object) -> bool:
+        raise AssertionError("guild channel policy must not run for personal DMs")
+
     monkeypatch.setattr(app.active_operations, "register_provisional", record_registration)
     monkeypatch.setattr(app.message_controller, "_on_message_for_user", stop_after_registration)
+    monkeypatch.setattr(message_runtime, "channel_access_allowed", reject_channel_policy_use)
 
     await app.on_message(_dm_message(42))  # type: ignore[arg-type]
 

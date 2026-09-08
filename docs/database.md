@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version and minimum supported baseline are v7. Fresh databases are created at v7, and existing v7 databases open without a migration. Databases below v7 or above this release's supported version are rejected. Optional application modules own their own schemas and versions.
+The current schema version is v8 and the minimum supported baseline is v7. Fresh databases record the v7 baseline plus the v8 privacy-plugin callback migration; existing v7 databases upgrade in place. Databases below v7 or above this release's supported version are rejected. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -80,9 +80,9 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 ## Schema upgrades
 
-`Database.connect()` creates the current schema for an empty database and records the v7 baseline as a single `schema_version` row named `core_v7_baseline`. Existing v7 databases retain their data and complete version ledger, including rows from earlier upgrades.
+`Database.connect()` creates the current schema for an empty database and records the v7 baseline as `core_v7_baseline` followed by the v8 `privacy_plugin_callbacks` migration. Existing v7 databases retain their data and complete version ledger, including rows from earlier upgrades.
 
-The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old transcript-format conversion have been removed. No operator action is needed for a database already at v7. When restoring an older backup, use a release compatible with that backup; this release cannot upgrade a pre-v7 database. Do not change the schema stamp to bypass the check.
+The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old transcript-format conversion have been removed. A database at v7 automatically applies the small v8 migration; no manual operator action is needed. When restoring an older backup, use a release compatible with that backup; this release cannot upgrade a pre-v7 database. Do not change the schema stamp to bypass the check.
 
 Each supported version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema, transcript rows, video sessions, cleanup outboxes, and version stamp unchanged.
 

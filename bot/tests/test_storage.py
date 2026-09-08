@@ -106,12 +106,15 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "core_v7_baseline"
+        assert version_row["name"] == "privacy_plugin_callbacks"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
         ) as cur:
-            assert [tuple(item) for item in await cur.fetchall()] == [(7, "core_v7_baseline")]
+            assert [tuple(item) for item in await cur.fetchall()] == [
+                (7, "core_v7_baseline"),
+                (8, "privacy_plugin_callbacks"),
+            ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_tasks'"
@@ -262,7 +265,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
 
     assert [(row["version"], row["name"]) for row in versions] == [
         (7, "core_v7_baseline"),
-        (8, "add_note"),
+        (8, "privacy_plugin_callbacks"),
+        (9, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -274,7 +278,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == 3
     finally:
         await reopened.close()
 
@@ -303,8 +307,53 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
     assert await history(tmp_path / "fresh.db") == upgraded_history
     assert upgraded_history == [
         (7, "core_v7_baseline"),
-        (8, "add_note"),
+        (8, "privacy_plugin_callbacks"),
+        (9, "add_note"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_v7_database_adds_durable_privacy_plugin_callback_names(tmp_path) -> None:
+    path = tmp_path / "v7.db"
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                name TEXT,
+                applied_at TEXT
+            );
+            INSERT INTO schema_version VALUES (7, 'core_v7_baseline', 'then');
+            CREATE TABLE privacy_deletion_requests (
+                user_id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                request_token TEXT NOT NULL,
+                memory_backend_required INTEGER NOT NULL DEFAULT 0,
+                requested_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            INSERT INTO privacy_deletion_requests VALUES (
+                '42', 'all', 1, 'token', 0, 1.0, 1.0
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    await db.connect()
+    try:
+        async with db.conn.execute(
+            "SELECT plugin_callbacks_json FROM privacy_deletion_requests WHERE user_id = '42'"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row["plugin_callbacks_json"] == "[]"
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -351,7 +400,7 @@ async def test_failed_schema_migration_rolls_back(tmp_path, monkeypatch) -> None
         conn.close()
 
     assert columns == {"id", "value"}
-    assert version == (7,)
+    assert version == (storage.db.SCHEMA_VERSION - 1,)
     assert preserved == ("keep me",)
 
 

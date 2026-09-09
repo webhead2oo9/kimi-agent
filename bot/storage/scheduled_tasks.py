@@ -30,12 +30,16 @@ class ScheduledTaskStore:
         result["state"] = json.loads(result.pop("state_json"))
         return result
 
-    async def list_tasks(self, guild_id: str, owner_id: str | None) -> list[dict[str, Any]]:
+    async def list_tasks(
+        self, guild_id: str, owner_id: str | None, *, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
         async with self.db.conn.execute(
-            "SELECT id, owner_id, status, revision, active_revision, next_run "
-            "FROM scheduled_tasks WHERE guild_id=? AND (? IS NULL OR owner_id=?) "
-            "ORDER BY created_at DESC LIMIT 100",
-            (guild_id, owner_id, owner_id),
+            "SELECT t.id,t.owner_id,t.status,t.revision,t.active_revision,t.next_run,"
+            "json_extract(r.definition_json,'$.name') AS name "
+            "FROM scheduled_tasks t JOIN scheduled_task_revisions r ON r.task_id=t.id "
+            "AND r.revision=t.revision WHERE t.guild_id=? AND (? IS NULL OR t.owner_id=?) "
+            "ORDER BY t.rowid DESC LIMIT ? OFFSET ?",
+            (guild_id, owner_id, owner_id, min(100, max(1, limit)), max(0, offset)),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -120,6 +124,10 @@ class ScheduledTaskStore:
                 (task_id, revision),
             )
             await conn.execute(
+                "DELETE FROM scheduled_task_wizards WHERE task_id=? AND context_key LIKE 'task-edit:%'",
+                (task_id,),
+            )
+            await conn.execute(
                 "UPDATE scheduled_task_previews SET desired_state='activated',next_run=?,attempts=0,retry_at=0,close_pending=1 "
                 "WHERE task_id=? AND revision=?",
                 (next_run, task_id, revision),
@@ -135,6 +143,10 @@ class ScheduledTaskStore:
             )
             if cursor.rowcount != 1:
                 raise ValueError("This revision has already been decided or replaced")
+            await conn.execute(
+                "DELETE FROM scheduled_task_wizards WHERE task_id=? AND context_key LIKE 'task-edit:%'",
+                (task_id,),
+            )
             await conn.execute(
                 "UPDATE scheduled_tasks SET status='rejected' WHERE id=? AND active_revision IS NULL",
                 (task_id,),
@@ -203,39 +215,56 @@ class ScheduledTaskStore:
                 (run_id,),
             )
 
+    async def _retry_run(self, conn: Any, task_id: str) -> str:
+        async with conn.execute(
+            "SELECT id,state_generation FROM scheduled_task_runs "
+            "WHERE task_id=? AND status='delivery_failed' ORDER BY rowid DESC LIMIT 1",
+            (task_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("No failed delivery to retry")
+        run_id = str(row[0])
+        # Claim insertion order is reliable even when wall-clock timestamps tie or regress.
+        async with conn.execute(
+            "SELECT 1 FROM scheduled_task_runs WHERE task_id=? AND rowid>"
+            "(SELECT rowid FROM scheduled_task_runs WHERE id=?) LIMIT 1",
+            (task_id, run_id),
+        ) as cursor:
+            if await cursor.fetchone():
+                raise ValueError("A newer run has superseded this failed delivery")
+        async with conn.execute(
+            "SELECT 1 FROM scheduled_tasks WHERE id=? AND state_generation=?",
+            (task_id, row[1]),
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                raise ValueError("Task state has changed since this failed delivery")
+        async with conn.execute(
+            "SELECT 1 FROM scheduled_task_deliveries WHERE run_id=? AND status='uncertain'",
+            (run_id,),
+        ) as cursor:
+            if await cursor.fetchone():
+                raise ValueError(
+                    "A send has an uncertain outcome. Inspect the destination before starting a new run; it cannot be retried automatically."
+                )
+        async with conn.execute(
+            "SELECT 1 FROM scheduled_task_deliveries WHERE run_id=? AND is_log=0 AND status='cancelled'",
+            (run_id,),
+        ) as cursor:
+            if await cursor.fetchone():
+                raise ValueError("This delivery was cancelled; start a new run instead")
+        return run_id
+
+    async def can_retry_delivery(self, task_id: str) -> bool:
+        try:
+            await self._retry_run(self.db.conn, task_id)
+        except ValueError:
+            return False
+        return True
+
     async def retry_delivery(self, task_id: str) -> None:
         async with self.db.immediate_write_transaction() as conn:
-            async with conn.execute(
-                "SELECT id,state_generation FROM scheduled_task_runs "
-                "WHERE task_id=? AND status='delivery_failed' ORDER BY rowid DESC LIMIT 1",
-                (task_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-            if row is None:
-                raise ValueError("No failed delivery to retry")
-            run_id = row[0]
-            # Claim insertion order is reliable even when wall-clock timestamps tie or regress.
-            async with conn.execute(
-                "SELECT 1 FROM scheduled_task_runs WHERE task_id=? AND rowid>"
-                "(SELECT rowid FROM scheduled_task_runs WHERE id=?) LIMIT 1",
-                (task_id, run_id),
-            ) as cursor:
-                if await cursor.fetchone():
-                    raise ValueError("A newer run has superseded this failed delivery")
-            async with conn.execute(
-                "SELECT 1 FROM scheduled_tasks WHERE id=? AND state_generation=?",
-                (task_id, row[1]),
-            ) as cursor:
-                if await cursor.fetchone() is None:
-                    raise ValueError("Task state has changed since this failed delivery")
-            async with conn.execute(
-                "SELECT 1 FROM scheduled_task_deliveries WHERE run_id=? AND status='uncertain'",
-                (run_id,),
-            ) as cursor:
-                if await cursor.fetchone():
-                    raise ValueError(
-                        "A send has an uncertain outcome. Inspect the destination before starting a new run; it cannot be retried automatically."
-                    )
+            run_id = await self._retry_run(conn, task_id)
             await conn.execute(
                 "UPDATE scheduled_task_deliveries SET status='pending',retry_at=0 WHERE run_id=? "
                 "AND status='failed'",
@@ -457,7 +486,7 @@ class ScheduledTaskStore:
     async def history(self, task_id: str) -> list[dict[str, Any]]:
         async with self.db.conn.execute(
             "SELECT id,revision,scheduled_for,status,detail,created_at,finished_at "
-            "FROM scheduled_task_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 30",
+            "FROM scheduled_task_runs WHERE task_id=? ORDER BY rowid DESC LIMIT 30",
             (task_id,),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]

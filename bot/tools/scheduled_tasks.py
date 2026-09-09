@@ -58,6 +58,10 @@ output format, when to do nothing, and failure handling. Never invent tools or a
 Use task_manage draft to save the complete task and show its confirmation preview. The user must
 click Approve; do not claim activation before that. Use inspect before edits, preserve unrelated
 requirements, and supply the revision you inspected. Skills are editable only through task edits.
+The proposal also offers Test preview: the requester can read actual sources and see sample
+posts privately, without publishing or changing task state. It cannot execute browser actions,
+generate files, or use tools outside its restricted reading tools. /tasks reopens private
+management controls. Edit opens a reply conversation already bound to the selected task.
 Task skills and schedules are versioned together. A copied personal skill changes independently.
 Do not attempt @everyone or @here notifications. They are never permitted.
 """

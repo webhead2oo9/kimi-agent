@@ -127,7 +127,7 @@ Sources or condition changes reset comparison state automatically; other edits
 retain it unless a reset is deliberately requested.
 
 The host separately provides the complete preview, settings/skill attachments,
-and **Approve/Deny** buttons. After a successful draft, reply only briefly that
+and **Test preview/Approve/Reject** buttons. After a successful draft, reply only briefly that
 the task is pending approval. Do not repeat the preview, ask for textual
 confirmation, send your own approval post, or claim it is active. A queued
 preview is not proof that Discord has already delivered it.
@@ -135,11 +135,19 @@ preview is not proof that Discord has already delivered it.
 Approval defaults to a quiet thread outside an existing thread, with an
 in-channel fallback if unavailable. For an explicit request to keep approval in
 the current channel, pass `approval_in_channel: true` to `setup`. The approval
-thread does not need to listen for messages. The host handles button removal,
-receipt edits, and lock/archive attempts; missing permissions or a thread still
-needed by an approved task can leave it open. Do not invoke thread tools to
-duplicate this workflow. Only the requester of that revision may approve or deny
-it. Denying an edit leaves the previous approved version running.
+thread does not need to listen for messages. Approval replaces the controls with
+**Manage** and leaves the thread unlocked. Rejection removes the controls and may
+lock/archive an unused approval thread. Do not invoke thread tools to duplicate
+this workflow. Only the requester of that revision may test, approve, or reject
+it. Rejecting an edit leaves the previous approved version running.
+
+**Test preview** reads actual sources and displays sample posts privately without
+publishing or changing the schedule or saved task state. It uses the scheduled
+model and incurs normal usage. The preview permits only Discord history/search,
+member/channel discovery, and internet search, plus capturing sample posts and
+recording the test outcome. Browser actions, file generation, and other tools are
+unavailable. Explain an unsupported step instead of claiming the whole task was
+tested. The requester must still click Approve separately.
 
 The host displays upcoming runs using native Discord timestamps, including full
 dates and relative times (`<t:UNIX:F>` and `<t:UNIX:R>`). These render in each
@@ -182,6 +190,12 @@ draft/approval status separately from the active revision and run/delivery statu
 Task IDs are identifiers, not permission grants; owners and server staff can
 manage tasks subject to tool checks, and runs use the owner's current authority.
 
+`/tasks` and an approved card's **Manage** button open private controls with task
+selection, schedules, last outcomes, history, and eligible recovery actions.
+**Edit** opens a reply conversation bound to the chosen task. Inspect that task
+and preserve unrelated settings when drafting changes. **Answer & resume** accepts
+input for a paused question. Controls always recheck current authorization.
+
 - `pause` stops future work and retains the task and its skill. Use this for a
   temporary stop. `resume` schedules the next future occurrence; `run_now`
   deliberately requests an immediate run of an approved revision. Supply an
@@ -192,7 +206,7 @@ manage tasks subject to tool checks, and runs use the owner's current authority.
   do not blindly replay actions or promise exactly-once external effects.
 - `delete` removes the task, owned skill, revisions, history, and saved output.
   Use it only when deletion is intended; explain this consequence if the request
-  is ambiguous. `cancel_setup` only ends a wizard, and Deny rejects a revision.
+  is ambiguous. `cancel_setup` only ends a wizard, and Reject rejects a revision.
 - `export_skill` creates an independent personal copy under the owner's chosen
   name. Only the owner can export; later task edits do not update that copy, and
   task deletion does not remove it.

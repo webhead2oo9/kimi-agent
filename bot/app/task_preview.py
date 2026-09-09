@@ -48,11 +48,15 @@ def render_preview(
     next_run: float | None = None,
 ) -> str:
     title = {
-        "pending": "Approve task",
+        "pending": "Task proposal",
         "activated": "Task activated",
         "denied": "Task denied",
         "superseded": "Superseded",
     }[state]
+    if state == "activated":
+        title = "Task " + task.get("task_status", "active").replace("attention", "needs attention")
+        if task.get("active_revision", task["revision"]) != task["revision"]:
+            title = "Approved task revision"
     lines = [
         f"**{title}: {clip(definition.name, 100)}**",
         f"Revision {task['revision']} · Task `{task.get('task_id', task.get('id'))}`",
@@ -64,8 +68,12 @@ def render_preview(
             else "A newer draft replaced this preview. Use its approval message."
         )
         return "\n".join(lines)
+    if state == "activated" and task.get("active_revision", task["revision"]) != task["revision"]:
+        lines.append("This approved revision was replaced. Open Manage for the current task.")
+        return "\n".join(lines)
     lines.extend(
         [
+            f"Objective: {clip(definition.objective, 180)}",
             f"Schedule: {schedule_label(definition)}",
             f"Schedule timezone: {definition.schedule.timezone}",
             "Destination: " + ", ".join(f"<#{x}>" for x in definition.destinations),
@@ -74,7 +82,7 @@ def render_preview(
     )
     times: list[float] = []
     if state == "activated":
-        if next_run is not None:
+        if next_run is not None and task.get("task_status", "active") == "active":
             times.append(next_run)
     else:
         after = now
@@ -87,7 +95,11 @@ def render_preview(
     lines.append("Next run" + ("s" if len(times) > 1 else "") + " (your local time):")
     lines.extend(native_time(t) for t in times)
     if not times:
-        lines.append("None; update the schedule before approval.")
+        lines.append(
+            "None; update the schedule before approval."
+            if state == "pending"
+            else "None scheduled."
+        )
     if state == "pending":
         lines.append(
             f"First check: {definition.first_check} · Missed runs: {definition.schedule.missed}"
@@ -106,6 +118,9 @@ def render_preview(
         if definition.reset_state:
             lines.append("**Saved comparison state will be reset.**")
         lines.append(
-            "Full instructions and settings are attached. Only the requester can approve or deny."
+            "Full instructions and settings are attached. Test preview privately before approving. "
+            "Only the requester can test, approve, or reject."
         )
+    else:
+        lines.append("Open Manage for private controls and run history.")
     return "\n".join(lines)

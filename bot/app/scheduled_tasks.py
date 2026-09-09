@@ -36,6 +36,7 @@ from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.scheduled_tasks import ScheduledTaskStore
 from storage.task_previews import TaskPreviewStore
 from app.task_preview import render_preview
+from app.task_controls import TaskControls, TaskManageEntry
 from app.thread_handoff_boundary import ThreadHandoffBoundary
 from tools.threads import ThreadRequest
 from storage.usage import UsageStore
@@ -52,6 +53,19 @@ from utils.plugin_privacy import PrivacyDeletionCallbackResult, PrivacyDeletionS
 from utils.privacy_barrier import UserPrivacyBarrier
 
 log = logging.getLogger(__name__)
+
+PREVIEW_TOOLS = frozenset(
+    {
+        "browse_tools",
+        "get_channel_context",
+        "discord_text_search",
+        "discord_channels",
+        "lookup_member",
+        "internet_search",
+        "discord_post",  # Captured in memory by the scheduled-run publication path.
+        "task_complete",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -75,9 +89,20 @@ class TaskConfirmation(discord.ui.View):
     def __init__(self, service: ScheduledTaskService, task_id: str, revision: int) -> None:
         super().__init__(timeout=None)
         self.service, self.task_id, self.revision = service, task_id, revision
+        preview: discord.ui.Button[TaskConfirmation] = discord.ui.Button(
+            label="Test preview", custom_id=f"task-test:{task_id}:{revision}"
+        )
+
+        async def test_preview(interaction: discord.Interaction) -> None:
+            await TaskControls(service).handle(
+                interaction, "test_preview", task_id=task_id, revision=revision
+            )
+
+        preview.callback = test_preview  # type: ignore[method-assign]
+        self.add_item(preview)
         for label, prefix, style, approve in (
             ("Approve", "task-confirm", discord.ButtonStyle.success, True),
-            ("Deny", "task-deny", discord.ButtonStyle.danger, False),
+            ("Reject", "task-deny", discord.ButtonStyle.danger, False),
         ):
             button: discord.ui.Button[TaskConfirmation] = discord.ui.Button(
                 label=label,
@@ -115,6 +140,7 @@ class ScheduledTaskService:
         self._posts: dict[str, list[dict[str, Any]]] = {}
         self._owns_lease = False
         self._publisher: asyncio.Task[None] | None = None
+        self._tests: dict[str, asyncio.Task[Any]] = {}
         init_task_tools(runtime.tools.registry, self.manage, self.post, self.discover)
         runtime.tools.registry.prompt_instructions = self.wizard_instructions
         runtime.tools.plugin_privacy_callbacks.register(
@@ -142,14 +168,15 @@ class ScheduledTaskService:
             "SELECT w.task_id FROM scheduled_task_wizards w LEFT JOIN scheduled_tasks t ON t.id=w.task_id "
             "LEFT JOIN scheduled_task_revisions r ON r.task_id=t.id AND r.revision=t.revision "
             "WHERE w.owner_id=? AND w.guild_id=? AND w.context_key=? AND "
-            "(w.task_id IS NULL OR (r.approval_status='pending' AND (t.active_revision IS NULL OR t.revision!=t.active_revision)))",
+            "(w.task_id IS NULL OR w.context_key LIKE 'task-edit:%' OR "
+            "(r.approval_status='pending' AND (t.active_revision IS NULL OR t.revision!=t.active_revision)))",
             (owner_id, guild_id, key),
         ) as cursor:
             row = await cursor.fetchone()
         instructions = ""
         if row is not None:
             instructions = WIZARD + (
-                f"\nCurrent draft: {row[0]}. Inspect before editing." if row[0] else ""
+                f"\nCurrent task: {row[0]}. Inspect before editing." if row[0] else ""
             )
         if key.startswith("scheduled-publication:"):
             origin = await self.r.store.publication_context(guild_id, key)
@@ -202,7 +229,18 @@ class ScheduledTaskService:
                 return json.dumps({"status": "setup_cancelled"})
             if action == "setup":
                 policy = await self.r.access.owner_allowed(ctx)
-                await self._bind_wizard(ctx)
+                selected_id = args.get("task_id")
+                if not selected_id and ctx.context_key.startswith("task-edit:"):
+                    async with self.r.store.db.conn.execute(
+                        "SELECT task_id FROM scheduled_task_wizards WHERE owner_id=? "
+                        "AND guild_id=? AND context_key=?",
+                        (ctx.user_id, ctx.guild_id, ctx.context_key),
+                    ) as cursor:
+                        selected = await cursor.fetchone()
+                    selected_id = selected[0] if selected else None
+                if selected_id:
+                    await self._task(ctx, str(selected_id))
+                await self._bind_wizard(ctx, str(selected_id) if selected_id else None)
                 if "approval_in_channel" in args:
                     if not isinstance(args["approval_in_channel"], bool):
                         raise ValueError("approval_in_channel must be a boolean")
@@ -221,6 +259,7 @@ class ScheduledTaskService:
                         "instructions": WIZARD,
                         "server_timezone": policy.timezone,
                         "definition_schema": TaskDefinition.model_json_schema(),
+                        "task_id": selected_id,
                     }
                 )
             if action == "list":
@@ -282,7 +321,7 @@ class ScheduledTaskService:
                         "revision": task["revision"],
                         "status": "awaiting_confirmation",
                         "preview_delivery": "queued_separate_message",
-                        "instructions": "The application will provide the user the full task information, skill/settings attachments, and Approve/Deny buttons in a separate message when this turn is delivered. Do not repeat any of that information or ask for textual confirmation. Reply only briefly that the task is pending approval. Do not claim it is active or that the preview has already been sent.",
+                        "instructions": "The application will provide the user the full task information, skill/settings attachments, and Test preview/Approve/Reject buttons in a separate message when this turn is delivered. Do not repeat any of that information or ask for textual confirmation. Reply only briefly that the task is pending approval. Do not claim it is active or that the preview has already been sent.",
                     }
                 )
             if task is None:
@@ -374,6 +413,49 @@ class ScheduledTaskService:
             )
         if definition.log_channel:
             await self.r.access.channel(ctx, definition.log_channel, posting=True)
+
+    async def test_preview(
+        self, ctx: MessageContext, task_id: str, revision: int
+    ) -> dict[str, Any]:
+        """Evaluate a pending draft without claiming an occurrence or saving its output/state."""
+        ctx = await self.fresh(ctx)
+        task = await self._task(ctx, task_id)
+        self._check_test_revision(task, ctx, revision)
+        definition = TaskDefinition.model_validate(task["definition"])
+        if task_id in self._tests:
+            raise ValueError("A test preview is already running for this task")
+        if len(self._tests) >= 2:
+            raise ValueError("Two test previews are already running; please try again shortly")
+        current = asyncio.current_task()
+        assert current is not None
+        self._tests[task_id] = current
+        run_id = "preview-" + uuid.uuid4().hex
+        if definition.reset_state:
+            task["state"] = {}
+        self._run_tasks[run_id] = task
+        self._posts[run_id] = []
+        try:
+            async with self.r.privacy.activity(task["owner_id"]):
+                owner = await self.r.access.context(
+                    task["guild_id"], task["owner_id"], task["channel_id"], run_id=run_id
+                )
+                owner = await self.fresh(owner)
+                await self._validate_definition(owner, definition)
+                async with asyncio.timeout(120):
+                    result = await self._execute(task, run_id, owner, definition, preview_actor=ctx)
+                assert result is not None
+                return result
+        finally:
+            self._tests.pop(task_id, None)
+            self._run_tasks.pop(run_id, None)
+            self._posts.pop(run_id, None)
+
+    @staticmethod
+    def _check_test_revision(task: dict[str, Any], ctx: MessageContext, revision: int) -> None:
+        if task["proposer_id"] != ctx.user_id:
+            raise ValueError("Only the person who requested this revision can test it")
+        if task["revision"] != revision or task["approval_status"] != "pending":
+            raise ValueError("This draft was decided or replaced; use its latest proposal")
 
     @staticmethod
     def _preview(task: dict[str, Any], definition: TaskDefinition) -> str:
@@ -520,25 +602,34 @@ class ScheduledTaskService:
                         and isinstance(channel, discord.Thread)
                         and await self.previews.thread_in_use(row["guild_id"], row["channel_id"])
                     )
-                    if row["rendered_state"] != row["desired_state"]:
+                    if row["rendered_state"] != row["render_key"]:
                         await channel.get_partial_message(int(row["message_id"])).edit(
                             content=render_preview(
                                 row,
                                 definition,
                                 now=time.time(),
                                 state=row["desired_state"],
-                                next_run=row["next_run"],
+                                next_run=row["task_next_run"],
                             )
                             + (
                                 "\nThread left open because an approved task uses it."
                                 if needed_by_task
                                 else ""
                             ),
-                            view=None,
+                            view=(
+                                TaskConfirmation(self, row["task_id"], row["revision"])
+                                if row["desired_state"] == "pending"
+                                else (
+                                    TaskManageEntry(self, row["task_id"])
+                                    if row["desired_state"] == "activated"
+                                    else None
+                                )
+                            ),
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                     if (
                         row["close_pending"]
+                        and row["desired_state"] != "activated"
                         and isinstance(channel, discord.Thread)
                         and not needed_by_task
                     ):
@@ -565,9 +656,7 @@ class ScheduledTaskService:
                                 )
                         except discord.Forbidden:
                             pass
-                    await self.previews.rendered(
-                        row["message_id"], row["desired_state"], closed=True
-                    )
+                    await self.previews.rendered(row["message_id"], row["render_key"], closed=True)
             except discord.HTTPException, ValueError, OSError:
                 log.warning("Could not update task approval message", exc_info=True)
                 await self.previews.failed(row["message_id"])
@@ -773,25 +862,7 @@ class ScheduledTaskService:
             task_id: str = "",
             answer: str | None = None,
         ) -> None:
-            await interaction.response.defer(ephemeral=True)
-            try:
-                ctx = await self.r.access.context(
-                    str(interaction.guild_id),
-                    str(interaction.user.id),
-                    str(interaction.channel_id),
-                )
-                async with self.r.privacy.activity(ctx.user_id):
-                    result = await self.manage(
-                        {"action": action, "task_id": task_id or None, "answer": answer}, ctx
-                    )
-                for chunk in chunk_message(result):
-                    await interaction.followup.send(
-                        chunk, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
-                    )
-            except (ValueError, discord.HTTPException) as exc:
-                await interaction.followup.send(
-                    str(exc)[:1500], ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
-                )
+            await TaskControls(self).handle(interaction, action, task_id=task_id, answer=answer)
 
         self.r.bot.tree.add_command(tasks)
 
@@ -803,9 +874,16 @@ class ScheduledTaskService:
         ) as cursor:
             for row in await cursor.fetchall():
                 self.r.bot.add_view(TaskConfirmation(self, row["id"], row["revision"]))
+        async with self.r.store.db.conn.execute("SELECT id FROM scheduled_tasks") as cursor:
+            for row in await cursor.fetchall():
+                self.r.bot.add_view(TaskManageEntry(self, row["id"]))
         self._loop_task = asyncio.create_task(self._loop(), name="scheduled-tasks")
 
     async def close(self) -> None:
+        for test in list(self._tests.values()):
+            test.cancel()
+        await asyncio.gather(*self._tests.values(), return_exceptions=True)
+        self._tests.clear()
         if self._loop_task is not None:
             self._loop_task.cancel()
             await asyncio.gather(self._loop_task, return_exceptions=True)
@@ -823,6 +901,10 @@ class ScheduledTaskService:
         self._owns_lease = False
 
     async def _cancel(self, task_id: str) -> None:
+        test = self._tests.get(task_id)
+        if test is not None and test is not asyncio.current_task():
+            test.cancel()
+            await asyncio.gather(test, return_exceptions=True)
         worker = self._workers.get(task_id)
         if worker is not None:
             worker.cancel()
@@ -920,8 +1002,14 @@ class ScheduledTaskService:
             self._workers.pop(task_id, None)
 
     async def _execute(
-        self, task: dict[str, Any], run_id: str, ctx: MessageContext, definition: TaskDefinition
-    ) -> None:
+        self,
+        task: dict[str, Any],
+        run_id: str,
+        ctx: MessageContext,
+        definition: TaskDefinition,
+        *,
+        preview_actor: MessageContext | None = None,
+    ) -> dict[str, Any] | None:
         registry = self.r.tools.registry
         home = await self.r.access.channel(ctx, ctx.channel_id, posting=False)
         parent_id = str(getattr(home, "parent_id", None) or home.id)
@@ -934,6 +1022,8 @@ class ScheduledTaskService:
             "resume_thread_replies",
             "start_coding_task",
         }
+        if preview_actor is not None:
+            blocked |= {entry.name for entry in registry.get_all_tools()} - PREVIEW_TOOLS
         tool_configs = await asyncio.to_thread(load_tool_configs, registry.config_specs())
         context = ConversationContext(
             key=f"scheduled:{run_id}",
@@ -957,7 +1047,11 @@ class ScheduledTaskService:
         saved_calls = 0
 
         async def guard(target: MessageContext) -> None:
-            if not await self.r.store.live(task["id"], run_id, self._token):
+            if preview_actor is not None:
+                actor = await self.fresh(preview_actor)
+                latest = await self._task(actor, task["id"])
+                self._check_test_revision(latest, actor, task["revision"])
+            elif not await self.r.store.live(task["id"], run_id, self._token):
                 raise asyncio.CancelledError
             current = await self.fresh(target)
             await self.r.access.owner_allowed(current)
@@ -966,6 +1060,11 @@ class ScheduledTaskService:
             target.blocked_tools = frozenset(blocked) | await asyncio.to_thread(
                 load_blocked_tools, current.guild_id or "", parent_id
             )
+            if preview_actor is not None:
+                # Recompute for plugins registered while the test is in progress, too.
+                target.blocked_tools |= {
+                    entry.name for entry in registry.get_all_tools()
+                } - PREVIEW_TOOLS
 
         async def usage(items: list[LLMUsageCall]) -> None:
             nonlocal saved_calls
@@ -994,6 +1093,16 @@ class ScheduledTaskService:
             "Your ordinary final reply is not posted. Do not call more tools after task_complete. "
             "Do not modify your skill, schedules, or approvals."
         )
+        if preview_actor is not None:
+            instructions += (
+                "\nThis is a TEST PREVIEW of a pending proposal. Read actual sources and "
+                "prepare the output you would publish. discord_post only captures sample posts; "
+                "nothing is published. Saved task state will not change. Only Discord history, "
+                "member/channel discovery and internet search are available for reading. "
+                "If the procedure requires unavailable tools, browser interactions, file "
+                "generation or other actions, stop with needs_input and explain the limitation. "
+                "Do not invent successful actions or substitute unsupported evidence."
+            )
         role = "scheduled" if self.r.providers.model_config.roles.scheduled is not None else "chat"
         provider = self.r.providers.resolve(
             role,
@@ -1032,7 +1141,11 @@ class ScheduledTaskService:
                         workspace_lock_held=True,
                         max_iterations=self.r.settings.react_max_iterations,
                         max_tokens=self.r.settings.react_max_tokens,
-                        timeout_seconds=self.r.settings.react_turn_timeout_seconds,
+                        timeout_seconds=(
+                            min(self.r.settings.react_turn_timeout_seconds or 120, 120)
+                            if preview_actor is not None
+                            else self.r.settings.react_turn_timeout_seconds
+                        ),
                         llm_semaphore=self.r.semaphore,
                         usage_store=self.r.usage,
                         usage_sink=calls,
@@ -1074,6 +1187,17 @@ class ScheduledTaskService:
                     }
                     for target in definition.destinations
                 )
+            if preview_actor is not None:
+                for post in posts:
+                    await self._moderate(ctx, post["content"], Direction.OUTPUT)
+                await self._moderate(ctx, result_state["detail"], Direction.OUTPUT)
+                return {
+                    "task_name": definition.name,
+                    "revision": task["revision"],
+                    "outcome": outcome,
+                    "detail": result_state["detail"],
+                    "posts": posts,
+                }
             if outcome == "completed":
                 assets = await asyncio.to_thread(validate_generated_assets, result.generated_assets)
                 await self._moderate(
@@ -1114,6 +1238,7 @@ class ScheduledTaskService:
             await self._finish(
                 task, run_id, outcome, result_state["detail"], result_state["state"], posts
             )
+        return None
 
     async def _finish(
         self,

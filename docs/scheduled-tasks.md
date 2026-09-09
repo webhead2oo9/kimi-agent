@@ -85,7 +85,7 @@ for missing sources, timing, destinations, conditions, and output requirements.
 Use `cancel_setup` to stop an unfinished wizard.
 
 Kimi writes the dedicated skill while preparing a draft. The preview includes the
-interpreted schedule and attached complete settings and `SKILL.md`. Click **Approve** to activate that exact revision, or **Deny** to reject it. Changed or already-used previews cannot be
+interpreted schedule and attached complete settings and `SKILL.md`. Click **Approve** to activate that exact revision, or **Reject** to reject it. Changed or already-used previews cannot be
 confirmed. A draft without valid skill instructions cannot activate.
 
 Owners can inspect, edit, pause, resume, delete, and run their tasks immediately.
@@ -96,8 +96,43 @@ resets saved comparison state, as shown in the preview.
 
 Ask Kimi to copy a task's skill to personal skills with a chosen kebab-case name.
 Only the creator can export it; the personal copy and task skill then change
-independently. `/tasks` also provides list, inspect, history, pause, resume,
-run-now, retry-delivery, and delete actions without requiring a model response.
+independently. `/tasks` opens a private, paginated list of tasks. Select one to see
+its schedule, next run, latest outcome, and management buttons. Owners see their
+tasks; staff can see tasks in their server. Existing action arguments still work.
+
+The **Manage** button on an approved proposal opens the same private controls.
+Pause/resume, run-now, history, and eligible delivery retries do not require a model
+response. A task needing input offers **Answer & resume**; deletion asks for a
+confirmation. History includes links to published messages and a downloadable
+record of run and delivery details. Every action checks current permissions.
+
+**Edit** posts a short prompt in the current channel. Reply directly to that
+message with the desired changes: its conversation is bound to the selected task
+and private persisted context is available only to the requester. The resulting
+edit still requires a new proposal approval.
+
+## Test a proposal
+
+Before approval, the requester can click **Test preview**. The test uses the
+scheduled-task model, the exact pending revision, and a copy of saved state (or an
+empty baseline when the draft requests a reset). It reads real sources and returns
+a private result: what it would publish, why it would stay silent, or what input or
+unsupported action prevents completion. Sample posts and their destination IDs are
+included in a downloadable preview. A silent first check reports that it would
+establish a baseline without posting.
+
+Tests cannot publish messages or change the schedule, approval, saved task state,
+or run/delivery history. Discord posts are captured in memory. Only Discord
+history/search, member/channel discovery, and internet search are allowed for
+reading; browser actions, workspace tools, generated files, and other tools are
+unavailable. Tool restrictions apply at dispatch, including tools registered while
+a test is running. The test stops if the draft is decided or replaced, or access
+is revoked. A test is not proof that a later run or an unsupported action will succeed.
+
+Tests incur normal model/search usage and have a two-minute limit, with at most two
+concurrent tests and one per task. They do not consume a scheduled occurrence;
+approval remains a separate action. Preview working conversations are owner-scoped
+and covered by the existing privacy deletion controls.
 
 ## Checks, memory, and notifications
 
@@ -185,15 +220,17 @@ countdowns use Discord timestamps, displayed in each viewer's local timezone;
 this does not change the task schedule. You may choose a different timezone per task.
 Full settings and instructions remain attached as `task.json` and `SKILL.md`.
 
-Only the person requesting that revision can approve or deny it, including when
-another staff member views its buttons. Either decision removes both buttons and
-edits the preview into a receipt. Denying an edit keeps the previously approved
+Only the person requesting that revision can test, approve, or reject it, including
+when another staff member views its buttons. Approval replaces the proposal buttons
+with **Manage**. The active card refreshes its status and next run; replaced approved
+revisions point to management of the current task. Rejecting an edit keeps the previously approved
 version running. Replaced pending previews are marked superseded.
 
-After a decision, Kimi attempts to lock and archive the approval thread where the
-requester and bot have the necessary authority. Missing permissions leave the thread
-open without undoing the decision. Threads used by an approved task for publication,
-logging, or follow-up questions also remain open, including when denying an edit.
+Approved proposal threads remain unlocked for management. After rejection, Kimi
+attempts to lock and archive the approval thread where the requester and bot have
+the necessary authority. Missing permissions leave it open without undoing the
+decision. Threads used by an approved task for publication, logging, or follow-up
+questions also remain open when rejecting an edit.
 Message edits retry after transient failures,
 including after a restart; approval itself is never repeated. Older previews remain
 usable and are updated on interaction.

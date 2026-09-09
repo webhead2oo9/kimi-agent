@@ -419,6 +419,26 @@ class ScheduledTaskStore:
                     if cursor.rowcount:
                         await self._commit_state(conn, run_id)
 
+    async def publication_context(
+        self, guild_id: str, conversation_key: str
+    ) -> dict[str, Any] | None:
+        """Return only public origin metadata for a verified published conversation."""
+        async with self.db.conn.execute(
+            "SELECT r.task_id,r.id AS run_id,r.revision,"
+            "json_extract(v.definition_json,'$.name') AS task_name,m.source_created_at AS published_at "
+            "FROM conversations c JOIN messages m ON m.conversation_id=c.id "
+            "AND m.discord_message_id=c.root_discord_message_id AND m.role='assistant' "
+            "JOIN scheduled_task_deliveries d ON d.message_id=m.discord_message_id "
+            "AND d.channel_id=c.channel_id AND d.status='sent' AND d.is_log=0 "
+            "JOIN scheduled_task_runs r ON r.id=d.run_id JOIN scheduled_tasks t "
+            "ON t.id=r.task_id AND t.guild_id=c.guild_id JOIN scheduled_task_revisions v "
+            "ON v.task_id=r.task_id AND v.revision=r.revision "
+            "WHERE c.key=? AND c.guild_id=? AND c.access_scope='channel_shared' LIMIT 1",
+            (conversation_key, guild_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
     async def history(self, task_id: str) -> list[dict[str, Any]]:
         async with self.db.conn.execute(
             "SELECT id,revision,scheduled_for,status,detail,created_at,finished_at "

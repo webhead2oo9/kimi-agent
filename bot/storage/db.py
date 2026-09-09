@@ -10,7 +10,7 @@ from pathlib import Path
 import aiosqlite
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -230,6 +230,39 @@ CREATE INDEX IF NOT EXISTS idx_usage_markers_user_surface_time
 
 CREATE INDEX IF NOT EXISTS idx_usage_markers_time
     ON usage_markers(created_at);
+
+-- Conservative pre-request reservations for paid image providers. Rows contain
+-- accounting dimensions only: prompts, reference images, and output bytes are
+-- deliberately excluded.
+CREATE TABLE IF NOT EXISTS image_usage_reservations (
+    reservation_id      TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    user_name           TEXT,
+    channel_id          TEXT,
+    guild_id            TEXT,
+    backend             TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    operation           TEXT NOT NULL CHECK (operation IN ('generate', 'edit')),
+    size                TEXT,
+    quality             TEXT,
+    estimated_cost_usd  REAL NOT NULL CHECK (estimated_cost_usd >= 0),
+    state               TEXT NOT NULL CHECK (state IN (
+                            'reserved', 'succeeded', 'provider_rejected',
+                            'failed_uncertain', 'cancelled_uncertain')),
+    provider_request_id TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_usage_user_time
+    ON image_usage_reservations(user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_image_usage_guild_time
+    ON image_usage_reservations(guild_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_image_usage_time
+    ON image_usage_reservations(created_at);
 
 
 -- Cached visual descriptions for non-vision chat models. Cache scope is one
@@ -601,8 +634,43 @@ async def _add_privacy_plugin_callbacks(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_image_usage_reservations(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        """
+        CREATE TABLE image_usage_reservations (
+            reservation_id      TEXT PRIMARY KEY,
+            user_id             TEXT NOT NULL,
+            user_name           TEXT,
+            channel_id          TEXT,
+            guild_id            TEXT,
+            backend             TEXT NOT NULL,
+            provider            TEXT NOT NULL,
+            model               TEXT NOT NULL,
+            operation           TEXT NOT NULL CHECK (operation IN ('generate', 'edit')),
+            size                TEXT,
+            quality             TEXT,
+            estimated_cost_usd  REAL NOT NULL CHECK (estimated_cost_usd >= 0),
+            state               TEXT NOT NULL CHECK (state IN (
+                                    'reserved', 'succeeded', 'provider_rejected',
+                                    'failed_uncertain', 'cancelled_uncertain')),
+            provider_request_id TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX idx_image_usage_user_time ON image_usage_reservations(user_id, created_at)"
+    )
+    await conn.execute(
+        "CREATE INDEX idx_image_usage_guild_time ON image_usage_reservations(guild_id, created_at)"
+    )
+    await conn.execute("CREATE INDEX idx_image_usage_time ON image_usage_reservations(created_at)")
+
+
 _MIGRATIONS: dict[int, Migration] = {
     8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
+    9: ("image_usage_reservations", _add_image_usage_reservations),
 }
 
 
@@ -835,11 +903,10 @@ class Database:
         rollback could destroy a bystander's uncommitted write. EVERY writer must
         therefore go through this context manager (``_initialize_schema`` is the one
         exception: it runs at startup before any concurrency exists). With all
-        writers serialized here, commit/rollback scoping is exact. ``BEGIN
-        IMMEDIATE`` remains unusable on this shared connection (it would hold the
-        write lock for the life of the connection, serializing every reader
-        behind one writer). The lock is not reentrant: a writer must never call
-        another writer; inline the statement instead.
+        writers serialized here, commit/rollback scoping is exact. Admission
+        checks that must lock before their first read use
+        :meth:`immediate_write_transaction` instead. The lock is not reentrant:
+        a writer must never call another writer; inline the statement instead.
         """
         async with self._write_lock:
             conn = self.conn
@@ -851,6 +918,27 @@ class Database:
                     await conn.rollback()
                 except Exception:
                     log.exception("Rollback failed after write-transaction error")
+                raise
+
+    @asynccontextmanager
+    async def immediate_write_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Serialize a read-check-write unit across processes and connections.
+
+        ``BEGIN IMMEDIATE`` obtains SQLite's reserved write lock before the first
+        limit query. This is intentionally reserved for admission decisions whose
+        read and subsequent insert must be one atomic operation.
+        """
+        async with self._write_lock:
+            conn = self.conn
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                await conn.commit()
+            except BaseException:
+                try:
+                    await conn.rollback()
+                except Exception:
+                    log.exception("Rollback failed after immediate write-transaction error")
                 raise
 
     async def close(self) -> None:

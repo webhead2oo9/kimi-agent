@@ -198,14 +198,28 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     video_understanding_max_concurrency: int = Field(default=4, ge=1, le=32)
 
-    # OpenAI image generation (optional REGULAR-tier core tool). OAuth reuses
-    # the Codex token manager; IMAGE_GEN_API_KEY is the dedicated fallback.
+    # Image generation (optional REGULAR-tier core tool). Codex OAuth and the
+    # paid OpenAI Platform API are explicit backends and never fail over.
     image_gen_enabled: bool = False
-    image_gen_backend: str = "openai"
+    image_gen_backend: str = "openai_codex"
     image_gen_auth_mode: str = "auto"
     image_gen_api_key: SecretStr = SecretStr("")
     image_gen_max_concurrency: int = Field(default=1, ge=1, le=8)
     image_gen_timeout_seconds: float = Field(default=300.0, ge=30.0, le=900.0)
+    image_gen_user_calls_per_24h: int = Field(default=5, ge=0)
+    image_gen_guild_calls_per_24h: int = Field(default=100, ge=0)
+    image_gen_deployment_monthly_usd: float = Field(default=100.0, ge=0)
+    image_gen_staff_exempt_from_call_limits: bool = True
+    image_gen_cost_estimates_usd: dict[str, float] = Field(
+        default_factory=lambda: {
+            "gpt-image-2:generate": 0.30,
+            "gpt-image-2:edit": 0.45,
+            "gpt-image-2.5-flare:generate": 0.30,
+            "gpt-image-2.5-flare:edit": 0.45,
+            "gpt-image-2.5-sunburst:generate": 0.30,
+            "gpt-image-2.5-sunburst:edit": 0.45,
+        }
+    )
 
     # The bot owner's Discord user id. Gates tools registered with owner_only at
     # dispatch (none ship today; the registry mechanism stays for future
@@ -763,9 +777,30 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_image_gen_backend(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized != "openai":
-            raise ValueError("IMAGE_GEN_BACKEND must be openai")
+        if normalized not in {"openai_codex", "openai_api", "openai"}:
+            raise ValueError("IMAGE_GEN_BACKEND must be one of: openai_codex, openai_api, openai")
         return normalized
+
+    @field_validator("image_gen_cost_estimates_usd")
+    @classmethod
+    def _validate_image_cost_estimates(cls, value: dict[str, float]) -> dict[str, float]:
+        expected = {
+            f"{model}:{operation}"
+            for model in (
+                "gpt-image-2",
+                "gpt-image-2.5-flare",
+                "gpt-image-2.5-sunburst",
+            )
+            for operation in ("generate", "edit")
+        }
+        if set(value) != expected:
+            raise ValueError(
+                "IMAGE_GEN_COST_ESTIMATES_USD must contain every supported "
+                "openai_api model:operation pair"
+            )
+        if any(not math.isfinite(cost) or cost <= 0 for cost in value.values()):
+            raise ValueError("IMAGE_GEN_COST_ESTIMATES_USD values must be finite and positive")
+        return value
 
     @field_validator("image_gen_auth_mode")
     @classmethod

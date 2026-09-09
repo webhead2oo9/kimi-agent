@@ -5,7 +5,7 @@ and files in your own workspace during a tool call. Any upload to another servic
 or additional storage by a module is covered by that module's privacy notice.
 The file API itself makes no network requests.
 
-_Last updated: 2026-09-01_
+_Last updated: 2026-09-09_
 
 > **Deployment template.** Before publishing this policy, check that the
 > services, retention periods, moderation features, and contact route it
@@ -206,9 +206,12 @@ the configured services and tools needed to answer you.
   and tool names, but an operator can choose a mode that also records message
   and reply text, retrieved channel context, and tool inputs and results.
   `/privacy` does not edit these files.
-- **Usage metadata: kept indefinitely.** The LLM and paid-tool cost accounting
-  records (which contain no message text) are kept for cost tracking and are
-  not on the 30-day clock.
+- **Usage metadata: kept indefinitely.** The LLM, paid-tool, and conservative
+  paid-image reservation records (which contain no prompt, image, or message
+  text) are kept for cost tracking and limits and are not on the 30-day clock.
+  **Delete my data** removes identifying attribution and provider-request
+  correlation from paid-image rows while retaining the unlinked estimate for
+  the deployment ceiling.
 - **Bot blocks: until removed.** If you or a moderator block the bot from
   responding to you, Kimi keeps your user ID plus the block's creator, reason,
   and timestamps until the block is removed. Blocks are not removed by
@@ -234,13 +237,15 @@ the configured services and tools needed to answer you.
   and does not keep you blocked while that retry runs. If you started a shared
   conversation, Kimi's local copy of that whole conversation is removed,
   including messages other people added to it; their other conversations,
-  workspaces, preferences, and personal memory are left alone.
+  workspaces, preferences, and personal memory are left alone. Paid-image
+  reservation rows are anonymized so their conservative amounts can continue
+  enforcing the deployment ceiling without identifying you.
 - **What `/privacy` cannot delete**: messages or files stored by Discord;
   provider safety logs, legally required records, backups, and copies outside
   the stored Gemini video Interactions Kimi knows how to delete; diagnostic
-  logs; community knowledge; shared or personal skills; usage and rate-limit
-  records; learning messages; blocks; or your saved consent preference. Each
-  has its own lifecycle, described above.
+  logs; community knowledge; shared or personal skills; aggregate usage/cost
+  history and active rate-limit records; learning messages; blocks; or your
+  saved consent preference. Each has its own lifecycle, described above.
 
 Deletion waits for any interaction already in progress, and blocks new activity
 for you until the required local deletion finishes. Your confirmation is saved

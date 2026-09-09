@@ -53,10 +53,25 @@ class ImageResult:
     quality: str | None = None
     output_format: str | None = None
     actual_size: str | None = None
+    backend: str = ""
+    provider: str = ""
+    requested_model: str = ""
+    provider_reported_model: str | None = None
+    model_verified: bool = False
+    request_id: str | None = None
+    model_caveat: str | None = None
 
 
 class ImageGenError(RuntimeError):
     """User-facing generation failure. The message is safe for Discord."""
+
+
+class ImageProviderRejectedError(ImageGenError):
+    """Deterministic provider-side input rejection; billing remains conservative."""
+
+    def __init__(self, message: str, request_id: str | None = None) -> None:
+        super().__init__(message)
+        self.request_id = request_id
 
 
 class ImageQuotaError(ImageGenError):

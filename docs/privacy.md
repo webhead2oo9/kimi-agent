@@ -55,7 +55,8 @@ This is the primary store: SQLite in WAL mode, with the schema owned by
 | `user_preferences` | `user_id`, `memory_enabled`, `privacy_consent`(+`_at`), `persona_prompt`(+`_updated_at`). Settings, not message content. |
 | `usage_ledger` | Cost/usage metadata, one row per completed LLM call, grouped into logical turns by `turn_id`: `user_id`, `user_name`, `channel_id`, `guild_id`, serving model/role, token counts, estimated cost. **No message content.** |
 | `paid_usage_ledger` | Cost metadata, one row per non-LLM tool backend that actually charged: user/channel/guild attribution, tool and provider names, dollars, turn id, and timestamp. **No query, result, or message content.** |
-| `usage_markers` | Short-lived rate-limit metadata for bounded tools: user/channel/guild attribution, surface, operation, unit count, and timestamp. Code-exec markers contain no source code, arguments, output, or cost. |
+| `image_usage_reservations` | Conservative pre-request accounting for billed image backends: user/channel/guild attribution, backend/provider/model, generation or edit, size/quality hints, configured USD estimate, outcome state, bounded provider request id, and timestamps. **No prompt, reference image, output image, or provider-token-derived charge.** |
+| `usage_markers` | Short-lived rate-limit metadata for bounded tools: user/channel/guild attribution, surface, operation, unit count, and timestamp. Code-exec and paid-image call markers contain no source code, prompt, image, arguments, output, or cost. |
 | `blocked_users` | Moderation blocks: `user_id`, `blocked_by`, `reason`, timestamps. |
 | `auto_retain_watermarks` | Per-(conversation, user) high-water marks for memory auto-retain. |
 | `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, required operator-plugin callback names, and timestamps. The row contains no message content. |
@@ -208,14 +209,18 @@ started in `on_ready` and run at
 
 A few stores are deliberately not on this clock:
 
-- **Usage/cost ledgers** (`usage_ledger`, `paid_usage_ledger`) are retained for
+- **Usage/cost ledgers** (`usage_ledger`, `paid_usage_ledger`, and
+  `image_usage_reservations`) are retained for
   cost accounting and the `/usage` command (any member sees their own windows;
   other users and server totals are staff-only). They hold per-call cost
-  metadata only, never message content.
+  metadata only, never message content. Full `/privacy` deletion anonymizes an
+  image reservation's user, channel, guild, and provider-request correlation
+  while retaining its unlinked estimate for the deployment ceiling.
 - **Bounded-tool markers** (`usage_markers`) are exempt from `/privacy`
   deletion, because a capacity limit anyone can reset by deleting their data is
   not a limit. A row records only that a bounded tool was used, with no code,
-  arguments, results, or message content, and is pruned after eight days.
+  arguments, results, or message content. Rows older than eight days are pruned
+  on the next marker write and can remain longer while the deployment is idle.
 - **Configured Discord learning cards** are ordinary messages in staff
   channels. Their lifecycle belongs to server staff and Discord, not to the
   local transcript sweep or `/privacy`.
@@ -306,9 +311,10 @@ Everything else keeps its own lifecycle, by design:
     Interaction and Files API upload and retries failures; it still cannot guarantee removal from
     provider safety logs, backups, or legally required records. The action also
     cannot delete Discord messages, other provider-side copies or logs, backups,
-    the tool-event log, community memory, shared skills, usage ledgers/markers,
-    Discord learning messages, blocks, the retained consent choice, or the
-    non-content bank-state marker.
+    the tool-event log, community memory, shared skills, aggregate usage/cost
+    history or active limit markers, Discord learning messages, blocks, the
+    retained consent choice, or the non-content bank-state marker. Paid-image
+    reservation attribution is anonymized rather than retained as user data.
   - **Delete memory** runs `forget_user_memory` plus callbacks explicitly
     registered for memory deletion only; the transcript and callbacks registered
     only for full deletion are left untouched.
@@ -418,8 +424,9 @@ The bot operator can access the SQLite database, workspace files, diagnostic
 logs, configuration, and Hindsight backend as the infrastructure administrator.
 
 Discord commands expose only their bounded operational views. `/usage` shows a
-member their own token and cost windows (viewing another user or the server
-totals is staff-only), the staff-only `/moderation` manages blocks and reasons,
+member their own token and cost windows, including conservative paid-image
+reservations (viewing another user or the server totals is staff-only), the
+staff-only `/moderation` manages blocks and reasons,
 and `/models` is bot-owner-only. None of these commands expose
 conversation transcripts or private memory. Staff with access to configured
 learning channels can also read the event cards posted there. The privilege
@@ -438,7 +445,8 @@ metadata (ids, channel, serving model, tokens, cost, grouped by `turn_id`) with
 member; other-user and server views staff-only).
 
 Bounded-tool markers hold less again: attribution, a counter unit, and a
-timestamp. They are pruned after eight days.
+timestamp. Rows older than eight days are pruned opportunistically when another
+marker is written, so an idle deployment can retain expired rows longer.
 
 ## Privacy consent gate
 

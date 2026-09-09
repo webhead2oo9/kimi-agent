@@ -426,6 +426,11 @@ async def run_privacy_deletion(
             "message(s) from shared conversations."
         )
         lines.append(f"Deleted **{deletion.coding_tasks_deleted}** coding task record(s).")
+        if deletion.image_usage_records_anonymized:
+            lines.append(
+                f"Anonymized **{deletion.image_usage_records_anonymized}** paid-image "
+                "usage record(s) while retaining deployment-level spend totals."
+            )
         try:
             async with workspace_locks.maintenance():
                 removed = await asyncio.to_thread(workspace_manager.delete_owner_dirs, user_id)
@@ -562,8 +567,9 @@ def _build_tldr_embed(
             "Known Gemini video Interactions and uploaded Files are also submitted "
             "for deletion.\n"
             "- This cannot erase Discord messages, provider safety logs or backups, "
-            "community knowledge, skills, usage or moderation records, blocks, or "
-            "your saved consent choice.\n"
+            "community knowledge, skills, aggregate usage/cost or moderation records, "
+            "blocks, or your saved consent choice. Paid-image reservation attribution "
+            "is anonymized.\n"
             "- Ask me to block you, or Decline the privacy prompt if it appears.\n\n"
             "Questions? Reach the bot owner or server staff."
         ),

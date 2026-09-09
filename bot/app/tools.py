@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -19,6 +19,7 @@ from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
 from image_gen.factory import ImageBackendConfig, build_image_backend
 from image_gen.service import ImageGenService
+from storage.usage import ImageUsageLimits
 from providers.factory import get_codex_auth_manager, get_xai_auth_manager
 from skills.admin import SkillAdminService
 from skills.loader import SharedSkillCatalog, scan_skills
@@ -350,7 +351,7 @@ CAPABILITY_PROBES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "image generation",
         ("generate_image",),
-        "IMAGE_GEN_ENABLED + Codex OAuth or IMAGE_GEN_API_KEY",
+        "IMAGE_GEN_ENABLED + explicit backend credential",
     ),
     (
         "video understanding",
@@ -559,7 +560,11 @@ def _register_image_gen(
         return
     auth_manager = (
         get_codex_auth_manager(settings.codex_token_file)
-        if settings.image_gen_auth_mode in {"auto", "oauth"}
+        if settings.image_gen_backend == "openai_codex"
+        or (
+            settings.image_gen_backend == "openai"
+            and settings.image_gen_auth_mode in {"auto", "oauth"}
+        )
         else None
     )
     backend = build_image_backend(
@@ -580,6 +585,7 @@ def _register_image_gen(
     service = ImageGenService(
         backend,
         max_concurrency=settings.image_gen_max_concurrency,
+        cost_estimates=_image_cost_estimates(settings.image_gen_cost_estimates_usd),
     )
     init_image_gen_tool(
         registry,
@@ -587,8 +593,24 @@ def _register_image_gen(
         workspace_manager,
         workspace_locks,
         workspace_config,
+        persistent_limits=ImageUsageLimits(
+            per_user_24h=settings.image_gen_user_calls_per_24h,
+            per_guild_24h=settings.image_gen_guild_calls_per_24h,
+            deployment_monthly_usd=settings.image_gen_deployment_monthly_usd,
+            staff_exempt_from_call_limits=(settings.image_gen_staff_exempt_from_call_limits),
+        ),
     )
     log.info("Image generation enabled with %s (%s auth)", backend.name, backend.auth_mode)
+
+
+def _image_cost_estimates(raw: Mapping[str, float]) -> dict[tuple[str, str], float]:
+    estimates: dict[tuple[str, str], float] = {}
+    for key, cost in raw.items():
+        model, separator, operation = key.rpartition(":")
+        if not separator or not model or operation not in {"generate", "edit"}:
+            raise ValueError(f"invalid image cost estimate key: {key!r}")
+        estimates[(model, operation)] = cost
+    return estimates
 
 
 def _register_video(

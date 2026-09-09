@@ -17,7 +17,14 @@ from pathlib import Path
 import pytest
 
 from image_gen.service import ImageGenService
-from image_gen.types import ImageEditRequest, ImageGenError, ImageGenRequest, ImageResult
+from image_gen.openai import CODEX_CAPABILITIES
+from image_gen.types import (
+    ImageEditRequest,
+    ImageGenError,
+    ImageGenRequest,
+    ImageReference,
+    ImageResult,
+)
 from providers.assets import write_generated_assets
 from providers.codex import CodexProvider
 from providers.openrouter import OpenRouterProvider
@@ -131,6 +138,10 @@ def test_provider_asset_paths_accept_a_decodable_png(sink, tmp_path: Path) -> No
 
 class _Backend:
     name = "stub"
+    provider = "stub"
+    auth_mode = "stub"
+    capabilities = CODEX_CAPABILITIES
+    requires_persistent_usage_reservation = False
 
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
@@ -158,7 +169,12 @@ async def test_image_gen_service_rejects_pngs_that_do_not_fully_decode(payload: 
         await service.generate(_request())
     with pytest.raises(ImageGenError, match="not a decodable PNG"):
         await service.edit(
-            ImageEditRequest(prompt="bluer", model="gpt-image-2", images=(), size="auto")
+            ImageEditRequest(
+                prompt="bluer",
+                model="gpt-image-2",
+                images=(ImageReference(media_type="image/png", data_base64="eA=="),),
+                size="auto",
+            )
         )
 
 

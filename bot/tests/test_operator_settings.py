@@ -102,6 +102,22 @@ def test_unlisted_plain_scalars_stay_environment_only() -> None:
     assert all(_spec_for(field) is None for field in environment_only)
 
 
+def test_image_cost_estimate_map_stays_environment_only() -> None:
+    assert "image_gen_cost_estimates_usd" not in OPERATOR_EDITABLE_FIELDS
+    assert _spec_for("image_gen_cost_estimates_usd") is None
+
+
+def test_paid_image_limit_controls_are_operator_editable_and_zeroable() -> None:
+    for field in (
+        "image_gen_user_calls_per_24h",
+        "image_gen_guild_calls_per_24h",
+        "image_gen_deployment_monthly_usd",
+    ):
+        spec = _spec_for(field)
+        assert spec is not None
+        assert spec.minimum == 0
+
+
 def test_no_secret_is_managed() -> None:
     """A file the overlay can pin is the wrong place to keep a credential:
     secrets stay in .env, referenced by env-var name."""
@@ -220,6 +236,8 @@ def test_choice_vocabularies_match_the_code_that_consumes_them() -> None:
 
     expected = {
         "codex_reasoning_effort": {"", *REASONING_EFFORT_ORDER},
+        "image_gen_backend": {"openai_codex", "openai_api", "openai"},
+        "image_gen_auth_mode": {"auto", "oauth", "api_key"},
     }
     for field, vocabulary in expected.items():
         spec = _spec_for(field)

@@ -30,21 +30,32 @@ def format_user_usage(
 ) -> str:
     """One member's spend, one row per window, widest window last."""
     show_paid = any(aggregate.paid_tool_cost_usd > 0 for aggregate in windows.values())
-    header = ["Window", "Est. cost", *(["Paid"] if show_paid else []), "Tokens", "Turns"]
+    show_images = any(aggregate.image_calls > 0 for aggregate in windows.values())
+    header = [
+        "Window",
+        "Est. cost",
+        *(["Paid"] if show_paid else []),
+        *(["Image est."] if show_images else []),
+        "Tokens",
+        "Turns",
+    ]
     rows = [
         _spend_row(
             name,
             cost=aggregate.est_cost_usd,
             paid=aggregate.paid_tool_cost_usd,
+            image_est=aggregate.image_est_cost_usd,
             tokens=_total_tokens(aggregate),
             turns=aggregate.turns,
             show_paid=show_paid,
+            show_images=show_images,
         )
         for name, aggregate in windows.items()
     ]
     widest = _widest_window(windows)
     notes = _notes(
         show_paid=show_paid,
+        show_images=show_images,
         unpriced=widest[1].unpriced_llm_calls if widest else 0,
         window=widest[0] if widest else "",
     )
@@ -59,15 +70,25 @@ def format_server_usage(
     show_paid = total.paid_tool_cost_usd > 0 or any(
         spender.paid_tool_cost_usd > 0 for spender in spenders
     )
-    header = ["", "Est. cost", *(["Paid"] if show_paid else []), "Tokens", "Turns"]
+    show_images = total.image_calls > 0
+    header = [
+        "",
+        "Est. cost",
+        *(["Paid"] if show_paid else []),
+        *(["Image est."] if show_images else []),
+        "Tokens",
+        "Turns",
+    ]
     rows = [
         _spend_row(
             "Server total",
             cost=total.est_cost_usd,
             paid=total.paid_tool_cost_usd,
+            image_est=total.image_est_cost_usd,
             tokens=_total_tokens(total),
             turns=total.turns,
             show_paid=show_paid,
+            show_images=show_images,
         ),
     ]
     if spenders:
@@ -78,14 +99,17 @@ def format_server_usage(
                 f"{rank}. {_plain(spender.user_name or spender.user_id, _MAX_NAME_CHARS)}",
                 cost=spender.est_cost_usd,
                 paid=spender.paid_tool_cost_usd,
+                image_est=spender.image_est_cost_usd,
                 tokens=spender.total_tokens,
                 turns=spender.turns,
                 show_paid=show_paid,
+                show_images=show_images,
             )
             for rank, spender in enumerate(spenders, start=1)
         )
     notes = _notes(
         show_paid=show_paid,
+        show_images=show_images,
         unpriced=total.unpriced_llm_calls,
         window="Last 30d",
     )
@@ -156,14 +180,17 @@ def _spend_row(
     *,
     cost: float,
     paid: float,
+    image_est: float,
     tokens: int,
     turns: int,
     show_paid: bool,
+    show_images: bool,
 ) -> list[str]:
     return [
         label,
         _money(cost),
         *([_money(paid)] if show_paid else []),
+        *([_money(image_est)] if show_images else []),
         _tokens(tokens),
         f"{turns:,}",
     ]
@@ -201,10 +228,15 @@ def _plain(value: str, limit: int = 32) -> str:
     return cleaned or "unknown"
 
 
-def _notes(*, show_paid: bool, unpriced: int, window: str) -> list[str]:
+def _notes(*, show_paid: bool, show_images: bool, unpriced: int, window: str) -> list[str]:
     notes = []
     if show_paid:
         notes.append("Paid is billed tool spend, already counted in est. cost.")
+    if show_images:
+        notes.append(
+            "Image est. is conservative reserved spend, including cancellations and "
+            "potentially billed failures; it is already counted in est. cost."
+        )
     if unpriced > 0:
         noun = "call" if unpriced == 1 else "calls"
         notes.append(

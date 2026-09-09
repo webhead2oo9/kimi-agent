@@ -297,7 +297,7 @@ OpenRouter is deliberately stricter: it requires `api_key_env`, rejects
 `api_key_env: GEMINI_API_KEY`; general-provider transport, attribution, retry,
 and circuit fields are rejected because its Google endpoints and lifecycle are
 code-owned. It may back only `roles.video`; it cannot appear in a
-chat/compaction/coding/persona role, fallback, scope override, or
+chat/compaction/coding/scheduled/persona role, fallback, scope override, or
 `selectable_chat_models`.
 
 #### Supported `api_key_env` values
@@ -358,6 +358,7 @@ that model, so an unset window is silent rather than safe.
 | `compaction` | yes | In-turn context compaction ([compaction.md](compaction.md)). |
 | `persona` | no | Compiling user persona overrides ([persona.md](persona.md)). |
 | `coding` | no | Durable background coding tasks ([coding-agent.md](coding-agent.md)); requires `text` and `tool_calling`. |
+| `scheduled` | no | Scheduled task execution ([scheduled-tasks.md](scheduled-tasks.md)); requires `text` and `tool_calling`. Unset preserves chat routing. |
 | `video` | no | Stateful Gemini video specialist ([video-understanding.md](video-understanding.md)); requires `video_input` on `gemini_interactions`. |
 
 General roles may declare an ordered `<role>_fallbacks` list. Video cannot:
@@ -412,6 +413,12 @@ the feature even if `CODING_TASKS_ENABLED=true`. The primary and every
 `coding_fallbacks` entry must declare `text` and `tool_calling`. Coding tasks use
 the ordinary failover rules but keep their own total and per-provider-call
 deadlines.
+
+`roles.scheduled` similarly selects a dedicated scheduled task runner with its
+own `scheduled_fallbacks`. It uses existing model entries and ignores runtime
+chat selection and chat overrides when configured. Unset preserves chat routing
+for existing scheduled tasks. Its configured primary and fallbacks must declare
+`text` and `tool_calling` and are included in startup credential checks.
 
 ### Catalog filtering
 

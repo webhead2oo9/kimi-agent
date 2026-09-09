@@ -994,8 +994,9 @@ class ScheduledTaskService:
             "Your ordinary final reply is not posted. Do not call more tools after task_complete. "
             "Do not modify your skill, schedules, or approvals."
         )
+        role = "scheduled" if self.r.providers.model_config.roles.scheduled is not None else "chat"
         provider = self.r.providers.resolve(
-            "chat",
+            role,
             Scope(
                 guild_id=ctx.guild_id,
                 channel_id=ctx.channel_id,

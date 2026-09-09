@@ -5,7 +5,7 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
@@ -287,12 +287,16 @@ async def test_everyone_role_is_rejected_even_with_permissions():
 
 
 @pytest.mark.asyncio
-async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(store, monkeypatch):
+@pytest.mark.parametrize("scheduled_model", [None, "task-model"])
+async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(
+    store, monkeypatch, scheduled_model
+):
     task = await active_task(store, condition="Report new releases", first_check="silent")
     run_id = await store.claim(task, time.time() + 3600)
     await store.lease("worker", time.time())
     registry = ToolRegistry()
     home = SimpleNamespace(id=200, name="development")
+    providers = {role: object() for role in ("chat", "scheduled", "compaction")}
     service = object.__new__(ScheduledTaskService)
     service._token = "worker"
     service._posts = {run_id: [{"channel_id": "300", "content": "Must not publish"}]}
@@ -301,7 +305,10 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(store
         tools=SimpleNamespace(registry=registry, workspace_locks=UserLocks()),
         conversations=ConversationStore(store.db),
         access=SimpleNamespace(channel=AsyncMock(return_value=home), owner_allowed=AsyncMock()),
-        providers=SimpleNamespace(resolve=lambda *args: object(), model_config=None),
+        providers=SimpleNamespace(
+            resolve=Mock(side_effect=lambda role, *args: providers[role]),
+            model_config=SimpleNamespace(roles=SimpleNamespace(scheduled=scheduled_model)),
+        ),
         usage=SimpleNamespace(record_turn=AsyncMock()),
         moderation=None,
         semaphore=None,
@@ -319,6 +326,7 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(store
     monkeypatch.setattr(scheduled_module, "load_tool_configs", lambda *args: {})
 
     async def run(request):
+        assert request.provider is providers["scheduled" if scheduled_model else "chat"]
         assert task["definition"]["skill"] in request.task_instructions
         assert "task_complete" in request.context.activated_tools
         assert request.usage_store is service.r.usage

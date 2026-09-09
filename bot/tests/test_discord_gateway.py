@@ -886,11 +886,14 @@ async def test_channel_discovery_pages_large_inventory_and_closes_archive_iterat
 
 
 @pytest.mark.asyncio
-async def test_channel_discovery_first_page_does_not_fetch_archives():
+@pytest.mark.parametrize("cursor", [None, "", "0"])
+async def test_channel_discovery_first_page_does_not_fetch_archives(cursor):
     member, bot = _SearchMember(123), _SearchMember(999)
     channels = [_SearchChannel(i, str(i), discord.ChannelType.text) for i in range(1, 202)]
     gateway = _search_gateway(_SearchGuild(member, bot, channels, []), member, bot)
-    page = await gateway.discover_discord_channels(_ctx(), excluded_channel_ids=frozenset())
+    page = await gateway.discover_discord_channels(
+        _ctx(), excluded_channel_ids=frozenset(), cursor=cursor
+    )
     assert len(page["sources"]) == 200
     assert page["next_cursor"] == "200"
     assert all(not channel.archive_calls for channel in channels)

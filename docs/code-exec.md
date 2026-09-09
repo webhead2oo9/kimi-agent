@@ -49,6 +49,8 @@ The filesystem, process, syscall, resource, and credential protections still app
 
 Use `netns` when code needs internet access but must not use the server's normal routes. You provide a persistent network namespace with a VPN or another restricted uplink. Kimi does not depend on a particular VPN provider.
 
+For operator setup steps using Private Internet Access, see [Use a PIA VPN](pia-vpn.md).
+
 Before the tool appears, Kimi launches a test through the real privileged path and checks that:
 
 1. seccomp is installed and a blocked syscall returns `EPERM`;

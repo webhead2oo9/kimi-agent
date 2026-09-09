@@ -83,8 +83,9 @@ The rest is reference material.
 - [Hindsight deployment](../bot/deploy/hindsight/README.md): the optional
   Compose stack and its storage and network boundary.
 - [Code-exec netns templates](../bot/deploy/code-exec-netns/README.md): the
-  generic privileged-helper and sudoers provisioning boundary, with a
-  [Private Internet Access runbook](../bot/deploy/code-exec-netns/PIA.md).
+  helper and sudo-rule reference files.
+- [Use a PIA VPN](pia-vpn.md): operator setup, verification, troubleshooting,
+  and rollback for code execution and browsing through Private Internet Access.
 - [Shared skill stores](../bot/skills/README.md): shipped built-ins, private
   provisioning and backup, and executable-skill trust.
 - [Full prompt overrides](../bot/config/prompts/README.md): resolution and

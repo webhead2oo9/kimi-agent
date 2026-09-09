@@ -206,14 +206,28 @@ class ScheduledTaskStore:
     async def retry_delivery(self, task_id: str) -> None:
         async with self.db.immediate_write_transaction() as conn:
             async with conn.execute(
-                "SELECT id FROM scheduled_task_runs WHERE task_id=? AND status='delivery_failed' "
-                "ORDER BY created_at DESC LIMIT 1",
+                "SELECT id,state_generation FROM scheduled_task_runs "
+                "WHERE task_id=? AND status='delivery_failed' ORDER BY rowid DESC LIMIT 1",
                 (task_id,),
             ) as cursor:
                 row = await cursor.fetchone()
             if row is None:
                 raise ValueError("No failed delivery to retry")
             run_id = row[0]
+            # Claim insertion order is reliable even when wall-clock timestamps tie or regress.
+            async with conn.execute(
+                "SELECT 1 FROM scheduled_task_runs WHERE task_id=? AND rowid>"
+                "(SELECT rowid FROM scheduled_task_runs WHERE id=?) LIMIT 1",
+                (task_id, run_id),
+            ) as cursor:
+                if await cursor.fetchone():
+                    raise ValueError("A newer run has superseded this failed delivery")
+            async with conn.execute(
+                "SELECT 1 FROM scheduled_tasks WHERE id=? AND state_generation=?",
+                (task_id, row[1]),
+            ) as cursor:
+                if await cursor.fetchone() is None:
+                    raise ValueError("Task state has changed since this failed delivery")
             async with conn.execute(
                 "SELECT 1 FROM scheduled_task_deliveries WHERE run_id=? AND status='uncertain'",
                 (run_id,),
@@ -365,7 +379,8 @@ class ScheduledTaskStore:
     async def _commit_state(conn: Any, run_id: str) -> None:
         await conn.execute(
             "UPDATE scheduled_tasks SET state_json=(SELECT proposed_state FROM scheduled_task_runs "
-            "WHERE id=?),status=CASE WHEN next_run IS NULL THEN 'completed' ELSE status END "
+            "WHERE id=?),state_generation=state_generation+1,"
+            "status=CASE WHEN next_run IS NULL THEN 'completed' ELSE status END "
             "WHERE status='active' AND EXISTS (SELECT 1 FROM scheduled_task_runs r WHERE r.id=? "
             "AND r.task_id=scheduled_tasks.id AND r.state_generation=scheduled_tasks.state_generation)",
             (run_id, run_id),

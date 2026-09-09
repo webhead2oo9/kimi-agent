@@ -144,7 +144,8 @@ SQLite revisions, occurrence claims, and a renewable process lease prevent dupli
 claims. Restart recovery does not replay interrupted agent actions. Generated
 publication is saved separately, including attachment bytes (up to 25 MiB total
 per run), so known delivery failures can be retried using `retry_delivery` without
-calling the model again. Already-sent chunks retain their message IDs. An uncertain
+calling the model again. Starting a newer run or changing saved state makes older
+failed deliveries ineligible for retry. Already-sent chunks retain their message IDs. An uncertain
 send requires inspecting the destination before deliberately starting a new run;
 it cannot be automatically retried. The reported-change baseline advances only
 after all destination messages succeed.

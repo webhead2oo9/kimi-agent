@@ -9,6 +9,12 @@ images through OpenAI. The model calls it deliberately, like any other tool;
 nothing in the bot watches the user's wording for verbs such as "draw" or
 "render" and turns them into an image request.
 
+Model-facing visual-brief, editing, iteration, and verification guidance ships
+in the read-only bundled
+[image-generation skill](../bot/skills/builtin/image-generation/SKILL.md). Its
+reference files adapt and attribute OpenAI's image-prompting guide while keeping
+the examples inside the narrower Kimi tool contract documented here.
+
 The image backend is independent of the chat provider. A Claude, GLM, Kimi, or
 Codex chat turn can all call the same OpenAI-backed image tool. OpenAI is the
 only backend shipped today; adding another means implementing the
@@ -159,6 +165,12 @@ or `transparent`. These operator values are defaults for calls that omit the
 corresponding arguments. Tool config never accepts credentials, endpoints, or
 paths.
 
+The model choice is operator-owned: `gpt-image-2` remains the shipped default,
+with `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst` available as closed
+configuration choices. Flare is the speed-oriented 2.5 choice and Sunburst is
+the quality-oriented choice. The chat model cannot override this setting in an
+individual call.
+
 ## Options evidence and scope
 
 The public Images API reference is the contract for platform API-key requests:
@@ -196,7 +208,8 @@ route. No transport switch or website-only parameters are introduced here.
 
 ## Resource and safety boundaries
 
-- Model: `gpt-image-2` (default) or `gpt-image-2.5-sunburst`.
+- Model: `gpt-image-2` (default), `gpt-image-2.5-flare`, or
+  `gpt-image-2.5-sunburst`.
 - Logical calls: default two per outer turn, configurable 1–8. Failed
   provider calls count once; invalid local references fail before the billable
   counter increments.

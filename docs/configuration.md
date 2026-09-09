@@ -223,7 +223,7 @@ The tool-owned behavior that exists today:
 | `browser` | `max_calls_per_turn` | `16` | 1–16 | `config/tools/browser.md` |
 | `browser` | `max_output_chars` | `28000` | 128–28,000 | `config/tools/browser.md` |
 | `browser` | `max_screenshots_per_turn` | `4` | 0–4 | `config/tools/browser.md` |
-| `generate_image` | `model` | `gpt-image-2` | closed choice | `config/tools/generate_image.md` |
+| `generate_image` | `model` | `gpt-image-2` | `gpt-image-2`, `gpt-image-2.5-flare`, or `gpt-image-2.5-sunburst` | `config/tools/generate_image.md` |
 | `generate_image` | `size` | `auto` | `auto`, `1024x1024`, `1024x1536`, `1536x1024` | `config/tools/generate_image.md` |
 | `generate_image` | `quality` | `auto` | `auto`, `low`, `medium`, `high` | `config/tools/generate_image.md` |
 | `generate_image` | `background` | `auto` | `auto`, `opaque`, `transparent` | `config/tools/generate_image.md` |

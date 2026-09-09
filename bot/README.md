@@ -59,7 +59,7 @@ guild installations, and permissions stay intact.
   then continue with rooted follow-ups and timestamped evidence. See
   [docs/video-understanding.md](../docs/video-understanding.md).
 - **Image generation (optional).** Let REGULAR-tier users explicitly generate
-  or edit `gpt-image-2` images through shared Codex OAuth or a platform API key,
+  or edit GPT Image images through shared Codex OAuth or a platform API key,
   with bounded workspace references and reusable queued PNG output. See
   [docs/image-generation.md](../docs/image-generation.md).
 - **Browser and visual rendering (optional).** Keep per-user BetterWright

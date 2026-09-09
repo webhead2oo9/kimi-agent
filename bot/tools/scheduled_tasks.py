@@ -168,8 +168,17 @@ def init_task_tools(
     registry.register(
         name="discord_channels",
         description="List accessible Discord source channels and configured "
-        "posting destinations in this server. Resolve names before using channel IDs.",
-        parameters={"type": "object", "properties": {}},
+        "posting destinations in this server. Resolve names before using channel IDs. "
+        "Follow next_cursor to find sources on later pages; a final page may be empty. "
+        "Restart without a cursor if "
+        "the channel inventory changes. sources_error means discovery was incomplete.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "cursor": {"type": "string", "description": "next_cursor from the previous page"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
+            },
+        },
         handler=discover,
         searchable=True,
         category="Discord",

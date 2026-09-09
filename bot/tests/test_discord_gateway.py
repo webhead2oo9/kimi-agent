@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, UTC
 from typing import Any
 
@@ -847,3 +848,128 @@ def test_gateway_context_skips_other_bots() -> None:
     result = asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=15))
 
     assert [item.transcript_line for item in result] == ["Alice: kept"]
+
+
+@pytest.mark.asyncio
+async def test_channel_discovery_pages_large_inventory_and_closes_archive_iterator():
+    member, bot = _SearchMember(123), _SearchMember(999)
+    parent = _SearchChannel(1, "general", discord.ChannelType.text)
+    active = _SearchChannel(2, "active", discord.ChannelType.public_thread, parent_id=1)
+    archived = [
+        _SearchChannel(i, f"archived-{i}", discord.ChannelType.public_thread, parent_id=1)
+        for i in range(3, 604)
+    ]
+    parent.public_archived = [active, *archived]
+    hidden = _SearchChannel(700, "hidden", discord.ChannelType.text, denied_ids={123})
+    excluded = _SearchChannel(701, "excluded", discord.ChannelType.text)
+    private = _SearchChannel(702, "private", discord.ChannelType.private_thread, parent_id=1)
+    parent.private_archived = [private]
+    guild = _SearchGuild(member, bot, [parent, hidden, excluded], [active])
+    gateway = _search_gateway(guild, member, bot)
+    ids = []
+    cursor = None
+    while True:
+        page = await asyncio.wait_for(
+            gateway.discover_discord_channels(
+                _ctx(), excluded_channel_ids=frozenset({"701"}), cursor=cursor
+            ),
+            timeout=2,
+        )
+        assert len(page["sources"]) <= 200
+        assert all(not lock.locked() for lock in gateway._discord_search_archive_locks.values())
+        ids.extend(page["sources"])
+        if not page["has_more"]:
+            assert page["next_cursor"] is None
+            break
+        cursor = page["next_cursor"]
+    assert ids == [str(i) for i in range(1, 604)]
+
+
+@pytest.mark.asyncio
+async def test_channel_discovery_first_page_does_not_fetch_archives():
+    member, bot = _SearchMember(123), _SearchMember(999)
+    channels = [_SearchChannel(i, str(i), discord.ChannelType.text) for i in range(1, 202)]
+    gateway = _search_gateway(_SearchGuild(member, bot, channels, []), member, bot)
+    page = await gateway.discover_discord_channels(_ctx(), excluded_channel_ids=frozenset())
+    assert len(page["sources"]) == 200
+    assert page["next_cursor"] == "200"
+    assert all(not channel.archive_calls for channel in channels)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [{"limit": 201}, {"limit": True}, {"cursor": "-1"}])
+async def test_channel_discovery_rejects_invalid_pagination(args):
+    gateway = DiscordGateway(bot_user_provider=lambda: None)
+    with pytest.raises(ValueError):
+        await gateway.discover_discord_channels(_ctx(), excluded_channel_ids=frozenset(), **args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["search", "discovery"])
+async def test_channel_scope_rejects_other_guild_context(operation):
+    member, bot = _SearchMember(123), _SearchMember(999)
+    channel = _SearchChannel(1, "source-server", discord.ChannelType.text)
+    guild = _SearchGuild(member, bot, [channel], [])
+    gateway = _search_gateway(guild, member, bot)
+    ctx = _ctx()
+
+    wrong_ctx = replace(ctx, guild_id="123456")
+    with pytest.raises(ValueError, match="scope is unavailable"):
+        if operation == "search":
+            await gateway.resolve_discord_search_channels(
+                wrong_ctx, requested_channel_ids=None, excluded_channel_ids=frozenset()
+            )
+        else:
+            await gateway.discover_discord_channels(wrong_ctx, excluded_channel_ids=frozenset())
+    assert not channel.archive_calls
+
+
+@pytest.mark.asyncio
+async def test_discovery_uses_each_invoking_guild_separately():
+    gateway = DiscordGateway(bot_user_provider=lambda: None)
+
+    for guild_id, channel_id in [(999, 100), (888, 200)]:
+        member, bot = _SearchMember(123), _SearchMember(9999)
+        channel = _SearchChannel(channel_id, f"server-{guild_id}", discord.ChannelType.text)
+        guild = _SearchGuild(member, bot, [channel], [])
+        guild.id = guild_id
+        source = _Message(guild_id, member, "discover")
+        source.guild = guild
+        ctx = replace(
+            _ctx(),
+            guild_id=str(guild_id),
+            context_key=f"guild:{guild_id}",
+            trigger_discord_message_id=str(guild_id),
+        )
+        gateway.bind_turn_source(ctx.context_key, ctx.trigger_discord_message_id, source)
+        page = await gateway.discover_discord_channels(ctx, excluded_channel_ids=frozenset())
+        assert page["sources"] == {str(channel_id): f"server-{guild_id}"}
+        scope = await gateway.resolve_discord_search_channels(
+            ctx, requested_channel_ids=None, excluded_channel_ids=frozenset()
+        )
+        assert scope == page["sources"]
+
+
+@pytest.mark.asyncio
+async def test_full_discovery_page_survives_failing_archive_endpoint():
+    member, bot = _SearchMember(123), _SearchMember(999)
+    channels = [_FailingArchiveChannel(i, str(i), discord.ChannelType.text) for i in range(1, 201)]
+    gateway = _search_gateway(_SearchGuild(member, bot, channels, []), member, bot)
+    page = await gateway.discover_discord_channels(_ctx(), excluded_channel_ids=frozenset())
+    assert page["sources"] == {str(i): str(i) for i in range(1, 201)}
+    assert page["next_cursor"] == "200"
+    assert page["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_discovery_exact_page_boundary_has_empty_terminal_page():
+    member, bot = _SearchMember(123), _SearchMember(999)
+    channel = _SearchChannel(1, "general", discord.ChannelType.text)
+    gateway = _search_gateway(_SearchGuild(member, bot, [channel], []), member, bot)
+    page = await gateway.discover_discord_channels(
+        _ctx(), excluded_channel_ids=frozenset(), limit=1
+    )
+    last = await gateway.discover_discord_channels(
+        _ctx(), excluded_channel_ids=frozenset(), cursor=page["next_cursor"], limit=1
+    )
+    assert last == {"sources": {}, "next_cursor": None, "has_more": False}

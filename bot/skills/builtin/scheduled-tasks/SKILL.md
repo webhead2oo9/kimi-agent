@@ -40,7 +40,15 @@ Establish:
 
 Use `browse_tools` to discover relevant tools and their parameters. Resolve
 Discord channel names with `discord_channels`; distinguish readable sources from
-configured posting destinations. Do not invent IDs or assume that read access
+configured posting destinations. Source lists have up to 200 entries per page, with regular channels and active
+threads before archived threads: follow `next_cursor`
+with `discord_channels` argument `cursor` until the needed source is found or
+`has_more` is false. A full page returns immediately, so the final continuation
+may be empty. Posting destinations are returned on every page. A
+`sources_error` means the source listing failed, not that no readable sources
+exist. Retry discovery; never infer missing access from an incomplete listing.
+Restart without a cursor if channels or permissions change while paging.
+Do not invent IDs or assume that read access
 implies permission to post. Both the user and bot need access. DMs, cross-server
 delivery, and creating forum posts are unsupported. Never attempt `@here` or
 `@everyone` notifications; there is no override. User and role pings require

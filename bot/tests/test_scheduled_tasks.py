@@ -798,3 +798,94 @@ async def test_deny_edit_keeps_previous_version_destination_open(store):
     await service.confirm(interaction, task_id, 3, approve=False)
     channel.edit.assert_not_awaited()
     assert (await store.get(task_id))["active_revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_publication_hint_reaches_model_without_private_task_context(store, monkeypatch):
+    from agent.context import ConversationContext
+    from agent.core import ConversationRunRequest, run_conversation
+    from tests.test_core_command_template import _CapturingProvider
+    import agent.core as core
+
+    task = await active_task(
+        store, skill="SECRET_PRIVATE_PROCEDURE", objective="SECRET_PRIVATE_OBJECTIVE"
+    )
+    run_id = await store.claim(task, 100)
+    await store.finish(
+        run_id,
+        "delivery",
+        "SECRET_RUN_DETAIL",
+        {"secret": "SECRET_STATE"},
+        [{"channel_id": "300", "content": "Public digest"}],
+    )
+    delivery = (await store.deliveries())[0]
+    await store.delivery_status(delivery["id"], "sent", message_id="500")
+    service = object.__new__(ScheduledTaskService)
+    service.r = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    message = SimpleNamespace(
+        id=500,
+        channel=SimpleNamespace(id=300, name="updates"),
+        content="Public digest",
+        created_at=datetime(2026, 9, 9, 8, tzinfo=UTC),
+    )
+    await service._record_message(context(), message)
+    key = "scheduled-publication:300:500"
+    # A later task edit must not rename the historical run in the reply hint.
+    await store.draft(
+        task_id=task["id"],
+        guild_id="100",
+        owner_id="10",
+        channel_id="200",
+        proposer_id="10",
+        definition=definition(name="Different task name"),
+        expected_revision=1,
+    )
+    registry = ToolRegistry()
+    registry.prompt_instructions = service.wizard_instructions
+    provider = _CapturingProvider()
+    monkeypatch.setattr(core, "build_system_prompt", lambda **kwargs: "System policy")
+    await run_conversation(
+        ConversationRunRequest(
+            user_message="Why did it change?",
+            context=ConversationContext(key=key),
+            trust_tier=TrustTier.MEMBER,
+            user_name="Reader",
+            user_id="20",
+            guild_id="100",
+            channel_id="300",
+            provider=provider,
+            registry=registry,
+            max_iterations=1,
+        )
+    )
+    prompt = provider.system_prompt
+    assert "Development digest" in prompt and "Different task name" not in prompt
+    assert run_id in prompt and task["id"] in prompt
+    assert "2026-09-09T08:00:00+00:00" in prompt
+    assert "explicit request and authorization" in prompt
+    for secret in (
+        "SECRET_PRIVATE_PROCEDURE",
+        "SECRET_PRIVATE_OBJECTIVE",
+        "SECRET_RUN_DETAIL",
+        "SECRET_STATE",
+    ):
+        assert secret not in prompt
+    assert await service.wizard_instructions("20", "999", key) == ""
+    assert await service.wizard_instructions("20", None, key) == ""
+    assert await service.wizard_instructions("20", "100", "scheduled-publication:301:500") == ""
+    await store.delete(task["id"])
+    assert await service.wizard_instructions("20", "100", key) == ""
+
+
+@pytest.mark.asyncio
+async def test_manual_publication_has_no_scheduled_task_hint(store):
+    service = object.__new__(ScheduledTaskService)
+    service.r = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    message = SimpleNamespace(
+        id=501,
+        channel=SimpleNamespace(id=300, name="updates"),
+        content="Manual post",
+        created_at=datetime.now(UTC),
+    )
+    await service._record_message(context(), message)
+    assert await service.wizard_instructions("10", "100", "scheduled-publication:300:501") == ""

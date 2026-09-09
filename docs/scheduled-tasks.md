@@ -151,3 +151,14 @@ logging, or follow-up questions also remain open, including when denying an edit
 Message edits retry after transient failures,
 including after a restart; approval itself is never repeated. Older previews remain
 usable and are updated on interaction.
+
+## Replies to scheduled output
+
+Replies continue from the published message. While its task and run records remain,
+Kimi receives an application-generated origin hint with the task's name at that
+revision, task/run IDs, revision, and publication time. The hint remains available
+through conversation compaction. It includes no private skill, comparison state,
+or working transcript. Ordinary cross-channel posts do not receive this hint.
+Replying does not run or modify the task; changes require an explicit request and
+the normal task-management authorization. Deleted/pruned origin records simply
+leave the public conversation without the hint.

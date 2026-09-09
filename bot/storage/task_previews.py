@@ -25,11 +25,18 @@ class TaskPreviewStore:
 
     async def updates(self, *, message_id: str | None = None) -> list[dict[str, Any]]:
         async with self.db.conn.execute(
-            "SELECT p.*,r.definition_json,r.proposer_id,t.owner_id,t.guild_id FROM scheduled_task_previews p "
+            "WITH cards AS (SELECT p.*,r.definition_json,r.proposer_id,t.owner_id,t.guild_id,"
+            "t.status AS task_status,t.active_revision,t.next_run AS task_next_run,"
+            "CASE WHEN p.desired_state='activated' AND r.revision=t.active_revision THEN "
+            "p.desired_state || ':' || t.status || ':' || COALESCE(t.next_run,'') "
+            "WHEN p.desired_state='activated' THEN 'activated:replaced:' || COALESCE(t.active_revision,'') "
+            "WHEN p.desired_state='pending' THEN 'pending:controls-v2' "
+            "ELSE p.desired_state END AS render_key "
+            "FROM scheduled_task_previews p "
             "JOIN scheduled_tasks t ON t.id=p.task_id JOIN scheduled_task_revisions r "
-            "ON r.task_id=p.task_id AND r.revision=p.revision WHERE "
-            "(p.desired_state!=p.rendered_state OR p.close_pending=1) AND "
-            "((? IS NOT NULL AND p.message_id=?) OR (? IS NULL AND p.attempts<5 AND p.retry_at<=?)) LIMIT 20",
+            "ON r.task_id=p.task_id AND r.revision=p.revision) SELECT * FROM cards WHERE "
+            "(render_key!=rendered_state OR close_pending=1) AND "
+            "((? IS NOT NULL AND message_id=?) OR (? IS NULL AND attempts<5 AND retry_at<=?)) LIMIT 20",
             (message_id, message_id, message_id, time.time()),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
@@ -48,7 +55,8 @@ class TaskPreviewStore:
     async def rendered(self, message_id: str, state: str, *, closed: bool) -> None:
         async with self.db.write_transaction() as conn:
             await conn.execute(
-                "UPDATE scheduled_task_previews SET rendered_state=?,close_pending=CASE WHEN ? THEN 0 ELSE close_pending END "
+                "UPDATE scheduled_task_previews SET rendered_state=?,attempts=0,retry_at=0,"
+                "close_pending=CASE WHEN ? THEN 0 ELSE close_pending END "
                 "WHERE message_id=?",
                 (state, closed, message_id),
             )

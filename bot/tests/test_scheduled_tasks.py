@@ -667,13 +667,18 @@ async def test_decision_updates_receipt_and_closes_only_with_permission(store, a
     assert ("activated" if approve else "denied") in result
     edit = channel.get_partial_message.return_value.edit
     edit.assert_awaited_once()
-    assert edit.call_args.kwargs["view"] is None and "attachments" not in edit.call_args.kwargs
-    assert channel.edit.await_count == int(can_close)
-    if can_close:
+    assert "attachments" not in edit.call_args.kwargs
+    if approve:
+        assert [button.label for button in edit.call_args.kwargs["view"].children] == ["Manage"]
+        assert edit.call_args.kwargs["view"].is_persistent()
+    else:
+        assert edit.call_args.kwargs["view"] is None
+    assert channel.edit.await_count == int(can_close and not approve)
+    if can_close and not approve:
         assert channel.edit.call_args.kwargs["locked"] is True
         assert channel.edit.call_args.kwargs["archived"] is True
     assert "already" in await service.confirm(interaction, task_id, 1, approve=approve)
-    assert channel.edit.await_count == int(can_close)
+    assert channel.edit.await_count == int(can_close and not approve)
 
 
 @pytest.mark.asyncio
@@ -703,7 +708,7 @@ async def test_activation_survives_receipt_failure_and_reconciles_after_restart(
     service.previews = TaskPreviewStore(store.db)
     edit.side_effect = None
     await service.reconcile_previews(message_id="500")
-    channel.edit.assert_awaited_once()
+    channel.edit.assert_not_awaited()
     assert await service.previews.updates(message_id="500") == []
 
 
@@ -770,7 +775,11 @@ async def test_preview_delivery_uses_quiet_thread_and_separate_short_notice(stor
     expected.send.assert_awaited_once()
     args = expected.send.call_args.kwargs
     assert [f.filename for f in args["files"]] == ["task.json", "SKILL.md"]
-    assert [button.label for button in args["view"].children] == ["Approve", "Deny"]
+    assert [button.label for button in args["view"].children] == [
+        "Test preview",
+        "Approve",
+        "Reject",
+    ]
     assert args["allowed_mentions"].everyone is False
     if location in {"new_thread", "fallback"}:
         request = boundary.create_handoff_thread.call_args.args[1]

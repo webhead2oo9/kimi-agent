@@ -165,7 +165,9 @@ def _success_body() -> str:
             "created": 1778832973,
             "data": [{"b64_json": PNG_BASE64}],
             "size": "1024x1024",
+            "quality": "medium",
             "background": "opaque",
+            "output_format": "png",
         }
     )
 
@@ -184,7 +186,9 @@ async def test_generate_oauth_sends_bearer_account_and_originator() -> None:
 
     assert result.image_base64 == PNG_BASE64
     assert result.size == "1024x1024"
+    assert result.quality == "medium"
     assert result.background == "opaque"
+    assert result.output_format == "png"
     assert result.usage is None
     request = session.requests[0]
     assert request["url"] == f"{OAUTH_BASE_URL}/images/generations"
@@ -382,7 +386,9 @@ async def test_provider_metadata_is_closed_before_tool_echo() -> None:
             "created": 1,
             "data": [{"b64_json": PNG_BASE64}],
             "size": "sk-secret-sentinel" * 100,
+            "quality": "best-ever",
             "background": "provider-controlled-text",
+            "output_format": "svg",
         }
     )
     backend, _session = _backend(
@@ -393,7 +399,9 @@ async def test_provider_metadata_is_closed_before_tool_echo() -> None:
     result = await backend.generate(_request())
 
     assert result.size is None
+    assert result.quality is None
     assert result.background is None
+    assert result.output_format is None
 
 
 @pytest.mark.asyncio
@@ -541,6 +549,7 @@ async def test_service_returns_verified_bytes_for_workspace_write() -> None:
     result = await ImageGenService(StubImageBackend(VALID_PNG_BYTES)).generate(_request())
 
     assert result.image_bytes == VALID_PNG_BYTES
+    assert result.actual_size == "1x1"
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,15 @@ import tempfile
 import pytest
 
 from skills.loader import (
+    BUILTIN_SKILLS_DIR,
     SharedSkillCatalog,
     SkillOrigin,
     SkillsIndexCache,
     _parse_skill_file,
     build_skills_index,
+    list_reference_files,
     load_skill,
+    resolve_reference_file,
     scan_skills,
     validate_builtin_skills,
 )
@@ -215,6 +218,36 @@ def test_shared_catalog_renders_bot_name_only_in_builtins(tmp_path: Path) -> Non
     local = catalog.load("local")
     assert about is not None and about.content == "# Community Helper admin"
     assert local is not None and local.content == "# {{bot_name}}"
+
+
+def test_bundled_image_generation_skill_loads_with_readable_references() -> None:
+    catalog = validate_builtin_skills()
+    assert "image-generation" in catalog
+
+    skill = load_skill(
+        "image-generation",
+        BUILTIN_SKILLS_DIR,
+        origin=SkillOrigin.BUILTIN,
+    )
+    assert skill is not None
+    assert skill.meta.origin is SkillOrigin.BUILTIN
+    assert "Kimi tool contract" in skill.content
+
+    references = dict(list_reference_files(skill.meta.path))
+    assert set(references) == {
+        "reference/editing-and-references.md",
+        "reference/fundamentals.md",
+        "reference/generation-recipes.md",
+        "reference/iteration-and-verification.md",
+    }
+    for relative, size in references.items():
+        resolved = resolve_reference_file(skill.meta.path, relative)
+        assert resolved is not None
+        raw = resolved.read_bytes()
+        text = raw.decode("utf-8")
+        assert len(raw) == size
+        assert text.startswith("# ")
+        assert "https://developers.openai.com/api/docs/guides/image-prompting" in text
 
 
 @pytest.mark.parametrize("placeholder", ["{{deployment.name}}", "{{ deployment name }}", "{{}}"])

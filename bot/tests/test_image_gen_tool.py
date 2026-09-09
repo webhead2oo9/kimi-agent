@@ -39,6 +39,11 @@ class StubService:
         self.failure: Exception | None = None
         self.usage: dict[str, object] | None = None
         self.image_bytes: bytes | None = PNG_BYTES
+        self.result_size: str | None = "1024x1024"
+        self.result_quality: str | None = "medium"
+        self.result_background: str | None = "opaque"
+        self.result_output_format: str | None = "png"
+        self.actual_size: str | None = "1536x1024"
 
     async def generate(self, request: ImageGenRequest) -> ImageResult:
         self.generate_requests.append(request)
@@ -46,10 +51,13 @@ class StubService:
             raise self.failure
         return ImageResult(
             image_base64=PNG_BASE64,
-            size="1024x1024",
-            background="opaque",
+            size=self.result_size,
+            quality=self.result_quality,
+            background=self.result_background,
+            output_format=self.result_output_format,
             usage=self.usage,
             image_bytes=self.image_bytes,
+            actual_size=self.actual_size,
         )
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
@@ -58,9 +66,13 @@ class StubService:
             raise self.failure
         return ImageResult(
             image_base64=PNG_BASE64,
-            size="1024x1536",
+            size=self.result_size,
+            quality=self.result_quality,
+            background=self.result_background,
+            output_format=self.result_output_format,
             usage=self.usage,
             image_bytes=self.image_bytes,
+            actual_size=self.actual_size,
         )
 
 
@@ -111,16 +123,24 @@ def _args(**extra: object) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_sunburst_config_is_selectable_and_reaches_backend(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model", ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])
+async def test_image_2_5_config_is_selectable_and_reaches_backend(
+    tmp_path: Path,
+    model: str,
+) -> None:
     registry, service, _manager = _registered(tmp_path)
     entry = next(t for t in registry.get_tools_for_tier(TrustTier.REGULAR) if t.name == TOOL_NAME)
     model_field = next(field for field in entry.config_spec if field.field == "model")
-    assert "gpt-image-2.5-sunburst" in model_field.choices
-    assert "gpt-image-2" in model_field.choices
-    ctx = _context(tool_config={"model": "gpt-image-2.5-sunburst", "size": "1536x1024"})
+    assert model_field.default == "gpt-image-2"
+    assert model_field.choices == (
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+    )
+    ctx = _context(tool_config={"model": model, "size": "1536x1024"})
     result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
     assert result["ok"] is True
-    assert service.generate_requests[0].model == "gpt-image-2.5-sunburst"
+    assert service.generate_requests[0].model == model
     assert service.generate_requests[0].size == "1536x1024"
 
 
@@ -134,7 +154,27 @@ def test_tool_is_core_and_regular_tier(tmp_path: Path) -> None:
     assert TOOL_NAME not in member_names
     assert regular_entry.searchable is False
     assert regular_entry.category == "Media"
+    assert "best-effort provider hints, not guarantees" in regular_entry.description
     assert regular_entry.parameters["required"] == ["prompt", "attachment_description"]
+    assert regular_entry.parameters["properties"]["size"]["enum"] == [
+        "auto",
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+    ]
+    assert regular_entry.parameters["properties"]["quality"]["enum"] == [
+        "auto",
+        "low",
+        "medium",
+        "high",
+    ]
+    assert regular_entry.parameters["properties"]["background"]["enum"] == [
+        "auto",
+        "opaque",
+        "transparent",
+    ]
+    for field in ("size", "quality", "background"):
+        assert "best-effort" in regular_entry.parameters["properties"][field]["description"]
     assert {field.field for field in regular_entry.config_spec} == {
         "model",
         "size",
@@ -163,16 +203,22 @@ async def test_generation_saves_reusable_workspace_png_and_queues_it(tmp_path: P
     ctx = _context(
         tool_config={
             "model": "gpt-image-2",
-            "size": "1024x1024",
-            "quality": "high",
-            "background": "opaque",
+            "size": "1536x1024",
+            "quality": "low",
+            "background": "transparent",
             "max_calls_per_turn": 2,
             "max_reference_images": 5,
             "max_attachments": 5,
         }
     )
 
-    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+    result = json.loads(
+        await registry.dispatch(
+            TOOL_NAME,
+            _args(size="1024x1024", quality="high", background="opaque"),
+            ctx,
+        )
+    )
 
     assert result["ok"] is True
     assert result["operation"] == "generate"
@@ -195,6 +241,30 @@ async def test_generation_saves_reusable_workspace_png_and_queues_it(tmp_path: P
     assert ctx.outbox.output_files == (str(saved.resolve()),)
     assert ctx.outbox.output_file_descriptions[str(saved.resolve())] == (
         "A moonlit cabin surrounded by pine trees."
+    )
+
+
+@pytest.mark.asyncio
+async def test_generation_uses_operator_defaults_when_options_are_omitted(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    ctx = _context(
+        tool_config={
+            "model": "gpt-image-2.5-sunburst",
+            "size": "1024x1536",
+            "quality": "medium",
+            "background": "transparent",
+        }
+    )
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result["ok"] is True
+    assert service.generate_requests[0] == ImageGenRequest(
+        prompt="A moonlit cabin in a pine forest",
+        model="gpt-image-2.5-sunburst",
+        size="1024x1536",
+        quality="medium",
+        background="transparent",
     )
 
 
@@ -240,7 +310,7 @@ async def test_generation_records_missing_usage_as_unpriced(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_edit_loads_workspace_references_as_typed_data_urls(tmp_path: Path) -> None:
     registry, service, manager = _registered(tmp_path)
-    ctx = _context()
+    ctx = _context(tool_config={"size": "1024x1024", "quality": "low", "background": "opaque"})
     ctx.usage_sink = []
     service.usage = {"input_tokens": 23, "output_tokens": 7}
     png = manager.resolve_user_file_path(ctx.workspace_key, "references/source.png")
@@ -252,7 +322,12 @@ async def test_edit_loads_workspace_references_as_typed_data_urls(tmp_path: Path
     result = json.loads(
         await registry.dispatch(
             TOOL_NAME,
-            _args(reference_paths=["references/source.png", "references/source.jpg"]),
+            _args(
+                reference_paths=["references/source.png", "references/source.jpg"],
+                size="1024x1536",
+                quality="high",
+                background="transparent",
+            ),
             ctx,
         )
     )
@@ -264,12 +339,114 @@ async def test_edit_loads_workspace_references_as_typed_data_urls(tmp_path: Path
     request = service.edit_requests[0]
     assert request.prompt == "A moonlit cabin in a pine forest"
     assert request.model == "gpt-image-2"
+    assert request.size == "1024x1536"
+    assert request.quality == "high"
+    assert request.background == "transparent"
     assert request.images[0].data_url.startswith("data:image/png;base64,")
     assert request.images[1].data_url.startswith("data:image/jpeg;base64,")
     assert ctx.usage_sink is not None
     assert len(ctx.usage_sink) == 1
     assert ctx.usage_sink[0].usage.input_tokens == 23
     assert ctx.usage_sink[0].usage.output_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_edit_uses_operator_defaults_when_options_are_omitted(tmp_path: Path) -> None:
+    registry, service, manager = _registered(tmp_path)
+    ctx = _context(tool_config={"size": "1536x1024", "quality": "medium", "background": "opaque"})
+    image = manager.resolve_user_file_path(ctx.workspace_key, "references/source.png")
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"\x89PNG\r\n\x1a\nsource")
+
+    result = json.loads(
+        await registry.dispatch(
+            TOOL_NAME,
+            _args(reference_paths=["references/source.png"]),
+            ctx,
+        )
+    )
+
+    assert result["ok"] is True
+    request = service.edit_requests[0]
+    assert request.size == "1536x1024"
+    assert request.quality == "medium"
+    assert request.background == "opaque"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("option", "value", "error"),
+    [
+        ("size", None, "size must be one of"),
+        ("size", 1024, "size must be one of"),
+        ("size", "1536x864", "size must be one of"),
+        ("quality", None, "quality must be one of"),
+        ("quality", "xhigh", "quality must be one of"),
+        ("background", False, "background must be one of"),
+        ("background", "white", "background must be one of"),
+        ("model", "gpt-image-2.5-sunburst", "unknown field(s): model"),
+    ],
+)
+async def test_invalid_per_call_option_fails_before_budget_or_provider_call(
+    tmp_path: Path,
+    option: str,
+    value: object,
+    error: str,
+) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    ctx = _context()
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(**{option: value}), ctx))
+
+    assert error in result["error"]
+    assert ctx.budget_used(BudgetName.IMAGE_GEN_CALLS) == 0
+    assert not service.generate_requests
+    assert not service.edit_requests
+
+
+@pytest.mark.asyncio
+async def test_result_distinguishes_requested_actual_and_provider_reported_metadata(
+    tmp_path: Path,
+) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.result_size = "1536x1024"
+    service.result_quality = "medium"
+    service.result_background = "transparent"
+    service.result_output_format = "png"
+    service.actual_size = "1536x1024"
+    ctx = _context()
+
+    result = json.loads(
+        await registry.dispatch(
+            TOOL_NAME,
+            _args(size="1024x1024", quality="high", background="opaque"),
+            ctx,
+        )
+    )
+
+    assert result["size"] == "1536x1024"
+    assert result["background"] == "transparent"
+    assert result["requested"] == {
+        "size": "1024x1024",
+        "quality": "high",
+        "background": "opaque",
+    }
+    assert result["actual"] == {"size": "1536x1024", "output_format": "png"}
+    assert result["provider_reported"] == {
+        "size": "1536x1024",
+        "quality": "medium",
+        "background": "transparent",
+        "output_format": "png",
+    }
+    assert result["mismatches"] == {
+        "size": {
+            "requested": "1024x1024",
+            "actual": "1536x1024",
+            "provider_reported": "1536x1024",
+        },
+        "quality": {"requested": "high", "provider_reported": "medium"},
+        "background": {"requested": "opaque", "provider_reported": "transparent"},
+    }
 
 
 @pytest.mark.asyncio

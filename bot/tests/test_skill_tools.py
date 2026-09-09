@@ -21,6 +21,7 @@ SHIPPED_BUILTIN_NAMES = {
     "browser",
     "coding-work",
     "embed",
+    "image-generation",
     "start-thread",
     "workspace",
 }
@@ -1035,6 +1036,35 @@ async def test_skill_file_reads_reference_file(
         {"skill": "diag-skill", "path": "sub/deep.md"}, _staff_ctx()
     )
     assert "bios notes" in bare
+
+
+@pytest.mark.asyncio
+async def test_bundled_image_generation_references_read_through_skill_file(
+    tmp_path: Path,
+) -> None:
+    _use_skill_store(tmp_path / "private")
+    ctx = _staff_ctx()
+
+    loaded = await skill_tools._load_skill({"name": "image-generation"}, ctx)
+
+    assert "## Reference files" in loaded
+    assert "reference/fundamentals.md" in loaded
+    assert "skill_file" in ctx.activated_tools
+
+    expected = {
+        "reference/fundamentals.md": "# Image prompting fundamentals",
+        "reference/generation-recipes.md": "# Generation recipes",
+        "reference/editing-and-references.md": "# Editing and multiple references",
+        "reference/iteration-and-verification.md": "# Iteration and verification",
+    }
+    for path, heading in expected.items():
+        result = await skill_tools._skill_file(
+            {"skill": "image-generation", "path": path},
+            ctx,
+        )
+        assert result.startswith(f"# image-generation: {path}\n\n{heading}")
+        assert "[truncated at" not in result
+        assert "https://developers.openai.com/api/docs/guides/image-prompting" in result
 
 
 def test_skill_file_reference_read_is_bounded(

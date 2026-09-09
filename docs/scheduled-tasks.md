@@ -5,6 +5,11 @@ Each task owns an automatically generated instruction skill, a schedule, saved n
 and run history. Task skills are loaded before execution, remain available through
 compaction, and stay separate from the normal shared and personal skill catalogs.
 
+The built-in [scheduled-tasks skill](../bot/skills/builtin/scheduled-tasks/SKILL.md)
+is a reusable management playbook, available through `skill_list` and
+`load_skill` with `name: "scheduled-tasks"`. It covers guided setup, writing each
+task's own procedure, complete source checks, conditional output, and recovery.
+
 ## Enable a server
 
 Add a `scheduled_tasks` mapping to the server's configuration fragment:

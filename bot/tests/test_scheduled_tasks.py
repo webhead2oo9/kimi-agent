@@ -394,6 +394,78 @@ async def test_retry_known_failure_preserves_sent_chunks(store):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["running", "completed", "no_change", "failed"])
+async def test_retry_rejects_failed_delivery_superseded_by_new_run(store, monkeypatch, outcome):
+    # Run ordering must remain deterministic even when the timestamps are equal.
+    monkeypatch.setattr("storage.scheduled_tasks.time.time", lambda: 1000.0)
+    task = await active_task(store)
+    old_run = await store.claim(task, 100.0)
+    await store.finish(
+        old_run,
+        "delivery",
+        "Old observation",
+        {"cursor": "old"},
+        [{"channel_id": "300", "content": "Old output"}],
+    )
+    delivery = (await store.deliveries())[0]
+    await store.delivery_status(delivery["id"], "failed", error="Forbidden")
+    await store.attention(task["id"], old_run)
+    await store.set_status(task["id"], "active", next_run=200.0)
+    new_run = await store.claim(await store.get(task["id"], active=True), 300.0)
+    if outcome != "running":
+        await store.finish(new_run, outcome, "New observation", {"cursor": "new"}, [])
+    before = await store.get(task["id"])
+
+    with pytest.raises(ValueError, match="newer run"):
+        await store.retry_delivery(task["id"])
+
+    assert await store.get(task["id"]) == before
+    assert await store.deliveries() == []
+    async with store.db.conn.execute(
+        "SELECT status FROM scheduled_task_deliveries WHERE id=?", (delivery["id"],)
+    ) as cursor:
+        assert (await cursor.fetchone())[0] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_failed_delivery_after_state_changes(store):
+    task = await active_task(store)
+    run_id = await store.claim(task, 100.0)
+    await store.finish(
+        run_id,
+        "delivery",
+        "Old observation",
+        {"cursor": "old"},
+        [{"channel_id": "300", "content": "Old output"}],
+    )
+    delivery = (await store.deliveries())[0]
+    await store.delivery_status(delivery["id"], "failed", error="Forbidden")
+    await store.attention(task["id"], run_id)
+    await store.set_status(task["id"], "active", next_run=200.0, answer="Use a new baseline")
+
+    with pytest.raises(ValueError, match="state has changed"):
+        await store.retry_delivery(task["id"])
+
+    assert await store.deliveries() == []
+    assert (await store.get(task["id"]))["state"] == {"human_input": "Use a new baseline"}
+
+
+@pytest.mark.asyncio
+async def test_successful_run_fences_late_commit_of_older_state(store):
+    task = await active_task(store)
+    old_run = await store.claim(task, 100.0)
+    await store.finish(old_run, "no_change", "Old observation", {"cursor": "old"}, [])
+    new_run = await store.claim(await store.get(task["id"], active=True), 200.0)
+    await store.finish(new_run, "no_change", "New observation", {"cursor": "new"}, [])
+
+    # A late commit must fail the generation fence even if its caller is stale.
+    async with store.db.write_transaction() as conn:
+        await store._commit_state(conn, old_run)
+
+    assert (await store.get(task["id"]))["state"] == {"cursor": "new"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["asc", "desc"])
 async def test_history_traverses_more_than_100_messages_without_gaps(order):
     start = datetime(2025, 1, 1, tzinfo=UTC)

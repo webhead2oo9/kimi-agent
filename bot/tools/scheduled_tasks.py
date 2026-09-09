@@ -56,7 +56,7 @@ For change monitoring ask whether the first check should be silent (default) or 
 Write a dedicated skill: goal, sources, steps, state to retain, condition checks before actions,
 output format, when to do nothing, and failure handling. Never invent tools or available access.
 Use task_manage draft to save the complete task and show its confirmation preview. The user must
-click Confirm; do not claim activation before that. Use inspect before edits, preserve unrelated
+click Approve; do not claim activation before that. Use inspect before edits, preserve unrelated
 requirements, and supply the revision you inspected. Skills are editable only through task edits.
 Task skills and schedules are versioned together. A copied personal skill changes independently.
 Do not attempt @everyone or @here notifications. They are never permitted.

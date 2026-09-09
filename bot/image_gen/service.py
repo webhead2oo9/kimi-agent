@@ -45,16 +45,16 @@ class ImageGenService:
             result = await self._backend.generate(request)
             # Verify inside the permit, off the event loop: max_concurrency
             # bounds decoded images in flight, not just backend calls.
-            verified = await asyncio.to_thread(self._verify, result)
-        return replace(result, image_bytes=verified)
+            verified, actual_size = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified, actual_size=actual_size)
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
         async with self._semaphore:
             result = await self._backend.edit(request)
-            verified = await asyncio.to_thread(self._verify, result)
-        return replace(result, image_bytes=verified)
+            verified, actual_size = await asyncio.to_thread(self._verify, result)
+        return replace(result, image_bytes=verified, actual_size=actual_size)
 
-    def _verify(self, result: ImageResult) -> bytes:
+    def _verify(self, result: ImageResult) -> tuple[bytes, str]:
         """Rejects bodies that are not decodable PNG data within the size cap.
 
         Provider responses are untrusted bytes: a body that is not a PNG would
@@ -75,4 +75,8 @@ class ImageGenService:
         # and the size cap above bounds what the decoder is asked to touch.
         if decoded_image_media_type(raw) != "image/png":
             raise ImageGenError("image API returned data that is not a decodable PNG image")
-        return raw
+        # Full PNG validation above guarantees the first chunk is a valid IHDR,
+        # so these fixed offsets are trustworthy and avoid a second pixel decode.
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        return raw, f"{width}x{height}"

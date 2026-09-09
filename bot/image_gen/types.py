@@ -50,6 +50,9 @@ class ImageResult:
     background: str | None = None
     usage: dict[str, Any] | None = None
     image_bytes: bytes | None = None
+    quality: str | None = None
+    output_format: str | None = None
+    actual_size: str | None = None
 
 
 class ImageGenError(RuntimeError):

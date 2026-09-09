@@ -42,6 +42,8 @@ MAX_ERROR_RESPONSE_BYTES = 64 * 1024
 _RESPONSE_CHUNK_BYTES = 64 * 1024
 _SIZE_RE = re.compile(r"^(?:auto|[0-9]{1,4}x[0-9]{1,4})$")
 _ALLOWED_BACKGROUNDS = frozenset({"auto", "opaque", "transparent"})
+_ALLOWED_QUALITIES = frozenset({"auto", "low", "medium", "high", "xhigh", "max"})
+_ALLOWED_OUTPUT_FORMATS = frozenset({"png", "jpeg", "webp"})
 
 
 class OpenAIImageBackend:
@@ -253,7 +255,9 @@ def _result_from_response(body: dict[str, Any]) -> ImageResult:
     if not isinstance(b64, str) or not b64:
         raise ImageGenError("image API returned no image data")
     size = body.get("size")
+    quality = body.get("quality")
     background = body.get("background")
+    output_format = body.get("output_format")
     raw_usage = body.get("usage")
     return ImageResult(
         image_base64=b64,
@@ -264,6 +268,12 @@ def _result_from_response(body: dict[str, Any]) -> ImageResult:
             else None
         ),
         usage=dict(raw_usage) if isinstance(raw_usage, dict) else None,
+        quality=(quality if isinstance(quality, str) and quality in _ALLOWED_QUALITIES else None),
+        output_format=(
+            output_format
+            if isinstance(output_format, str) and output_format in _ALLOWED_OUTPUT_FORMATS
+            else None
+        ),
     )
 
 

@@ -69,11 +69,24 @@ with repeated binary `image[]` parts, as required by OpenAI's Images API.
 - `prompt` — required generation/editing instructions, capped at 10,000
   characters;
 - `attachment_description` — required Discord accessibility text, capped at
-  1,000 characters; and
+  1,000 characters;
 - `reference_paths` — optional workspace-relative PNG, JPEG, or WebP paths;
 - `reference_attachments` — optional exact filenames of current-message images
   automatically saved in the caller's workspace. Duplicate filenames require
-  selecting the saved path instead.
+  selecting the saved path instead;
+- `size` — optional `auto`, `1024x1024`, `1024x1536`, or `1536x1024`;
+- `quality` — optional `auto`, `low`, `medium`, or `high`; and
+- `background` — optional `auto`, `opaque`, or `transparent`.
+
+The three rendering options are best-effort provider hints. They do not promise
+exact dimensions, visual quality, or pixel transparency, particularly through
+the OAuth endpoint. Omitting an option uses the corresponding operator value
+from `config/tools/generate_image.md`; supplying it overrides that value for one
+call. Explicit `null`, a non-string value, and a value outside the vocabulary
+are rejected before references are read, the provider is called, or the
+per-turn image budget is consumed. There is no per-call model, credential,
+endpoint, limit, or moderation override, and the tool never rewrites the prompt
+to try to force a hint.
 
 Omitting both reference fields generates a new image. Providing references edits
 those images, with one combined limit of five references (or the configured lower
@@ -93,6 +106,24 @@ for the final Discord reply with its accessibility description, and stays
 available for a later edit through `reference_paths`. The model gets back only
 metadata and the relative path; image bytes never enter the conversation
 transcript.
+
+Result metadata keeps the legacy top-level `size` and `background` fields,
+which are provider-reported values. New structured fields make their provenance
+explicit:
+
+- `requested` contains the effective hints sent to the provider, including
+  operator defaults for omitted arguments;
+- `actual` contains the fully decoded PNG dimensions and the enforced `png`
+  output format;
+- `provider_reported` contains only allowlisted size, quality, background, and
+  format values echoed by the provider; and
+- `mismatches` calls out conflicts between a non-`auto` request and actual or
+  provider-reported metadata.
+
+Provider-reported quality and background are labels, not pixel analysis or
+proof that those settings were honored. An empty mismatch object likewise does
+not prove that a visual property took effect. Actual transparency is not
+reported by the tool.
 
 ## Operator controls
 
@@ -124,7 +155,44 @@ max_attachments: 5
 
 Allowed sizes are `auto`, `1024x1024`, `1024x1536`, and `1536x1024`.
 Quality is `auto`, `low`, `medium`, or `high`; background is `auto`, `opaque`,
-or `transparent`. Tool config never accepts credentials, endpoints, or paths.
+or `transparent`. These operator values are defaults for calls that omit the
+corresponding arguments. Tool config never accepts credentials, endpoints, or
+paths.
+
+## Options evidence and scope
+
+The public Images API reference is the contract for platform API-key requests:
+[generate](https://developers.openai.com/api/reference/resources/images/methods/generate)
+and [edit](https://developers.openai.com/api/reference/resources/images/methods/edit).
+OAuth behavior below is empirical and narrower: HTTP acceptance proves only
+that a field was accepted, not that it controlled the output.
+
+| Option or capability | Public API contract | Observed through ChatGPT OAuth | Tool status |
+|---|---|---|---|
+| Background | `auto`, `opaque`, and `transparent` | Requests were accepted. A genuine transparent-background prompt with `transparent` produced an RGBA PNG whose alpha histogram contained transparent pixels. Isolated-icon tests also produced transparency after requesting `opaque`, so reliable field enforcement was not demonstrated. | Enabled as the conservative three-value request hint. Provider-reported background is labelled separately; actual alpha is not claimed. |
+| Size | The reference supports documented presets and, subject to model limits, dimensions expressed as multiples of 16. | Preset and `1536x864` requests were accepted, but sampled generation responses decoded as 1536×1024; an edit requested at 1024×1024 decoded as 1254×1254. | Only `auto`, `1024x1024`, `1024x1536`, and `1536x1024` are enabled. Actual decoded dimensions are reported. Arbitrary dimensions are deferred. |
+| Quality | `auto`, `low`, `medium`, and `high`; the 2.5 model reference also lists `xhigh` and `max`. | `low`, `xhigh`, and `max` requests were accepted, but sampled generations reported `medium`; an edit requested as `medium` reported `low`. The visual effect was not established. | Only `auto`, `low`, `medium`, and `high` are enabled as hints. `xhigh` and `max` are deferred. |
+| Output format and compression | PNG, JPEG, and WebP output are documented; JPEG/WebP compression accepts 0–100. | JPEG/WebP and compression requests were accepted, but sampled outputs were PNG. | Deferred. The bot continues to require, verify, save, and attach PNG only. |
+| Edit fidelity and masks | Edit masks and input fidelity are documented. | `input_fidelity=high` was accepted, but its effect was not established; the sampled output also differed from requested size and quality. Masks were not established for this integration. | Deferred. References keep the existing OAuth JSON and API-key multipart contracts. |
+| Multiple images and streaming | `n` from 1–10 and streaming are documented where supported. | Not relied upon by this integration. | Deferred. One completed PNG per tool call remains the boundary. |
+| Moderation and user metadata | Provider defaults and API fields are documented. | Not investigated as user controls. | Provider-default moderation remains in effect; no per-call lowering or user metadata is sent. |
+
+The observed generation samples also included an ordinary white-background
+baseline that returned PNG normally. These checks support transparency output
+as a capability when genuinely prompted, but they do not support claiming that
+the background field alone reliably controls pixels. The same caution applies
+to quality, size, format, compression, and edit fidelity.
+
+### OAuth transport distinction
+
+These observations apply to Kimi's existing Codex Images endpoints, which this
+change preserves. They are not interchangeable with the Codex Responses image
+tool used by Hermes. A separate Responses-route probe returned actual JPEG
+output, but rejected `background: transparent` with “Transparent background is
+not supported for this model” even with Sunburst requested. That probe does not
+independently establish the model actually served. Website-style
+`transparent_background` flags did not demonstrate control on Kimi's Images
+route. No transport switch or website-only parameters are introduced here.
 
 ## Resource and safety boundaries
 
@@ -139,12 +207,14 @@ or `transparent`. Tool config never accepts credentials, endpoints, or paths.
 - References: at most five; each is bounded to 10 MiB and the aggregate to
   25 MiB. Reads stop after the cap rather than loading an arbitrarily large
   workspace file.
-- Formats: source bytes are sniffed for PNG, JPEG, or WebP signatures rather
+- Reference formats: source bytes are sniffed for PNG, JPEG, or WebP signatures rather
   than trusted by filename.
 - Output: base64 must decode, fit the 10 MiB Discord default file limit, and
   pass the same full-decode PNG validation as provider-native image assets
   (`utils/image_types.py:decoded_image_media_type`) before it is written. A
   bare PNG signature, a CRC-corrupt chunk, or a truncated file is rejected.
+  Only after that validation does the service read the PNG header dimensions
+  for `actual.size`; no provider-reported dimensions weaken this check.
 - Reading references, calling the provider, and writing the output all hold
   the same per-workspace lock as the file tools, so nothing can change or
   delete the workspace mid-call. A slow call can therefore hold off the sweeper

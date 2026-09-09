@@ -5,6 +5,10 @@ They do not create a VPN, firewall, resolver, or namespace: those details are
 provider- and host-specific and remain operator-owned. Read
 [`docs/code-exec.md`](../../../docs/code-exec.md) before installing anything.
 
+For Private Internet Access, follow the provider-specific
+[`PIA.md`](PIA.md) runbook. It fills in the operator-owned side of this boundary
+without putting credentials or live tunnel configuration in the checkout.
+
 ## Boundary
 
 The helper accepts the sandbox command to execute, but it accepts **no namespace

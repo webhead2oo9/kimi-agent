@@ -603,18 +603,35 @@ async def test_approve_deny_race_has_one_winner(store):
 
 
 def test_preview_uses_native_times_and_omits_verbose_details():
-    from app.task_preview import render_preview
+    from app.task_preview import render_preview, render_task_details
 
     d = TaskDefinition.model_validate(
-        definition(objective="x" * 4000, condition="y" * 4000, skill="z" * 10000)
+        definition(
+            objective="x" * 4000,
+            condition="y" * 4000,
+            skill="z" * 10000,
+            mention_users=["10", "11", "12", "13"],
+            mention_roles=["20"],
+            log_channel="400",
+            reset_state=True,
+        )
     )
-    rendered = render_preview(
-        {"id": "task", "revision": 1}, d, now=datetime(2029, 12, 31, tzinfo=UTC).timestamp()
-    )
+    task = {"id": "task", "revision": 1, "guild_id": "100"}
+    rendered = render_preview(task, d, now=datetime(2029, 12, 31, tzinfo=UTC).timestamp())
     assert len(rendered) < 1800
     assert "Europe/Berlin" in rendered and "your local time" in rendered
     assert rendered.count(":F>") == 3 and rendered.count(":R>") == 3
     assert "T09:" not in rendered and d.skill not in rendered and d.objective not in rendered
+    assert "in task-details.md" in rendered
+    details = render_task_details(task, d)
+    assert details.startswith("# Task: Development digest")
+    assert d.objective in details and d.condition in details
+    assert "Europe/Berlin" in details and "09:00:00" in details and "UTC+0100" in details
+    assert "https://discord.com/channels/100/300" in details
+    assert "https://discord.com/channels/100/400" in details
+    assert "https://discord.com/users/13" in details and "Role 20" in details
+    assert "Reset when this revision is approved" in details
+    assert "SKILL.md" in details and d.skill not in details
 
 
 async def preview_fixture(store, *, can_close=True):
@@ -633,14 +650,17 @@ async def preview_fixture(store, *, can_close=True):
     )
     service = object.__new__(ScheduledTaskService)
     channel = MagicMock(spec=discord.Thread)
+    service._preview_lock = asyncio.Lock()
     channel.id = 400
     channel.owner_id = 99
+    channel.archived = channel.locked = False
     member = SimpleNamespace(id=10)
     channel.guild = SimpleNamespace(
         id=100, me=SimpleNamespace(id=99), fetch_member=AsyncMock(return_value=member)
     )
     channel.permissions_for.return_value = SimpleNamespace(manage_threads=can_close)
     channel.edit = AsyncMock()
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=501))
     channel.get_partial_message.return_value.edit = AsyncMock()
     service.r = SimpleNamespace(
         store=store,
@@ -673,12 +693,17 @@ async def test_decision_updates_receipt_and_closes_only_with_permission(store, a
         assert edit.call_args.kwargs["view"].is_persistent()
     else:
         assert edit.call_args.kwargs["view"] is None
-    assert channel.edit.await_count == int(can_close and not approve)
-    if can_close and not approve:
+    assert channel.edit.await_count == int(can_close)
+    assert channel.send.await_count == int(can_close)
+    if can_close:
+        assert ("Task approved" if approve else "Task rejected") in channel.send.call_args.args[0]
+        assert "Closing this approval thread" in channel.send.call_args.args[0]
+        assert channel.send.call_args.kwargs["allowed_mentions"].everyone is False
         assert channel.edit.call_args.kwargs["locked"] is True
         assert channel.edit.call_args.kwargs["archived"] is True
     assert "already" in await service.confirm(interaction, task_id, 1, approve=approve)
-    assert channel.edit.await_count == int(can_close and not approve)
+    assert channel.edit.await_count == int(can_close)
+    assert channel.send.await_count == int(can_close)
 
 
 @pytest.mark.asyncio
@@ -708,8 +733,83 @@ async def test_activation_survives_receipt_failure_and_reconciles_after_restart(
     service.previews = TaskPreviewStore(store.db)
     edit.side_effect = None
     await service.reconcile_previews(message_id="500")
-    channel.edit.assert_not_awaited()
+    channel.edit.assert_awaited_once()
+    channel.send.assert_awaited_once()
     assert await service.previews.updates(message_id="500") == []
+
+
+@pytest.mark.asyncio
+async def test_signoff_precedes_closure_and_is_not_repeated_after_close_failure(store):
+    import discord
+    from storage.task_previews import TaskPreviewStore
+
+    service, task_id, channel, interaction = await preview_fixture(store)
+    events = []
+
+    async def signoff(*args, **kwargs):
+        events.append("signoff")
+        return SimpleNamespace(id=501)
+
+    async def close(**kwargs):
+        assert events[0] == "signoff"
+        events.append("close")
+        if events.count("close") == 1:
+            raise discord.HTTPException(SimpleNamespace(status=503, reason="down"), "down")
+
+    channel.send.side_effect = signoff
+    channel.edit.side_effect = close
+    assert "decision succeeded" in await service.confirm(interaction, task_id, 1)
+    assert (await store.get(task_id))["active_revision"] == 1
+    service.previews = TaskPreviewStore(store.db)
+    assert await service.reconcile_previews(message_id="500")
+    assert events == ["signoff", "close", "close"]
+    channel.send.assert_awaited_once()
+    # Changing task status must not try to edit or reopen an archived receipt.
+    channel.get_partial_message.return_value.edit.reset_mock()
+    await store.set_status(task_id, "paused")
+    assert await service.previews.updates() == []
+    await service.reconcile_previews()
+    channel.get_partial_message.return_value.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_receipt_reconciliation_sends_one_signoff(store):
+    service, task_id, channel, _ = await preview_fixture(store)
+    await store.activate(task_id, 1, "10", 100, reset_state=False)
+    await service.previews.remember(task_id, 1, "400", "500")
+    assert all(await asyncio.gather(service.reconcile_previews(), service.reconcile_previews()))
+    channel.send.assert_awaited_once()
+    channel.edit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_v12_migration_requeues_open_approved_threads_without_changing_tasks(tmp_path):
+    import sqlite3
+    from storage.task_previews import TaskPreviewStore
+
+    path = tmp_path / "v11.db"
+    db = Database(path)
+    await db.connect()
+    store = ScheduledTaskStore(db)
+    task = await active_task(store)
+    previews = TaskPreviewStore(db)
+    await previews.remember(task["id"], 1, "400", "500")
+    await previews.rendered("500", "activated:active:100", closed=True)
+    await db.close()
+    # Restore the prior on-disk schema and the receipt state produced by that release.
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN signoff_message_id")
+        conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN thread_closed")
+        conn.execute("DELETE FROM schema_version WHERE version=12")
+    await db.connect()
+    try:
+        assert await store.get(task["id"]) == task
+        row = (await previews.updates())[0]
+        assert row["close_pending"] == 1
+        assert row["signoff_message_id"] is None
+        assert row["thread_closed"] == 0
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -771,10 +871,10 @@ async def test_preview_delivery_uses_quiet_thread_and_separate_short_notice(stor
     result = await service.deliver_preview(
         message, boundary, 1, TaskPreviewRequest(task_id, 1, location == "in_channel"), "root"
     )
-    assert sent.jump_url in result and "pending approval" in result
+    assert f"Task pending approval: [Review task]({sent.jump_url})" in result
     expected.send.assert_awaited_once()
     args = expected.send.call_args.kwargs
-    assert [f.filename for f in args["files"]] == ["task.json", "SKILL.md"]
+    assert [f.filename for f in args["files"]] == ["task-details.md", "SKILL.md"]
     assert [button.label for button in args["view"].children] == [
         "Test preview",
         "Approve",

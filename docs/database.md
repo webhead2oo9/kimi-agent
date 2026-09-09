@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v11 and the minimum supported baseline is v7.
+The current schema version is v12 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
 and v9 paid-image reservation migration; existing v7/v8 databases upgrade in
 place. Databases below v7 or above this release's supported version are
@@ -245,3 +245,7 @@ once no publication is pending. Full privacy deletion removes the owner’s task
 
 Schema v11 adds approval decisions, preview message references and bounded message-update
 retries. It preserves v10 tasks and records their active revisions as approved.
+
+Schema v12 records approval-thread sign-off messages and completed closures. It
+queues approved threads left open by the initial management-card release for
+reconciliation; existing task definitions and approvals remain unchanged.

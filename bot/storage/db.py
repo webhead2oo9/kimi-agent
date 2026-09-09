@@ -12,7 +12,7 @@ import aiosqlite
 from storage.task_schema import TASK_SCHEMA
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -703,11 +703,24 @@ async def _add_task_previews(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_task_thread_closure(conn: aiosqlite.Connection) -> None:
+    await conn.execute("ALTER TABLE scheduled_task_previews ADD COLUMN signoff_message_id TEXT")
+    await conn.execute(
+        "ALTER TABLE scheduled_task_previews ADD COLUMN thread_closed INTEGER NOT NULL DEFAULT 0"
+    )
+    # Reconcile approval threads left open by the initial management-card release.
+    await conn.execute(
+        "UPDATE scheduled_task_previews SET close_pending=1,attempts=0,retry_at=0 "
+        "WHERE desired_state='activated'"
+    )
+
+
 _MIGRATIONS: dict[int, Migration] = {
     8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
     9: ("image_usage_reservations", _add_image_usage_reservations),
     10: ("scheduled_tasks", _add_scheduled_tasks),
     11: ("task_previews", _add_task_previews),
+    12: ("task_thread_closure", _add_task_thread_closure),
 }
 
 
@@ -832,6 +845,7 @@ class Database:
             await conn.executescript(_SCHEMA_SQL)
             await _add_scheduled_tasks(conn)
             await _add_task_previews(conn)
+            await _add_task_thread_closure(conn)
             await _record_schema_version(
                 conn,
                 _BASELINE_SCHEMA_VERSION,

@@ -135,9 +135,10 @@ preview is not proof that Discord has already delivered it.
 Approval defaults to a quiet thread outside an existing thread, with an
 in-channel fallback if unavailable. For an explicit request to keep approval in
 the current channel, pass `approval_in_channel: true` to `setup`. The approval
-thread does not need to listen for messages. Approval replaces the controls with
-**Manage** and leaves the thread unlocked. Rejection removes the controls and may
-lock/archive an unused approval thread. Do not invoke thread tools to duplicate
+thread does not need to listen for messages. After approval or rejection, the host
+posts a short sign-off, then locks and archives an unused approval thread when
+permissions allow. Use `/tasks` for private management afterward. Approval receipts
+retain **Manage**; rejected proposals have no controls. Do not invoke thread tools to duplicate
 this workflow. Only the requester of that revision may test, approve, or reject
 it. Rejecting an edit leaves the previous approved version running.
 

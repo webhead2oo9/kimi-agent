@@ -587,3 +587,7 @@ files.
 Clearing the persona removes it from SQLite. The memory-forget path
 (`/privacy`) also clears the stored persona as part of deleting user-scoped
 retained data.
+
+[Scheduled tasks](scheduled-tasks.md#stored-data) store owner-scoped definitions,
+task skills, comparison state, run history, and saved publication attachments.
+Full privacy deletion cancels owned tasks and removes that data.

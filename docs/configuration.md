@@ -1327,3 +1327,6 @@ If you want to know where a setting is actually read, this is the map:
 Application modules using the optional `tool_files` permission share admitted uploads
 and bounded caller-workspace reads. This uses the existing workspace byte limits;
 see [module file access](module-files.md) for the SDK and capability requirements.
+
+Server fragments can enable [scheduled tasks](scheduled-tasks.md#enable-a-server),
+set the minimum creator tier and timezone, and allow cross-channel destinations.

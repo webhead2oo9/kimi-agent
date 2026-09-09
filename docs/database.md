@@ -2,7 +2,7 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v9 and the minimum supported baseline is v7.
+The current schema version is v11 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
 and v9 paid-image reservation migration; existing v7/v8 databases upgrade in
 place. Databases below v7 or above this release's supported version are
@@ -76,7 +76,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8 and v9 changes after the v7 baseline.
+- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8, v9, v10, and v11 changes after the v7 baseline.
 - Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -91,7 +91,7 @@ databases retain their data and complete version ledger, including rows from
 earlier upgrades.
 
 The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old
-transcript-format conversion have been removed. A database at v7 or v8
+transcript-format conversion have been removed. A database at v7, v8, v9, or v10
 automatically applies the remaining migrations; no manual operator action is
 needed. When restoring an older backup, use a release compatible with that
 backup; this release cannot upgrade a pre-v7 database. Do not change the schema
@@ -235,3 +235,13 @@ The bot records the deletion request before it begins and blocks new activity fo
 Deleting SQLite transcript data leaves the model and paid-tool ledgers alone,
 anonymizes paid-image reservations as described above, and leaves active
 rate-limit markers alone too.
+
+## Scheduled task storage
+
+[Scheduled tasks](scheduled-tasks.md) add core task definitions and immutable revisions,
+conversation setup markers, occurrence records, saved output files and deliveries,
+and a singleton runner lease in schema v10. Terminal runs are pruned after 30 days
+once no publication is pending. Full privacy deletion removes the owner’s task data.
+
+Schema v11 adds approval decisions, preview message references and bounded message-update
+retries. It preserves v10 tasks and records their active revisions as approved.

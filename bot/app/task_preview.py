@@ -39,6 +39,70 @@ def native_time(timestamp: float) -> str:
     return f"<t:{stamp}:F> · <t:{stamp}:R>"
 
 
+def render_task_details(task: dict[str, Any], definition: TaskDefinition) -> str:
+    """Readable, complete approval settings accompanying the separate task skill."""
+    schedule = definition.schedule
+    start = schedule.start.astimezone(ZoneInfo(schedule.timezone))
+
+    def channel(channel_id: str) -> str:
+        return (
+            f"[Channel {channel_id}](https://discord.com/channels/{task['guild_id']}/{channel_id})"
+        )
+
+    lines = [
+        f"# Task: {clip(definition.name, 100)}",
+        f"Revision {task['revision']} · Task ID: {task['id']}",
+        "## Objective",
+        definition.objective,
+        "## Sources",
+        "\n".join(f"- {source}" for source in definition.sources) or "No sources specified.",
+        "## Schedule",
+        f"- Frequency: {schedule_label(definition)}",
+        f"- Timezone: {schedule.timezone}",
+        f"- Start: {start.strftime('%A, %d %B %Y at %H:%M:%S')} (UTC{start.strftime('%z')})",
+        "- After downtime: "
+        + (
+            "Run once to catch up, combining any missed occurrences."
+            if schedule.missed == "catch_up"
+            else "Skip occurrences more than 60 seconds late."
+        ),
+        "## Publication",
+        "Destinations:\n" + "\n".join(f"- {channel(target)}" for target in definition.destinations),
+        "Publish when:\n" + (definition.condition or "Every successful run."),
+        "First check: "
+        + (
+            "No conditional baseline; perform the task normally."
+            if not definition.condition
+            else (
+                "Establish the baseline silently, without publishing."
+                if definition.first_check == "silent"
+                else "Publish the initial baseline."
+            )
+        ),
+        "## Notifications",
+        "Users:\n"
+        + (
+            "\n".join(
+                f"- [User {user}](https://discord.com/users/{user})"
+                for user in definition.mention_users
+            )
+            or "None."
+        ),
+        "Roles:\n" + ("\n".join(f"- Role {role}" for role in definition.mention_roles) or "None."),
+        "## Run log",
+        channel(definition.log_channel)
+        if definition.log_channel
+        else "Internal task history only.",
+        "## Saved comparison state",
+        "Reset when this revision is approved."
+        if definition.reset_state
+        else "Keep the existing state.",
+        "## Procedure",
+        "The complete instructions are in the attached SKILL.md. Approval applies to these settings and that skill together.",
+    ]
+    return "\n\n".join(lines) + "\n"
+
+
 def render_preview(
     task: dict[str, Any],
     definition: TaskDefinition,
@@ -110,7 +174,7 @@ def render_preview(
         ]
         shown = ", ".join(recipients[:3]) or "none"
         if len(recipients) > 3:
-            shown += f" (+{len(recipients) - 3} in task.json)"
+            shown += f" (+{len(recipients) - 3} in task-details.md)"
         lines.append(
             f"Notify: {shown} · Log: "
             + (f"<#{definition.log_channel}>" if definition.log_channel else "internal history")

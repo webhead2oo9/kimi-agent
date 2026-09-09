@@ -27,7 +27,8 @@ class TaskPreviewStore:
         async with self.db.conn.execute(
             "WITH cards AS (SELECT p.*,r.definition_json,r.proposer_id,t.owner_id,t.guild_id,"
             "t.status AS task_status,t.active_revision,t.next_run AS task_next_run,"
-            "CASE WHEN p.desired_state='activated' AND r.revision=t.active_revision THEN "
+            "CASE WHEN p.desired_state='activated' AND p.thread_closed=1 THEN p.rendered_state "
+            "WHEN p.desired_state='activated' AND r.revision=t.active_revision THEN "
             "p.desired_state || ':' || t.status || ':' || COALESCE(t.next_run,'') "
             "WHEN p.desired_state='activated' THEN 'activated:replaced:' || COALESCE(t.active_revision,'') "
             "WHEN p.desired_state='pending' THEN 'pending:controls-v2' "
@@ -52,13 +53,23 @@ class TaskPreviewStore:
         ) as cursor:
             return await cursor.fetchone() is not None
 
-    async def rendered(self, message_id: str, state: str, *, closed: bool) -> None:
+    async def signoff_sent(self, message_id: str, signoff_message_id: str) -> None:
+        async with self.db.write_transaction() as conn:
+            await conn.execute(
+                "UPDATE scheduled_task_previews SET signoff_message_id=? WHERE message_id=?",
+                (signoff_message_id, message_id),
+            )
+
+    async def rendered(
+        self, message_id: str, state: str, *, closed: bool, thread_closed: bool = False
+    ) -> None:
         async with self.db.write_transaction() as conn:
             await conn.execute(
                 "UPDATE scheduled_task_previews SET rendered_state=?,attempts=0,retry_at=0,"
+                "thread_closed=thread_closed OR ?,"
                 "close_pending=CASE WHEN ? THEN 0 ELSE close_pending END "
                 "WHERE message_id=?",
-                (state, closed, message_id),
+                (state, thread_closed, closed, message_id),
             )
 
     async def failed(self, message_id: str, *, permanent: bool = False) -> None:

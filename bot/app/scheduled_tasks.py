@@ -35,7 +35,7 @@ from moderation.types import Direction
 from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.scheduled_tasks import ScheduledTaskStore
 from storage.task_previews import TaskPreviewStore
-from app.task_preview import render_preview
+from app.task_preview import render_preview, render_task_details
 from app.task_controls import TaskControls, TaskManageEntry
 from app.thread_handoff_boundary import ThreadHandoffBoundary
 from tools.threads import ThreadRequest
@@ -140,6 +140,7 @@ class ScheduledTaskService:
         self._posts: dict[str, list[dict[str, Any]]] = {}
         self._owns_lease = False
         self._publisher: asyncio.Task[None] | None = None
+        self._preview_lock = asyncio.Lock()
         self._tests: dict[str, asyncio.Task[Any]] = {}
         init_task_tools(runtime.tools.registry, self.manage, self.post, self.discover)
         runtime.tools.registry.prompt_instructions = self.wizard_instructions
@@ -505,7 +506,8 @@ class ScheduledTaskService:
             await self._moderate(ctx, preview, Direction.OUTPUT)
             files = [
                 discord.File(
-                    io.BytesIO(definition.model_dump_json(indent=2).encode()), filename="task.json"
+                    io.BytesIO(render_task_details(task, definition).encode()),
+                    filename="task-details.md",
                 ),
                 discord.File(io.BytesIO(definition.skill.encode()), filename="SKILL.md"),
             ]
@@ -520,7 +522,7 @@ class ScheduledTaskService:
                 for file in files:
                     file.close()
             await self.previews.remember(task["id"], task["revision"], str(target.id), str(sent.id))
-            notice = f"Task pending approval: {sent.jump_url}"
+            notice = f"Task pending approval: [Review task]({sent.jump_url})"
             if fallback:
                 notice = "I couldn't open an approval thread, so the preview is here. " + notice
             return notice
@@ -581,14 +583,20 @@ class ScheduledTaskService:
             ) + (
                 ""
                 if updated
-                else " The decision succeeded, but the approval message could not be updated; a retry is queued."
+                else " The decision succeeded, but its receipt or thread closure could not be completed; a retry is queued."
             )
 
     async def reconcile_previews(self, *, message_id: str | None = None) -> bool:
         success = True
         for row in await self.previews.updates(message_id=message_id):
             try:
-                async with self.r.privacy.activity(row["owner_id"]):
+                # Confirmations already hold privacy activity: acquire it before the shared
+                # reconciliation lock so a pending deletion cannot invert the lock order.
+                async with self.r.privacy.activity(row["owner_id"]), self._preview_lock:
+                    current = await self.previews.updates(message_id=row["message_id"])
+                    if not current:
+                        continue
+                    row = current[0]
                     channel = self.r.bot.get_channel(int(row["channel_id"]))
                     if channel is None:
                         channel = await self.r.bot.fetch_channel(int(row["channel_id"]))
@@ -602,7 +610,10 @@ class ScheduledTaskService:
                         and isinstance(channel, discord.Thread)
                         and await self.previews.thread_in_use(row["guild_id"], row["channel_id"])
                     )
-                    if row["rendered_state"] != row["render_key"]:
+                    thread_closed = bool(
+                        isinstance(channel, discord.Thread) and channel.archived and channel.locked
+                    )
+                    if row["rendered_state"] != row["render_key"] and not thread_closed:
                         await channel.get_partial_message(int(row["message_id"])).edit(
                             content=render_preview(
                                 row,
@@ -629,8 +640,8 @@ class ScheduledTaskService:
                         )
                     if (
                         row["close_pending"]
-                        and row["desired_state"] != "activated"
                         and isinstance(channel, discord.Thread)
+                        and not thread_closed
                         and not needed_by_task
                     ):
                         # Decisions remain valid even when thread management isn't permitted.
@@ -651,12 +662,31 @@ class ScheduledTaskService:
                                 and bot_member
                                 and channel.permissions_for(bot_member).manage_threads
                             ):
+                                if row["signoff_message_id"] is None:
+                                    signoff = (
+                                        "Task approved. Use `/tasks` to manage it or view run history."
+                                        if row["desired_state"] == "activated"
+                                        else "Task rejected. Any previously approved version keeps running."
+                                    )
+                                    sent = await channel.send(
+                                        signoff + " Closing this approval thread.",
+                                        allowed_mentions=discord.AllowedMentions.none(),
+                                    )
+                                    await self.previews.signoff_sent(
+                                        row["message_id"], str(sent.id)
+                                    )
                                 await channel.edit(
                                     locked=True, archived=True, reason="Task approval decided"
                                 )
+                                thread_closed = True
                         except discord.Forbidden:
                             pass
-                    await self.previews.rendered(row["message_id"], row["render_key"], closed=True)
+                    await self.previews.rendered(
+                        row["message_id"],
+                        row["render_key"],
+                        closed=True,
+                        thread_closed=thread_closed,
+                    )
             except discord.HTTPException, ValueError, OSError:
                 log.warning("Could not update task approval message", exc_info=True)
                 await self.previews.failed(row["message_id"])

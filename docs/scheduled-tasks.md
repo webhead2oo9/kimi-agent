@@ -212,26 +212,29 @@ The wizard stays in the current conversation. A draft is delivered separately in
 quiet approval thread by default; a current thread is reused. New approval threads
 do not automatically answer messages. Ask to keep approval in-channel to opt out.
 If thread creation is unavailable, the preview appears in the current channel.
-Kimi's ordinary reply only points to the pending approval and does not repeat the
+Kimi's ordinary reply uses a labeled **Review task** link to the pending approval and does not repeat the
 skill or settings.
 
 Previews show a readable schedule and the task's IANA timezone. Upcoming dates and
 countdowns use Discord timestamps, displayed in each viewer's local timezone;
 this does not change the task schedule. You may choose a different timezone per task.
-Full settings and instructions remain attached as `task.json` and `SKILL.md`.
+Full settings are attached as readable `task-details.md`, with the complete
+instructions in `SKILL.md`.
 
 Only the person requesting that revision can test, approve, or reject it, including
 when another staff member views its buttons. Approval replaces the proposal buttons
 with **Manage**. The active card refreshes its status and next run; replaced approved
-revisions point to management of the current task. Rejecting an edit keeps the previously approved
+revisions point to management of the current task. Archived approval receipts stay
+fixed; `/tasks` always shows current status. Rejecting an edit keeps the previously approved
 version running. Replaced pending previews are marked superseded.
 
-Approved proposal threads remain unlocked for management. After rejection, Kimi
-attempts to lock and archive the approval thread where the requester and bot have
-the necessary authority. Missing permissions leave it open without undoing the
-decision. Threads used by an approved task for publication, logging, or follow-up
-questions also remain open when rejecting an edit.
-Message edits retry after transient failures,
+After approval or rejection, Kimi posts a short sign-off and then locks and archives
+the approval thread where the requester and bot have the necessary authority.
+Use `/tasks` to reopen private management controls. Missing permissions leave the
+thread open without undoing the decision. Threads used by an approved task for
+publication, logging, or follow-up questions also remain open.
+Successful sign-offs are recorded so retrying a failed closure does not repeat them.
+Message edits and thread closure retry after transient failures,
 including after a restart; approval itself is never repeated. Older previews remain
 usable and are updated on interaction.
 

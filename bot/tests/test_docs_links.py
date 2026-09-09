@@ -27,7 +27,6 @@ _LIVE_DOC_PAGES: tuple[Path, ...] = (
     PROJECT_ROOT / "deploy" / "README.md",
     PROJECT_ROOT / "deploy" / "betterwright" / "README.md",
     PROJECT_ROOT / "deploy" / "code-exec-netns" / "README.md",
-    PROJECT_ROOT / "deploy" / "code-exec-netns" / "PIA.md",
     PROJECT_ROOT / "deploy" / "hindsight" / "README.md",
     PROJECT_ROOT / "modules" / "example" / "README.md",
     PROJECT_ROOT / "modules" / "minimal" / "README.md",

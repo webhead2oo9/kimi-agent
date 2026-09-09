@@ -14,5 +14,5 @@ backstop.
 | Directory | Applies when |
 |---|---|
 | [`betterwright/`](betterwright/README.md) | The browser tool is enabled. Installs the pinned BetterWright runtime outside the checkout. |
-| [`code-exec-netns/`](code-exec-netns/README.md) | Code execution or the browser runs in a fixed VPN namespace. Includes privileged-seam templates and a [PIA runbook](code-exec-netns/PIA.md). |
+| [`code-exec-netns/`](code-exec-netns/README.md) | Helper and sudo-rule templates for a fixed VPN namespace. Operators: [Use a PIA VPN](../../docs/pia-vpn.md). |
 | [`hindsight/`](hindsight/README.md) | Long-term memory is enabled. Runs the backend as a container on any Docker host the bot can reach. |

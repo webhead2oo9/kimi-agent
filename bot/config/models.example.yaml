@@ -86,6 +86,10 @@ roles:
   # CODING_TASKS_ENABLED=true and the code-execution sandbox.
   # coding: primary-chat
   # coding_fallbacks: []
+  # Optional dedicated scheduled task runner. Unset preserves chat routing.
+  # Applies to every server's scheduled runs; requires text and tool_calling.
+  # scheduled: primary-chat
+  # scheduled_fallbacks: []
   compaction_fallbacks: []
   # Optional. Assigning it registers the regular+ persona_set, persona_show, and
   # persona_clear tools and compiles persona requests through this model. Leave

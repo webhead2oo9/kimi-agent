@@ -175,7 +175,10 @@ def init_task_tools(
         parameters={
             "type": "object",
             "properties": {
-                "cursor": {"type": "string", "description": "next_cursor from the previous page"},
+                "cursor": {
+                    "type": "string",
+                    "description": "next_cursor from the previous page; omit or use empty for page one",
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
             },
         },

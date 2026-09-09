@@ -13,6 +13,7 @@ task's own procedure, complete source checks, conditional output, and recovery.
 `discord_channels` returns up to 200 readable sources per page (configurable with
 `limit`, from 1 to 200), listing regular channels and active threads before
 archived threads. Pass the returned `next_cursor` as `cursor` to continue.
+Omit `cursor`, pass an empty string, or use `"0"` to start at the first page.
 A full page returns immediately: `has_more: true` means more sources may remain,
 so the final continuation can be empty.
 Configured, accessible posting destinations appear on every page. A
@@ -47,6 +48,33 @@ scheduled execution is disabled.
 Both the task owner and bot must be able to access and post to a destination.
 Deployment channel boundaries and the destination's `discord_post` tool denylist
 still apply. Cross-server delivery, DMs, and creating forum posts are unsupported.
+
+## Runner model
+
+Operators can choose a dedicated model for all scheduled runs in
+`config/models.yaml`, using the existing `models` catalog just like the coding
+agent:
+
+```yaml
+roles:
+  # Keep the existing chat, compaction, and other role assignments.
+  scheduled: primary-chat
+  scheduled_fallbacks: []
+```
+
+Replace `primary-chat` with a configured model entry name. The primary and any
+fallbacks must declare `text` and `tool_calling`; their required credentials are
+checked at startup. Restart the bot after editing model configuration.
+
+This setting applies to scheduled execution in every enabled server. Task setup
+and follow-up conversations still use chat routing, and compaction still uses
+the compaction role. There is no per-task model field. A configured scheduled
+model is independent of `/models` selection and chat scope overrides. Failures
+use only `scheduled_fallbacks` under the ordinary provider failover rules; they
+do not silently switch to the chat model.
+
+Leaving `scheduled` unset preserves existing behavior: scheduled runs use chat
+routing, including the active `/models` selection and scope overrides.
 
 ## Create and edit tasks
 

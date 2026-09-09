@@ -289,7 +289,7 @@ class DiscordGateway:
         """Page readable sources; cursors are offsets in the current accessible inventory."""
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("limit must be an integer between 1 and 200")
-        if cursor is not None and (
+        if cursor not in (None, "") and (
             not isinstance(cursor, str)
             or not cursor.isascii()
             or not cursor.isdecimal()

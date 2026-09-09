@@ -17,19 +17,23 @@ def _agg(
     unpriced_llm_calls: int = 0,
     paid_tool_cost_usd: float = 0.0,
     paid_tool_calls: int = 0,
+    image_est_cost_usd: float = 0.0,
+    image_calls: int = 0,
 ) -> UsageAggregate:
     return UsageAggregate(
         input_tokens=1000,
         cached_read_tokens=500,
         cache_write_tokens=0,
         output_tokens=200,
-        est_cost_usd=cost + paid_tool_cost_usd,
+        est_cost_usd=cost + paid_tool_cost_usd + image_est_cost_usd,
         llm_est_cost_usd=cost,
         paid_tool_cost_usd=paid_tool_cost_usd,
         unpriced_llm_calls=unpriced_llm_calls,
         turns=turns,
         llm_calls=turns,
         paid_tool_calls=paid_tool_calls,
+        image_est_cost_usd=image_est_cost_usd,
+        image_calls=image_calls,
     )
 
 
@@ -66,6 +70,38 @@ def test_format_user_usage_drops_the_paid_column_without_paid_spend() -> None:
 
     assert "Paid" not in text
     assert "Window  Est. cost  Tokens  Turns" in text
+
+
+def test_format_user_usage_labels_conservative_image_reservations() -> None:
+    text = format_user_usage(
+        "u1",
+        {"Today": _agg(0.10, image_est_cost_usd=0.30, image_calls=1)},
+    )
+
+    assert "Image est." in text
+    assert "$0.30" in text
+    assert "potentially billed failures" in text
+
+
+def test_format_server_usage_attributes_image_estimate_to_spender() -> None:
+    spender = SpenderRow(
+        "u1",
+        "Image User",
+        0.45,
+        0,
+        0,
+        0,
+        image_est_cost_usd=0.45,
+        image_calls=1,
+    )
+
+    text = format_server_usage(
+        _agg(0, image_est_cost_usd=0.45, image_calls=1),
+        [spender],
+    )
+
+    spender_line = next(line for line in text.splitlines() if line.startswith("1. Image User"))
+    assert spender_line.count("$0.45") == 2
 
 
 def test_format_server_usage_ranks_top_spenders_under_the_total() -> None:

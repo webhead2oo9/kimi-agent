@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from providers.image_caption import is_image_caption
@@ -70,6 +71,7 @@ class UserDataDeletion:
     conversations_deleted: int
     messages_scrubbed: int
     coding_tasks_deleted: int = 0
+    image_usage_records_anonymized: int = 0
 
 
 class ConversationStore:
@@ -678,7 +680,10 @@ class ConversationStore:
         are scrubbed, because an aggregate description may include their image
         content. This is the raw SQLite transcript only; Hindsight memory is a
         separate store (see ``memory/privacy.py:forget_user_memory``) and usage
-        ledgers are excluded by design, same as the retention sweep.
+        general usage ledgers are excluded by design, same as the retention sweep.
+        Paid-image reservations are different: they are anonymized in place so
+        the deployment ceiling remains conservative without retaining the user's
+        identity or channel/guild association.
         """
         async with self._db.write_transaction() as conn:
             # Coding tasks carry their own internal journal and job records.
@@ -736,11 +741,21 @@ class ConversationStore:
                 "UPDATE thread_conversations SET creator_user_id = NULL WHERE creator_user_id = ?",
                 (user_id,),
             )
+            image_usage = await conn.execute(
+                "UPDATE image_usage_reservations SET "
+                "user_id = 'deleted:' || reservation_id, user_name = NULL, "
+                "channel_id = NULL, guild_id = NULL, provider_request_id = NULL, "
+                "updated_at = ? WHERE user_id = ?",
+                (datetime.now(UTC).isoformat(), user_id),
+            )
             messages_scrubbed = scrub.rowcount if scrub.rowcount and scrub.rowcount > 0 else 0
             return UserDataDeletion(
                 conversations_deleted=conversations_deleted,
                 messages_scrubbed=messages_scrubbed,
                 coding_tasks_deleted=coding_tasks_deleted,
+                image_usage_records_anonymized=(
+                    image_usage.rowcount if image_usage.rowcount and image_usage.rowcount > 0 else 0
+                ),
             )
 
     async def get_message_by_discord_id(

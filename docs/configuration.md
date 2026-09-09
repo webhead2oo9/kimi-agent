@@ -761,20 +761,33 @@ provider retention/deletion, caching, and prompt-injection posture.
 
 ## Image generation (gated)
 
-The REGULAR-tier core `generate_image` tool is operator opt-in. ChatGPT OAuth
-through the shared Codex token manager is primary; a dedicated OpenAI platform
-key is the fallback. Missing credentials fail closed by leaving the tool
-unregistered. Safe per-call behavior lives in
+The REGULAR-tier core `generate_image` tool is operator opt-in. Choose the
+`openai_codex` Codex OAuth backend or the billed `openai_api` platform-key
+backend explicitly; neither falls back to the other. Missing credentials fail
+closed by leaving the tool unregistered. Safe per-call behavior lives in
 `config/tools/generate_image.md`.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `IMAGE_GEN_ENABLED` | bool | `false` | Requests registration of the image generation and editing tool. |
-| `IMAGE_GEN_BACKEND` | str | `openai` | Image backend name. The supported value is `openai`. |
-| `IMAGE_GEN_AUTH_MODE` | str | `auto` | `auto` prefers Codex OAuth and falls back to `IMAGE_GEN_API_KEY`; `oauth` and `api_key` select one path explicitly. |
-| `IMAGE_GEN_API_KEY` | secret | `""` | Dedicated OpenAI platform key for API-key mode. Environment-only and never written to a tool fragment. |
+| `IMAGE_GEN_BACKEND` | str | `openai_codex` | Explicit backend: `openai_codex` or `openai_api`. The deprecated `openai` alias is accepted only when `IMAGE_GEN_AUTH_MODE` selects one path or exactly one credential exists; dual credentials with `auto` are ambiguous and abort registration. |
+| `IMAGE_GEN_AUTH_MODE` | str | `auto` | Legacy selector for the `openai` alias. With an explicit backend, `auto` or the matching mode is accepted and a conflicting mode is rejected. |
+| `IMAGE_GEN_API_KEY` | secret | `""` | Dedicated OpenAI platform key for `openai_api`. Environment-only and never written to a tool fragment. |
 | `IMAGE_GEN_MAX_CONCURRENCY` | int | `1` | Process-wide image request cap, 1–8. |
 | `IMAGE_GEN_TIMEOUT_SECONDS` | float | `300` | Whole HTTP request timeout, 30–900 seconds. |
+| `IMAGE_GEN_USER_CALLS_PER_24H` | int | `5` | Per-user rolling 24-hour reservation limit for billed image backends; `0` disables it. |
+| `IMAGE_GEN_GUILD_CALLS_PER_24H` | int | `100` | Per-guild rolling 24-hour reservation limit for billed image backends; `0` disables it. Calls without a guild do not use this limit. |
+| `IMAGE_GEN_DEPLOYMENT_MONTHLY_USD` | float | `100` | Deployment-wide calendar-month ceiling over conservative configured reservations for billed image backends; `0` disables it. |
+| `IMAGE_GEN_STAFF_EXEMPT_FROM_CALL_LIMITS` | bool | `true` | Lets STAFF bypass only user/guild call limits. The deployment spend ceiling always applies. |
+| `IMAGE_GEN_COST_ESTIMATES_USD` | JSON object | all six shipped model/operation pairs | Environment-only conservative per-request USD reservations. These are not provider-reported charges; update every value against current pricing and expected worst-case settings. |
+
+The reservation map covers generation and editing for `gpt-image-2`,
+`gpt-image-2.5-flare`, and `gpt-image-2.5-sunburst`. It is validated as a
+complete, positive map at startup. Paid reservations are written atomically to
+the encrypted core database before HTTP begins and remain counted after
+cancellation or uncertain failure. Codex OAuth does not use these paid limits.
+Provider token metadata is recorded for diagnostics but is never converted
+into a fabricated image charge.
 
 See [Image generation](image-generation.md) for request contracts, workspace
 persistence, local file limits, quota errors, and the moderation boundary.

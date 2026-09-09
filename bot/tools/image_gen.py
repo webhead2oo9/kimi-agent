@@ -16,9 +16,16 @@ from image_gen.types import (
     ImageEditRequest,
     ImageGenError,
     ImageGenRequest,
+    ImageProviderRejectedError,
     ImageQuotaError,
     ImageReference,
     ImageResult,
+)
+from storage.usage import (
+    ImageUsageLimitExceeded,
+    ImageUsageLimits,
+    ImageUsageRequest,
+    ImageUsageReservation,
 )
 from tools._common import tool_error
 from tools.config_spec import KIND_CHOICE, KIND_INT, ToolConfigField
@@ -50,9 +57,31 @@ log = logging.getLogger(__name__)
 
 
 class ImageGenServiceLike(Protocol):
+    @property
+    def requires_persistent_usage_reservation(self) -> bool: ...
+
+    @property
+    def backend_name(self) -> str: ...
+
+    @property
+    def provider(self) -> str: ...
+
     async def generate(self, request: ImageGenRequest) -> ImageResult: ...
 
     async def edit(self, request: ImageEditRequest) -> ImageResult: ...
+
+    def estimate_cost(self, request: ImageGenRequest | ImageEditRequest) -> float: ...
+
+    def validate_generate(self, request: ImageGenRequest) -> None: ...
+
+    def validate_edit(self, request: ImageEditRequest) -> None: ...
+
+
+DEFAULT_IMAGE_USAGE_LIMITS = ImageUsageLimits(
+    per_user_24h=5,
+    per_guild_24h=100,
+    deployment_monthly_usd=100.0,
+)
 
 
 _CONFIG_SPEC = (
@@ -128,6 +157,8 @@ def init_image_gen_tool(
     workspace_manager: WorkspaceManager,
     workspace_locks: UserLocks,
     workspace_config: WorkspaceToolConfig,
+    *,
+    persistent_limits: ImageUsageLimits = DEFAULT_IMAGE_USAGE_LIMITS,
 ) -> None:
     async def generate_image(args: dict, ctx: MessageContext) -> str:
         try:
@@ -157,22 +188,89 @@ def init_image_gen_tool(
                     reference_paths,
                 )
                 request_fields = _request_fields(ctx, option_overrides)
+                if service.requires_persistent_usage_reservation and ctx.usage_store is None:
+                    return tool_error(
+                        "paid image generation is unavailable because persistent usage "
+                        "accounting is unavailable"
+                    )
+                operation = "edit" if reference_urls else "generate"
+                request: ImageGenRequest | ImageEditRequest
+                if reference_urls:
+                    request = ImageEditRequest(
+                        prompt=prompt,
+                        images=reference_urls,
+                        **request_fields,
+                    )
+                    service.validate_edit(request)
+                else:
+                    request = ImageGenRequest(prompt=prompt, **request_fields)
+                    service.validate_generate(request)
                 if not ctx.consume_budget(BudgetName.IMAGE_GEN_CALLS):
                     return tool_error(
                         f"image generation limit reached ({max_calls} calls per turn)"
                     )
-                if reference_urls:
-                    result = await service.edit(
-                        ImageEditRequest(
-                            prompt=prompt,
-                            images=reference_urls,
-                            **request_fields,
+                reservation: ImageUsageReservation | None = None
+                if service.requires_persistent_usage_reservation:
+                    assert ctx.usage_store is not None
+                    try:
+                        reservation = await ctx.usage_store.reserve_image_usage(
+                            user_id=ctx.user_id,
+                            user_name=ctx.user_name,
+                            channel_id=ctx.conversation_channel_id,
+                            guild_id=ctx.guild_id,
+                            request=ImageUsageRequest(
+                                backend=service.backend_name,
+                                provider=service.provider,
+                                model=request.model,
+                                operation=operation,
+                                size=request.size,
+                                quality=request.quality,
+                                estimated_cost_usd=service.estimate_cost(request),
+                            ),
+                            limits=persistent_limits,
+                            is_staff=ctx.trust_tier is TrustTier.STAFF,
                         )
+                    except ImageUsageLimitExceeded as exc:
+                        return tool_error(f"{exc}; resets at {exc.resets_at.isoformat()}")
+                    except Exception:
+                        log.exception("paid image usage reservation failed")
+                        return tool_error(
+                            "paid image generation is unavailable because persistent usage "
+                            "accounting is unavailable"
+                        )
+                try:
+                    if isinstance(request, ImageEditRequest):
+                        result = await service.edit(request)
+                    else:
+                        result = await service.generate(request)
+                except asyncio.CancelledError:
+                    await _finalize_image_reservation(
+                        ctx,
+                        reservation,
+                        state="cancelled_uncertain",
                     )
-                else:
-                    result = await service.generate(
-                        ImageGenRequest(prompt=prompt, **request_fields)
+                    raise
+                except ImageProviderRejectedError as exc:
+                    await _finalize_image_reservation(
+                        ctx,
+                        reservation,
+                        state="provider_rejected",
+                        provider_request_id=exc.request_id,
                     )
+                    raise
+                except Exception:
+                    await _finalize_image_reservation(
+                        ctx,
+                        reservation,
+                        state="failed_uncertain",
+                    )
+                    raise
+                await _finalize_image_reservation(
+                    ctx,
+                    reservation,
+                    state="succeeded",
+                    provider_request_id=result.request_id,
+                )
                 await _record_image_usage(
                     ctx,
                     result,
@@ -425,6 +523,16 @@ def _result_metadata(result: ImageResult, request_fields: dict[str, str]) -> dic
     actual = {"size": result.actual_size, "output_format": "png"}
     mismatches: dict[str, dict[str, str]] = {}
 
+    requested_model = result.requested_model or request_fields["model"]
+    if (
+        result.provider_reported_model is not None
+        and result.provider_reported_model != requested_model
+    ):
+        mismatches["model"] = {
+            "requested": requested_model,
+            "provider_reported": result.provider_reported_model,
+        }
+
     requested_size = requested["size"]
     if requested_size != "auto":
         size_mismatch: dict[str, str] = {"requested": requested_size}
@@ -455,6 +563,14 @@ def _result_metadata(result: ImageResult, request_fields: dict[str, str]) -> dic
         }
 
     return {
+        "backend": result.backend,
+        "provider": result.provider,
+        "requested_model": requested_model,
+        "provider_reported_model": result.provider_reported_model,
+        "model_verified": result.model_verified,
+        "request_id": result.request_id,
+        "model_caveat": result.model_caveat,
+        "caveats": [result.model_caveat] if result.model_caveat else [],
         "requested": requested,
         "actual": actual,
         "provider_reported": provider_reported,
@@ -472,6 +588,10 @@ async def _record_image_usage(
         model=model,
         role="image_generation",
         usage=normalize_usage(result.usage),
+        # Image-provider token shapes are not interchangeable with chat-model
+        # token pricing. Paid API reservations are accounted separately, while
+        # Codex OAuth has no per-call charge to estimate here.
+        est_cost_usd=0.0,
         usage_present=result.usage is not None,
     )
     if ctx.record_usage_call is None:
@@ -486,6 +606,31 @@ async def _record_image_usage(
         raise
     except Exception:
         log.warning("image generation usage recording failed", exc_info=True)
+
+
+async def _finalize_image_reservation(
+    ctx: MessageContext,
+    reservation: ImageUsageReservation | None,
+    *,
+    state: str,
+    provider_request_id: str | None = None,
+) -> None:
+    if reservation is None or ctx.usage_store is None:
+        return
+    try:
+        await await_uncancellable(
+            ctx.usage_store.finalize_image_usage(
+                reservation.reservation_id,
+                state=state,
+                provider_request_id=provider_request_id,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # The original reservation remains counted even if outcome annotation
+        # fails, so this cannot reopen allowance or understate the ceiling.
+        log.warning("image usage reservation finalization failed", exc_info=True)
 
 
 def _reference_images(

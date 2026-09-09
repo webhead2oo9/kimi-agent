@@ -600,8 +600,9 @@ systemctl --user is-active kimi-agent.service
 ## 16. Upgrading
 
 These steps assume the v1-to-v2 upgrade is complete, including v2 extension
-packages and database schema v8. Fresh databases and existing v7 databases
-start normally, with v7 upgraded automatically; older database schemas are rejected.
+packages and the v7 database baseline. The current core schema is v9. Fresh
+databases and existing v7/v8 databases start normally and upgrade
+automatically; older database schemas are rejected.
 No manual migration is needed for an already-upgraded installation. See [Database](database.md#schema-upgrades)
 for the supported schema boundary and backup requirements.
 

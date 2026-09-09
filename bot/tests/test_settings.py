@@ -126,11 +126,11 @@ def test_video_understanding_is_off_and_secret_is_blank_by_default() -> None:
     assert settings.video_understanding_max_concurrency == 4
 
 
-def test_image_generation_is_off_and_oauth_first_by_default() -> None:
+def test_image_generation_is_off_and_codex_explicit_by_default() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.image_gen_enabled is False
-    assert settings.image_gen_backend == "openai"
+    assert settings.image_gen_backend == "openai_codex"
     assert settings.image_gen_auth_mode == "auto"
     assert settings.image_gen_api_key.get_secret_value() == ""
     assert settings.image_gen_max_concurrency == 1

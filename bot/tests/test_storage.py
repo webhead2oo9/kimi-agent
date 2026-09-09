@@ -106,7 +106,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "privacy_plugin_callbacks"
+        assert version_row["name"] == "image_usage_reservations"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
@@ -114,6 +114,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
             assert [tuple(item) for item in await cur.fetchall()] == [
                 (7, "core_v7_baseline"),
                 (8, "privacy_plugin_callbacks"),
+                (9, "image_usage_reservations"),
             ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -266,7 +267,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
     assert [(row["version"], row["name"]) for row in versions] == [
         (7, "core_v7_baseline"),
         (8, "privacy_plugin_callbacks"),
-        (9, "add_note"),
+        (9, "image_usage_reservations"),
+        (10, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -278,7 +280,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 3
+        assert row[0] == 4
     finally:
         await reopened.close()
 
@@ -308,7 +310,8 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
     assert upgraded_history == [
         (7, "core_v7_baseline"),
         (8, "privacy_plugin_callbacks"),
-        (9, "add_note"),
+        (9, "image_usage_reservations"),
+        (10, "add_note"),
     ]
 
 
@@ -1618,6 +1621,45 @@ async def test_delete_conversations_older_than_purges_unit_and_keeps_recent(tmp_
 
         # Nothing left to purge → no-op returns 0.
         assert await store.delete_conversations_older_than(1_000.0) == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_privacy_deletion_anonymizes_image_usage_but_preserves_ceiling_spend(
+    tmp_path,
+) -> None:
+    db = Database(tmp_path / "bot.db")
+    await db.connect()
+    store = ConversationStore(db)
+    try:
+        async with db.write_transaction() as conn:
+            await conn.execute(
+                "INSERT INTO image_usage_reservations ("
+                "reservation_id, user_id, user_name, channel_id, guild_id, backend, provider, "
+                "model, operation, estimated_cost_usd, state, provider_request_id, "
+                "created_at, updated_at) "
+                "VALUES ('r1', 'alice', 'Alice', 'channel', 'guild', 'openai_api', 'openai', "
+                "'gpt-image-2', 'generate', 0.30, 'succeeded', 'req_personal', "
+                "'2026-09-01', '2026-09-01')"
+            )
+
+        deletion = await store.delete_user_data("alice")
+
+        assert deletion.image_usage_records_anonymized == 1
+        async with db.conn.execute(
+            "SELECT user_id, user_name, channel_id, guild_id, provider_request_id, "
+            "estimated_cost_usd "
+            "FROM image_usage_reservations"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row["user_id"] == "deleted:r1"
+        assert row["user_name"] is None
+        assert row["channel_id"] is None
+        assert row["guild_id"] is None
+        assert row["provider_request_id"] is None
+        assert row["estimated_cost_usd"] == 0.30
     finally:
         await db.close()
 

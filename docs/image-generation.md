@@ -25,7 +25,7 @@ only backend shipped today; adding another means implementing the
 Registration requires all of the following:
 
 - `IMAGE_GEN_ENABLED=true`;
-- the supported `IMAGE_GEN_BACKEND` value, `openai`;
+- an explicit `IMAGE_GEN_BACKEND` value, `openai_codex` or `openai_api`;
 - usable credentials for the selected auth mode; and
 - a REGULAR or STAFF caller at dispatch.
 
@@ -39,13 +39,19 @@ turn and can answer "draw me..." straight away, without a `browse_tools` step.
 
 ## Authentication
 
-`IMAGE_GEN_AUTH_MODE` accepts three values:
+The two current backends have fixed identities and never fall back:
 
-| Mode | Behavior |
+| Backend | Credential and endpoint |
 |---|---|
-| `auto` | Prefer the existing Codex OAuth token when present; otherwise use `IMAGE_GEN_API_KEY`; otherwise leave the tool absent. |
-| `oauth` | Require the Codex OAuth token file. |
-| `api_key` | Require `IMAGE_GEN_API_KEY`, an OpenAI platform key dedicated to this tool. |
+| `openai_codex` | Requires the existing Codex OAuth token file and uses the ChatGPT Codex endpoint. An unrelated platform key is ignored. |
+| `openai_api` | Requires `IMAGE_GEN_API_KEY`, a dedicated OpenAI platform key, and uses the public API. Codex OAuth is ignored. |
+
+`IMAGE_GEN_AUTH_MODE` remains only for compatibility with the deprecated
+`IMAGE_GEN_BACKEND=openai` alias. `oauth` and `api_key` resolve that alias
+explicitly. `auto` resolves only when exactly one credential is available; if
+both are available it fails as ambiguous and requires an explicit backend.
+With `openai_codex` or `openai_api`, `auto` is neutral and a contradictory
+legacy mode is rejected.
 
 OAuth reuses the same `CodexAuthManager` as the Codex chat provider
 (`providers/factory.py:get_codex_auth_manager`), so image requests and Codex
@@ -63,6 +69,15 @@ header. A 401 triggers one token refresh and one retry. A stale token never
 stops the bot from starting; the first image call simply returns a short
 "please log in again" error. API-key requests go to
 `https://api.openai.com/v1` with only the platform key.
+
+The Codex OAuth route is not a model-attested API. Empirical tests indicate
+that it does not reliably respect requested model IDs: it accepted an invalid
+model ID, and its response does not attest which model was served. The tool
+therefore reports the requested ID but always marks Codex model identity
+unverified. By contrast, the public API's documented explicit `model` contract
+allows `openai_api` to mark the requested identity verified even when the
+response omits a model field. A model actually reported by the provider remains
+a separate metadata field in both cases.
 
 Both modes use JSON for `images/generations`. OAuth edits use the Codex
 backend's JSON data-URL contract. Public API-key edits use multipart form data
@@ -117,6 +132,14 @@ Result metadata keeps the legacy top-level `size` and `background` fields,
 which are provider-reported values. New structured fields make their provenance
 explicit:
 
+- `backend` and `provider` identify the concrete integration (`openai_codex` or
+  `openai_api`, both supplied by OpenAI);
+- `requested_model` is the configured model sent in the request;
+- `provider_reported_model` is the separately parsed model field, when the
+  provider returns one; `model_verified` states whether the backend contract
+  can attest the requested identity;
+- `request_id` is a bounded provider request identifier when one is returned,
+  and `model_caveat` / `caveats` disclose the Codex limitation;
 - `requested` contains the effective hints sent to the provider, including
   operator defaults for omitted arguments;
 - `actual` contains the fully decoded PNG dimensions and the enforced `png`
@@ -138,11 +161,39 @@ Deployment-wide controls live in `.env` / `Settings`:
 | Setting | Default | Purpose |
 |---|---:|---|
 | `IMAGE_GEN_ENABLED` | `false` | Opt-in registration gate. |
-| `IMAGE_GEN_BACKEND` | `openai` | Backend factory name. |
-| `IMAGE_GEN_AUTH_MODE` | `auto` | OAuth/API-key selection. |
-| `IMAGE_GEN_API_KEY` | empty | Environment-only platform credential. |
+| `IMAGE_GEN_BACKEND` | `openai_codex` | Explicit backend identity: `openai_codex` or `openai_api`. |
+| `IMAGE_GEN_AUTH_MODE` | `auto` | Deprecated-alias resolver; it never causes fallback between explicit backends. |
+| `IMAGE_GEN_API_KEY` | empty | Environment-only platform credential for `openai_api`. |
 | `IMAGE_GEN_MAX_CONCURRENCY` | `1` | Process-wide billable request cap (1–8). |
 | `IMAGE_GEN_TIMEOUT_SECONDS` | `300` | Whole HTTP request timeout (30–900 seconds). |
+| `IMAGE_GEN_USER_CALLS_PER_24H` | `5` | Billed-backend reservations per user in a rolling 24 hours; zero disables. |
+| `IMAGE_GEN_GUILD_CALLS_PER_24H` | `100` | Billed-backend reservations per guild in a rolling 24 hours; zero disables. |
+| `IMAGE_GEN_DEPLOYMENT_MONTHLY_USD` | `$100` | Calendar-month ceiling over configured reservation estimates; zero disables. |
+| `IMAGE_GEN_STAFF_EXEMPT_FROM_CALL_LIMITS` | `true` | Exempts STAFF from call limits only, never the deployment ceiling. |
+| `IMAGE_GEN_COST_ESTIMATES_USD` | six entries | Environment-only JSON map of conservative generation/edit reservations for every shipped model. |
+
+The user/guild/deployment controls are persistent and apply to `openai_api`
+(and any future backend that explicitly declares itself billed), not Codex
+OAuth. Before any provider request, the bot atomically reserves the configured
+amount in the core SQLite/SQLCipher database. No database transaction spans
+HTTP. Accounting failures fail closed. Reservations remain counted after
+cancellation, provider rejection, and failures whose billing status is
+uncertain.
+
+These amounts are conservative operator-configured reservations, not claimed
+actual charges. The ledger does not derive dollars from provider token fields,
+and `/usage` labels this column `Image est.` separately. Operators should
+review all six values against current OpenAI pricing and the deployment's
+allowed sizes/qualities whenever pricing or model behavior changes. The ledger
+stores attribution, backend/provider/model, operation/options, state, request
+ID, timestamps, and the estimate—never prompts, reference images, or output
+image bytes. `/privacy` anonymizes the user's image rows (including guild,
+channel, and request correlation) while retaining the unlinked amount needed
+for the deployment ceiling; the member's self-service `/usage` view includes
+their attributed estimates before deletion. Content-free call markers prevent
+deletion from resetting a 24-hour limit. Markers older than eight days are
+pruned on the next marker write and can remain longer while the deployment is
+idle.
 
 Safe per-call behavior is read fresh each turn from
 `config/tools/generate_image.md`:
@@ -169,11 +220,18 @@ The model choice is operator-owned: `gpt-image-2` remains the shipped default,
 with `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst` available as closed
 configuration choices. Flare is the speed-oriented 2.5 choice and Sunburst is
 the quality-oriented choice. The chat model cannot override this setting in an
-individual call.
+individual call. Official OpenAI model pages list
+[`gpt-image-2`](https://developers.openai.com/api/docs/models/gpt-image-2),
+[`gpt-image-2.5-flare`](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare),
+and
+[`gpt-image-2.5-sunburst`](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst);
+each is admitted by the public API backend, and both 2.5 pages list image
+generation and edit endpoints.
 
 ## Options evidence and scope
 
-The public Images API reference is the contract for platform API-key requests:
+The public Images API reference and individual model pages are the contract for
+platform API-key requests:
 [generate](https://developers.openai.com/api/reference/resources/images/methods/generate)
 and [edit](https://developers.openai.com/api/reference/resources/images/methods/edit).
 OAuth behavior below is empirical and narrower: HTTP acceptance proves only
@@ -188,6 +246,7 @@ that a field was accepted, not that it controlled the output.
 | Edit fidelity and masks | Edit masks and input fidelity are documented. | `input_fidelity=high` was accepted, but its effect was not established; the sampled output also differed from requested size and quality. Masks were not established for this integration. | Deferred. References keep the existing OAuth JSON and API-key multipart contracts. |
 | Multiple images and streaming | `n` from 1–10 and streaming are documented where supported. | Not relied upon by this integration. | Deferred. One completed PNG per tool call remains the boundary. |
 | Moderation and user metadata | Provider defaults and API fields are documented. | Not investigated as user controls. | Provider-default moderation remains in effect; no per-call lowering or user metadata is sent. |
+| Model identity | The request has an explicit documented model contract for all three shipped IDs. A response model field is optional metadata and remains separate from the request. | The endpoint accepted an invalid model ID and did not attest the served model, so accepted requests do not establish model identity. | `openai_api` can verify the requested contract when no conflicting model is reported. `openai_codex` always reports identity as unverified and returns a caveat. |
 
 The observed generation samples also included an ordinary white-background
 baseline that returned PNG normally. These checks support transparency output
@@ -210,9 +269,13 @@ route. No transport switch or website-only parameters are introduced here.
 
 - Model: `gpt-image-2` (default), `gpt-image-2.5-flare`, or
   `gpt-image-2.5-sunburst`.
-- Logical calls: default two per outer turn, configurable 1–8. Failed
-  provider calls count once; invalid local references fail before the billable
-  counter increments.
+- Logical calls: default two per outer turn, configurable 1–8. Failed provider
+  calls count once; invalid local references fail before the per-turn counter
+  or persistent allowance is consumed.
+- Persistent paid limits: for billed backends only, defaults are five user
+  calls per rolling 24 hours, 100 guild calls per rolling 24 hours, and $100 in
+  conservative deployment reservations per calendar month. Zero independently
+  disables each limit. STAFF can bypass only the two call limits.
 - Global concurrency: one by default, configurable 1–8. While a response is
   being decoded, a request can briefly hold several copies of a roughly 14 MiB
   JSON/base64 body, so running eight at once can use a few hundred MiB of

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import threading
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -16,10 +17,14 @@ from app.tools import _register_image_gen
 from config.settings import Settings
 from image_gen.types import (
     ImageEditRequest,
+    ImageGenError,
     ImageGenRequest,
     ImageQuotaError,
     ImageResult,
+    ImageProviderRejectedError,
 )
+from storage.db import Database
+from storage.usage import ImageUsageRequest, ImageUsageReservation, UsageStore
 from tools.image_gen import TOOL_NAME, init_image_gen_tool
 from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from tools.workspace.common import UserLocks
@@ -44,8 +49,19 @@ class StubService:
         self.result_background: str | None = "opaque"
         self.result_output_format: str | None = "png"
         self.actual_size: str | None = "1536x1024"
+        self.requires_persistent_usage_reservation = False
+        self.backend_name = "openai_codex"
+        self.provider = "openai"
+        self.estimated_cost_usd = 0.0
+        self.events: list[str] = []
+        self.validation_failure: Exception | None = None
+        self.provider_reported_model: str | None = None
+        self.model_verified = False
+        self.request_id: str | None = None
+        self.model_caveat: str | None = None
 
     async def generate(self, request: ImageGenRequest) -> ImageResult:
+        self.events.append("provider")
         self.generate_requests.append(request)
         if self.failure is not None:
             raise self.failure
@@ -58,9 +74,17 @@ class StubService:
             usage=self.usage,
             image_bytes=self.image_bytes,
             actual_size=self.actual_size,
+            backend=self.backend_name,
+            provider=self.provider,
+            requested_model=request.model,
+            provider_reported_model=self.provider_reported_model,
+            model_verified=self.model_verified,
+            request_id=self.request_id,
+            model_caveat=self.model_caveat,
         )
 
     async def edit(self, request: ImageEditRequest) -> ImageResult:
+        self.events.append("provider")
         self.edit_requests.append(request)
         if self.failure is not None:
             raise self.failure
@@ -73,7 +97,45 @@ class StubService:
             usage=self.usage,
             image_bytes=self.image_bytes,
             actual_size=self.actual_size,
+            backend=self.backend_name,
+            provider=self.provider,
+            requested_model=request.model,
+            provider_reported_model=self.provider_reported_model,
+            model_verified=self.model_verified,
+            request_id=self.request_id,
+            model_caveat=self.model_caveat,
         )
+
+    def estimate_cost(self, request: ImageGenRequest | ImageEditRequest) -> float:
+        del request
+        return self.estimated_cost_usd
+
+    def validate_generate(self, request: ImageGenRequest) -> None:
+        del request
+        if self.validation_failure is not None:
+            raise self.validation_failure
+
+    def validate_edit(self, request: ImageEditRequest) -> None:
+        del request
+        if self.validation_failure is not None:
+            raise self.validation_failure
+
+
+class RecordingImageUsageStore:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.requests: list[object] = []
+        self.finalized: list[tuple[str, str]] = []
+
+    async def reserve_image_usage(self, **kwargs: object) -> ImageUsageReservation:
+        self.events.append("reserve")
+        self.requests.append(kwargs["request"])
+        return ImageUsageReservation("reservation-1", 0.25)
+
+    async def finalize_image_usage(
+        self, reservation_id: str, *, state: str, **_kwargs: object
+    ) -> None:
+        self.finalized.append((reservation_id, state))
 
 
 def _context(
@@ -142,6 +204,148 @@ async def test_image_2_5_config_is_selectable_and_reaches_backend(
     assert result["ok"] is True
     assert service.generate_requests[0].model == model
     assert service.generate_requests[0].size == "1536x1024"
+
+
+@pytest.mark.asyncio
+async def test_paid_image_fails_closed_without_persistent_usage_store(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    ctx = _context()
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert "persistent usage accounting is unavailable" in result["error"]
+    assert service.generate_requests == []
+
+
+@pytest.mark.asyncio
+async def test_paid_image_reserves_before_provider_without_storing_prompt(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.estimated_cost_usd = 0.25
+    usage = RecordingImageUsageStore(service.events)
+    ctx = _context()
+    ctx.usage_store = usage  # type: ignore[assignment]
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result["ok"] is True
+    assert service.events == ["reserve", "provider"]
+    usage_request = usage.requests[0]
+    assert isinstance(usage_request, ImageUsageRequest)
+    assert asdict(usage_request) == {
+        "backend": "openai_api",
+        "provider": "openai",
+        "model": "gpt-image-2",
+        "operation": "generate",
+        "size": "auto",
+        "quality": "auto",
+        "estimated_cost_usd": 0.25,
+    }
+    assert usage.finalized == [("reservation-1", "succeeded")]
+
+
+@pytest.mark.asyncio
+async def test_paid_image_closes_database_transaction_before_provider_http(tmp_path: Path) -> None:
+    db = Database(tmp_path / "usage.db")
+    await db.connect()
+
+    class TransactionCheckingService(StubService):
+        async def generate(self, request: ImageGenRequest) -> ImageResult:
+            assert db.conn.in_transaction is False
+            return await super().generate(request)
+
+    registry = ToolRegistry()
+    service = TransactionCheckingService()
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.estimated_cost_usd = 0.25
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    init_image_gen_tool(
+        registry,
+        service,
+        manager,
+        UserLocks(),
+        WorkspaceToolConfig(),
+    )
+    ctx = _context()
+    ctx.usage_store = UsageStore(db)
+    try:
+        result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+        assert result["ok"] is True
+        assert db.conn.in_transaction is False
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_paid_provider_failure_keeps_reservation_as_uncertain(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.estimated_cost_usd = 0.25
+    service.failure = ImageGenError("transport failed")
+    usage = RecordingImageUsageStore(service.events)
+    ctx = _context()
+    ctx.usage_store = usage  # type: ignore[assignment]
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert "transport failed" in result["error"]
+    assert usage.finalized == [("reservation-1", "failed_uncertain")]
+
+
+@pytest.mark.asyncio
+async def test_paid_provider_rejection_is_distinct_but_not_refunded(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.estimated_cost_usd = 0.25
+    service.failure = ImageProviderRejectedError("rejected", "req_rejected")
+    usage = RecordingImageUsageStore(service.events)
+    ctx = _context()
+    ctx.usage_store = usage  # type: ignore[assignment]
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert "rejected" in result["error"]
+    assert usage.finalized == [("reservation-1", "provider_rejected")]
+
+
+@pytest.mark.asyncio
+async def test_paid_cancellation_keeps_reservation_as_uncertain(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.estimated_cost_usd = 0.25
+    service.failure = asyncio.CancelledError()  # type: ignore[assignment]
+    usage = RecordingImageUsageStore(service.events)
+    ctx = _context()
+    ctx.usage_store = usage  # type: ignore[assignment]
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.dispatch(TOOL_NAME, _args(), ctx)
+
+    assert usage.finalized == [("reservation-1", "cancelled_uncertain")]
+
+
+@pytest.mark.asyncio
+async def test_invalid_local_options_do_not_consume_persistent_allowance(tmp_path: Path) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.requires_persistent_usage_reservation = True
+    service.backend_name = "openai_api"
+    service.validation_failure = ImageGenError("model is not allowed for openai_api")
+    usage = RecordingImageUsageStore(service.events)
+    ctx = _context(tool_config={"model": "invalid-model"})
+    ctx.usage_store = usage  # type: ignore[assignment]
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert "not allowed" in result["error"]
+    assert usage.requests == []
+    assert service.generate_requests == []
 
 
 def test_tool_is_core_and_regular_tier(tmp_path: Path) -> None:
@@ -286,11 +490,11 @@ async def test_generation_records_provider_reported_usage(tmp_path: Path) -> Non
     assert call.usage.input_tokens == 17
     assert call.usage.output_tokens == 5
     assert call.usage_present is True
-    assert call.est_cost_usd is None
+    assert call.est_cost_usd == 0.0
 
 
 @pytest.mark.asyncio
-async def test_generation_records_missing_usage_as_unpriced(tmp_path: Path) -> None:
+async def test_generation_records_missing_usage_without_fabricated_cost(tmp_path: Path) -> None:
     registry, _service, _manager = _registered(tmp_path)
     ctx = _context()
     ctx.usage_sink = []
@@ -304,7 +508,7 @@ async def test_generation_records_missing_usage_as_unpriced(tmp_path: Path) -> N
     assert call.usage_present is False
     assert call.usage.input_tokens == 0
     assert call.usage.output_tokens == 0
-    assert call.est_cost_usd is None
+    assert call.est_cost_usd == 0.0
 
 
 @pytest.mark.asyncio
@@ -446,6 +650,33 @@ async def test_result_distinguishes_requested_actual_and_provider_reported_metad
         },
         "quality": {"requested": "high", "provider_reported": "medium"},
         "background": {"requested": "opaque", "provider_reported": "transparent"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_result_includes_backend_model_attestation_and_caveat_metadata(
+    tmp_path: Path,
+) -> None:
+    registry, service, _manager = _registered(tmp_path)
+    service.backend_name = "openai_codex"
+    service.provider_reported_model = "gpt-image-2.5-flare"
+    service.model_verified = False
+    service.request_id = "req_123"
+    service.model_caveat = "endpoint does not attest the served model"
+    ctx = _context(tool_config={"model": "gpt-image-2"})
+
+    result = json.loads(await registry.dispatch(TOOL_NAME, _args(), ctx))
+
+    assert result["backend"] == "openai_codex"
+    assert result["provider"] == "openai"
+    assert result["requested_model"] == "gpt-image-2"
+    assert result["provider_reported_model"] == "gpt-image-2.5-flare"
+    assert result["model_verified"] is False
+    assert result["request_id"] == "req_123"
+    assert result["model_caveat"] == "endpoint does not attest the served model"
+    assert result["mismatches"]["model"] == {
+        "requested": "gpt-image-2",
+        "provider_reported": "gpt-image-2.5-flare",
     }
 
 
@@ -807,6 +1038,7 @@ def test_registration_requires_flag_and_usable_credentials(
         Settings(  # type: ignore[call-arg]
             _env_file=None,
             image_gen_enabled=True,
+            image_gen_backend="openai_api",
             image_gen_auth_mode="api_key",
             image_gen_api_key=SecretStr("sk-test"),
         ),
@@ -823,6 +1055,7 @@ def test_registration_requires_flag_and_usable_credentials(
         Settings(  # type: ignore[call-arg]
             _env_file=None,
             image_gen_enabled=True,
+            image_gen_backend="openai_codex",
             image_gen_auth_mode="oauth",
         ),
         oauth,
@@ -844,3 +1077,21 @@ def test_image_settings_reject_unknown_backend_and_auth_mode() -> None:
             _env_file=None,
             image_gen_auth_mode="magic",
         )
+
+
+def test_image_settings_default_to_explicit_codex_and_persistent_limits() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.image_gen_backend == "openai_codex"
+    assert settings.image_gen_user_calls_per_24h == 5
+    assert settings.image_gen_guild_calls_per_24h == 100
+    assert settings.image_gen_deployment_monthly_usd == 100.0
+    assert settings.image_gen_staff_exempt_from_call_limits is True
+    assert settings.image_gen_cost_estimates_usd == {
+        "gpt-image-2:generate": 0.30,
+        "gpt-image-2:edit": 0.45,
+        "gpt-image-2.5-flare:generate": 0.30,
+        "gpt-image-2.5-flare:edit": 0.45,
+        "gpt-image-2.5-sunburst:generate": 0.30,
+        "gpt-image-2.5-sunburst:edit": 0.45,
+    }

@@ -10,11 +10,13 @@ import pytest
 
 import image_gen.openai as openai_module
 from codex.auth import CodexAuthError
-from image_gen.factory import ImageBackendConfig, build_image_backend
+from image_gen.factory import IMAGE_BACKEND_BUILDERS, ImageBackendConfig, build_image_backend
 from image_gen.openai import (
     API_KEY_BASE_URL,
+    CODEX_CAPABILITIES,
     OAUTH_BASE_URL,
-    OpenAIImageBackend,
+    OpenAIAPIImageBackend,
+    OpenAICodexImageBackend,
 )
 from image_gen.service import DEFAULT_MAX_IMAGE_BYTES, ImageGenService
 from image_gen.types import (
@@ -24,6 +26,7 @@ from image_gen.types import (
     ImageQuotaError,
     ImageReference,
     ImageResult,
+    ImageProviderRejectedError,
 )
 
 from tests.helpers import PNG_SIGNATURE_ONLY, VALID_PNG_BYTES, corrupt_png_crc
@@ -85,11 +88,13 @@ class FakeResponse:
         *,
         content_length: int | None = -1,
         chunks: list[bytes] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status = status
         encoded = body if isinstance(body, bytes) else str(body).encode("utf-8")
         self.content_length = len(encoded) if content_length == -1 else content_length
         self.content = FakeContent(chunks if chunks is not None else [encoded])
+        self.headers = headers or {}
 
 
 class FakePostContext:
@@ -146,16 +151,21 @@ def _backend(
     auth_mode: str = "oauth",
     auth_manager: StubAuthManager | None = None,
     api_key: str = "",
-) -> tuple[OpenAIImageBackend, FakeSession]:
+) -> tuple[OpenAICodexImageBackend | OpenAIAPIImageBackend, FakeSession]:
     session = FakeSession(responses)
-    backend = OpenAIImageBackend(
-        auth_mode=auth_mode,
-        auth_manager=auth_manager if auth_mode == "oauth" else None,
-        api_key=api_key,
-        timeout_seconds=5.0,
-        session_factory=lambda **_kwargs: FakeSessionContext(session),
-        form_factory=FakeFormData,
-    )
+    common = {
+        "timeout_seconds": 5.0,
+        "session_factory": lambda **_kwargs: FakeSessionContext(session),
+        "form_factory": FakeFormData,
+    }
+    backend: OpenAICodexImageBackend | OpenAIAPIImageBackend
+    if auth_mode == "oauth":
+        backend = OpenAICodexImageBackend(
+            auth_manager=auth_manager or StubAuthManager(),
+            **common,
+        )
+    else:
+        backend = OpenAIAPIImageBackend(api_key=api_key, **common)
     return backend, session
 
 
@@ -217,6 +227,28 @@ async def test_generate_preserves_provider_reported_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_codex_result_discloses_unverified_model_identity_and_request_id() -> None:
+    body = json.loads(_success_body())
+    body["model"] = "gpt-image-2"
+    backend, _session = _backend(
+        [FakeResponse(200, json.dumps(body), headers={"x-request-id": "req_codex_123"})],
+        auth_manager=StubAuthManager(),
+    )
+
+    result = await backend.generate(_request())
+
+    assert result.backend == "openai_codex"
+    assert result.provider == "openai"
+    assert result.requested_model == "gpt-image-2"
+    assert result.provider_reported_model == "gpt-image-2"
+    assert result.model_verified is False
+    assert result.request_id == "req_codex_123"
+    assert result.model_caveat is not None
+    assert "accepted an invalid model ID" in result.model_caveat
+    assert "does not attest" in result.model_caveat
+
+
+@pytest.mark.asyncio
 async def test_generate_api_key_uses_platform_url_without_account_header() -> None:
     backend, session = _backend(
         [FakeResponse(200, _success_body())], auth_mode="api_key", api_key="sk-test"
@@ -230,6 +262,41 @@ async def test_generate_api_key_uses_platform_url_without_account_header() -> No
     assert headers["Authorization"] == "Bearer sk-test"
     assert "ChatGPT-Account-Id" not in headers
     assert "originator" not in headers
+
+
+@pytest.mark.asyncio
+async def test_openai_api_result_keeps_requested_and_unreported_models_separate() -> None:
+    backend, _session = _backend(
+        [FakeResponse(200, _success_body(), headers={"x-request-id": "req_api_123"})],
+        auth_mode="api_key",
+        api_key="sk-test",
+    )
+
+    result = await backend.generate(_request())
+
+    assert result.backend == "openai_api"
+    assert result.provider == "openai"
+    assert result.requested_model == "gpt-image-2"
+    assert result.provider_reported_model is None
+    assert result.model_verified is True
+    assert result.request_id == "req_api_123"
+
+
+@pytest.mark.asyncio
+async def test_openai_api_keeps_a_safe_conflicting_provider_model_separate() -> None:
+    body = json.loads(_success_body())
+    body["model"] = "provider-model-not-requested"
+    backend, _session = _backend(
+        [FakeResponse(200, json.dumps(body))],
+        auth_mode="api_key",
+        api_key="sk-test",
+    )
+
+    result = await backend.generate(_request())
+
+    assert result.requested_model == "gpt-image-2"
+    assert result.provider_reported_model == "provider-model-not-requested"
+    assert result.model_verified is False
 
 
 @pytest.mark.asyncio
@@ -424,6 +491,26 @@ async def test_provider_error_message_never_leaks_upstream_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deterministic_provider_rejection_is_distinct_and_keeps_request_id() -> None:
+    backend, _session = _backend(
+        [
+            FakeResponse(
+                400,
+                json.dumps({"error": {"message": "rejected"}}),
+                headers={"x-request-id": "req_rejected_123"},
+            )
+        ],
+        auth_mode="api_key",
+        api_key="sk-test",
+    )
+
+    with pytest.raises(ImageProviderRejectedError) as exc_info:
+        await backend.generate(_request())
+
+    assert exc_info.value.request_id == "req_rejected_123"
+
+
+@pytest.mark.asyncio
 async def test_declared_oversized_success_response_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -479,16 +566,128 @@ async def test_broken_oauth_tokens_surface_reauth_message() -> None:
         await backend.generate(_request())
 
 
-def test_build_backend_auto_prefers_oauth() -> None:
-    backend = build_image_backend(ImageBackendConfig(), StubAuthManager(token="tok"))
+def test_legacy_openai_auto_resolves_only_available_oauth_path() -> None:
+    backend = build_image_backend(
+        ImageBackendConfig(backend="openai"), StubAuthManager(token="tok")
+    )
     assert backend is not None
     assert backend.auth_mode == "oauth"
+    assert backend.name == "openai_codex"
 
 
-def test_build_backend_auto_falls_back_to_api_key() -> None:
-    backend = build_image_backend(ImageBackendConfig(api_key="sk-test"), UnavailableAuthManager())
+def test_explicit_codex_backend_has_immutable_identity_and_capabilities() -> None:
+    backend = build_image_backend(
+        ImageBackendConfig(backend="openai_codex"),
+        StubAuthManager(token="tok"),
+    )
+
+    assert backend is not None
+    assert backend.name == "openai_codex"
+    assert backend.provider == "openai"
+    assert backend.capabilities.allowed_model_ids == (
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+    )
+    assert backend.capabilities.supports_generation is True
+    assert backend.capabilities.supports_edit is True
+    assert backend.capabilities.max_reference_images == 5
+    assert backend.capabilities.model_identity_verifiable is False
+    assert backend.requires_persistent_usage_reservation is False
+    with pytest.raises(AttributeError):
+        backend.capabilities.max_reference_images = 6  # type: ignore[misc]
+
+
+def test_explicit_openai_api_backend_has_distinct_identity_and_models() -> None:
+    backend = build_image_backend(
+        ImageBackendConfig(backend="openai_api", api_key="sk-test"),
+        StubAuthManager(token="unused"),
+    )
+
+    assert backend is not None
+    assert backend.name == "openai_api"
+    assert backend.auth_mode == "api_key"
+    assert backend.provider == "openai"
+    assert backend.capabilities.allowed_model_ids == (
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+    )
+    assert backend.capabilities.model_identity_verifiable is True
+    assert backend.requires_persistent_usage_reservation is True
+
+
+def test_legacy_openai_auto_rejects_ambiguous_credentials_without_fallback() -> None:
+    with pytest.raises(ValueError, match="ambiguous.*openai_codex.*openai_api"):
+        build_image_backend(
+            ImageBackendConfig(backend="openai", auth_mode="auto", api_key="sk-test"),
+            StubAuthManager(token="tok"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("auth_mode", "expected_name"),
+    [("oauth", "openai_codex"), ("api_key", "openai_api")],
+)
+def test_legacy_openai_explicit_auth_resolves_ambiguous_credentials(
+    auth_mode: str, expected_name: str
+) -> None:
+    backend = build_image_backend(
+        ImageBackendConfig(
+            backend="openai",
+            auth_mode=auth_mode,
+            api_key="sk-test",
+        ),
+        StubAuthManager(token="tok"),
+    )
+
+    assert backend is not None
+    assert backend.name == expected_name
+
+
+def test_explicit_backends_never_fall_back_to_the_other_credential() -> None:
+    assert (
+        build_image_backend(
+            ImageBackendConfig(backend="openai_codex", api_key="sk-test"),
+            UnavailableAuthManager(),
+        )
+        is None
+    )
+    assert (
+        build_image_backend(
+            ImageBackendConfig(backend="openai_api"),
+            StubAuthManager(token="tok"),
+        )
+        is None
+    )
+
+
+def test_backend_builder_registry_is_small_explicit_and_immutable() -> None:
+    assert tuple(IMAGE_BACKEND_BUILDERS) == ("openai_codex", "openai_api")
+    with pytest.raises(TypeError):
+        IMAGE_BACKEND_BUILDERS["future"] = object()  # type: ignore[index,assignment]
+
+
+def test_explicit_backend_rejects_conflicting_legacy_auth_mode() -> None:
+    with pytest.raises(ValueError, match="openai_api.*IMAGE_GEN_AUTH_MODE=oauth"):
+        build_image_backend(
+            ImageBackendConfig(
+                backend="openai_api",
+                auth_mode="oauth",
+                api_key="sk-test",
+            ),
+            StubAuthManager(),
+        )
+
+
+def test_legacy_openai_auto_resolves_only_available_api_path() -> None:
+    backend = build_image_backend(
+        ImageBackendConfig(backend="openai", api_key="sk-test"),
+        UnavailableAuthManager(),
+    )
     assert backend is not None
     assert backend.auth_mode == "api_key"
+    assert backend.name == "openai_api"
 
 
 def test_build_backend_auto_without_credentials_returns_none() -> None:
@@ -496,9 +695,21 @@ def test_build_backend_auto_without_credentials_returns_none() -> None:
     assert build_image_backend(ImageBackendConfig(), None) is None
 
 
+def test_backend_config_default_is_explicit_codex() -> None:
+    assert ImageBackendConfig().backend == "openai_codex"
+
+
 def test_build_backend_unknown_name_aborts() -> None:
     with pytest.raises(ValueError, match="unknown image generation backend"):
         build_image_backend(ImageBackendConfig(backend="gemini"), None)
+
+
+def test_build_backend_rejects_unknown_auth_mode_for_explicit_backend() -> None:
+    with pytest.raises(ValueError, match="unknown image auth mode"):
+        build_image_backend(
+            ImageBackendConfig(backend="openai_codex", auth_mode="magic"),
+            StubAuthManager(),
+        )
 
 
 def test_build_backend_explicit_oauth_without_tokens_returns_none() -> None:
@@ -508,11 +719,15 @@ def test_build_backend_explicit_oauth_without_tokens_returns_none() -> None:
 
 
 def test_build_backend_explicit_api_key_without_key_returns_none() -> None:
-    assert build_image_backend(ImageBackendConfig(auth_mode="api_key"), None) is None
+    assert build_image_backend(ImageBackendConfig(backend="openai_api"), None) is None
 
 
 class StubImageBackend:
     name = "stub"
+    provider = "stub"
+    auth_mode = "stub"
+    capabilities = CODEX_CAPABILITIES
+    requires_persistent_usage_reservation = False
 
     def __init__(self, payload: bytes) -> None:
         self.result = ImageResult(image_base64=base64.b64encode(payload).decode())
@@ -550,6 +765,37 @@ async def test_service_returns_verified_bytes_for_workspace_write() -> None:
 
     assert result.image_bytes == VALID_PNG_BYTES
     assert result.actual_size == "1x1"
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_unsupported_model_before_provider_request() -> None:
+    backend, session = _backend(
+        [FakeResponse(200, _success_body())],
+        auth_manager=StubAuthManager(),
+    )
+    service = ImageGenService(backend)
+
+    with pytest.raises(ImageGenError, match="model.*not allowed.*openai"):
+        await service.generate(ImageGenRequest(prompt="fox", model="made-up-image-model"))
+
+    assert session.requests == []
+
+
+def test_openai_api_service_exposes_paid_identity_and_configured_operation_costs() -> None:
+    backend, _session = _backend([], auth_mode="api_key", api_key="sk-test")
+    service = ImageGenService(
+        backend,
+        cost_estimates={
+            (model, operation): 0.42
+            for model in backend.capabilities.allowed_model_ids
+            for operation in ("generate", "edit")
+        },
+    )
+
+    assert service.backend_name == "openai_api"
+    assert service.provider == "openai"
+    assert service.requires_persistent_usage_reservation is True
+    assert service.estimate_cost(_request()) == 0.42
 
 
 @pytest.mark.asyncio

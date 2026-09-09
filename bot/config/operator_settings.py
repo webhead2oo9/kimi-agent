@@ -155,6 +155,10 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
         "image_gen_auth_mode",
         "image_gen_max_concurrency",
         "image_gen_timeout_seconds",
+        "image_gen_user_calls_per_24h",
+        "image_gen_guild_calls_per_24h",
+        "image_gen_deployment_monthly_usd",
+        "image_gen_staff_exempt_from_call_limits",
         "owner_user_id",
         # Code execution and durable coding
         "code_exec_enabled",
@@ -301,6 +305,8 @@ OPERATOR_EDITABLE_FIELDS = frozenset(
 # endpoint accepts is worse than accepting one it does not.
 _CHOICES: dict[str, tuple[str, ...]] = {
     "image_detail": ("auto", "low", "high", "original"),
+    "image_gen_backend": ("openai_codex", "openai_api", "openai"),
+    "image_gen_auth_mode": ("auto", "oauth", "api_key"),
     "memory_recall_budget": ("low", "mid", "high"),
     "moderation_output_exempt_tier": ("", "member", "regular", "staff"),
     "internet_search_safesearch": ("off", "moderate", "strict"),
@@ -350,6 +356,9 @@ _MINIMUMS: dict[str, int | float] = {
     "video_understanding_max_concurrency": 1,
     "image_gen_max_concurrency": 1,
     "image_gen_timeout_seconds": 30.0,
+    "image_gen_user_calls_per_24h": 0,
+    "image_gen_guild_calls_per_24h": 0,
+    "image_gen_deployment_monthly_usd": 0,
     "exa_search_cost_usd": 0,
     "exa_contents_cost_usd": 0,
     "brave_search_cost_usd": 0,

@@ -2,7 +2,11 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v8 and the minimum supported baseline is v7. Fresh databases record the v7 baseline plus the v8 privacy-plugin callback migration; existing v7 databases upgrade in place. Databases below v7 or above this release's supported version are rejected. Optional application modules own their own schemas and versions.
+The current schema version is v9 and the minimum supported baseline is v7.
+Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
+and v9 paid-image reservation migration; existing v7/v8 databases upgrade in
+place. Databases below v7 or above this release's supported version are
+rejected. Optional application modules own their own schemas and versions.
 
 ## Contents
 
@@ -17,7 +21,7 @@ The current schema version is v8 and the minimum supported baseline is v7. Fresh
   - [Memory and privacy](#memory-and-privacy)
   - [Operations](#operations)
   - [Modules and proposals](#modules-and-proposals)
-- [Model, paid-tool, and bounded-tool usage](#model-paid-tool-and-bounded-tool-usage)
+- [Model, paid-tool, paid-image, and bounded-tool usage](#model-paid-tool-paid-image-and-bounded-tool-usage)
 - [Transcript retention](#transcript-retention)
 - [On-demand per-user deletion](#on-demand-per-user-deletion)
 
@@ -72,7 +76,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies changes after the v7 baseline; it is currently empty.
+- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8 and v9 changes after the v7 baseline.
 - Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -80,9 +84,18 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 ## Schema upgrades
 
-`Database.connect()` creates the current schema for an empty database and records the v7 baseline as `core_v7_baseline` followed by the v8 `privacy_plugin_callbacks` migration. Existing v7 databases retain their data and complete version ledger, including rows from earlier upgrades.
+`Database.connect()` creates the current schema for an empty database and
+records the v7 baseline as `core_v7_baseline`, followed by v8
+`privacy_plugin_callbacks` and v9 `image_usage_reservations`. Existing v7/v8
+databases retain their data and complete version ledger, including rows from
+earlier upgrades.
 
-The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old transcript-format conversion have been removed. A database at v7 automatically applies the small v8 migration; no manual operator action is needed. When restoring an older backup, use a release compatible with that backup; this release cannot upgrade a pre-v7 database. Do not change the schema stamp to bypass the check.
+The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old
+transcript-format conversion have been removed. A database at v7 or v8
+automatically applies the remaining migrations; no manual operator action is
+needed. When restoring an older backup, use a release compatible with that
+backup; this release cannot upgrade a pre-v7 database. Do not change the schema
+stamp to bypass the check.
 
 Each supported version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema, transcript rows, video sessions, cleanup outboxes, and version stamp unchanged.
 
@@ -130,9 +143,13 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`coding_tasks`** holds the durable objective, owner/root/workspace scope, deadline, status, plan, checkpoint, Discord delivery ids, terminal result, conversation context and input-file references supplied to the worker, and the short-lived handoff hold that prevents execution before reply routing is settled.
 - **`coding_task_events`** is the append-only task journal for steering, milestones, checkpoints, recovery, cancellation, and terminal transitions.
 - **`coding_command_jobs`** records managed sandbox job requests, exact systemd unit names, and bounded terminal stdout/stderr. Startup confirms every persisted active unit is inactive before privacy replay or retention can delete these identifiers, even when coding is disabled or unavailable in the new process. Active jobs then become `interrupted`, so an agent can't unknowingly replay a command whose outcome is uncertain.
-- **`usage_ledger`** holds one row per completed model request. See [Model, paid-tool, and bounded-tool usage](#model-paid-tool-and-bounded-tool-usage).
+- **`usage_ledger`** holds one row per completed model request. See [Model, paid-tool, paid-image, and bounded-tool usage](#model-paid-tool-paid-image-and-bounded-tool-usage).
 - **`paid_usage_ledger`** holds one row per non-LLM tool backend that actually charged money. Same section.
-- **`usage_markers`** stores zero-cost per-user counters for bounded tool surfaces. Code execution uses it for the rolling network-run budget. Rows hold attribution, surface/operation, units, and time, never code or tool output.
+- **`image_usage_reservations`** atomically reserves a conservative configured amount before a billed image request. It stores attribution, backend/provider/model, operation/options, state, a bounded request id, and timestamps—never prompts or image bytes. Same section.
+- **`usage_markers`** stores zero-cost counters for bounded tool surfaces. Code
+  execution uses it for the rolling network-run budget, and billed image
+  backends use it for the user/guild 24-hour call limits. Rows hold attribution,
+  surface/operation, units, and time, never prompts, images, code, or tool output.
 - **`model_selection`** is a singleton holding the owner-selected global chat model, so a `/models` switch survives a restart. NULL means the normal `config/models.yaml` role and scope routing applies.
 - **`provider_circuits`** stores active model- or account-scoped provider cooldowns, including the normalized reason, optional status/provider code, and retry time. Persisting them prevents a restart from immediately retrying a provider that is still unhealthy. Successful recovery or an owner reset removes the affected rows.
 - **`image_distillations`** caches visual descriptions for text-only chat models. The key covers the image set, the vision model, and the prompt version. The cache is scoped to a single conversation so descriptions never cross a privacy or guild boundary, and deleting the parent conversation removes them by cascade. It's just a cache; the durable copy lives on the message row it describes.
@@ -146,7 +163,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 - **`config_proposals`** stores guild-scoped fragment proposals, including the proposed content hash and the exact pre-change baseline needed to detect conflicts and roll back.
 - **`module_schema_versions`** records the latest applied schema version for each module that has run migrations.
 
-## Model, paid-tool, and bounded-tool usage
+## Model, paid-tool, paid-image, and bounded-tool usage
 
 Every completed model request writes one row to `usage_ledger`. A single Discord interaction may make several model requests: the reply, compaction summaries, image descriptions, persona compilation. They share a `turn_id` so they can be reported as one interaction.
 
@@ -156,9 +173,27 @@ Rows save as each model request finishes, so if a later request fails or the int
 
 Tool providers that bill separately write one row per charged backend to `paid_usage_ledger`. A blended search creates an Exa row and a Brave row when both bill. Rows store attribution and dollars, not queries or results. A provider-reported zero creates no row, and an absent configured or reported price is never guessed. Ledger failures never fail the tool call, so recorded tool spend is an attributable floor; the vendor dashboard remains the source of truth.
 
-`/usage` shows the estimated cost of each window and breaks paid-tool spend out into its own column whenever a window has any. Members can view their own usage. Staff can also view another member's usage and server totals.
+Billed image backends use `image_usage_reservations` instead. The bot checks
+the rolling user/guild call limits and calendar-month deployment ceiling, then
+inserts the reservation in one `BEGIN IMMEDIATE` transaction before starting
+HTTP. No database transaction remains open during the provider request.
+Cancellation and uncertain failures stay counted. The amount is a conservative
+operator-configured reservation, not a claimed actual charge, and image token
+metadata is never run through chat-model pricing. Codex OAuth does not use this
+paid ledger. The vendor dashboard remains the billing authority.
 
-`usage_markers` stays out of those totals on purpose: its rows count how often something was used, not what it cost. The bot prunes markers outside the eight-day storage window, which covers the seven-day reporting window.
+`/usage` shows the estimated cost of each window, breaks paid-tool spend out
+into its own column, and labels conservative image reservations as `Image est.`
+whenever present. Members can view their own usage. Staff can also view another
+member's usage and server totals, including image-only top spenders.
+
+`usage_markers` stays out of those totals on purpose: its rows count how often
+something was used, not what it cost. Paid-image call markers are committed in
+the same atomic transaction as their corresponding reservation, and survive
+reservation anonymization so `/privacy` cannot reset a call limit. The bot
+opportunistically prunes markers older than eight days whenever another marker
+is written. On an idle deployment, expired rows can remain until the next
+marker-producing use.
 
 ## Transcript retention
 
@@ -166,7 +201,7 @@ Conversation transcripts live for 30 days by default. The retention clock measur
 
 A background task removes expired conversations in bounded batches. Removing a conversation also removes its message-routing records, activated tools, managed thread state, memory-retention markers, cached image descriptions, and local video sessions. Triggers first move every known Gemini Interaction and Files API resource name into independent provider-deletion outboxes. Each batch is removed in one database transaction, so a failure can't leave a partially deleted transcript behind.
 
-Usage and cost records, short-lived `usage_markers`, provider circuit cooldowns, and long-term Hindsight memory all sit outside transcript retention and keep their own lifecycles. See [privacy.md](privacy.md#retention-and-deletion) for the complete list of stored data and retention periods.
+Usage and cost records, `usage_markers`, provider circuit cooldowns, and long-term Hindsight memory all sit outside transcript retention and keep their own lifecycles. See [privacy.md](privacy.md#retention-and-deletion) for the complete list of stored data and retention periods.
 
 ## On-demand per-user deletion
 
@@ -184,8 +219,11 @@ Full deletion also removes every video session initiated by that user, including
 
 The deletion removes the transcript, routing, activated tools, managed-thread markers, cached image descriptions, and local video sessions. It does **not** remove:
 
-- Usage ledgers. The history of model and paid-tool calls is preserved as audit data.
-- Active rate-limit markers (`usage_markers`). A capacity limit anyone could reset by deleting their data is not a limit. These markers age out on their own, pruned after eight days.
+- Model and paid-tool usage ledgers. Their audit history is preserved.
+- Paid-image reservations. Their user, channel, guild, and provider-request
+  correlation is anonymized; the unlinked estimate remains so deleting data
+  cannot reset the deployment ceiling.
+- Active rate-limit markers (`usage_markers`). A capacity limit anyone could reset by deleting their data is not a limit. Markers older than eight days are pruned on the next marker write, so expired rows can remain longer while the deployment is idle.
 - Long-term Hindsight memory. That's deleted separately as part of the wider privacy workflow.
 
 If the memory service is unavailable and local tracking says a user may have stored memory, the request stays pending rather than reporting a successful deletion that can't be confirmed.
@@ -194,4 +232,6 @@ If the memory service is unavailable and local tracking says a user may have sto
 
 The bot records the deletion request before it begins and blocks new activity for that user while the request is in progress. In-flight turns that could write to affected conversations are allowed to finish first. If the bot stops or a dependency fails, the request stays pending and `app/lifecycle.py:ApplicationLifecycle` resumes it during READY initialization after restart. Repeating a deletion is safe.
 
-Deleting SQLite transcript data leaves both usage ledgers alone, and it leaves active rate-limit markers alone too.
+Deleting SQLite transcript data leaves the model and paid-tool ledgers alone,
+anonymizes paid-image reservations as described above, and leaves active
+rate-limit markers alone too.

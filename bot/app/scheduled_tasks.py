@@ -577,11 +577,6 @@ class ScheduledTaskService:
     async def discover(self, args: dict[str, Any], ctx: MessageContext) -> str:
         try:
             ctx = await self.fresh(ctx)
-            sources = await self.r.gateway.resolve_discord_search_channels(
-                ctx,
-                requested_channel_ids=None,
-                excluded_channel_ids=self.r.settings.discord_search_excluded_channel_ids,
-            )
             destinations: dict[str, str] = {}
             policy = await self.r.access.policy(ctx.guild_id or "")
             for channel_id in policy.destinations:
@@ -590,7 +585,32 @@ class ScheduledTaskService:
                     destinations[str(channel.id)] = channel.name
                 except ValueError, discord.HTTPException:
                     continue
-            return json.dumps({"sources": sources, "destinations": destinations})
+            try:
+                page = await asyncio.wait_for(
+                    self.r.gateway.discover_discord_channels(
+                        ctx,
+                        excluded_channel_ids=self.r.settings.discord_search_excluded_channel_ids,
+                        cursor=args.get("cursor"),
+                        limit=args.get("limit", 200),
+                    ),
+                    timeout=30,
+                )
+            except (ValueError, discord.HTTPException, TimeoutError) as exc:
+                page = {
+                    "sources": {},
+                    "sources_error": str(exc) or "Source channel discovery timed out; retry.",
+                    "next_cursor": None,
+                    "has_more": None,
+                }
+            except Exception:
+                log.warning("Could not discover Discord source channels", exc_info=True)
+                page = {
+                    "sources": {},
+                    "sources_error": "Source channel discovery is unavailable; retry.",
+                    "next_cursor": None,
+                    "has_more": None,
+                }
+            return json.dumps({**page, "guild_id": ctx.guild_id, "destinations": destinations})
         except (ValueError, discord.HTTPException) as exc:
             return tool_error(str(exc))
 

@@ -889,3 +889,34 @@ async def test_manual_publication_has_no_scheduled_task_hint(store):
     )
     await service._record_message(context(), message)
     assert await service.wizard_instructions("10", "100", "scheduled-publication:300:501") == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [None, ValueError("Sources unavailable"), TimeoutError(), RuntimeError("API failed")]
+)
+async def test_discovery_returns_destinations_independently(failure):
+    page = {"sources": {"200": "general"}, "next_cursor": "400", "has_more": True}
+    discovery = AsyncMock(return_value=page, side_effect=failure)
+    service = object.__new__(ScheduledTaskService)
+    ctx = context()
+    service.fresh = AsyncMock(return_value=ctx)
+    service.r = SimpleNamespace(
+        gateway=SimpleNamespace(discover_discord_channels=discovery),
+        settings=SimpleNamespace(discord_search_excluded_channel_ids=frozenset()),
+        access=SimpleNamespace(
+            policy=AsyncMock(return_value=SimpleNamespace(destinations=["300", "400"])),
+            channel=AsyncMock(side_effect=[SimpleNamespace(id=300, name="reports"), ValueError()]),
+        ),
+    )
+    result = json.loads(await service.discover({"cursor": "200"}, ctx))
+    assert result["destinations"] == {"300": "reports"}
+    discovery.assert_awaited_once_with(
+        ctx, excluded_channel_ids=frozenset(), cursor="200", limit=200
+    )
+    if failure is None:
+        assert result == {**page, "guild_id": "100", "destinations": {"300": "reports"}}
+    else:
+        assert result["sources_error"]
+        assert result["sources"] == {}
+        assert result["has_more"] is None

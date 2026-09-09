@@ -10,6 +10,18 @@ is a reusable management playbook, available through `skill_list` and
 `load_skill` with `name: "scheduled-tasks"`. It covers guided setup, writing each
 task's own procedure, complete source checks, conditional output, and recovery.
 
+`discord_channels` returns up to 200 readable sources per page (configurable with
+`limit`, from 1 to 200), listing regular channels and active threads before
+archived threads. Pass the returned `next_cursor` as `cursor` to continue.
+A full page returns immediately: `has_more: true` means more sources may remain,
+so the final continuation can be empty.
+Configured, accessible posting destinations appear on every page. A
+`sources_error` means source discovery failed; destinations can still be used,
+but the empty source list does not establish that no sources are available.
+Cursors are offsets into the current accessible inventory, not snapshots:
+restart discovery if channels, thread archive status, or permissions change.
+Archive traversal can revisit earlier entries when requesting subsequent pages.
+
 ## Enable a server
 
 Add a `scheduled_tasks` mapping to the server's configuration fragment:

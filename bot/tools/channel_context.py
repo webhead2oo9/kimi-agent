@@ -15,6 +15,12 @@ MAX_CONTEXT_IMAGES = 40
 
 
 class ChannelContextGateway(Protocol):
+    async def collect_channel_history(
+        self,
+        ctx: MessageContext,
+        args: dict,
+    ) -> dict[str, object]: ...
+
     async def collect_recent_channel_context(
         self,
         ctx: MessageContext,
@@ -28,6 +34,20 @@ def init_channel_context_tool(
     gateway: ChannelContextGateway,
 ) -> None:
     async def _get_channel_context(args: dict, ctx: MessageContext) -> str:
+        if ctx.scheduled_run_id or any(
+            key in args
+            for key in (
+                "channel_id",
+                "before",
+                "after",
+                "cursor",
+                "order",
+            )
+        ):
+            try:
+                return json.dumps(await gateway.collect_channel_history(ctx, args))
+            except (DiscordGatewayError, ValueError) as exc:
+                return tool_error(str(exc))
         limit = _bounded_limit(args.get("limit"))
         try:
             messages = await gateway.collect_recent_channel_context(ctx, limit=limit)
@@ -81,13 +101,34 @@ def init_channel_context_tool(
         parameters={
             "type": "object",
             "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Accessible channel or existing thread ID.",
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Exclusive upper timestamp (ISO8601 with offset). Preserve window_end while paging.",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Exclusive lower timestamp (ISO8601 with offset).",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "next_cursor from the previous page, keeping the same channel, window, and order.",
+                },
+                "order": {
+                    "type": "string",
+                    "enum": ["asc", "desc"],
+                    "description": "Chronological asc or newest-first desc (default).",
+                },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_CHANNEL_CONTEXT_LIMIT,
                     "default": DEFAULT_CHANNEL_CONTEXT_LIMIT,
                     "description": (
-                        "How many recent channel messages to read before the current message."
+                        "Messages per page (up to 100). Follow next_cursor to read arbitrarily older history."
                     ),
                 },
             },

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -99,6 +100,8 @@ class DiscordSearchApiClient:
                 data = await _response_json(response)
                 if response.status in {200, 202}:
                     return data
+                if response.status == 429:
+                    return {"status": "rate_limited", "retry_after": data.get("retry_after", 1)}
                 raise DiscordTextSearchError(
                     f"Discord text search failed with HTTP {response.status}."
                 )
@@ -139,15 +142,32 @@ def init_discord_text_search_tool(
                 max_results=_configured_max_results(ctx),
             )
             response = await client.search_guild_messages(ctx.guild_id, params=params)
-            return json.dumps(
-                _normalize_response(
-                    response,
-                    selected_channels,
-                    channels,
-                    config,
-                    explicit_scope=requested_channel_ids is not None,
-                )
+            for _ in range(2):
+                if response.get("code") != 110000 and response.get("status") != "rate_limited":
+                    break
+                delay = max(0.5, float(response.get("retry_after") or 1))
+                if delay > 5:
+                    break
+                await asyncio.sleep(delay)
+                response = await client.search_guild_messages(ctx.guild_id, params=params)
+            if response.get("status") == "rate_limited":
+                return json.dumps(response)
+            normalized = _normalize_response(
+                response,
+                selected_channels,
+                channels,
+                config,
+                explicit_scope=requested_channel_ids is not None,
             )
+            if normalized.get("status") != "ok":
+                return json.dumps(normalized)
+            next_offset = int(params.get("offset", 0)) + int(params["limit"])
+            normalized["pagination"] = {
+                "next_offset": next_offset if next_offset <= MAX_DISCORD_OFFSET else None,
+                "note": "Short pages do not prove exhaustion. Beyond the offset limit, narrow "
+                "the date/message window or use get_channel_context pagination.",
+            }
+            return json.dumps(normalized)
         except (DiscordTextSearchError, ValueError) as exc:
             return tool_error(str(exc))
         except TimeoutError:
@@ -167,7 +187,7 @@ def init_discord_text_search_tool(
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Text to search for in message content.",
+                    "description": "Optional text to search; omit for a filter-only search.",
                 },
                 "channels": {
                     "type": "string",
@@ -192,6 +212,14 @@ def init_discord_text_search_tool(
                     "type": "string",
                     "description": "Only return matches before this Discord message ID.",
                 },
+                "before": {
+                    "type": "string",
+                    "description": "Before an ISO8601 timestamp with UTC offset.",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "After an ISO8601 timestamp with UTC offset.",
+                },
                 "after_message_id": {
                     "type": "string",
                     "description": "Only return matches after this Discord message ID.",
@@ -212,7 +240,7 @@ def init_discord_text_search_tool(
                     "description": "Sort direction. Defaults to desc.",
                 },
             },
-            "required": ["query"],
+            "required": [],
         },
         handler=handler,
         min_tier=TrustTier.MEMBER,
@@ -226,7 +254,17 @@ def init_discord_text_search_tool(
 
 def _required_query(args: dict) -> str:
     query = str(args.get("query", "")).strip()
-    if not query:
+    if not query and not any(
+        args.get(key)
+        for key in (
+            "channels",
+            "author_ids",
+            "before",
+            "after",
+            "before_message_id",
+            "after_message_id",
+        )
+    ):
         raise ValueError("query is required for Discord text search.")
     if len(query) > MAX_CONTENT_CHARS:
         raise ValueError(f"query must be at most {MAX_CONTENT_CHARS} characters.")
@@ -280,6 +318,19 @@ def _search_params(
         "sort_by": _enum_value(args.get("sort_by", "timestamp"), SORT_BY, "sort_by"),
         "sort_order": _enum_value(args.get("sort_order", "desc"), SORT_ORDER, "sort_order"),
     }
+    if not query:
+        params.pop("content")
+    for field, target in (("before", "max_id"), ("after", "min_id")):
+        if args.get(field):
+            if args.get(field + "_message_id"):
+                raise ValueError(f"Use either {field} or {field}_message_id")
+            moment = datetime.fromisoformat(str(args[field]))
+            if moment.tzinfo is None:
+                raise ValueError("Search timestamps must include a UTC offset")
+            milliseconds = int(moment.timestamp() * 1000) - 1420070400000
+            if milliseconds < 0:
+                raise ValueError("Discord history starts in 2015")
+            params[target] = str(milliseconds << 22)
     if args.get("offset") is not None:
         params["offset"] = get_int(
             args.get("offset"),

@@ -20,11 +20,12 @@ technical version is [`privacy.md`](privacy.md).
 
 ## TL;DR
 
-- Kimi only starts an AI conversation when you call on it: a mention, a reply
+- Kimi starts an AI conversation when you call on it: a mention, a reply
   with the ping on, `hey Kimi` / `hi Kimi`, `Kimi help`, a message in one of its
   auto-responding threads, the optional `/chat` command, or (when enabled for
   your account) a direct message. Ordinary DMs to the bot are ignored by
   default. Personal DMs join the same private conversation as `/chat`.
+  Approved scheduled tasks can also run automatically at their configured times.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
   features (search, video, images, and so on) send only what that feature
   needs. If you ask Kimi to browse a site or run code with network access, the
@@ -42,7 +43,7 @@ technical version is [`privacy.md`](privacy.md).
 
 ## When Kimi is listening
 
-Kimi only starts a conversation when you call on it: by @mentioning it,
+Kimi starts an interactive conversation when you call on it: by @mentioning it,
 replying with the ping on, starting a message with `hey Kimi`, `hi Kimi`, or
 `Kimi help`, or posting in an auto-responding thread it started. In a paused
 thread you have to call on it the same way as in a channel. It does **not**
@@ -65,6 +66,11 @@ transcript write, or provider call. `/chat-reset` clears that transcript but
 keeps long-term memory and workspace files; `/privacy` remains the full deletion
 control.
 
+If your server enables scheduled tasks, you can approve a task that runs without
+a new message from you. It uses your current permissions and can read its approved
+sources, call tools, and publish to configured channels. A task can check for changes
+without posting. You can inspect, pause, or delete it using `/tasks`.
+
 ## What Kimi collects
 
 Depending on the features a server enables, Kimi handles:
@@ -81,6 +87,12 @@ Depending on the features a server enables, Kimi handles:
   and join dates, and roles. Anyone in the server can already see all of that.
   The lookup goes to the AI provider as context for that one reply and is not
   stored.
+- **Scheduled tasks**: the task description, its dedicated instruction skill,
+  schedule, sources, destinations, comparison notes, run outcomes, and saved output
+  attachments. These instructions and relevant tool results go to the selected AI
+  provider on each run. Definitions and current notes remain until deleted; terminal
+  run records and attachments are removed after 30 days once no delivery is pending.
+  Full `/privacy` deletion cancels your tasks and removes this local data.
 - **Usage records**: how many tokens each reply used and what it cost, plus
   short-lived counters that enforce per-user limits on some tools. None of this
   includes the content of your messages, code, tool queries, or results.

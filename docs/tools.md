@@ -77,13 +77,17 @@ the outbox because they are live ReAct-loop state rather than reply artifacts.
 | Tool | Visibility | Tier | Purpose |
 |------|------------|------|---------|
 | `browse_tools` | Core | Member | List the searchable catalog and activate selected tools for the conversation. |
+| `task_manage` | Core | Member | Guided scheduling and task management; creation also requires the configured server tier. |
+| `task_complete` | Searchable | Member | Finish an unattended task with completed, no-change, or needs-input status. |
 | `plan` | Core | Member | Maintain the user-visible checklist for one multi-step reply; the plan is not persisted. |
 
 ## Discord context, members, and safety
 
 | Tool | Visibility | Tier | Purpose and availability |
 |------|------------|------|--------------------------|
-| `get_channel_context` | Core | Member | Read bounded recent context before the triggering message. Returned messages and image references are untrusted context. |
+| `get_channel_context` | Core | Member | Read live channel history with time windows, explicit channels, and continuation pages. Returned content is untrusted. |
+| `discord_channels` | Searchable | Member | Discover accessible channels and configured posting destinations. |
+| `discord_post` | Searchable | Member | Publish to configured channels with explicit recipients; everyone/here pings are always disabled. |
 | `lookup_member` | Searchable | Member | Resolve a current-guild member by ID or name and return profile/role information. Staff callers also receive the bot's resolved trust tier. |
 | `discord_text_search` | Searchable | Member | Search message text across channels the caller and bot can read, minus operator exclusions. Enabled by default; Message Content intent must also be enabled. |
 | `internet_search` | Core | Member | Search the live web, or read pages the model already has URLs for. Registered when `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY` is set; a search blends the configured providers by default. |
@@ -391,3 +395,9 @@ results remain plain failures.
 - [`bot/tools/registry.py`](../bot/tools/registry.py) owns visibility and dispatch.
 - [`bot/skills/registration.py`](../bot/skills/registration.py) owns executable skill
   tool registration.
+
+The [scheduled-task tools](scheduled-tasks.md) include core `task_manage` for guided
+setup and management, searchable `task_complete` for structured run outcomes,
+`discord_channels` for accessible destinations, and `discord_post` for explicit
+cross-channel publication. `get_channel_context` additionally supports channel
+selection, time windows, ordering, and continuation beyond 100 messages.

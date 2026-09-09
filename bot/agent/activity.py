@@ -98,7 +98,11 @@ _TOOL_LABELS: dict[str, str] = {
     "persona_show": "Checking your persona",
     "persona_clear": "Clearing your persona",
     # Discord context / reply composition
-    "get_channel_context": "Reading recent messages",
+    "get_channel_context": "Reading channel messages",
+    "task_manage": "Managing scheduled tasks",
+    "task_complete": "Recording task outcome",
+    "discord_channels": "Finding accessible channels",
+    "discord_post": "Preparing channel publication",
     "lookup_member": "Looking up a member",
     "browse_tools": "Looking for the right tool",
     "plan": "Planning",

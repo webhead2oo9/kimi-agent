@@ -106,7 +106,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "image_usage_reservations"
+        assert version_row["name"] == "task_previews"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
@@ -115,12 +115,14 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
                 (7, "core_v7_baseline"),
                 (8, "privacy_plugin_callbacks"),
                 (9, "image_usage_reservations"),
+                (10, "scheduled_tasks"),
+                (11, "task_previews"),
             ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_tasks'"
         ) as cur:
-            assert await cur.fetchone() is None
+            assert await cur.fetchone() is not None
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name IN ('config_proposals','control_proposals','control_proposal_events') "
@@ -268,7 +270,9 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (7, "core_v7_baseline"),
         (8, "privacy_plugin_callbacks"),
         (9, "image_usage_reservations"),
-        (10, "add_note"),
+        (10, "scheduled_tasks"),
+        (11, "task_previews"),
+        (12, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -280,7 +284,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 4
+        assert row[0] == 6
     finally:
         await reopened.close()
 
@@ -311,7 +315,9 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (7, "core_v7_baseline"),
         (8, "privacy_plugin_callbacks"),
         (9, "image_usage_reservations"),
-        (10, "add_note"),
+        (10, "scheduled_tasks"),
+        (11, "task_previews"),
+        (12, "add_note"),
     ]
 
 

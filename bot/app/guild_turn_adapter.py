@@ -32,6 +32,7 @@ from discord_adapter.gateway import DiscordGateway
 from discord_adapter.io import DiscordActivityReporter, SentMessages
 from storage.conversations import CHANNEL_SHARED, ConversationAccessScope
 from tools.embeds import embed_transcript_summary
+from tools.registry import TaskPreviewRequest
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,17 @@ class BotUserProvider(Protocol):
     def __call__(self) -> discord.ClientUser | None: ...
 
 
+class TaskPreviewDelivery(Protocol):
+    async def deliver_preview(
+        self,
+        message: discord.Message,
+        threads: ThreadHandoffBoundary,
+        conversation_id: int,
+        request: TaskPreviewRequest,
+        context_key: str,
+    ) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class GuildTurnCollaborators:
     config: GuildTurnDeliveryConfig
@@ -57,6 +69,7 @@ class GuildTurnCollaborators:
     responses: DiscordResponseSender
     bot_user: BotUserProvider
     strip_invocation: MessageInvocationStripper
+    task_previews: TaskPreviewDelivery | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +167,26 @@ class GuildMessageTurnAdapter:
             reply_reference: discord.Message | None = message
             # Model and deterministic handoffs share one creation path so live
             # policy, enrollment, and failure cleanup cannot drift.
-            thread_request = delivery_result.outbox.thread_request
+            approval_only = delivery_result.outbox.task_preview is not None
+            if (
+                approval_only
+                and not delivery_result.blocked_by_moderation
+                and delivery_result.termination_reason == "completed"
+            ):
+                request = delivery_result.outbox.task_preview
+                assert request is not None
+                if collaborators.task_previews is None:
+                    notice = "The draft is saved, but approval delivery is unavailable. Please retry later."
+                else:
+                    notice = await collaborators.task_previews.deliver_preview(
+                        message,
+                        collaborators.threads,
+                        conversation_id,
+                        request,
+                        self.conversation_key,
+                    )
+                delivery_result = replace(delivery_result, response_text=notice)
+            thread_request = None if approval_only else delivery_result.outbox.thread_request
             if (
                 delivery_result.blocked_by_moderation
                 or delivery_result.termination_reason == "attachment_error"
@@ -162,6 +194,7 @@ class GuildMessageTurnAdapter:
                 thread_request = None
             elif (
                 thread_request is None
+                and not approval_only
                 and collaborators.config.thread_auto_handoff_enabled
                 and collaborators.config.thread_handoff_enabled
                 and collaborators.thread_handoff is not None

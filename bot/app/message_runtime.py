@@ -44,6 +44,7 @@ from app.guild_turn_adapter import (
     GuildMessageTurnAdapter,
     GuildTurnCollaborators,
     GuildTurnDeliveryConfig,
+    TaskPreviewDelivery,
 )
 from app.learn_turn import run_learn_turn
 from app.memory import MemoryManager
@@ -164,6 +165,7 @@ class MessageRuntimeBindings:
     thread_handoff: Callable[[], ThreadHandoffManager | None]
     coding: Callable[[], CodingHandoffControl]
     moderation_service: Callable[[], ModerationService | None]
+    task_previews: Callable[[], TaskPreviewDelivery | None] = lambda: None
 
 
 class DiscordMessageController:
@@ -591,6 +593,7 @@ class DiscordMessageController:
             responses=self._responses,
             bot_user=lambda: self._bot.user,
             strip_invocation=self.strip_message_invocation,
+            task_previews=self._bindings.task_previews(),
         )
 
     async def resolve_conversation_for_message(

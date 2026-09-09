@@ -565,3 +565,29 @@ async def test_fallback_send_drops_superseded_partial_live_routes(
     finally:
         unregister_live_reply("701")
         unregister_live_reply("702")
+
+
+@pytest.mark.asyncio
+async def test_task_approval_delivery_keeps_short_reply_in_original_channel():
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+    from tools.registry import TaskPreviewRequest
+
+    channel = FakeChannel(100)
+    app = FakeCollaborators(channel)
+    preview = SimpleNamespace(deliver_preview=AsyncMock(return_value="Task pending approval: link"))
+    adapter = replace(
+        _adapter(app, FakeMessage(channel)),
+        collaborators=replace(app.bundle(), task_previews=preview),
+    )
+    result = TurnResult(
+        response_text="The model unnecessarily repeated the whole task",
+        outbox=TurnOutbox(
+            task_preview=TaskPreviewRequest("t", 1), thread_request=ThreadRequest("extra thread")
+        ),
+    )
+    await adapter.deliver(result, conversation_id=1)
+    preview.deliver_preview.assert_awaited_once()
+    assert app.send_calls[0][0] is channel
+    assert app.send_calls[0][1] == "Task pending approval: link"
+    assert app.threads.created == []

@@ -42,6 +42,9 @@ MAX_ATTACHMENT_DESCRIPTION_CHARS = 1_000
 MAX_REFERENCE_IMAGES = 5
 MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_REFERENCE_TOTAL_BYTES = 25 * 1024 * 1024
+ALLOWED_SIZES = ("auto", "1024x1024", "1024x1536", "1536x1024")
+ALLOWED_QUALITIES = ("auto", "low", "medium", "high")
+ALLOWED_BACKGROUNDS = ("auto", "opaque", "transparent")
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +61,11 @@ _CONFIG_SPEC = (
         label="Image model",
         kind=KIND_CHOICE,
         default="gpt-image-2",
-        choices=("gpt-image-2", "gpt-image-2.5-sunburst"),
+        choices=(
+            "gpt-image-2",
+            "gpt-image-2.5-flare",
+            "gpt-image-2.5-sunburst",
+        ),
         help="Image model used for generation and editing.",
     ),
     ToolConfigField(
@@ -66,24 +73,24 @@ _CONFIG_SPEC = (
         label="Image size",
         kind=KIND_CHOICE,
         default="auto",
-        choices=("auto", "1024x1024", "1024x1536", "1536x1024"),
-        help="Requested output dimensions; auto lets the image model choose.",
+        choices=ALLOWED_SIZES,
+        help="Best-effort output size hint; auto lets the image provider choose.",
     ),
     ToolConfigField(
         field="quality",
         label="Image quality",
         kind=KIND_CHOICE,
         default="auto",
-        choices=("auto", "low", "medium", "high"),
-        help="Requested render quality.",
+        choices=ALLOWED_QUALITIES,
+        help="Best-effort render quality hint; the result may differ.",
     ),
     ToolConfigField(
         field="background",
         label="Background",
         kind=KIND_CHOICE,
         default="auto",
-        choices=("auto", "opaque", "transparent"),
-        help="Requested background treatment.",
+        choices=ALLOWED_BACKGROUNDS,
+        help="Best-effort background hint; the result may differ.",
     ),
     ToolConfigField(
         field="max_calls_per_turn",
@@ -124,7 +131,7 @@ def init_image_gen_tool(
 ) -> None:
     async def generate_image(args: dict, ctx: MessageContext) -> str:
         try:
-            prompt, description, reference_paths = _parse_args(args, ctx)
+            prompt, description, reference_paths, option_overrides = _parse_args(args, ctx)
         except ValueError as exc:
             return tool_error(str(exc))
         if not ctx.context_key:
@@ -149,7 +156,7 @@ def init_image_gen_tool(
                     ctx.workspace_key,
                     reference_paths,
                 )
-                request_fields = _request_fields(ctx)
+                request_fields = _request_fields(ctx, option_overrides)
                 if not ctx.consume_budget(BudgetName.IMAGE_GEN_CALLS):
                     return tool_error(
                         f"image generation limit reached ({max_calls} calls per turn)"
@@ -196,6 +203,7 @@ def init_image_gen_tool(
             except (AttachmentLimitError, ImageGenError, ValueError) as exc:
                 return tool_error(str(exc))
 
+        metadata = _result_metadata(result, request_fields)
         return json.dumps(
             {
                 "ok": True,
@@ -203,8 +211,11 @@ def init_image_gen_tool(
                 "path": relative_path,
                 "filename": output_path.name,
                 "bytes": output_bytes,
+                # Preserve the original provider-metadata fields for callers
+                # that consumed the pre-options result contract.
                 "size": result.size,
                 "background": result.background,
+                **metadata,
                 "attachment_description": description,
                 "attached_to_reply": True,
             },
@@ -220,7 +231,9 @@ def init_image_gen_tool(
             "or provide workspace-relative reference_paths. Current chat uploads are automatically "
             "saved when possible; use their supplied paths directly. A successful call saves a reusable "
             "PNG under generated_images/ and queues it for the final Discord reply. The "
-            "attachment_description must concisely describe the visual for accessibility."
+            "attachment_description must concisely describe the visual for accessibility. Size, "
+            "quality, and background are best-effort provider hints, not guarantees; inspect the "
+            "requested, actual, provider_reported, and mismatches result metadata."
         ),
         parameters={
             "type": "object",
@@ -257,6 +270,30 @@ def init_image_gen_tool(
                         "use the distinct saved reference_paths instead."
                     ),
                 },
+                "size": {
+                    "type": "string",
+                    "enum": list(ALLOWED_SIZES),
+                    "description": (
+                        "Optional best-effort size hint. Omit to use the operator default. The "
+                        "provider may return different decoded dimensions."
+                    ),
+                },
+                "quality": {
+                    "type": "string",
+                    "enum": list(ALLOWED_QUALITIES),
+                    "description": (
+                        "Optional best-effort quality hint. Omit to use the operator default; "
+                        "provider acceptance does not prove the quality was honored."
+                    ),
+                },
+                "background": {
+                    "type": "string",
+                    "enum": list(ALLOWED_BACKGROUNDS),
+                    "description": (
+                        "Optional best-effort background hint. Omit to use the operator default; "
+                        "requesting opaque or transparent does not guarantee the pixels match."
+                    ),
+                },
             },
             "required": ["prompt", "attachment_description"],
             "additionalProperties": False,
@@ -276,9 +313,20 @@ def init_image_gen_tool(
     )
 
 
-def _parse_args(args: dict[str, Any], ctx: MessageContext) -> tuple[str, str, tuple[str, ...]]:
+def _parse_args(
+    args: dict[str, Any], ctx: MessageContext
+) -> tuple[str, str, tuple[str, ...], dict[str, str]]:
     unknown = sorted(
-        set(args) - {"prompt", "attachment_description", "reference_paths", "reference_attachments"}
+        set(args)
+        - {
+            "prompt",
+            "attachment_description",
+            "reference_paths",
+            "reference_attachments",
+            "size",
+            "quality",
+            "background",
+        }
     )
     if unknown:
         raise ValueError(f"unknown field(s): {', '.join(unknown)}")
@@ -322,7 +370,16 @@ def _parse_args(args: dict[str, Any], ctx: MessageContext) -> tuple[str, str, tu
         raise ValueError(f"reference_paths is limited to {configured_max} images")
     if len(set(paths)) != len(paths):
         raise ValueError("reference_paths must not contain duplicates")
-    return prompt, description, paths
+    option_overrides = {
+        field: _choice(args[field], field, choices)
+        for field, choices in (
+            ("size", ALLOWED_SIZES),
+            ("quality", ALLOWED_QUALITIES),
+            ("background", ALLOWED_BACKGROUNDS),
+        )
+        if field in args
+    }
+    return prompt, description, paths, option_overrides
 
 
 def _required_text(value: object, name: str, maximum: int) -> str:
@@ -334,18 +391,74 @@ def _required_text(value: object, name: str, maximum: int) -> str:
     return text
 
 
+def _choice(value: object, name: str, choices: tuple[str, ...]) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise ValueError(f"{name} must be one of: {', '.join(choices)}")
+    return value
+
+
 def _configured_int(ctx: MessageContext, field: str, *, default: int) -> int:
     value = (ctx.tool_configs.get(TOOL_NAME) or {}).get(field, default)
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
-def _request_fields(ctx: MessageContext) -> dict[str, str]:
+def _request_fields(ctx: MessageContext, option_overrides: dict[str, str]) -> dict[str, str]:
     config = ctx.tool_configs.get(TOOL_NAME) or {}
-    return {
+    fields = {
         "model": str(config.get("model") or "gpt-image-2"),
         "size": str(config.get("size") or "auto"),
         "quality": str(config.get("quality") or "auto"),
         "background": str(config.get("background") or "auto"),
+    }
+    fields.update(option_overrides)
+    return fields
+
+
+def _result_metadata(result: ImageResult, request_fields: dict[str, str]) -> dict[str, object]:
+    requested = {field: request_fields[field] for field in ("size", "quality", "background")}
+    provider_reported = {
+        "size": result.size,
+        "quality": result.quality,
+        "background": result.background,
+        "output_format": result.output_format,
+    }
+    actual = {"size": result.actual_size, "output_format": "png"}
+    mismatches: dict[str, dict[str, str]] = {}
+
+    requested_size = requested["size"]
+    if requested_size != "auto":
+        size_mismatch: dict[str, str] = {"requested": requested_size}
+        if result.actual_size is not None and result.actual_size != requested_size:
+            size_mismatch["actual"] = result.actual_size
+        if result.size is not None and result.size != requested_size:
+            size_mismatch["provider_reported"] = result.size
+        if len(size_mismatch) > 1:
+            mismatches["size"] = size_mismatch
+
+    for field in ("quality", "background"):
+        requested_value = requested[field]
+        reported_value = provider_reported[field]
+        if (
+            requested_value != "auto"
+            and isinstance(reported_value, str)
+            and reported_value != requested_value
+        ):
+            mismatches[field] = {
+                "requested": requested_value,
+                "provider_reported": reported_value,
+            }
+
+    if result.output_format is not None and result.output_format != "png":
+        mismatches["output_format"] = {
+            "actual": "png",
+            "provider_reported": result.output_format,
+        }
+
+    return {
+        "requested": requested,
+        "actual": actual,
+        "provider_reported": provider_reported,
+        "mismatches": mismatches,
     }
 
 

@@ -1,3 +1,12 @@
+<h1 align="center">⚠️ HEAVILY IN DEVELOPMENT ⚠️</h1>
+
+<p align="center">
+  <strong>This project is experimental and changing rapidly.</strong><br>
+  Expect breaking changes, bugs, and incomplete features. Back up your data before updating.
+</p>
+
+---
+
 # Kimi
 
 > A Discord assistant built for you and your communities.

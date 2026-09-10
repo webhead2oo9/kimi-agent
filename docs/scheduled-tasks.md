@@ -61,22 +61,30 @@ agent:
 roles:
   # Keep the existing chat, compaction, and other role assignments.
   scheduled: primary-chat
-  scheduled_fallbacks: []
+  scheduled_fallbacks: [fallback-chat]
 ```
 
-Replace `primary-chat` with a configured model entry name. The primary and any
-fallbacks must declare `text` and `tool_calling`; their required credentials are
-checked at startup. Restart the bot after editing model configuration.
+Replace `primary-chat` and `fallback-chat` with configured model entry names.
+The primary and any fallbacks must declare `text` and `tool_calling`; their
+required credentials are checked at startup. Restart the bot after editing
+model configuration.
+
+Scheduled runs use the shared [provider failover rules](providers.md#failover):
+provider availability failures can move to backups in the listed order, while
+invalid requests do not trigger a model switch. An omitted or empty
+`scheduled_fallbacks: []` list means there is no backup model; applicable retries
+still run against the primary.
 
 This setting applies to scheduled execution in every enabled server. Task setup
 and follow-up conversations still use chat routing, and compaction still uses
 the compaction role. There is no per-task model field. A configured scheduled
 model is independent of `/models` selection and chat scope overrides. Failures
-use only `scheduled_fallbacks` under the ordinary provider failover rules; they
-do not silently switch to the chat model.
+use only `scheduled_fallbacks`; neither `chat_fallbacks` nor `coding_fallbacks`
+is inherited.
 
 Leaving `scheduled` unset preserves existing behavior: scheduled runs use chat
-routing, including the active `/models` selection and scope overrides.
+routing, including the active `/models` selection, scope overrides, and
+`chat_fallbacks`. In that mode, `scheduled_fallbacks` is not used.
 
 ## Create and edit tasks
 

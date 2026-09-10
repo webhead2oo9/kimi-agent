@@ -33,6 +33,29 @@ You need three things before the tools appear:
 
 If any of these are missing, `start_coding_task` and the related controls stay hidden. The ordinary `run_code` tool continues to work normally.
 
+### Model and fallbacks
+
+Configure the primary and optional backup models in `config/models.yaml`:
+
+```yaml
+roles:
+  # Keep the existing chat, compaction, and other role assignments.
+  coding: coding-primary
+  coding_fallbacks: [coding-backup]
+```
+
+Replace these names with entries from your `models` catalog. Every model in the
+chain must declare `text` and `tool_calling`; required credentials are checked
+at startup when coding tasks are enabled. Restart the bot after editing model
+configuration.
+
+Coding tasks use the shared [provider failover rules](providers.md#failover):
+provider availability failures can move to backups in the listed order, while
+invalid requests do not trigger a model switch. An omitted or empty
+`coding_fallbacks: []` list means there is no backup model; applicable retries
+still run against the primary. Coding tasks use only this dedicated chain,
+independent of `chat_fallbacks`, `/models` selection, and chat scope overrides.
+
 ## How a task starts
 
 The foreground assistant calls `start_coding_task` with the objective, acceptance criteria, selected context, and starting files. The call returns a task id immediately. The task is durably queued, the foreground turn ends cleanly, and the bot posts a short acknowledgement with the task id.
@@ -91,7 +114,7 @@ Members can cancel with `/stop`, or by sending the bot a message that says exact
 
 ## Failure boundaries and monitoring
 
-Each model call has its own timeout (`CODING_PROVIDER_CALL_TIMEOUT_SECONDS`) inside the task's total deadline (`CODING_TASK_MAX_SECONDS`). A model failure, running out of iterations (`CODING_TASK_MAX_ITERATIONS`), hitting the deadline, a failed command, or an explicit cancel all leave the task in a final recorded state; none of them can wedge a Discord turn. Token usage for a task is recorded under its own `coding:<task-id>` turn, so `/usage` shows it separately from chat.
+Each model call has its own timeout (`CODING_PROVIDER_CALL_TIMEOUT_SECONDS`) inside the task's total deadline (`CODING_TASK_MAX_SECONDS`). An unrecovered model failure, running out of iterations (`CODING_TASK_MAX_ITERATIONS`), hitting the deadline, a failed command, or an explicit cancel all leave the task in a final recorded state; none of them can wedge a Discord turn. Token usage for a task is recorded under its own `coding:<task-id>` turn, so `/usage` shows it separately from chat.
 
 The worker's output text goes through the same output moderation as chat replies. Workspace files it attaches are not moderated (they are delivered as-is), while generated images in ordinary turns keep their usual moderation.
 

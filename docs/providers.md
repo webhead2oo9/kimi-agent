@@ -447,6 +447,14 @@ roles:
   chat_fallbacks: [fallback-chat]
 ```
 
+The same rules apply to `coding` with `coding_fallbacks` and a configured
+`scheduled` role with `scheduled_fallbacks`. Each chain uses its own ordered
+fallback list; it does not borrow backups from another role. An omitted or empty
+list (`[]`) leaves only the primary model, with applicable retries but no backup
+to switch to. Scheduled runs inherit the chat chain only when `roles.scheduled`
+is unset. See the [coding setup](coding-agent.md#model-and-fallbacks) and
+[scheduled runner setup](scheduled-tasks.md#runner-model) for examples.
+
 Under the generic failure policy, connection errors, timeouts, server failures,
 and rate limits without a `Retry-After` receive one retry before the chain
 advances. Rate limits with a `Retry-After` and unambiguous account/model failures

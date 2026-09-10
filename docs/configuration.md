@@ -156,7 +156,13 @@ requires a restart.
   `roles.persona` are optional. `roles.video` selects the optional specialized
   Gemini Interactions model. `roles.coding` and its optional
   `coding_fallbacks` independently route the durable coding worker and never
-  inherit from `roles.chat`. `selectable_chat_models` supplies the candidates
+  inherit from `roles.chat`. `roles.scheduled` and `scheduled_fallbacks` select
+  an independent chain for scheduled runs; leaving `roles.scheduled` unset uses
+  chat routing and `chat_fallbacks`. For either dedicated role, an empty fallback
+  list means no backup model, with applicable retries still enabled. See
+  [coding models](coding-agent.md#model-and-fallbacks) and the
+  [scheduled runner](scheduled-tasks.md#runner-model).
+  `selectable_chat_models` supplies the candidates
   for the owner-only `/models` menu, and profiles with `models_endpoint` filter
   those candidates against the live `/v1/models` response at startup. Selection
   is live and global, but catalog edits still need a restart.

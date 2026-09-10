@@ -875,6 +875,9 @@ async def test_v12_migration_requeues_open_approved_threads_without_changing_tas
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN signoff_message_id")
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN thread_closed")
         conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN read_failure_streak")
+        conn.execute("DROP INDEX idx_messages_conv_source")
+        conn.execute("ALTER TABLE messages DROP COLUMN source_id")
+        conn.execute("ALTER TABLE coding_tasks DROP COLUMN delivery_surface")
         conn.execute("DELETE FROM schema_version WHERE version>=12")
     await db.connect()
     try:
@@ -977,12 +980,14 @@ async def test_preview_references_cascade_on_task_deletion(store):
 @pytest.mark.asyncio
 async def test_v10_migration_preserves_approved_task_and_pending_draft(tmp_path):
     import sqlite3
+    from storage.db import _SCHEMA_SQL
     from storage.task_schema import TASK_SCHEMA
 
     path = tmp_path / "v10.db"
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(
-            'CREATE TABLE schema_version(version INTEGER PRIMARY KEY,name TEXT,applied_at TEXT); INSERT INTO schema_version VALUES(10,"scheduled_tasks","then");'
+            _SCHEMA_SQL
+            + 'INSERT INTO schema_version VALUES(10,"scheduled_tasks","then");'
             + TASK_SCHEMA
         )
         conn.execute(

@@ -1,0 +1,20 @@
+:root {
+  --canvas: #1a1c23;
+  --sidebar: #17191f;
+  --panel: #181a21;
+  --surface: #242630;
+  --hover: #2d2f3a;
+  --border: #ffffff0c;
+  --border-strong: #ffffff19;
+  --text: #e3e3ed;
+  --muted: #999aa9;
+  --faint: #6d7083;
+  --accent: #aa98de;
+  --accent-light: #c7b9ed;
+  --danger: #e9a3ad;
+  /* Discord's documented insets include the Activity chrome on mobile. */
+  --safe-top: var(--discord-safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--discord-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --safe-left: var(--discord-safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --safe-right: var(--discord-safe-area-inset-right, env(safe-area-inset-right, 0px));
+}

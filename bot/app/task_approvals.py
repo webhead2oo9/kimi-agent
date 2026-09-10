@@ -15,7 +15,7 @@ from storage.task_previews import TaskPreviewStore
 from app.task_preview import render_preview, render_task_details
 from app.thread_handoff_boundary import ThreadHandoffBoundary
 from tools.threads import ThreadRequest
-from tools.registry import TaskPreviewRequest
+from tools.registry import MessageContext, TaskPreviewRequest
 from tools.scheduled_tasks import TaskDefinition
 from app.task_runtime import ScheduledTaskRuntime
 
@@ -122,6 +122,29 @@ class TaskApprovals:
             str(interaction.guild_id), str(interaction.user.id), str(interaction.channel_id)
         )
         async with self.r.privacy.activity(ctx.user_id):
+            notice = await self.decide(ctx, task_id, revision, approve=approve)
+            updated = True
+            if interaction.message is not None:
+                await self.previews.remember(
+                    task_id, revision, str(interaction.channel_id), str(interaction.message.id)
+                )
+                updated = await self.reconcile(message_id=str(interaction.message.id))
+            return notice + (
+                ""
+                if updated
+                else " The decision succeeded, but its receipt or thread closure could not be completed; a retry is queued."
+            )
+
+    async def decide(
+        self,
+        ctx: MessageContext,
+        task_id: str,
+        revision: int,
+        *,
+        approve: bool = True,
+    ) -> str:
+        """Apply one approval using current authority, independently of its UI receipt."""
+        async with self.r.privacy.activity(ctx.user_id):
             ctx = await self.authority.fresh(ctx)
             task = await self.authority.task(ctx, task_id)
             record = await self.r.store.revision_approval(task_id, revision)
@@ -129,13 +152,7 @@ class TaskApprovals:
                 raise ValueError(
                     "Only the person who requested this revision can approve or deny it"
                 )
-            if interaction.message is not None:
-                await self.previews.remember(
-                    task_id, revision, str(interaction.channel_id), str(interaction.message.id)
-                )
             if record[1] != "pending" or task["revision"] != revision:
-                if interaction.message is not None:
-                    await self.reconcile(message_id=str(interaction.message.id))
                 return "This revision has already been decided or superseded; nothing was changed."
             if approve:
                 owner = await self.r.access.context(
@@ -152,17 +169,10 @@ class TaskApprovals:
                 )
             else:
                 await self.r.store.reject(task_id, revision, ctx.user_id)
-            updated = True
-            if interaction.message is not None:
-                updated = await self.reconcile(message_id=str(interaction.message.id))
             return (
                 "Task activated."
                 if approve
                 else "Task denied. Any previously approved version is unchanged."
-            ) + (
-                ""
-                if updated
-                else " The decision succeeded, but its receipt or thread closure could not be completed; a retry is queued."
             )
 
     async def reconcile(self, *, message_id: str | None = None) -> bool:

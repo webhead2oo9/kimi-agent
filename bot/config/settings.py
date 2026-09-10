@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     # transcript depends on.
     user_app_dm_enabled: bool = False
 
+    # Optional private guild chat delivered through a Discord Activity. The
+    # listener belongs behind an HTTPS reverse proxy and never opens by default.
+    dashboard_enabled: bool = False
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = Field(default=8088, ge=1, le=65535)
+    dashboard_client_secret: SecretStr = SecretStr("")
+    dashboard_session_seconds: int = Field(default=3600, ge=300, le=86400)
+    dashboard_max_sessions: int = Field(default=2048, ge=1, le=100000)
+    dashboard_turn_timeout_seconds: float = Field(default=840.0, ge=1.0, le=3600.0)
+    dashboard_max_message_chars: int = Field(default=32000, ge=1, le=100000)
+    dashboard_frontend_dir: str = ""
+
     # Privileged gateway intents. As of Discord's 2026 policy, apps over 10,000
     # users must apply for these in the Developer Portal and reauthorize yearly
     # (https://support-dev.discord.com/hc/en-us/articles/6207308062871).

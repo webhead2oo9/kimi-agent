@@ -251,3 +251,15 @@ retries. It preserves v10 tasks and records their active revisions as approved.
 Schema v12 records approval-thread sign-off messages and completed closures. It
 queues approved threads left open by the initial management-card release for
 reconciliation; existing task definitions and approvals remain unchanged.
+
+## Activity dashboard records
+
+Schema version 14 adds `messages.source_id` for non-Discord transcript sources and
+`coding_tasks.delivery_surface` for durable private delivery. Dashboard conversations
+reference ordinary owner-only conversations. `dashboard_turns` and
+`dashboard_actions` record idempotent foreground and task requests;
+`dashboard_events` is their replay journal. `dashboard_files` records protected
+file snapshots, and `dashboard_task_previews` links exact scheduled revisions to
+the chat that displayed them. Dashboard records cascade with the parent
+conversation. Startup marks unfinished foreground turns and task actions
+interrupted instead of replaying them. See [dashboard behavior](dashboard.md).

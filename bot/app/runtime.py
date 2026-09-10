@@ -25,6 +25,12 @@ from app.admission import (
     TurnAdmissionController,
 )
 from app.cancellation import ActiveOperationRegistry
+from app.dashboard import Dashboard
+from app.dashboard_access import DashboardAccess
+from app.dashboard_files import DashboardFiles
+from app.dashboard_tasks import DashboardTasks
+from app.dashboard_turn import DashboardTurns
+from storage.dashboard import DashboardStore
 from app.command_sync import CommandSyncConfig, DiscordCommandSync
 from app.conversation_routing import (
     ResolvedConversation,
@@ -115,6 +121,39 @@ class _DeferredShutdownSignal(ShutdownSignal):
 
 
 class KimiCommandTree(app_commands.CommandTree):
+    async def sync(
+        self, *, guild: discord.abc.Snowflake | None = None
+    ) -> list[app_commands.AppCommand]:
+        application = getattr(self.client, "_agent_application", None)
+        if guild is not None or application is None or not application.settings.dashboard_enabled:
+            return await super().sync(guild=guild)
+        # discord.py 2.7 does not model type-4 entry points. Include the
+        # Discord-handled launcher in the SAME global replacement as commands;
+        # a second PUT/upsert could race a later command-sync generation.
+        if self.client.application_id is None:
+            raise app_commands.MissingApplicationID
+        local = self._get_all_commands(guild=None)
+        translator = self.translator
+        payload = (
+            [await command.get_translated_payload(self, translator) for command in local]
+            if translator
+            else [command.to_dict(self) for command in local]
+        )
+        payload.append(
+            {
+                "name": "Launch",
+                "description": "Open your private Kimi dashboard",
+                "type": 4,
+                "handler": 2,
+                "integration_types": [0],
+                "contexts": [0],
+            }
+        )
+        data = await self._http.bulk_upsert_global_commands(
+            self.client.application_id, payload=payload
+        )
+        return [app_commands.AppCommand(data=item, state=self._state) for item in data]
+
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         application = getattr(self.client, "_agent_application", None)
         if application is None:
@@ -646,6 +685,22 @@ def build_app(settings: Settings) -> KimiApplication:
         ),
         preference_store=repositories.preference_store,
     )
+    coding_delivery = CodingDelivery(
+        bot=bot,
+        store=repositories.coding_task_store,
+        conversation_store=repositories.conversation_store,
+        discord_gateway=gateway,
+        workspace_locks=application.tools.workspace_locks,
+        root_locks=application.root_locks,
+        threads=application.threads,
+        moderation_service=moderation_service,
+        config=CodingDeliveryConfig(
+            thread_handoff_enabled=settings.thread_handoff_enabled,
+            thread_auto_handoff_enabled=settings.thread_auto_handoff_enabled,
+            bot_name=settings.bot_name,
+        ),
+        strip_message_invocation=application.message_controller.strip_message_invocation,
+    )
     coding_task_controller = CodingTaskController(
         settings=settings,
         store=repositories.coding_task_store,
@@ -656,22 +711,7 @@ def build_app(settings: Settings) -> KimiApplication:
         llm_semaphore=application.llm_semaphore,
         privacy_barrier=application.privacy_barrier,
         user_blocked=application.user_blocked,
-        delivery=CodingDelivery(
-            bot=bot,
-            store=repositories.coding_task_store,
-            conversation_store=repositories.conversation_store,
-            discord_gateway=gateway,
-            workspace_locks=application.tools.workspace_locks,
-            root_locks=application.root_locks,
-            threads=application.threads,
-            moderation_service=moderation_service,
-            config=CodingDeliveryConfig(
-                thread_handoff_enabled=settings.thread_handoff_enabled,
-                thread_auto_handoff_enabled=settings.thread_auto_handoff_enabled,
-                bot_name=settings.bot_name,
-            ),
-            strip_message_invocation=application.message_controller.strip_message_invocation,
-        ),
+        delivery=coding_delivery,
     )
     scheduled_tasks = ScheduledTaskService(
         ScheduledTaskRuntime(
@@ -689,6 +729,66 @@ def build_app(settings: Settings) -> KimiApplication:
             semaphore=application.llm_semaphore,
             moderation=moderation_service,
         )
+    )
+    dashboard_store = DashboardStore(database)
+    dashboard_access = DashboardAccess(
+        bot=bot,
+        settings=settings,
+        trust=trust_resolver,
+        active_guilds=application.active_guilds,
+        user_blocked=application.user_blocked,
+        channel_access_allowed=application.message_controller.channel_access_allowed,
+        preferences=repositories.preference_store,
+    )
+    dashboard_files = DashboardFiles(
+        store=dashboard_store,
+        workspace=application.tools.workspace_manager,
+        locks=application.tools.workspace_locks,
+        settings=settings,
+    )
+    dashboard_tasks = DashboardTasks(
+        store=dashboard_store,
+        files=dashboard_files,
+        access=dashboard_access,
+        coding=coding_task_controller,
+        delivery=coding_delivery,
+        scheduled=scheduled_tasks,
+        roots=application.root_locks,
+        privacy=application.privacy_barrier,
+        operations=application.active_operations,
+        admission=application.turn_admission,
+    )
+    coding_delivery.dashboard_publish = dashboard_tasks.publish_coding
+    dashboard_turns = DashboardTurns(
+        store=dashboard_store,
+        files=dashboard_files,
+        access=dashboard_access,
+        runner=turn_runner,
+        gateway=gateway,
+        coding=coding_task_controller,
+        preview=dashboard_tasks.preview,
+        operations=application.active_operations,
+        privacy=application.privacy_barrier,
+        admission=application.turn_admission,
+        roots=application.root_locks,
+        hooks=application.message_controller.turn_entry_hooks(),
+        settings=settings,
+    )
+    dashboard = Dashboard(
+        bot=bot,
+        settings=settings,
+        store=dashboard_store,
+        access=dashboard_access,
+        files=dashboard_files,
+        turns=dashboard_turns,
+        tasks=dashboard_tasks,
+        privacy=application.privacy_barrier,
+        ready=application.gateway_interactions_ready,
+    )
+    application.tools.plugin_privacy_callbacks.register(
+        "core_dashboard",
+        dashboard.delete_user,
+        scopes=frozenset({"all"}),
     )
     work_cancellation: WorkCancellationCoordinator | None = None
 
@@ -759,6 +859,7 @@ def build_app(settings: Settings) -> KimiApplication:
             coding_tasks=coding_task_controller,
             module_manager=application.tools.module_manager,
             scheduled_tasks=scheduled_tasks,
+            dashboard=dashboard,
             trust_resolver=trust_resolver,
             context_manager=context_manager,
             turn_runner=turn_runner,

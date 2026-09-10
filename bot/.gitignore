@@ -220,3 +220,7 @@ evals/models.*.yml
 !evals/models.sample.yml
 !evals/models.template.yaml
 !evals/models.template.yml
+
+# Dashboard browser-check output
+dashboard/test-results/
+dashboard/playwright-report/

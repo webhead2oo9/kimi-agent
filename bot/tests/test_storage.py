@@ -106,7 +106,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "task_read_recovery"
+        assert version_row["name"] == "assistant_dashboard"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
@@ -119,6 +119,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
                 (11, "task_previews"),
                 (12, "task_thread_closure"),
                 (13, "task_read_recovery"),
+                (14, "assistant_dashboard"),
             ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -276,7 +277,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (11, "task_previews"),
         (12, "task_thread_closure"),
         (13, "task_read_recovery"),
-        (14, "add_note"),
+        (14, "assistant_dashboard"),
+        (15, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -288,7 +290,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 8
+        assert row[0] == 9
     finally:
         await reopened.close()
 
@@ -323,7 +325,8 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (11, "task_previews"),
         (12, "task_thread_closure"),
         (13, "task_read_recovery"),
-        (14, "add_note"),
+        (14, "assistant_dashboard"),
+        (15, "add_note"),
     ]
 
 
@@ -357,6 +360,10 @@ async def test_v7_database_adds_durable_privacy_plugin_callback_names(tmp_path) 
         conn.commit()
     finally:
         conn.close()
+
+    with sqlite3.connect(path) as baseline:
+        baseline.executescript(storage.db._SCHEMA_SQL)
+        baseline.execute("DROP TABLE image_usage_reservations")
 
     db = Database(path)
     await db.connect()

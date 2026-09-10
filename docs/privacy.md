@@ -596,3 +596,14 @@ are removed with that job unless the script includes them in saved state or outp
 Only LLM execution or a gate handoff sends task instructions and observations to
 the generation provider. Configured moderation still applies to proposed content.
 Full privacy deletion cancels owned tasks and removes that data.
+
+## Private Activity chats
+
+The optional [Discord dashboard](dashboard.md) stores chats per owner and server,
+with the same idle transcript retention as normal chat. It uses short-lived
+in-memory sessions and private file snapshots. Closing an Activity does not stop
+accepted work. Chat deletion cancels its work and removes its transcript and
+private snapshots; shared workspace files and approved schedules remain. Full
+privacy deletion revokes dashboard sessions and applies the existing transcript,
+workspace, and task deletion pipeline. Other Activity participants cannot read
+these chats; normal operator access still applies.

@@ -1281,3 +1281,19 @@ async def test_history_http_failure_is_reported_safely(extra):
 
     with pytest.raises(DiscordGatewayError, match="Could not read channel history"):
         await gateway.collect_channel_history(_ctx(), {"channel_id": "200", **extra})
+
+
+def test_dashboard_source_binding_is_root_scoped_without_discord_message_id() -> None:
+    gateway = DiscordGateway(bot_user_provider=lambda: None)
+    ctx = _ctx()
+    ctx.context_key = "dashboard:999:123:opaque"
+    ctx.trigger_discord_message_id = ""
+    source = object()
+    binding = gateway.bind_turn_source(ctx.context_key, "", source)
+    assert gateway._turn_source(ctx) is source
+    ctx.context_key = "dashboard:999:123:another"
+    assert gateway._turn_source(ctx) is None
+    assert gateway.bind_turn_source("guild:100:main", "", source) is None
+    gateway.unbind_turn_source(binding)
+    ctx.context_key = "dashboard:999:123:opaque"
+    assert gateway._turn_source(ctx) is None

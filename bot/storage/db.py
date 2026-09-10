@@ -10,9 +10,10 @@ from pathlib import Path
 import aiosqlite
 
 from storage.task_schema import TASK_SCHEMA
+from storage.dashboard_schema import DASHBOARD_SCHEMA
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -721,6 +722,18 @@ async def _add_task_read_recovery(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_dashboard(conn: aiosqlite.Connection) -> None:
+    await conn.execute("ALTER TABLE messages ADD COLUMN source_id TEXT")
+    # Persist the delivery surface independently of the conversation's current
+    # existence, so a private coding result can never fall back to a channel.
+    await conn.execute(
+        "ALTER TABLE coding_tasks ADD COLUMN delivery_surface TEXT NOT NULL DEFAULT 'discord'"
+    )
+    for statement in DASHBOARD_SCHEMA.split(";"):
+        if statement.strip():
+            await conn.execute(statement)
+
+
 _MIGRATIONS: dict[int, Migration] = {
     8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
     9: ("image_usage_reservations", _add_image_usage_reservations),
@@ -728,6 +741,7 @@ _MIGRATIONS: dict[int, Migration] = {
     11: ("task_previews", _add_task_previews),
     12: ("task_thread_closure", _add_task_thread_closure),
     13: ("task_read_recovery", _add_task_read_recovery),
+    14: ("assistant_dashboard", _add_dashboard),
 }
 
 
@@ -854,6 +868,7 @@ class Database:
             await _add_task_previews(conn)
             await _add_task_thread_closure(conn)
             await _add_task_read_recovery(conn)
+            await _add_dashboard(conn)
             await _record_schema_version(
                 conn,
                 _BASELINE_SCHEMA_VERSION,

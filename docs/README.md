@@ -18,6 +18,8 @@ The rest is reference material.
   fragment surface.
 - [Discord user-app personal chat](user-app.md): optional `/chat` installation,
   access tiers, scopes, prompt override, and reset behavior.
+- [Private Discord dashboard](dashboard.md): optional Activity, saved chats, files,
+  task review, authentication, and deployment.
 - [Development](development.md): running isolated local and test instances.
 - [Public source and private instance data](instance-data.md): what belongs in
   Git and what stays deployment-owned.

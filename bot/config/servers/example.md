@@ -5,6 +5,9 @@
 # Activation is explicit: true enables this guild; false keeps all configuration
 # while making the bot silent, even when ALLOWED_GUILD_IDS contains the guild.
 bot_active: true
+# Private Discord Activity chats also require global DASHBOARD_ENABLED.
+dashboard:
+  enabled: false
 staff_user_ids: [1001]
 staff_role_ids: [2001]
 regular_role_ids: [2002]

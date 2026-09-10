@@ -114,6 +114,7 @@ class CodingTask:
     finished_at: float | None
     deadline_at: float
     heartbeat_at: float
+    delivery_surface: str = "discord"
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +172,10 @@ class CodingTaskStore:
         initial_checkpoint: dict[str, Any] | None = None,
         max_queued_per_user: int | None = None,
         max_queued_per_workspace: int | None = None,
+        delivery_surface: str = "discord",
     ) -> CodingTask:
+        if delivery_surface not in {"discord", "dashboard"}:
+            raise ValueError("Unknown coding delivery surface")
         now = time.time()
         task_id = uuid4().hex
         async with self._db.write_transaction() as conn:
@@ -202,8 +206,8 @@ class CodingTaskStore:
                     trigger_discord_message_id,
                     objective, acceptance_criteria_json, context_text,
                     display_summary, context_messages_json, input_files_json, status,
-                    checkpoint_json, created_at, updated_at, deadline_at, heartbeat_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                    checkpoint_json, created_at, updated_at, deadline_at, heartbeat_at, delivery_surface
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -228,6 +232,7 @@ class CodingTaskStore:
                     now,
                     now + max_seconds,
                     now,
+                    delivery_surface,
                 ),
             )
             await self._append_event_conn(conn, task_id, "created", {}, now)
@@ -802,7 +807,7 @@ class CodingTaskStore:
                 (message_id, now, task_id),
             )
 
-    async def mark_delivered(self, task_id: str, message_id: str) -> None:
+    async def mark_delivered(self, task_id: str, message_id: str | None) -> None:
         now = time.time()
         async with self._db.write_transaction() as conn:
             await conn.execute(
@@ -812,6 +817,15 @@ class CodingTaskStore:
                 """,
                 (message_id, now, task_id),
             )
+
+    async def dashboard_handoff_acknowledged(self, task_id: str) -> bool:
+        async with self._db.conn.execute(
+            "SELECT 1 FROM dashboard_events WHERE kind='turn_finished' "
+            "AND json_extract(payload_json,'$.coding_task_id')=? "
+            "AND json_extract(payload_json,'$.status')='completed' LIMIT 1",
+            (task_id,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
 
     async def set_delivery_attachment_plan_if_absent(
         self,
@@ -1211,6 +1225,7 @@ class CodingTaskStore:
             finished_at=(float(row["finished_at"]) if row["finished_at"] is not None else None),
             deadline_at=float(row["deadline_at"]),
             heartbeat_at=float(row["heartbeat_at"]),
+            delivery_surface=str(row["delivery_surface"]),
         )
 
     @staticmethod

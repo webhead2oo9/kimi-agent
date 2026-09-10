@@ -353,3 +353,13 @@ A start timeout raises `Kimi module '<name>' start() exceeded 60s`, emits a `mod
 If a module trips either ceiling during development, the fix belongs in the module (move slow work into a scheduler job, or make `close()` cancel rather than await), not in the setting.
 
 The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4) jobs concurrently, at most one per module. If a dev instance shares a database file with another running instance, the scheduler logs `Module scheduler paused: another scheduler runner holds the lease` and runs nothing until the other process stops (or its 60-second lease expires). The isolated dev setup above avoids this by giving each instance its own database.
+
+## Discord dashboard frontend
+
+The optional Activity frontend lives in `bot/dashboard`. Its locked dependencies
+require Node 22.18 or newer. From that directory run `npm ci`, `npm test`, and
+`npm run build`. Browser checks use `npx playwright install chromium` followed by
+`npm run test:browser`. The test fixture simulates the API and is excluded from
+the production build; normal `npm run dev` still requires a real Discord launch.
+See [dashboard setup and live smoke testing](dashboard.md) for the separate test
+application, HTTPS mapping, and instance settings.

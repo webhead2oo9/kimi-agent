@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+import pytest_asyncio
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from app.dashboard import Dashboard
+from app.dashboard_auth import SESSION_COOKIE, DashboardAuth, DashboardSession
+from storage.dashboard import DashboardStore
+from storage.db import Database
+from tests.helpers import make_settings
+from utils.privacy_barrier import UserPrivacyBarrier
+
+
+@pytest_asyncio.fixture
+async def api(tmp_path):
+    db = Database(tmp_path / "api.db")
+    await db.connect()
+    store = DashboardStore(db)
+    access = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(parent_id="3", channel=SimpleNamespace(name="general"))
+        ),
+        consent_required=AsyncMock(return_value=False),
+    )
+    turns = SimpleNamespace(
+        submit=AsyncMock(return_value="turn"), delete=AsyncMock(), stop=AsyncMock(return_value=True)
+    )
+    service = Dashboard(
+        bot=None,
+        settings=make_settings(),
+        store=store,
+        access=access,
+        files=SimpleNamespace(upload_limit=10000),
+        turns=turns,
+        tasks=None,
+        privacy=UserPrivacyBarrier(),
+        ready=lambda: True,
+    )
+    service.auth = DashboardAuth(
+        application_id="42",
+        bot_token="",
+        client_secret="",
+        session_seconds=300,
+        max_sessions=10,
+        http=None,
+    )
+    session = DashboardSession("token", "csrf", "1", "2", "3", "instance", time.monotonic() + 300)
+    service.auth._sessions[session.token] = session
+    service.auth.verify_instance = AsyncMock(return_value=("2", "3"))
+    async with TestClient(TestServer(service.application(static=False))) as client:
+        client.session.headers.update(
+            {
+                "Cookie": f"{SESSION_COOKIE}=token",
+                "Origin": service.auth.origin,
+                "X-CSRF-Token": "csrf",
+            }
+        )
+        yield client, service
+    await db.close()
+
+
+async def create(service, user="1", guild="2", channel="3"):
+    return await service.store.create(
+        user_id=user,
+        guild_id=guild,
+        channel_id=channel,
+        parent_channel_id=channel,
+        channel_name="general",
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_owner_server_and_saved_channel_boundaries(api):
+    client, service = api
+    own = await create(service)
+    other = await create(service, user="9")
+    elsewhere = await create(service, guild="8")
+    assert (await client.get(f"/api/chats/{own.id}/events")).status == 200
+    for chat in (other, elsewhere):
+        assert (await client.get(f"/api/chats/{chat.id}/events")).status == 404
+        assert (
+            await client.post(
+                f"/api/chats/{chat.id}/messages", json={"text": "hello", "request_id": "r"}
+            )
+        ).status == 404
+    assert not service.turns.submit.called
+
+    async def resolve(**kwargs):
+        if kwargs["channel_id"] == "4":
+            raise web.HTTPForbidden(reason="Revoked")
+
+    revoked = await create(service, channel="4")
+    service.access.resolve.side_effect = resolve
+    assert (await client.get(f"/api/chats/{revoked.id}/events")).status == 403
+    # An owner can still delete a saved chat after losing its originating channel.
+    assert (await client.delete(f"/api/chats/{revoked.id}")).status == 200
+    service.turns.delete.assert_awaited_once_with(revoked)
+
+
+@pytest.mark.asyncio
+async def test_http_requires_session_csrf_origin_and_object_body(api):
+    client, _ = api
+    assert (
+        await client.post("/api/chats", json={}, headers={"Origin": "https://evil.example"})
+    ).status == 403
+    assert (
+        await client.post("/api/chats", json={}, headers={"X-CSRF-Token": "wrong"})
+    ).status == 403
+    assert (await client.get("/api/chats", headers={"Cookie": ""})).status == 401
+    response = await client.get("/api/chats")
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "object-src 'none'" in response.headers["Content-Security-Policy"]
+    own = (await response.json())["chats"]
+    assert own == []
+    chat = await create(api[1])
+    assert (await client.post(f"/api/chats/{chat.id}/messages", json=[])).status == 400
+    assert (await client.get("/api/ws")).status == 400
+
+
+@pytest.mark.asyncio
+async def test_socket_replays_durable_events_and_revocation_ends_session(api):
+    client, service = api
+    chat = await create(service)
+    await service.store.event(chat.id, "activity", {"label": "old"})
+    first = (await service.store.events(chat.id))[0]
+    await service.store.event(chat.id, "turn_finished", {"text": "Done", "status": "completed"})
+    async with client.ws_connect(f"/api/ws?chat={chat.id}&after={first.id}") as ws:
+        replay = await ws.receive_json(timeout=2)
+        assert [e["payload"]["text"] for e in replay["events"]] == ["Done"]
+        await service.auth.delete_user("1")
+        await ws.receive(timeout=3)
+        assert ws.close_code == 1008
+
+
+@pytest.mark.asyncio
+async def test_chat_deleted_while_upload_body_arrives_cannot_recreate_files(api):
+    import asyncio
+
+    from aiohttp.test_utils import make_mocked_request
+
+    from app.dashboard import _SESSION
+    from app.root_locks import RootLockPool
+
+    _, service = api
+    chat = await create(service)
+    service.turns.roots = RootLockPool()
+    service.files.save = AsyncMock()
+    reading, release = asyncio.Event(), asyncio.Event()
+
+    async def body():
+        reading.set()
+        await release.wait()
+        return b"private upload"
+
+    request = make_mocked_request(
+        "POST", f"/api/chats/{chat.id}/upload", match_info={"chat": chat.id}
+    )
+    request[_SESSION] = service.auth._sessions["token"]
+    request.read = body
+    upload = asyncio.create_task(service.upload(request))
+    await reading.wait()
+    async with service.turns.roots.hold(chat.key):
+        await service.store.delete(chat)
+    release.set()
+    with pytest.raises(web.HTTPNotFound):
+        await upload
+    service.files.save.assert_not_called()

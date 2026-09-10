@@ -35,20 +35,22 @@ class StoredMessage:
 
 @dataclass(frozen=True)
 class ChannelMessageRecord:
-    """A real Discord channel message persisted to the transcript, deduped by id.
+    """A user-facing message persisted to the transcript, deduped by its source.
 
     Persistence DTO, defined here (not in agent/) so the store types against it
     without importing agent. Carries its own author and Discord source timestamp
     so source-anchored memory writes can enforce per-user boundaries.
     """
 
-    discord_message_id: str
+    discord_message_id: str | None
     role: str  # "user" | "assistant"
     author_id: str | None  # None for the bot's own messages
     author_name: str | None
     content: str  # clean text; chunk-marker stripped; NO "Name:" prefix
     source_created_at: float | None = None
     content_parts: list[ContentPart] | None = None
+    # Other surfaces have their own identifiers, never counterfeit Discord IDs.
+    source_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -365,7 +367,7 @@ class ConversationStore:
         *,
         context_channel_id: str | None = None,
     ) -> int | None:
-        """Persist real channel messages, deduped by (conversation_id, discord id).
+        """Persist transcript messages, deduped by their Discord or surface id.
 
         Each row carries its own author so per-user memory writes and source
         lookup attribute content to the right user. Returns MAX(message id) for
@@ -383,6 +385,7 @@ class ConversationStore:
                 record.content,
                 json.dumps(_message_data_for_record(record)),
                 record.discord_message_id,
+                record.source_id,
                 record.source_created_at,
                 now,
             )
@@ -395,8 +398,8 @@ class ConversationStore:
             await conn.executemany(
                 "INSERT OR IGNORE INTO messages "
                 "(conversation_id, role, user_id, user_name, content, message_data, "
-                "discord_message_id, source_created_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "discord_message_id, source_id, source_created_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             if context_channel_id is not None:
@@ -412,6 +415,7 @@ class ConversationStore:
                             now,
                         )
                         for record in records
+                        if record.discord_message_id is not None
                     ],
                 )
             await conn.execute(

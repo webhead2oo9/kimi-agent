@@ -1341,3 +1341,13 @@ Server fragments can enable [scheduled tasks](scheduled-tasks.md#enable-a-server
 set the minimum creator tier and suggested timezone, and allow cross-channel destinations.
 Task setup asks for a timezone when the user's intent is unclear; the server value
 does not silently select a timezone for a new task.
+
+## Discord Activity dashboard
+
+The owner-only saved-chat Activity is disabled by default. Its environment-only
+settings are `DASHBOARD_ENABLED`, `DASHBOARD_HOST`, `DASHBOARD_PORT`,
+`DASHBOARD_CLIENT_SECRET`, `DASHBOARD_FRONTEND_DIR`, `DASHBOARD_SESSION_SECONDS`,
+`DASHBOARD_MAX_SESSIONS`, `DASHBOARD_TURN_TIMEOUT_SECONDS`, and
+`DASHBOARD_MAX_MESSAGE_CHARS`. Each active server must also opt in with the live
+frontmatter flag `dashboard: {enabled: true}`. See the
+[dashboard guide](dashboard.md) for defaults, bounds, authentication, and deployment.

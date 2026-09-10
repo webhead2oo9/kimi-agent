@@ -212,7 +212,7 @@ class ScheduledTaskStore:
             cursor = await conn.execute(
                 "UPDATE scheduled_tasks SET active_revision=revision,status='active',next_run=?,"
                 "state_json=CASE WHEN ? THEN '{}' ELSE state_json END,"
-                "state_generation=state_generation+?,updated_at=? "
+                "state_generation=state_generation+?,read_failure_streak=0,updated_at=? "
                 "WHERE id=? AND revision=? AND (active_revision IS NULL OR active_revision!=revision) "
                 "AND EXISTS(SELECT 1 FROM scheduled_task_revisions "
                 "WHERE task_id=? AND revision=? AND proposer_id=? AND approval_status='pending')",
@@ -513,6 +513,8 @@ class ScheduledTaskStore:
         detail: str,
         state: dict[str, Any],
         deliveries: list[dict[str, Any]],
+        *,
+        recover_reads: bool = True,
     ) -> None:
         async with self.db.immediate_write_transaction() as conn:
             cursor = await conn.execute(
@@ -523,18 +525,11 @@ class ScheduledTaskStore:
             if cursor.rowcount != 1:
                 return
             for delivery in deliveries:
-                await conn.execute(
-                    "INSERT INTO scheduled_task_deliveries(run_id,channel_id,payload_json,is_log) "
-                    "VALUES(?,?,?,?)",
-                    (
-                        run_id,
-                        delivery["channel_id"],
-                        json.dumps(delivery),
-                        delivery.get("is_log", False),
-                    ),
-                )
+                await self._enqueue(conn, run_id, delivery)
             if status in {"completed", "no_change"}:
-                await self._commit_state(conn, run_id)
+                await self._commit_state(conn, run_id, recover_reads=recover_reads)
+            elif status == "read_failed":
+                await self._read_failed(conn, run_id, detail)
             elif status in {"needs_input", "failed"}:
                 await conn.execute(
                     "UPDATE scheduled_tasks SET status='attention' WHERE id="
@@ -543,15 +538,82 @@ class ScheduledTaskStore:
                 )
 
     @staticmethod
-    async def _commit_state(conn: Any, run_id: str) -> None:
+    async def _enqueue(conn: Any, run_id: str, delivery: dict[str, Any]) -> None:
         await conn.execute(
+            "INSERT INTO scheduled_task_deliveries(run_id,channel_id,payload_json,is_log) VALUES(?,?,?,?)",
+            (run_id, delivery["channel_id"], json.dumps(delivery), delivery.get("is_log", False)),
+        )
+
+    @staticmethod
+    async def _read_failed(conn: Any, run_id: str, detail: str) -> None:
+        async with conn.execute(
+            "SELECT t.*,v.definition_json FROM scheduled_tasks t "
+            "JOIN scheduled_task_runs r ON r.task_id=t.id "
+            "JOIN scheduled_task_revisions v ON v.task_id=t.id AND v.revision=r.revision "
+            "WHERE r.id=? AND t.status='active' AND t.active_revision=r.revision "
+            "AND t.state_generation=r.state_generation",
+            (run_id,),
+        ) as cursor:
+            task = await cursor.fetchone()
+        if task is None:
+            return
+        await conn.execute(
+            "UPDATE scheduled_tasks SET read_failure_streak=read_failure_streak+1,"
+            "status=CASE WHEN next_run IS NULL THEN 'attention' ELSE status END WHERE id=?",
+            (task["id"],),
+        )
+        if task["read_failure_streak"] == 0:
+            name = json.loads(task["definition_json"])["name"]
+            action = (
+                "The schedule remains active; the next occurrence will try again."
+                if task["next_run"] is not None
+                else "This one-time task needs attention. Inspect it, then resume."
+            )
+            await ScheduledTaskStore._enqueue(
+                conn,
+                run_id,
+                {
+                    "channel_id": task["channel_id"],
+                    "is_log": True,
+                    "management": True,
+                    "content": f"Task {name}: input reads failed before execution. {detail[:1000]}\n"
+                    f"{action}\nTask ID: {task['id']}.",
+                },
+            )
+
+    @staticmethod
+    async def _commit_state(conn: Any, run_id: str, *, recover_reads: bool = True) -> None:
+        async with conn.execute(
+            "SELECT t.channel_id,t.id,v.definition_json FROM scheduled_tasks t "
+            "JOIN scheduled_task_runs r ON r.task_id=t.id "
+            "JOIN scheduled_task_revisions v ON v.task_id=t.id AND v.revision=r.revision "
+            "WHERE r.id=? AND t.status='active' AND t.read_failure_streak>0 "
+            "AND t.active_revision=r.revision AND t.state_generation=r.state_generation",
+            (run_id,),
+        ) as cursor:
+            recovery = await cursor.fetchone() if recover_reads else None
+        cursor = await conn.execute(
             "UPDATE scheduled_tasks SET state_json=(SELECT proposed_state FROM scheduled_task_runs "
             "WHERE id=?),state_generation=state_generation+1,"
+            "read_failure_streak=CASE WHEN ? THEN 0 ELSE read_failure_streak END,"
             "status=CASE WHEN next_run IS NULL THEN 'completed' ELSE status END "
             "WHERE status='active' AND EXISTS (SELECT 1 FROM scheduled_task_runs r WHERE r.id=? "
             "AND r.task_id=scheduled_tasks.id AND r.state_generation=scheduled_tasks.state_generation)",
-            (run_id, run_id),
+            (run_id, recovery is not None, run_id),
         )
+        if cursor.rowcount == 1 and recovery is not None:
+            name = json.loads(recovery["definition_json"])["name"]
+            await ScheduledTaskStore._enqueue(
+                conn,
+                run_id,
+                {
+                    "channel_id": recovery["channel_id"],
+                    "is_log": True,
+                    "management": True,
+                    "content": f"Task {name}: input reads recovered and the occurrence completed successfully.\n"
+                    f"Task ID: {recovery['id']}.",
+                },
+            )
 
     async def delivery_runs(self, limit: int, excluded: set[str]) -> list[str]:
         """Choose runs, rather than chunks, so a long post cannot occupy the pool."""

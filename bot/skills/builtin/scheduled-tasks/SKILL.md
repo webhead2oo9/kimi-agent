@@ -289,6 +289,15 @@ input for a paused question. Controls always recheck current authorization.
   task deletion does not remove it. It exports the instruction skill, not the
   Python source or input configuration.
 
+The application retries temporary preflight and declared input-read failures up to
+three attempts, before execution. Input attempts share a 60-second deadline and
+the same Discord window. Exhaustion records `read_failed`, preserves saved state
+and cursors, and keeps recurring tasks scheduled; one-time tasks require attention.
+Home-channel notices mark the start and successful recovery of an outage, while
+each occurrence still has history and its configured log. Execution failures,
+denied access, invalid results, and uncertain actions require attention; do not
+misreport them as `no_change` or automatically rerun Python/model actions.
+
 A reply to published scheduled output can carry an application-provided origin
 hint. Treat it as context for a normal conversation, not a new scheduled run or
 an instruction to change the task. It includes identifiers, not private working

@@ -134,7 +134,8 @@ def render_task_details(task: Mapping[str, Any], definition: TaskDefinition) -> 
                 (
                     "The script runs offline with existing sandbox packages. Package versions may change "
                     "between runs. Text and selected files are delivered to the destinations above. "
-                    "A failed check requires attention; it does not fall back to an LLM."
+                    "Temporary input-read failures keep recurring checks scheduled. Execution failures "
+                    "require attention; they do not fall back to an LLM."
                 ),
             ]
         )

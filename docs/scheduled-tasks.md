@@ -158,6 +158,7 @@ outcome in its [result file](scheduled-python.md#script-contract):
 | `completed` | Publish queued results and save the successful state. |
 | `no_change` | Save the observation and record history without a destination post. |
 | `needs_input` | Ask in the setup channel and pause future runs. |
+| `read_failed` | Application preflight/input reads exhausted temporary retries; recurring tasks keep their schedule, while one-time tasks require attention. |
 | Failure/interruption | Record the problem and require attention before retrying actions. |
 
 For conditional tasks, setup chooses a silent first baseline or an initial post;
@@ -198,6 +199,24 @@ Different runs publish concurrently, with ordered chunks within each run and sta
 committed only after every required destination succeeds. A delayed chunk blocks
 later chunks of that run. Approval-card updates and publication run independently;
 neither waits in the lease-renewal loop.
+
+Application-owned preflight and declared input reads can retry temporary timeouts,
+connection/DNS failures, and HTTP 408, 429, 500, 502, 503, or 504 responses before
+Python or model execution begins. There are at most three attempts, with waits of
+one and four seconds; a longer `Retry-After` is honored only if it fits the read
+deadline. Declared inputs share one 60-second deadline across attempts and preserve
+the same Discord history window. Permission denials and invalid inputs require
+attention immediately. Reads performed by model tools are part of execution and
+do not use this retry policy.
+
+After temporary read retries are exhausted, history records `read_failed` without
+changing saved state or input cursors. Recurring tasks retain their next occurrence;
+one-time tasks require attention. The home channel receives one notice at the start
+of an outage and one after a successful occurrence, including required publication.
+Every failed occurrence still appears in history and the configured log channel.
+Outage tracking survives restarts and clears when a replacement definition is
+approved. Skipping a missed occurrence does not report recovery. Python/model
+execution and uncertain publication are never replayed by this read retry policy.
 
 Pausing stops future occurrences, interrupts active execution and preview tests,
 and cancels pending publication. Already-sent messages remain in Discord. Resume

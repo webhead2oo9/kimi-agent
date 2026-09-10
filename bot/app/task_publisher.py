@@ -147,6 +147,8 @@ class TaskPublisher:
         detail: str,
         state: dict[str, Any],
         posts: list[dict[str, Any]],
+        *,
+        recover_reads: bool = True,
     ) -> None:
         definition = TaskDefinition.model_validate(task["definition"])
         deliveries: list[dict[str, Any]] = []
@@ -187,7 +189,12 @@ class TaskPublisher:
                 }
             )
         await self.r.store.finish(
-            run_id, "delivery" if posts else outcome, detail, state, deliveries
+            run_id,
+            "delivery" if posts else outcome,
+            detail,
+            state,
+            deliveries,
+            recover_reads=recover_reads,
         )
 
     @staticmethod

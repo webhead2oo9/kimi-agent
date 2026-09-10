@@ -272,7 +272,9 @@ class DiscordGateway:
                 or str(getattr(getattr(channel, "guild", None), "id", "")) != str(guild.id)
                 or not _is_search_message_channel(channel)
                 or _search_channel_is_excluded(channel, excluded_channel_ids)
-                or not await _search_channel_accessible(channel, member, bot_member)
+                or not await _search_channel_accessible(
+                    channel, member, bot_member, propagate_http_errors=True
+                )
             ):
                 raise ValueError(unavailable)
             channels[requested_id] = _search_channel_name(channel)
@@ -782,7 +784,9 @@ def _archive_discovery_mode(parent: Any, bot_member: Any) -> str:
     return "joined_private"
 
 
-async def _search_channel_accessible(channel: Any, member: Any, bot_member: Any) -> bool:
+async def _search_channel_accessible(
+    channel: Any, member: Any, bot_member: Any, *, propagate_http_errors: bool = False
+) -> bool:
     permissions_for = getattr(channel, "permissions_for", None)
     if not callable(permissions_for):
         return False
@@ -804,12 +808,18 @@ async def _search_channel_accessible(channel: Any, member: Any, bot_member: Any)
     need_bot = not bool(getattr(bot_permissions, "manage_threads", False))
     if not need_member and not need_bot:
         return True
-    if need_member and not await _private_thread_has_member(channel, member):
+    if need_member and not await _private_thread_has_member(
+        channel, member, propagate_http_errors=propagate_http_errors
+    ):
         return False
-    return not need_bot or await _private_thread_has_member(channel, bot_member)
+    return not need_bot or await _private_thread_has_member(
+        channel, bot_member, propagate_http_errors=propagate_http_errors
+    )
 
 
-async def _private_thread_has_member(channel: Any, member: Any) -> bool:
+async def _private_thread_has_member(
+    channel: Any, member: Any, *, propagate_http_errors: bool = False
+) -> bool:
     fetch_member = getattr(channel, "fetch_member", None)
     member_id = getattr(member, "id", None)
     if not callable(fetch_member) or member_id is None:
@@ -817,7 +827,11 @@ async def _private_thread_has_member(channel: Any, member: Any) -> bool:
     try:
         await fetch_member(int(member_id))
         return True
-    except discord.Forbidden, discord.NotFound, discord.HTTPException:
+    except discord.Forbidden, discord.NotFound:
+        return False
+    except discord.HTTPException:
+        if propagate_http_errors:
+            raise
         return False
 
 

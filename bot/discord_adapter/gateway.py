@@ -39,6 +39,7 @@ MAX_MEMBER_ROLES = 10
 _DISCORD_SEARCH_CHANNEL_LIMIT = 500
 _DISCORD_SEARCH_ARCHIVE_CACHE_TTL_SECONDS = 30.0
 _DISCORD_SEARCH_ARCHIVE_CACHE_MAX_ENTRIES = 1024
+_CHANNEL_HISTORY_MAX_CHARS = 32_000
 _SEARCH_THREAD_CHANNEL_TYPES = frozenset(
     {
         discord.ChannelType.news_thread,
@@ -476,10 +477,53 @@ class DiscordGateway:
             log.warning("Could not read recent Discord channel context", exc_info=True)
             raise DiscordGatewayError("Could not read recent channel context.") from exc
 
+    async def _history_channel_id(self, ctx: MessageContext, args: dict) -> str:
+        selector = args.get("channel")
+        channel_id = args.get("channel_id")
+        if selector is not None and not isinstance(selector, str):
+            raise ValueError("channel must be a channel name, mention, or ID")
+        selector = selector.strip() if selector is not None else ""
+        if selector and channel_id:
+            raise ValueError("Use either channel or channel_id, not both")
+        if not selector:
+            return str(_history_message_id(str(channel_id or ctx.channel_id), "channel_id"))
+        if selector.startswith("<#") and selector.endswith(">"):
+            return str(_history_message_id(selector[2:-1], "channel"))
+        if selector.isascii() and selector.isdecimal():
+            return str(_history_message_id(selector, "channel"))
+        name = selector.removeprefix("#").casefold()
+        if not name:
+            raise ValueError("channel must be a channel name, mention, or ID")
+        guild, member, bot_member = self._discord_search_actors(ctx)
+        matches: set[str] = set()
+        for channel in (*guild.channels, *guild.threads):
+            if (
+                str(getattr(getattr(channel, "guild", None), "id", "")) == str(guild.id)
+                and _search_channel_name(channel).casefold() == name
+                and _is_search_message_channel(channel)
+                and callable(getattr(channel, "history", None))
+                and not _search_channel_is_excluded(channel, self._search_excluded_channel_ids)
+                and await _search_channel_accessible(
+                    channel, member, bot_member, propagate_http_errors=True
+                )
+            ):
+                matches.add(str(channel.id))
+        if not matches:
+            raise ValueError(
+                "Channel unavailable in this server; use discord_channels to find an ID"
+            )
+        if len(matches) > 1:
+            raise ValueError("Multiple accessible channels match; use an exact channel ID")
+        return matches.pop()
+
     async def collect_channel_history(self, ctx: MessageContext, args: dict) -> dict[str, object]:
-        channel_id = str(args.get("channel_id") or ctx.channel_id)
-        if not channel_id.isdigit():
-            raise ValueError("channel_id must be numeric")
+        try:
+            return await self._collect_channel_history(ctx, args)
+        except (discord.HTTPException, discord.InvalidData) as exc:
+            raise DiscordGatewayError("Could not read channel history.") from exc
+
+    async def _collect_channel_history(self, ctx: MessageContext, args: dict) -> dict[str, object]:
+        channel_id = await self._history_channel_id(ctx, args)
         # Exclusions apply identically to search and history.
         channels = await self.resolve_discord_search_channels(
             ctx,
@@ -490,8 +534,17 @@ class DiscordGateway:
         channel = guild.get_channel_or_thread(int(channel_id)) or await guild.fetch_channel(
             int(channel_id)
         )
-        if channel_id not in channels:
+        if (
+            channel_id not in channels
+            or str(getattr(channel, "id", "")) != channel_id
+            or str(getattr(getattr(channel, "guild", None), "id", "")) != str(ctx.guild_id)
+        ):
             raise ValueError("Channel unavailable")
+        if not callable(getattr(channel, "history", None)):
+            raise ValueError("Select a message channel or an existing thread")
+
+        if args.get("around_message_id"):
+            return await self._collect_message_context(channel, args)
 
         def timestamp(value: object) -> datetime:
             parsed = datetime.fromisoformat(str(value))
@@ -525,20 +578,9 @@ class DiscordGateway:
         ):
             if message.created_at >= upper or (lower and message.created_at <= lower):
                 continue
-            item = {
-                "id": str(message.id),
-                "author_id": str(message.author.id),
-                "author": message.author.display_name,
-                "content": message.content,
-                "timestamp": message.created_at.isoformat(),
-                "url": message.jump_url,
-                "attachments": [
-                    {"index": i + 1, "filename": a.filename}
-                    for i, a in enumerate(message.attachments)
-                ],
-            }
+            item = _channel_history_item(message)
             item_size = len(json.dumps(item))
-            if len(results) >= limit or (results and size + item_size > 32_000):
+            if len(results) >= limit or (results and size + item_size > _CHANNEL_HISTORY_MAX_CHARS):
                 has_more = True
                 break
             results.append(item)
@@ -551,6 +593,70 @@ class DiscordGateway:
             "order": order,
             "has_more": has_more,
             "next_cursor": results[-1]["id"] if results and has_more else None,
+        }
+
+    async def _collect_message_context(self, channel: Any, args: dict) -> dict[str, object]:
+        if any(args.get(key) for key in ("before", "after", "cursor")):
+            raise ValueError("around_message_id cannot be combined with before, after, or cursor")
+        anchor_id = _history_message_id(args["around_message_id"], "around_message_id")
+        limit = max(1, min(int(args.get("limit", 15)), 100))
+        order = args.get("order", "asc")
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be asc or desc")
+        upper = datetime.now(UTC).isoformat()
+        messages = [
+            message
+            async for message in channel.history(
+                limit=limit, around=discord.Object(anchor_id), oldest_first=True
+            )
+        ]
+        messages.sort(key=lambda message: message.id)
+        anchor_index = next(
+            (index for index, message in enumerate(messages) if message.id == anchor_id), None
+        )
+        if anchor_index is None:
+            raise ValueError("Message unavailable in the selected channel")
+
+        # Discord may return limit + 1 for an even around limit. Keep the anchor
+        # and its nearest neighbours even when the count or text budget trims it.
+        selected = {anchor_id: _channel_history_item(messages[anchor_index])}
+        size = len(json.dumps(selected[anchor_id]))
+        if size > _CHANNEL_HISTORY_MAX_CHARS:
+            raise ValueError("Selected message exceeds the channel context text budget")
+        neighbours = sorted(
+            (index for index in range(len(messages)) if index != anchor_index),
+            key=lambda index: (abs(index - anchor_index), index),
+        )
+        for index in neighbours:
+            item = _channel_history_item(messages[index])
+            item_size = len(json.dumps(item))
+            if len(selected) >= limit or size + item_size > _CHANNEL_HISTORY_MAX_CHARS:
+                break
+            selected[messages[index].id] = item
+            size += item_size
+        results = [selected[key] for key in sorted(selected, reverse=order == "desc")]
+        return {
+            "channel_id": str(channel.id),
+            "around_message_id": str(anchor_id),
+            "messages": results,
+            "count": len(results),
+            "order": order,
+            "window_end": upper,
+            "truncated": len(selected) < len(messages),
+            "older": {
+                "channel_id": str(channel.id),
+                "cursor": str(min(selected)),
+                "order": "desc",
+                "before": upper,
+                "limit": limit,
+            },
+            "newer": {
+                "channel_id": str(channel.id),
+                "cursor": str(max(selected)),
+                "order": "asc",
+                "before": upper,
+                "limit": limit,
+            },
         }
 
     async def resolve_member(
@@ -756,6 +862,30 @@ def _is_default_role(role: Any) -> bool:
         except Exception:
             return False
     return False
+
+
+def _history_message_id(raw: object, field: str) -> int:
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdecimal() or len(raw) > 20:
+        raise ValueError(f"{field} must be a numeric Discord ID")
+    value = int(raw)
+    if not 0 < value < 2**64:
+        raise ValueError(f"{field} must be a numeric Discord ID")
+    return value
+
+
+def _channel_history_item(message: Any) -> dict[str, Any]:
+    return {
+        "id": str(message.id),
+        "author_id": str(message.author.id),
+        "author": message.author.display_name,
+        "content": message.content,
+        "timestamp": message.created_at.isoformat(),
+        "url": message.jump_url,
+        "attachments": [
+            {"index": i + 1, "filename": attachment.filename}
+            for i, attachment in enumerate(message.attachments)
+        ],
+    }
 
 
 def _is_search_message_channel(channel: Any) -> bool:

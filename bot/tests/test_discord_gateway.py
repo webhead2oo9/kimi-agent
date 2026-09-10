@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime, UTC
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -976,3 +978,306 @@ async def test_discovery_exact_page_boundary_has_empty_terminal_page():
         _ctx(), excluded_channel_ids=frozenset(), cursor=page["next_cursor"], limit=1
     )
     assert last == {"sources": {}, "next_cursor": None, "has_more": False}
+
+
+class _HistoryChannel(_SearchChannel):
+    def __init__(self, id=200, name="development", **kwargs):
+        channel_type = kwargs.pop("channel_type", discord.ChannelType.text)
+        super().__init__(id, name, channel_type, **kwargs)
+        self.messages = [
+            SimpleNamespace(
+                id=index,
+                author=_Author(123, "Alice"),
+                content=f"message {index}",
+                created_at=datetime.fromtimestamp(index, tz=UTC),
+                jump_url=f"https://discord.com/channels/999/{id}/{index}",
+                attachments=[],
+            )
+            for index in range(1, 61)
+        ]
+        self.history_calls = []
+        self.history_error = None
+
+    async def history(self, *, limit, before=None, after=None, around=None, oldest_first=False):
+        self.history_calls.append(
+            {"limit": limit, "before": before, "after": after, "around": around}
+        )
+        if self.history_error:
+            raise self.history_error
+        messages = list(self.messages)
+        if around:
+            # Model Discord's even-limit quirk, including a missing anchor that
+            # still returns nearby messages from the selected channel.
+            messages.sort(key=lambda message: abs(message.id - around.id))
+            messages = messages[: 2 * (limit // 2) + 1]
+        else:
+            if before:
+                messages = [
+                    message
+                    for message in messages
+                    if (
+                        message.created_at < before
+                        if isinstance(before, datetime)
+                        else message.id < before.id
+                    )
+                ]
+            if after:
+                messages = [
+                    message
+                    for message in messages
+                    if (
+                        message.created_at > after
+                        if isinstance(after, datetime)
+                        else message.id > after.id
+                    )
+                ]
+        messages.sort(key=lambda message: message.id, reverse=not oldest_first)
+        for message in messages if around else messages[:limit]:
+            yield message
+
+
+def _history_setup(*, target=None, excluded=frozenset()):
+    member, bot = _SearchMember(123), _SearchMember(999)
+    current = _HistoryChannel(100, "general")
+    target = target or _HistoryChannel()
+    guild = _SearchGuild(member, bot, [current, target], [])
+    gateway = _search_gateway(guild, member, bot)
+    gateway._search_excluded_channel_ids = excluded
+    return gateway, guild, current, target
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selector", ["development", "#Development", "200", "<#200>"])
+async def test_history_reads_last_30_messages_from_selected_channel(selector):
+    gateway, _guild, current, target = _history_setup()
+
+    result = await gateway.collect_channel_history(_ctx(), {"channel": selector, "limit": 30})
+
+    assert result["channel_id"] == "200"
+    assert [message["id"] for message in result["messages"]] == [str(i) for i in range(60, 30, -1)]
+    assert result["next_cursor"] == "31"
+    assert current.history_calls == []
+    assert len(target.history_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_without_channel_selection_uses_current_channel():
+    gateway, _guild, current, target = _history_setup()
+
+    result = await gateway.collect_channel_history(_ctx(), {"order": "desc", "limit": 30})
+
+    assert result["channel_id"] == "100"
+    assert len(current.history_calls) == 1
+    assert target.history_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selector", ["development", "200", "<#200>"])
+@pytest.mark.parametrize("restriction", ["member", "bot", "excluded", "other_guild"])
+async def test_history_selection_rejects_unreadable_and_other_guild_channels(selector, restriction):
+    gateway, _guild, current, target = _history_setup()
+    if restriction == "member":
+        target.denied_ids.add(123)
+    elif restriction == "bot":
+        target.denied_ids.add(999)
+    elif restriction == "excluded":
+        gateway._search_excluded_channel_ids = frozenset({"200"})
+    else:
+        target.guild = SimpleNamespace(id=1000)
+
+    with pytest.raises(ValueError, match="unavailable"):
+        await gateway.collect_channel_history(
+            _ctx(), {"channel": selector, "around_message_id": "30"}
+        )
+
+    assert current.history_calls == []
+    assert target.history_calls == []
+
+
+@pytest.mark.asyncio
+async def test_history_channel_names_are_resolved_in_each_request_guild():
+    first, _guild, _current, target = _history_setup()
+    second, other_guild, _other_current, other_target = _history_setup(target=_HistoryChannel(300))
+    other_guild.id = 1000
+
+    first_page = await first.collect_channel_history(_ctx(), {"channel": "development"})
+    second_page = await second.collect_channel_history(
+        replace(_ctx(), guild_id="1000"), {"channel": "development"}
+    )
+
+    assert first_page["channel_id"] == "200"
+    assert second_page["channel_id"] == "300"
+    assert len(target.history_calls) == len(other_target.history_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_rejects_ambiguous_names_but_accepts_explicit_id():
+    gateway, guild, current, target = _history_setup()
+    current.name = target.name
+
+    with pytest.raises(ValueError, match="Multiple accessible channels"):
+        await gateway.collect_channel_history(_ctx(), {"channel": "development"})
+    assert current.history_calls == target.history_calls == []
+
+    result = await gateway.collect_channel_history(_ctx(), {"channel_id": "200"})
+    assert result["channel_id"] == "200"
+    current.denied_ids.add(123)
+    result = await gateway.collect_channel_history(_ctx(), {"channel": "development"})
+    assert result["channel_id"] == "200"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+@pytest.mark.parametrize("selector", ["private-topic", "201"])
+async def test_history_active_private_thread_selection_requires_both_members(allowed, selector):
+    gateway, guild, _current, target = _history_setup()
+    thread = _HistoryChannel(
+        201,
+        "private-topic",
+        channel_type=discord.ChannelType.private_thread,
+        parent_id=200,
+        thread_member_ids={123, 999} if allowed else {999},
+    )
+    thread.guild = guild
+    guild.threads.append(thread)
+    guild._all[201] = thread
+
+    if allowed:
+        result = await gateway.collect_channel_history(_ctx(), {"channel": selector})
+        assert result["channel_id"] == "201"
+    else:
+        with pytest.raises(ValueError, match="unavailable"):
+            await gateway.collect_channel_history(_ctx(), {"channel": selector})
+        assert thread.history_calls == []
+    assert target.history_calls == []
+
+
+@pytest.mark.asyncio
+async def test_history_parent_exclusion_covers_thread_selection():
+    gateway, guild, _current, target = _history_setup(excluded=frozenset({"100"}))
+    target.type = discord.ChannelType.public_thread
+    target.parent_id = 100
+    guild.channels.remove(target)
+    guild.threads.append(target)
+
+    for args in ({"channel": "development"}, {"channel_id": "200"}):
+        with pytest.raises(ValueError, match="unavailable"):
+            await gateway.collect_channel_history(_ctx(), args)
+    assert target.history_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_history_uses_owners_guild_identity_for_channel_selection():
+    gateway, guild, _current, _target = _history_setup()
+    member = _SearchMember(123)
+    member.guild = guild
+    ctx = replace(_ctx(), scheduled_run_id="run-1", platform_member=member)
+
+    result = await gateway.collect_channel_history(ctx, {"channel": "development", "limit": 30})
+    assert result["channel_id"] == "200"
+
+    with pytest.raises(ValueError, match="identity is unavailable"):
+        await gateway.collect_channel_history(replace(ctx, guild_id="1000"), {"channel_id": "200"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 2, 21, 30, 100])
+@pytest.mark.parametrize("order", ["asc", "desc"])
+async def test_message_context_keeps_anchor_and_both_sides_within_requested_count(limit, order):
+    gateway, _guild, current, target = _history_setup()
+    args = {"channel_id": "200", "around_message_id": "30", "limit": limit, "order": order}
+
+    result = await gateway.collect_channel_history(_ctx(), args)
+    ids = [int(message["id"]) for message in result["messages"]]
+
+    assert 30 in ids
+    assert ids == sorted(ids, reverse=order == "desc")
+    assert len(ids) <= limit
+    if limit >= 3:
+        assert 29 in ids and 31 in ids
+    assert target.history_calls[0]["around"].id == 30
+    assert current.history_calls == []
+
+    older = await gateway.collect_channel_history(_ctx(), result["older"])
+    newer = await gateway.collect_channel_history(_ctx(), result["newer"])
+    assert all(int(message["id"]) < min(ids) for message in older["messages"])
+    assert all(int(message["id"]) > max(ids) for message in newer["messages"])
+    if min(ids) > 1:
+        assert int(older["messages"][0]["id"]) == min(ids) - 1
+    if max(ids) < 60:
+        assert int(newer["messages"][0]["id"]) == max(ids) + 1
+
+
+@pytest.mark.asyncio
+async def test_message_context_preserves_anchor_when_text_budget_is_reached():
+    gateway, _guild, _current, target = _history_setup()
+    for message in target.messages:
+        message.content = "x" * 4000
+
+    result = await gateway.collect_channel_history(
+        _ctx(), {"channel_id": "200", "around_message_id": "30", "limit": 30}
+    )
+
+    assert result["truncated"] is True
+    assert "30" in [message["id"] for message in result["messages"]]
+    assert sum(len(json.dumps(message)) for message in result["messages"]) <= 32_000
+
+
+@pytest.mark.asyncio
+async def test_message_context_rejects_oversized_anchor_instead_of_exceeding_text_budget():
+    gateway, _guild, _current, target = _history_setup()
+    target.messages[29].content = "x" * 32_000
+
+    with pytest.raises(ValueError, match="exceeds the channel context text budget"):
+        await gateway.collect_channel_history(
+            _ctx(), {"channel_id": "200", "around_message_id": "30"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_message_context_rejects_missing_anchor_in_selected_channel():
+    gateway, _guild, _current, target = _history_setup()
+    target.messages = [message for message in target.messages if message.id != 30]
+
+    with pytest.raises(ValueError, match="Message unavailable in the selected channel"):
+        await gateway.collect_channel_history(
+            _ctx(), {"channel_id": "200", "around_message_id": "30"}
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"channel": "development", "channel_id": "200"},
+        {"channel": ["development"]},
+        {"channel": []},
+        {"channel": False},
+        {"channel": "<#-1>"},
+        {"channel": "#"},
+        {"channel_id": str(2**64)},
+        {"channel_id": "200", "around_message_id": "-1"},
+        {"channel_id": "200", "around_message_id": "0"},
+        {"channel_id": "200", "around_message_id": "１２３"},
+        {"channel_id": "200", "around_message_id": "30", "cursor": "40"},
+        {"channel_id": "200", "around_message_id": "30", "before": "2026-09-10T00:00:00Z"},
+        {"channel_id": "200", "around_message_id": "30", "after": "2026-09-10T00:00:00Z"},
+        {"channel_id": "200", "around_message_id": "30", "order": "random"},
+    ],
+)
+async def test_invalid_history_selectors_and_mixed_windows_never_fetch_messages(args):
+    gateway, _guild, current, target = _history_setup()
+
+    with pytest.raises(ValueError):
+        await gateway.collect_channel_history(_ctx(), args)
+    assert current.history_calls == target.history_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [{}, {"around_message_id": "30"}])
+async def test_history_http_failure_is_reported_safely(extra):
+    gateway, _guild, _current, target = _history_setup()
+    target.history_error = discord.NotFound(_FakeResponse(), "internal provider details")
+
+    with pytest.raises(DiscordGatewayError, match="Could not read channel history"):
+        await gateway.collect_channel_history(_ctx(), {"channel_id": "200", **extra})

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from agent.backfill import BackfilledMessage, ChannelContextImage
 from discord_adapter.gateway import DiscordGatewayError
 from tools.channel_context import MAX_CONTEXT_IMAGES, init_channel_context_tool
@@ -15,8 +17,12 @@ class _Gateway:
         self.result = result or []
         self.error = error
         self.limits: list[int] = []
+        self.history_args: list[dict] = []
 
     async def collect_channel_history(self, ctx: MessageContext, args: dict) -> dict[str, object]:
+        self.history_args.append(args)
+        if self.error is not None:
+            raise self.error
         return {"messages": [], "next_cursor": None}
 
     async def collect_recent_channel_context(
@@ -153,3 +159,39 @@ def test_get_channel_context_returns_safe_error_when_gateway_unavailable() -> No
     raw = asyncio.run(registry.dispatch("get_channel_context", {}, _ctx()))
 
     assert json.loads(raw) == {"error": "Current Discord source is unavailable."}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"channel": "#development", "limit": 30},
+        {"channel_id": "200", "limit": 30},
+        {"around_message_id": "777", "limit": 21},
+        {"channel": "<#200>", "around_message_id": "777"},
+    ],
+)
+async def test_get_channel_context_routes_selectors_and_anchors_to_history(args):
+    gateway = _Gateway()
+    registry = ToolRegistry()
+    init_channel_context_tool(registry, gateway)
+
+    result = json.loads(await registry.dispatch("get_channel_context", args, _ctx()))
+
+    assert gateway.history_args == [args]
+    assert gateway.limits == []
+    assert result["context_is_untrusted"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_channel_context_reports_unavailable_channel_without_a_fallback_read():
+    gateway = _Gateway(error=ValueError("Channel unavailable"))
+    registry = ToolRegistry()
+    init_channel_context_tool(registry, gateway)
+
+    result = json.loads(
+        await registry.dispatch("get_channel_context", {"channel": "#private"}, _ctx())
+    )
+
+    assert result == {"error": "Channel unavailable"}
+    assert gateway.limits == []

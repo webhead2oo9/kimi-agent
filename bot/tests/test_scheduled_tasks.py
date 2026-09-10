@@ -580,8 +580,8 @@ async def test_history_traverses_more_than_100_messages_without_gaps(order):
         for message in selected[:limit]:
             yield message
 
-    channel = SimpleNamespace(history=history)
-    guild = SimpleNamespace(get_channel_or_thread=lambda _: channel)
+    guild = SimpleNamespace(id=int(context().guild_id), get_channel_or_thread=lambda _: channel)
+    channel = SimpleNamespace(id=200, guild=guild, history=history)
     gateway = DiscordGateway(bot_user_provider=lambda: None)
     gateway._discord_search_actors = lambda ctx: (guild, None, None)
     gateway.resolve_discord_search_channels = AsyncMock(return_value={"200": "development"})

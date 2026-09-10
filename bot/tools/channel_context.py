@@ -37,7 +37,9 @@ def init_channel_context_tool(
         if ctx.scheduled_run_id or any(
             key in args
             for key in (
+                "channel",
                 "channel_id",
+                "around_message_id",
                 "before",
                 "after",
                 "cursor",
@@ -90,7 +92,10 @@ def init_channel_context_tool(
     registry.register(
         name="get_channel_context",
         description=(
-            "Read recent Discord channel or thread context before the current message. "
+            "Read Discord channel or thread context in the current server. "
+            "Omit channel to read the current channel, or select an accessible channel "
+            "by name, mention, or ID. Use around_message_id with a search result's "
+            "channel_id to read surrounding discussion. "
             "Use when the user refers to prior discussion, says things like above/that, "
             "asks what was decided, asks for a summary/catch-up, or you are missing "
             "Discord context needed to answer well. Any images posted in that window "
@@ -101,9 +106,30 @@ def init_channel_context_tool(
         parameters={
             "type": "object",
             "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": (
+                        "Optional channel name, #name, mention, or ID in the current server. "
+                        "Defaults to the current channel. Names must be unique among accessible "
+                        "channels and active threads; use an ID for archived threads. "
+                        "Use either channel or channel_id."
+                    ),
+                },
                 "channel_id": {
                     "type": "string",
-                    "description": "Accessible channel or existing thread ID.",
+                    "description": (
+                        "Exact accessible channel or thread ID in the current server. "
+                        "Use either channel_id or channel."
+                    ),
+                },
+                "around_message_id": {
+                    "type": "string",
+                    "description": (
+                        "Read a bounded window around this message in the selected channel, "
+                        "including the message itself. limit counts all returned messages. "
+                        "Cannot combine with before, after, or cursor. Use the returned "
+                        "older/newer argument objects to continue beyond the window."
+                    ),
                 },
                 "before": {
                     "type": "string",
@@ -120,7 +146,10 @@ def init_channel_context_tool(
                 "order": {
                     "type": "string",
                     "enum": ["asc", "desc"],
-                    "description": "Chronological asc or newest-first desc (default).",
+                    "description": (
+                        "Chronological asc or newest-first desc. Defaults to desc for history, "
+                        "asc around a message."
+                    ),
                 },
                 "limit": {
                     "type": "integer",

@@ -151,12 +151,13 @@ def _domain_matches(url: str, pattern: str) -> bool:
     except ValueError:
         return False
     host = (parsed.hostname or "").casefold()
-    raw = pattern.strip().casefold()
+    raw = pattern.strip()
     if "://" in raw:
         candidate = urlsplit(raw)
         raw = (candidate.hostname or "") + candidate.path
-    raw = raw.removeprefix("www.").rstrip("/")
+    raw = raw.rstrip("/")
     domain, _, path = raw.partition("/")
+    domain = domain.casefold().removeprefix("www.")
     if domain.startswith("*."):
         host_match = host.endswith(domain[1:]) and host != domain[2:]
     else:

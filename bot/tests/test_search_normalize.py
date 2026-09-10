@@ -4,6 +4,13 @@ from search.normalize import canonical_url, filter_results, unique_content
 from search.types import SearchResult
 
 
+def test_url_prefix_preserves_path_case_for_inclusion_and_exclusion() -> None:
+    result = SearchResult("API", "https://example.com/API")
+    assert filter_results((result,), include_domains=("https://EXAMPLE.com/API",)) == (result,)
+    assert filter_results((result,), exclude_domains=("https://EXAMPLE.com/API",)) == ()
+    assert filter_results((result,), include_domains=("https://example.com/api",)) == ()
+
+
 def test_canonical_url_removes_only_identity_noise() -> None:
     assert (
         canonical_url("HTTP://WWW.Example.COM:80/Path/?b=2&utm_source=news&a=1#part")

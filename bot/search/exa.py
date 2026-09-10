@@ -90,8 +90,10 @@ class ExaSearchBackend:
             raise SearchProviderError("Exa could not read the requested pages.")
         results = tuple(
             result
-            for result in _normalize_results(raw_results, request.content_mode)
-            if canonical_url(result.url) in successful
+            for item in raw_results
+            if isinstance(item, dict)
+            and canonical_url(clean_text(item.get("id") or item.get("url"))) in successful
+            for result in _normalize_results([item], request.content_mode)
         )
         if not results:
             raise SearchProviderError("Exa returned an invalid response shape.")
@@ -99,6 +101,7 @@ class ExaSearchBackend:
             provider=self.name,
             results=results,
             reported_cost_usd=_cost_dollars(response.payload),
+            failed_urls=tuple(url for url in request.urls if canonical_url(url) not in successful),
         )
 
     async def _post(self, path: str, payload: dict[str, Any]) -> HttpResponse:

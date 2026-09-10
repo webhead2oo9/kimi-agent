@@ -28,6 +28,31 @@ class RecordingPost:
 
 
 @pytest.mark.asyncio
+async def test_exa_contents_matches_document_id_not_display_url() -> None:
+    original = "https://arxiv.org/abs/2307.06435"
+    pdf = "https://arxiv.org/pdf/2307.06435.pdf"
+    post = RecordingPost(
+        {
+            "results": [{"id": original, "url": pdf, "text": "Paper"}],
+            "statuses": [{"id": original, "status": "success"}],
+        }
+    )
+    response = await ExaSearchBackend("secret", request=post).contents(
+        ContentsRequest((original, "https://example.com/missing"), "text")
+    )
+    assert response.results[0].url == pdf
+    assert response.failed_urls == ("https://example.com/missing",)
+
+
+@pytest.mark.asyncio
+async def test_brave_rejects_unsupported_country_before_network() -> None:
+    post = RecordingPost({})
+    with pytest.raises(SearchProviderError, match="does not support this country"):
+        await BraveSearchBackend("secret", request=post).search(SearchRequest("q", 1, country="ZZ"))
+    assert not post.calls
+
+
+@pytest.mark.asyncio
 async def test_exa_search_uses_highlights_and_normalizes_reported_cost() -> None:
     post = RecordingPost(
         {
@@ -96,6 +121,7 @@ async def test_exa_contents_uses_top_level_content_option_and_statuses() -> None
         "text": True,
     }
     assert [item.url for item in response.results] == ["https://example.com/good"]
+    assert response.failed_urls == ("https://example.com/bad",)
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ The model sees one tool and never learns which provider answered. Provider names
 
 ## Request modes
 
-- `search` takes a `query` and returns up to `num_results` combined results. A query is capped at 400 characters and 50 words, the strictest limit any configured provider imposes.
+- `search` takes a `query` and returns up to `num_results` combined results. Queries must stay within both limits: 400 characters and 50 words.
 - `contents` takes one or more absolute HTTP(S) `urls` and reads those pages. TinyFish and Exa can do this; Brave cannot. A Brave-only deployment returns an error saying no page-reading provider is configured, rather than quietly turning the request into a search.
 - `content_mode` is `highlights` by default. Asking for `text` sends the call only to a backend that can return full page text, and the two entry points are judged separately: TinyFish search returns snippets and is skipped for a `text` search, while TinyFish page reads return whole pages and are eligible.
 - Domain, publication-date, and country constraints are optional. Where a provider can't apply one itself, Kimi applies it to that provider's results afterward, so a constraint is never dropped quietly. A result whose publication date the provider never reported can't satisfy a date constraint, and is dropped.
@@ -17,7 +17,12 @@ Each result carries `title`, `url`, the useful `content`, and the publication da
 {"results": [], "message": "No matching results found."}
 ```
 
-That is distinct from a timeout or a provider failure, which come back as an `error` object. Without the distinction the model can't tell "the web has no answer" from "the search is broken", and will retry the wrong one.
+If only some pages can be read, the tool returns those pages and tells the model which URLs need another attempt.
+
+`INTERNET_SEARCH_MAX_OUTPUT_CHARS` limits the whole tool response. Lower limits can shorten page text or leave out results; the default is 24,000 characters.
+
+
+Timeouts and complete provider failures return an `error` object, distinct from an empty search result. This lets the model distinguish a failed search from a search with no matches.
 
 ## Provider behavior
 

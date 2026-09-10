@@ -101,7 +101,12 @@ class TinyFishSearchBackend:
             # Per-URL failures ride along with HTTP 200 in errors[], so an empty
             # result set is the only signal that every page failed.
             raise SearchProviderError("TinyFish could not read the requested pages.")
-        return BackendResponse(provider=self.name, results=tuple(results))
+        completed = {canonical_url(result.url) for result in results}
+        return BackendResponse(
+            provider=self.name,
+            results=tuple(results),
+            failed_urls=tuple(url for url in request.urls if canonical_url(url) not in completed),
+        )
 
     async def _try_fetch_batch(self, urls: tuple[str, ...]) -> tuple[SearchResult, ...] | None:
         try:
@@ -171,7 +176,7 @@ def _normalize_fetch_results(raw: list[object]) -> tuple[SearchResult, ...]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        url = clean_text(item.get("final_url")) or clean_text(item.get("url"))
+        url = clean_text(item.get("url")) or clean_text(item.get("final_url"))
         if not canonical_url(url):
             continue
         results.append(

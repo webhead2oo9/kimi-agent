@@ -15,6 +15,35 @@ _MAX_JSON_NODES = 50_000
 _MAX_JSON_DEPTH = 32
 
 
+def provider_error(provider: str, response: HttpResponse) -> SearchProviderError:
+    """Expose validation locations, never echoed query values or arbitrary provider text."""
+    error = response.payload.get("error")
+    fields: set[str] = set()
+    if isinstance(error, dict):
+        meta = error.get("meta")
+        errors = meta.get("errors") if isinstance(meta, dict) else None
+        if isinstance(errors, list):
+            for item in errors:
+                loc = item.get("loc") if isinstance(item, dict) else None
+                if isinstance(loc, list):
+                    fields.update(
+                        str(value)
+                        for value in loc
+                        if value
+                        in (
+                            "q",
+                            "country",
+                            "search_lang",
+                            "freshness",
+                            "safesearch",
+                            "maximum_number_of_urls",
+                            "count",
+                        )
+                    )
+    detail = " Check parameter(s): " + ", ".join(sorted(fields)) + "." if fields else ""
+    return SearchProviderError(f"{provider} returned HTTP {response.status}." + detail)
+
+
 async def post_json(
     url: str,
     headers: dict[str, str],

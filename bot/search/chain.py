@@ -91,7 +91,7 @@ class SearchChain:
             except Exception as exc:
                 errors.append(exc)
                 log.warning("Search backend %s failed", backend.name, exc_info=exc)
-        raise SearchProviderError("Internet search is temporarily unavailable.") from errors[-1]
+        raise SearchProviderError(_failure_message(errors)) from errors[-1]
 
     async def _blend_search(
         self,
@@ -116,13 +116,22 @@ class SearchChain:
             )
             if budget_error is not None:
                 raise budget_error
-            raise SearchProviderError("Internet search is temporarily unavailable.")
+            raise SearchProviderError(
+                _failure_message([item for item in outcomes if isinstance(item, Exception)])
+            )
         merged = _round_robin_results(responses, request.num_results)
         return ChainResponse(merged, responses)
 
     async def _call(self, awaitable: Awaitable[T]) -> T:
         async with asyncio.timeout(self._timeout_seconds):
             return await awaitable
+
+
+def _failure_message(errors: list[Exception]) -> str:
+    details = [str(error) for error in errors if isinstance(error, SearchProviderError)]
+    return "Internet search is temporarily unavailable." + (
+        " " + " ".join(details) if details else ""
+    )
 
 
 def _round_robin_results(

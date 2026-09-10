@@ -238,6 +238,27 @@ async def test_branch_return_adds_selected_result_as_context_once(store):
     await branches.return_result(branch, parent, event_id=answer.id)
     returned = [event for event in await store.events(parent.id) if event.kind == "branch_result"]
     assert len(returned) == 1 and returned[0].payload["text"] == "Alternative result"
+    assert returned[0].payload["source_event_id"] == answer.id
+    branch_events = await store.events(branch.id)
+    assert (
+        next(event for event in branch_events if event.id == answer.id).payload[
+            "returned_to_parent"
+        ]
+        is True
+    )
+    assert len([event for event in branch_events if event.kind == "branch_returned"]) == 1
+    # Older returned results also show their durable state without a new journal notice.
+    async with store.db.write_transaction() as conn:
+        await conn.execute(
+            "DELETE FROM dashboard_events WHERE dashboard_id=? AND kind='branch_returned'",
+            (branch.id,),
+        )
+    assert (
+        next(event for event in await store.events(branch.id) if event.id == answer.id).payload[
+            "returned_to_parent"
+        ]
+        is True
+    )
     history = await store.conversations.load_recent_conversation_messages(parent.conversation_id)
     assert history[-1].role == "user"
     assert "Alternative result" in history[-1].content[0].text

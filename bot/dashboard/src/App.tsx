@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, Check, ChevronLeft, CornerUpLeft, Files, GitBranch, Hash, LockKeyhole, Menu, MoreHorizontal, Paperclip, Plus, Search, Square, Trash2, X } from "lucide-react";
 import type { Connection } from "./api";
-import { ApiError } from "./api";
+import { ApiError, retryRead } from "./api";
 import { Markdown } from "./Markdown";
+import { CopyButton } from "./CopyButton";
 import { WorkPanel } from "./WorkPanel";
 import { conversationTimeline, isResponding, latestWork, mergeEvents, type Chat, type ChatEvent, type FileRecord, type Session } from "./types";
 
@@ -31,9 +32,15 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [openingRetry, setOpeningRetry] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [loadedChatId, setLoadedChatId] = useState<string | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<{ chatId: string; eventId: number } | null>(null);
+  const [focusedMessage, setFocusedMessage] = useState<{ chatId: string; eventId: number } | null>(null);
+  const [jumpLoading, setJumpLoading] = useState(false);
   const [moreHistory, setMoreHistory] = useState(false);
   const [moreChats, setMoreChats] = useState(false);
   const [chatCursor, setChatCursor] = useState<Chat | null>(null);
@@ -78,38 +85,39 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   }, [api]);
 
   useEffect(() => {
-    let live = true;
-    void refreshChats().then(async result => {
-      if (!live) return;
+    return retryRead(async () => {
+      const { chats } = await api.request<{ chats: Chat[] }>("/chats");
       let remembered: string | null = null;
       try { remembered = localStorage.getItem(rememberKey); } catch { /* storage may be disabled */ }
-      if (remembered && !result.some(chat => chat.id === remembered)) {
+      let saved: Chat | undefined;
+      if (remembered && !chats.some(chat => chat.id === remembered)) {
         try {
-          const saved = await api.request<Chat>(`/chats/${encodeURIComponent(remembered)}`);
-          if (!live) return;
-          setChats(previous => [...previous.filter(chat => chat.id !== saved.id), saved]);
-          setActiveId(saved.id); return;
+          saved = await api.request<Chat>(`/chats/${encodeURIComponent(remembered)}`);
         } catch (error) {
           if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
         }
       }
-      if (live) setActiveId(result.find(chat => chat.id === remembered)?.id || result[0]?.id || null);
-    }).catch(report).finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
-  }, [api, refreshChats, rememberKey, report]);
+      return { chats, remembered, saved };
+    }, ({ chats, remembered, saved }) => {
+      setChats(saved ? [...chats, saved] : chats);
+      setMoreChats(chats.length === 100); setChatCursor(chats.at(-1) || null);
+      setActiveId(saved?.id || chats.find(chat => chat.id === remembered)?.id || chats[0]?.id || null);
+      setLoading(false); setOpeningRetry(false);
+    }, error => { report(error); setLoading(false); setOpeningRetry(false); }, () => setOpeningRetry(true));
+  }, [api, rememberKey, report]);
 
   useEffect(() => {
     let live = true;
     let unsubscribe: (() => void) | undefined;
-    setEvents([]); setFiles([]); setSelectedFile(null); setConnected(null); setMoreHistory(false); setHistoryLoading(false);
+    setEvents([]); setFiles([]); setSelectedFile(null); setConnected(null); setMoreHistory(false); setHistoryLoading(false); setLoadedChatId(null);
     followEnd.current = true;
     if (!activeId || expired) return;
     try { localStorage.setItem(rememberKey, activeId); } catch { /* optional preference */ }
     setHistoryLoading(true);
     const refreshFiles = () => void api.request<{ files: FileRecord[] }>(`/chats/${activeId}/files`).then(result => { if (live) setFiles(result.files); }).catch(report);
-    void api.request<{ events: ChatEvent[] }>(`/chats/${activeId}/events`).then(result => {
-      if (!live) return;
+    const stopLoading = retryRead(() => api.request<{ events: ChatEvent[] }>(`/chats/${activeId}/events`), result => {
       setEvents(result.events); setMoreHistory(result.events.length === 200);
+      setLoadedChatId(activeId); setHistoryLoading(false);
       setOptimisticBusy(previous => previous === activeId ? null : previous);
       const after = result.events.at(-1)?.id || 0;
       unsubscribe = api.subscribe(activeId, after, incoming => {
@@ -129,15 +137,45 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         }
       });
       refreshFiles();
-    }).catch(report).finally(() => { if (live) setHistoryLoading(false); });
-    return () => { live = false; unsubscribe?.(); };
+    }, error => { report(error); setHistoryLoading(false); }, () => setConnected(false));
+    return () => { live = false; stopLoading(); unsubscribe?.(); };
   }, [activeId, api, expired, rememberKey, refreshChats, report]);
 
   useEffect(() => {
     if (followEnd.current && history.current) history.current.scrollTop = history.current.scrollHeight;
   }, [events, busy]);
 
-  const choose = (id: string) => { setActiveId(id); setSidebarOpen(false); setError(""); setMenu(null); };
+  useEffect(() => {
+    if (!jumpTarget || loadedChatId !== jumpTarget.chatId || activeId !== jumpTarget.chatId || expired) return;
+    let live = true;
+    setJumpLoading(true); followEnd.current = false;
+    const findMessage = async () => {
+      let page = events;
+      while (live && !page.some(event => event.id === jumpTarget.eventId)) {
+        const before = page[0]?.id;
+        if (!before || before <= jumpTarget.eventId) throw new Error("The branch starting message is no longer available.");
+        const result = await api.request<{ events: ChatEvent[] }>(`/chats/${jumpTarget.chatId}/events?before=${before}`);
+        if (!live) return;
+        if (!result.events.length || result.events[0].id >= before) throw new Error("The branch starting message is no longer available.");
+        const earlier = result.events;
+        page = earlier;
+        setEvents(previous => mergeEvents(earlier, previous)); setMoreHistory(earlier.length === 200);
+      }
+      if (live) setFocusedMessage(jumpTarget);
+    };
+    void findMessage().catch(error => { if (live) report(error); }).finally(() => { if (live) setJumpLoading(false); });
+    return () => { live = false; };
+    // The event snapshot belongs to loadedChatId. Live updates and pagination
+    // must not restart a navigation already loading its earlier pages.
+  }, [jumpTarget, loadedChatId, activeId, expired, api, report]);
+
+  useEffect(() => {
+    if (focusedMessage?.chatId !== activeId) return;
+    const node = document.getElementById(`message-${focusedMessage.eventId}`);
+    node?.scrollIntoView?.({ block: "center" }); node?.focus({ preventScroll: true });
+  }, [focusedMessage, activeId]);
+
+  const choose = (id: string) => { setActiveId(id); setSidebarOpen(false); setError(""); setNotice(""); setMenu(null); setJumpTarget(null); setFocusedMessage(null); setJumpLoading(false); };
   const updateDraft = (chatId: string, update: Partial<Draft>) => setDrafts(current => ({ ...current, [chatId]: { ...(current[chatId] || emptyDraft), ...update } }));
   const newChat = async (text = "") => {
     try {
@@ -149,12 +187,12 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     } catch (error) { report(error); return null; }
   };
   const selectFile = (file: FileRecord) => { setSelectedFile(file); setWorkOpen(true); };
-  const openChat = async (id: string) => {
+  const openChat = async (id: string, eventId?: number | null) => {
     const from = activeId;
     try {
       const chat = await api.request<Chat>(`/chats/${encodeURIComponent(id)}`);
       setChats(previous => [chat, ...previous.filter(item => item.id !== chat.id)]);
-      if (currentChatId.current === from) choose(chat.id);
+      if (currentChatId.current === from) { choose(chat.id); if (eventId) setJumpTarget({ chatId: chat.id, eventId }); }
     } catch (error) { report(error); }
   };
   const branchFrom = async (eventId: number) => {
@@ -179,7 +217,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     try {
       const parent = await api.request<Chat>(`/chats/${chatId}/return-result`, "POST", { event_id: eventId });
       setChats(previous => [parent, ...previous.filter(chat => chat.id !== parent.id)]);
-      if (currentChatId.current === chatId) choose(parent.id);
+      if (currentChatId.current === chatId) { choose(parent.id); setNotice("Response brought to parent."); }
     } catch (error) { report(error); }
     finally { setBranching(false); }
   };
@@ -236,6 +274,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   };
 
   const messages = conversationTimeline(events);
+  const returnedMessages = new Set(events.filter(event => event.kind === "branch_returned").map(event => event.payload.event_id));
   const completedTurns = new Set(events.filter(event => event.kind === "turn_finished").map(event => event.payload.turn_id));
   const activity = [...events].reverse().find(event => event.kind === "activity" && !completedTurns.has(event.payload.turn_id))?.payload.label;
   const work = latestWork(events);
@@ -245,7 +284,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     {sidebarOpen && <button className="drawer-scrim" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />}
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-label="Saved conversations">
       <div className="brand"><div className="kimi-mark">k</div><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
-      <button className="new-chat" onClick={() => void newChat()} disabled={expired}><Plus size={16} /> New chat</button>
+      <button className="new-chat" onClick={() => void newChat()} disabled={expired || loading}><Plus size={16} /> New chat</button>
       <label className="chat-search"><Search size={15} /><input aria-label="Search conversations" placeholder="Find a conversation" value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="sidebar-label">Recent</div>
       <nav className="chat-list" aria-label="Conversations">
@@ -266,36 +305,44 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         <div className="chat-heading"><strong>{active?.title || session.bot_name}</strong>{active && <span><Hash size={12} />{active.channel_name}{connected === false && <><i /><span className="status-pill reconnecting" role="status">Reconnecting…</span></>}</span>}</div>
         <button className={`work-toggle ${workOpen ? "active" : ""}`} aria-label="Work" onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
       </header>
-      {active?.parent_title && <div className="branch-banner"><GitBranch size={16} /><div>{active.parent_id ? <button className="text-button" onClick={() => void openChat(active.parent_id!)}><CornerUpLeft size={14} />Parent: {active.parent_title}</button> : <span>Parent conversation deleted</span>}<p>Context copied through the selected message. Workspace files are shared.</p></div></div>}
+      {active?.parent_title && <div className="branch-banner"><GitBranch size={16} /><div>{active.parent_id ? <button className="text-button" title="Go to the starting message in the parent conversation" onClick={() => void openChat(active.parent_id!, active.parent_event_id)}><CornerUpLeft size={14} />Parent: {active.parent_title}</button> : <span>Parent conversation deleted</span>}<p>Context copied through the selected message. Workspace files are shared.</p></div></div>}
+      {notice && !expired && <div className="notice success-notice" role="status"><Check size={15} /><span>{notice}</span><button type="button" className="icon-button" aria-label="Dismiss confirmation" onClick={() => setNotice("")}><X size={16} /></button></div>}
       {error && <div className="notice error" role="alert"><span>{error}</span>{expired ? <button onClick={() => location.reload()}>Reconnect</button> : <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
       {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2><p>{session.consent_text}</p><button className="primary" onClick={() => void api.request("/consent", "POST", { accept: true }).then(() => setSession({ ...session, consent_required: false })).catch(report)}>Accept and continue</button></div>}
       <div className="message-scroll" ref={history} onScroll={() => { const node = history.current; if (node) followEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
+        {loading && <p className="loading-history" role="status">{openingRetry ? "Connection unavailable. Retrying…" : "Opening your conversations…"}</p>}
         {!activeId && !loading && !expired && <div className="empty-state"><div className="kimi-mark large">k</div><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
         {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><div className="kimi-mark large">k</div><h2>What are we working on?</h2></div>}
         {historyLoading && <p className="loading-history" role="status">Opening conversation…</p>}
-        {moreHistory && <button className="history-more text-button" onClick={() => void older()}>Load earlier messages</button>}
+        {jumpLoading && <p className="loading-history" role="status">Finding the branch starting message…</p>}
+        {moreHistory && <button className="history-more text-button" disabled={jumpLoading} onClick={() => void older()}>Load earlier messages</button>}
         <div className="messages">
-          {!expired && messages.map(event => {
+          {!expired && messages.map((event, index) => {
             if (event.kind === "plan") return <PlanCard key={event.id} event={event} />;
             if (event.kind === "branch_created") return <div className="branch-link" key={event.id}><GitBranch size={15} /><span>Conversation branched</span><button className="text-button" onClick={() => void openChat(event.payload.chat_id!)}>Open branch</button></div>;
             const user = event.kind === "user_message" || event.kind === "branch_result" || event.kind === "history_message" && event.payload.role === "user";
             const p = event.payload;
             const branchable = ["user_message", "history_message", "branch_result"].includes(event.kind) || ["turn_finished", "coding_task"].includes(event.kind) && p.status === "completed";
             const canReturn = active?.parent_id && ["turn_finished", "coding_task"].includes(event.kind) && p.status === "completed";
-            return <article key={event.id} className={`message ${user ? "user-message" : "assistant-message"}`}>
+            const returned = p.returned_to_parent || returnedMessages.has(event.id);
+            return <Fragment key={event.id}>
+              {event.kind === "history_message" && messages[index - 1]?.kind !== "history_message" && <div className="branch-divider">Copied conversation history</div>}
+              <article id={`message-${event.id}`} tabIndex={-1} className={`message ${user ? "user-message" : "assistant-message"}${focusedMessage?.chatId === activeId && focusedMessage.eventId === event.id ? " highlighted-message" : ""}`}>
               {user ? <div className="message-avatar profile-avatar">{initial}</div> : <div className="message-avatar kimi-mark">k</div>}
               <div className="message-body"><div className="message-meta"><strong>{user ? "You" : session.bot_name}</strong><time dateTime={new Date(event.created_at * 1000).toISOString()}>{new Date(event.created_at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>{event.kind === "task_action_result" && <span className="pill">Task review</span>}</div>
                 {event.kind === "coding_task" && <span className="result-label">Coding task · {(p.status || "finished").replaceAll("_", " ")}</span>}
                 {event.kind === "turn_finished" && p.status !== "completed" && <span className="result-label">{p.status === "cancelled" ? "Response stopped" : "Response interrupted"}</span>}
-                {p.source_chat_id && <div className="returned-result"><CornerUpLeft size={14} /><span>Brought back from </span><button className="text-button" onClick={() => void openChat(p.source_chat_id!)}>{p.source_title}</button></div>}
+                {p.source_chat_id && <div className="returned-result"><CornerUpLeft size={14} /><span>Brought back from </span><button className="text-button" onClick={() => void openChat(p.source_chat_id!, p.source_event_id)}>{p.source_title}</button></div>}
                 {p.text && (user && event.kind !== "branch_result" && !p.render_markdown ? <p className="user-text">{p.text}</p> : <Markdown text={p.text} openLink={openLink} />)}
                 {p.posts?.map((post, index) => <details key={index} className="sample-post"><summary>Sample for channel {post.channel_id}</summary><Markdown text={post.content} openLink={openLink} /></details>)}
                 {!!p.files?.length && <div className="message-files">{p.files.map((file, index) => <FileButton key={file.id || index} file={file} onSelect={selectFile} />)}</div>}
                 {p.task_preview && <button className="review-link" onClick={() => { setSelectedFile(null); setWorkOpen(true); }}><Check size={16} /> Review “{p.task_preview.name}”<ChevronLeft size={16} className="reverse" /></button>}
                 {p.coding_task_id && <button className="review-link" onClick={() => setWorkOpen(true)}>Follow coding progress <ChevronLeft size={16} className="reverse" /></button>}
-                {branchable && <div className="message-actions"><button className="text-button" disabled={branching || session.consent_required} onClick={() => void branchFrom(event.id)} title="Start a new conversation with context through this message"><GitBranch size={13} />Branch from here</button>{canReturn && <button className="text-button" disabled={branching || session.consent_required} onClick={() => void bringToParent(event.id)} title="Add this response to the parent conversation without starting a new reply"><CornerUpLeft size={13} />Bring to parent</button>}</div>}
+                {(branchable || !user && p.text) && <div className="message-actions">{!user && p.text && <CopyButton text={p.text} label="Copy response" />}{branchable && <button className="text-button" disabled={branching || session.consent_required} onClick={() => void branchFrom(event.id)} title="Start a new conversation with context through this message"><GitBranch size={13} />Branch from here</button>}{canReturn && <button className="text-button" disabled={returned || branching || session.consent_required} onClick={() => void bringToParent(event.id)} title={returned ? "This response is already in the parent conversation" : "Add this response to the parent conversation without starting a new reply"}>{returned ? <Check size={13} /> : <CornerUpLeft size={13} />}{returned ? "Brought to parent" : "Bring to parent"}</button>}</div>}
               </div>
-            </article>;
+            </article>
+            {event.kind === "history_message" && messages[index + 1]?.kind !== "history_message" && <div className="branch-divider">New work in this branch</div>}
+            </Fragment>;
           })}
           {busy && !expired && <div className="live-activity" role="status"><span className="thinking-dot" /><span>{activity || `${session.bot_name} is thinking…`}</span></div>}
         </div>
@@ -341,5 +388,5 @@ function ChatDialog({ dialog, onClose, onSubmit }: { dialog: NonNullable<Dialog>
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { node.current?.showModal(); return () => node.current?.close(); }, []);
-  return <dialog ref={node} className="chat-dialog" onCancel={onClose} aria-labelledby="dialog-title"><form onSubmit={event => { event.preventDefault(); setBusy(true); void onSubmit(title).catch((error: Error) => setError(error.message)).finally(() => setBusy(false)); }}><h2 id="dialog-title">{dialog.kind === "rename" ? "Rename conversation" : "Delete this conversation?"}</h2>{dialog.kind === "rename" ? <input aria-label="Conversation name" value={title} onChange={event => setTitle(event.target.value)} maxLength={120} autoFocus required /> : <p>“{dialog.chat.title}” and its chat history will be deleted. Any work running in this chat will stop. Your shared workspace and approved schedules stay available.</p>}{error && <p role="alert">{error}</p>}<div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className={dialog.kind === "delete" ? "danger" : "primary"} disabled={busy}>{busy ? "Working…" : dialog.kind === "rename" ? "Save name" : "Delete conversation"}</button></div></form></dialog>;
+  return <dialog ref={node} className="chat-dialog" onCancel={onClose} aria-labelledby="dialog-title"><form onSubmit={event => { event.preventDefault(); setBusy(true); void onSubmit(title).catch((error: Error) => setError(error.message)).finally(() => setBusy(false)); }}><h2 id="dialog-title">{dialog.kind === "rename" ? "Rename conversation" : "Delete this conversation?"}</h2>{dialog.kind === "rename" ? <input aria-label="Conversation name" value={title} onChange={event => setTitle(event.target.value)} maxLength={120} autoFocus required /> : <p>“{dialog.chat.title}” and its chat history will be deleted. Any work running in this chat will stop. Branches and responses already brought into other conversations remain. Your shared workspace and approved schedules stay available.</p>}{error && <p role="alert">{error}</p>}<div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className={dialog.kind === "delete" ? "danger" : "primary"} disabled={busy}>{busy ? "Working…" : dialog.kind === "rename" ? "Save name" : "Delete conversation"}</button></div></form></dialog>;
 }

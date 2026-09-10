@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import aiohttp
 import discord
 from aiohttp import web
 from discord.ext import commands
@@ -127,9 +128,17 @@ class DashboardAccess:
                         raise web.HTTPForbidden(reason="You and the bot must be able to chat here")
                 if isinstance(channel, discord.Thread) and (channel.archived or channel.locked):
                     raise web.HTTPForbidden(reason="This thread is archived or locked")
-        except discord.HTTPException:
+        except discord.HTTPException as exc:
+            if exc.status == 429 or exc.status >= 500:
+                raise web.HTTPServiceUnavailable(
+                    reason="Discord access verification is temporarily unavailable"
+                ) from None
             raise web.HTTPForbidden(
                 reason="Your current channel access could not be verified"
+            ) from None
+        except aiohttp.ClientError, TimeoutError:
+            raise web.HTTPServiceUnavailable(
+                reason="Discord access verification is temporarily unavailable"
             ) from None
         tier = await asyncio.to_thread(self.trust.resolve, member, user_id, guild_id)
         if tier < TrustTier(self.settings.dashboard_min_tier):

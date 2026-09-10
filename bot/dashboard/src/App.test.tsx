@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DashboardApp, FileButton } from "./App";
-import { DashboardApi, type Connection } from "./api";
+import { ApiError, DashboardApi, type Connection } from "./api";
 import { conversationTimeline, mergeEvents, isResponding, latestWork, type ChatEvent } from "./types";
 import { Markdown } from "./Markdown";
 
@@ -138,6 +138,7 @@ it("names the configured bot when a coding task asks for input", async () => {
   fixture.value.session = { ...session, bot_name: "Nova" };
   render(<DashboardApp connection={fixture.value} />);
   await screen.findByRole("textbox", { name: "Message Nova" });
+  await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
   fireEvent.click(screen.getByRole("button", { name: /^Work/ }));
   await act(async () => fixture.receive([event(5, "coding_task", { id: "coding", status: "waiting_for_input", text: "Which branch?" })]));
   expect(screen.getByPlaceholderText("Tell Nova how to continue…")).toBeVisible();
@@ -231,14 +232,17 @@ it("ignores older-history responses after selecting another chat", async () => {
   fixture.request.mockImplementation(async path => {
     if (path === "/chats") return { chats: [chat, other] };
     if (path.includes("before=")) return await new Promise(resolve => { release = resolve; });
-    if (path === "/chats/a/events") return { events: Array.from({ length: 200 }, (_, index) => event(index + 2, "turn_finished", { text: `A message ${index}`, status: "completed" })) };
+    if (path === "/chats/a/events") return { events: [
+      ...Array.from({ length: 199 }, (_, index) => event(index + 2, "activity", {})),
+      event(201, "turn_finished", { text: "A recent message", status: "completed" }),
+    ] };
     if (path.endsWith("/events")) return { events: [] };
     if (path.endsWith("/tasks")) return { tasks: [] };
     return { files: [] };
   });
   render(<DashboardApp connection={fixture.value} />);
-  // Keep this history-race test focused on pagination; computing accessible
-  // names for hundreds of message actions dominates this fixture in jsdom.
+  // A full event page enables pagination; only its final response needs to be
+  // visible for this test of switching chats during an in-flight history read.
   fireEvent.click(await screen.findByText("Load earlier messages", { selector: "button" }));
   fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "Other conversation" }));
   await waitFor(() => expect(fixture.request).toHaveBeenCalledWith("/chats/b/events"));
@@ -268,4 +272,86 @@ it("reconciles a response that finishes while another chat is open", async () =>
   fireEvent.click(screen.getByRole("button", { name: "A test conversation" }));
   expect(await screen.findByText("Finished while away")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+});
+
+it("recovers chat list and history initialization after transient verification failures", async () => {
+  vi.useFakeTimers();
+  try {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    const unavailable = new Set(["/chats", "/chats/a/events"]);
+    fixture.request.mockImplementation(async (path, ...args) => {
+      if (unavailable.delete(path)) throw new ApiError("Verification unavailable", 503);
+      return base(path, ...args);
+    });
+    render(<DashboardApp connection={fixture.value} />);
+    await act(async () => {});
+    expect(screen.getByText("Connection unavailable. Retrying…")).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText("Reconnecting…")).toBeVisible();
+    expect(fixture.value.api.subscribe).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixture.value.api.subscribe).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally { vi.useRealTimers(); }
+});
+
+it("cancels history retries when another conversation is selected", async () => {
+  vi.useFakeTimers();
+  try {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    fixture.request.mockImplementation(async (path, ...args) => {
+      if (path === "/chats") return { chats: [chat, { ...chat, id: "b", title: "Other conversation" }] };
+      if (path === "/chats/a/events") throw new ApiError("Verification unavailable", 503);
+      return base(path, ...args);
+    });
+    render(<DashboardApp connection={fixture.value} />);
+    await act(async () => {});
+    expect(screen.getByText("Reconnecting…")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Other conversation" }));
+    await act(async () => vi.advanceTimersByTimeAsync(30000));
+    expect(fixture.request.mock.calls.filter(call => call[0] === "/chats/a/events")).toHaveLength(1);
+    expect(fixture.value.api.subscribe).toHaveBeenCalledOnce();
+    expect(fixture.value.api.subscribe).toHaveBeenCalledWith("b", 0, expect.any(Function), expect.any(Function));
+  } finally { vi.useRealTimers(); }
+});
+
+it("loads earlier parent history and focuses the exact branch starting message", async () => {
+  const fixture = connection();
+  const parent = { ...chat, id: "parent", title: "Parent conversation" };
+  const branch = { ...chat, parent_id: parent.id, parent_event_id: 1, parent_title: parent.title };
+  fixture.request.mockImplementation(async path => {
+    if (path === "/chats") return { chats: [branch, parent] };
+    if (path === "/chats/parent") return parent;
+    if (path === "/chats/a/events") return { events: [event(301, "history_message", { role: "assistant", text: "Copied answer" })] };
+    if (path === "/chats/parent/events") return { events: [event(201, "turn_finished", { text: "Later answer", status: "completed" })] };
+    if (path === "/chats/parent/events?before=201") return { events: [event(1, "turn_finished", { text: "Starting answer", status: "completed" })] };
+    if (path.endsWith("/tasks")) return { tasks: [] };
+    return { files: [] };
+  });
+  render(<DashboardApp connection={fixture.value} />);
+  expect(await screen.findByText("Copied conversation history")).toBeVisible();
+  expect(screen.getByText("New work in this branch")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Parent: Parent conversation" }));
+  const starting = (await screen.findByText("Starting answer")).closest("article");
+  expect(starting).toHaveClass("highlighted-message");
+  expect(starting).toHaveFocus();
+  expect(screen.getByText("Later answer")).toBeVisible();
+});
+
+it("shows persisted return feedback and explains deletion of copied conversations", async () => {
+  const fixture = connection();
+  fixture.request.mockImplementation(async path => {
+    if (path === "/chats") return { chats: [{ ...chat, parent_id: "parent", parent_title: "Parent" }] };
+    if (path.endsWith("/events")) return { events: [event(1, "turn_finished", { text: "Already returned", status: "completed", returned_to_parent: true })] };
+    if (path.endsWith("/tasks")) return { tasks: [] };
+    return { files: [] };
+  });
+  render(<DashboardApp connection={fixture.value} />);
+  expect(await screen.findByRole("button", { name: "Brought to parent" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Options for A test conversation" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  expect(screen.getByRole("dialog")).toHaveTextContent("Branches and responses already brought into other conversations remain.");
 });

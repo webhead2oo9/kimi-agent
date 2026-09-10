@@ -625,6 +625,7 @@ class Dashboard:
         try:
             await socket.prepare(request)
             check_at = 0.0
+            verified = False
             while not socket.closed:
                 if not self.auth.valid(session):
                     raise web.HTTPUnauthorized(reason="Session expired")
@@ -655,10 +656,14 @@ class Dashboard:
                     ):
                         raise web.HTTPForbidden(reason="Conversation access expired")
                     events = await self.store.events(chat.id, after=after)
-                    if events:
+                    if events or not verified:
                         async with asyncio.timeout(10):
-                            await socket.send_json({"events": [asdict(event) for event in events]})
-                        after = events[-1].id
+                            await socket.send_json(
+                                {"events": [asdict(event) for event in events], "ready": True}
+                            )
+                        verified = True
+                        if events:
+                            after = events[-1].id
                 if len(events) == 200:
                     continue
                 try:
@@ -673,7 +678,12 @@ class Dashboard:
                         await socket.close(code=1008, message=b"This socket only delivers updates")
                 except TimeoutError:
                     pass
-        except web.HTTPException, PrivacyDeletionPendingError:
+        except web.HTTPException as exc:
+            if exc.status == 429 or exc.status >= 500:
+                await socket.close(code=1013, message=b"Verification unavailable. Reconnecting")
+            else:
+                await socket.close(code=1008, message=b"Access expired. Reopen the dashboard")
+        except PrivacyDeletionPendingError:
             await socket.close(code=1008, message=b"Access expired. Reopen the dashboard")
         except ConnectionError, TimeoutError:
             pass

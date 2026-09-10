@@ -199,7 +199,12 @@ class DashboardBranches:
                         ),
                         **{
                             key: original[key]
-                            for key in ("render_markdown", "source_chat_id", "source_title")
+                            for key in (
+                                "render_markdown",
+                                "source_chat_id",
+                                "source_event_id",
+                                "source_title",
+                            )
                             if key in original
                         },
                     }
@@ -272,6 +277,7 @@ class DashboardBranches:
                         {
                             "text": text,
                             "source_chat_id": branch.id,
+                            "source_event_id": event_id,
                             "source_title": current.title,
                             "context_source_id": source_id,
                             "files": await self._copy_files(
@@ -279,6 +285,16 @@ class DashboardBranches:
                             ),
                         }
                     ),
+                    source_id,
+                    now,
+                ),
+            )
+            await conn.execute(
+                "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,dedup_key,created_at) "
+                "VALUES(?,'branch_returned',?,?,?)",
+                (
+                    branch.id,
+                    json.dumps({"event_id": event_id, "parent_id": parent.id}),
                     source_id,
                     now,
                 ),

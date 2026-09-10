@@ -283,23 +283,33 @@ class DashboardStore:
         before: int | None = None,
         limit: int = 200,
     ) -> list[DashboardEvent]:
-        where = "dashboard_id=?"
+        where = "e.dashboard_id=?"
         values: list[str | int] = [chat_id]
         if after is not None:
-            where += " AND id>?"
+            where += " AND e.id>?"
             values.append(after)
         if before is not None:
-            where += " AND id<?"
+            where += " AND e.id<?"
             values.append(before)
         order = "ASC" if after is not None else "DESC"
         async with self.db.conn.execute(
-            f"SELECT id,kind,payload_json,created_at FROM dashboard_events WHERE {where} ORDER BY id {order} LIMIT ?",
+            "SELECT e.id,e.kind,e.payload_json,e.created_at,EXISTS("
+            "SELECT 1 FROM dashboard_events r WHERE r.dashboard_id=("
+            "SELECT parent_id FROM dashboard_branches WHERE dashboard_id=e.dashboard_id) "
+            "AND r.dedup_key='branch-return:'||e.dashboard_id||':'||e.id) AS returned "
+            f"FROM dashboard_events e WHERE {where} ORDER BY e.id {order} LIMIT ?",
             (*values, min(500, max(1, limit))),
         ) as cur:
             rows = await cur.fetchall()
         result = [
             DashboardEvent(
-                row["id"], row["kind"], json.loads(row["payload_json"]), row["created_at"]
+                row["id"],
+                row["kind"],
+                {
+                    **json.loads(row["payload_json"]),
+                    **({"returned_to_parent": True} if row["returned"] else {}),
+                },
+                row["created_at"],
             )
             for row in rows
         ]

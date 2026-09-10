@@ -183,6 +183,8 @@ class DashboardAuth:
                 timeout=aiohttp.ClientTimeout(total=15),
                 **kwargs,
             ) as response:
+                if response.status == 429 or response.status >= 500:
+                    raise web.HTTPServiceUnavailable(reason="Discord verification is unavailable")
                 if response.status != 200:
                     raise web.HTTPUnauthorized(reason="Discord could not verify this session")
                 result = await response.json()

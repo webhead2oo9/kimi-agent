@@ -190,6 +190,39 @@ async def test_dashboard_access_denial_covers_existing_sessions_and_websockets(a
 
 
 @pytest.mark.asyncio
+async def test_temporary_verification_failure_closes_socket_without_private_events(api):
+    client, service = api
+    chat = await create(service)
+    await service.store.event(chat.id, "turn_finished", {"text": "Private result"})
+    service.access.resolve.side_effect = web.HTTPServiceUnavailable(reason="Discord unavailable")
+    assert (await client.get(f"/api/chats/{chat.id}/events")).status == 503
+    async with client.ws_connect(f"/api/ws?chat={chat.id}") as ws:
+        message = await ws.receive(timeout=3)
+        assert message.type == WSMsgType.CLOSE and message.data == 1013
+    assert service.auth.valid(service.auth._sessions["token"])
+    service.access.resolve.side_effect = None
+    async with client.ws_connect(f"/api/ws?chat={chat.id}") as ws:
+        message = await ws.receive_json(timeout=3)
+        assert message["ready"] is True
+        assert message["events"][0]["payload"]["text"] == "Private result"
+
+
+@pytest.mark.asyncio
+async def test_idle_socket_reports_ready_only_after_instance_verification(api):
+    client, service = api
+    chat = await create(service)
+    service.auth.verify_instance.side_effect = web.HTTPServiceUnavailable(
+        reason="Discord unavailable"
+    )
+    async with client.ws_connect(f"/api/ws?chat={chat.id}") as ws:
+        message = await ws.receive(timeout=3)
+        assert message.type == WSMsgType.CLOSE and message.data == 1013
+    service.auth.verify_instance.side_effect = None
+    async with client.ws_connect(f"/api/ws?chat={chat.id}") as ws:
+        assert await ws.receive_json(timeout=3) == {"events": [], "ready": True}
+
+
+@pytest.mark.asyncio
 async def test_dashboard_access_denial_revokes_new_login_before_returning_credentials(api):
     client, service = api
     session = service.auth._sessions["token"]

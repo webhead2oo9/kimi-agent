@@ -89,6 +89,21 @@ async def test_continuing_rechecks_posting_permission_and_blocked_user(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404, 429, 500, 503])
+async def test_discord_lookup_distinguishes_revocation_from_temporary_failure(tmp_path, status):
+    access, guild, _, _, _ = setup(tmp_path)
+    guild.fetch_member.side_effect = discord.HTTPException(
+        SimpleNamespace(status=status, reason="Discord unavailable"), "failed"
+    )
+    expected = web.HTTPServiceUnavailable if status == 429 or status >= 500 else web.HTTPForbidden
+    with pytest.raises(expected):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+    guild.fetch_channel.assert_not_awaited()
+    guild.fetch_member.side_effect = None
+    await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tier", list(TrustTier))
 async def test_unlisted_users_cannot_access_dashboard_even_as_owner_or_staff(tmp_path, tier):
     access, guild, _, _, _ = setup(tmp_path)

@@ -107,6 +107,17 @@ svg { flex-shrink: 0; }
 .branch-banner p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
 .branch-link, .returned-result { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .branch-link { margin-left: 40px; }
+.branch-divider { display: flex; align-items: center; gap: 12px; margin: 6px 0; font-size: 11px; color: var(--muted); }
+.branch-divider::before, .branch-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+.message.highlighted-message { outline: 2px solid var(--accent-border); outline-offset: 8px; border-radius: 4px; }
+.success-notice { display: flex; align-items: center; gap: 8px; margin: 10px 24px 0; }
+.success-notice > span { flex: 1; }
+.code-block { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--code); }
+.code-toolbar { display: flex; justify-content: flex-end; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.code-toolbar .copy-button { min-height: 30px; font-size: 11px; color: var(--muted); }
+.markdown .code-block pre { margin: 0; border: 0; border-radius: 0; }
+.copy-dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; }
+.copy-dialog textarea { width: 100%; margin: 12px 0; font-family: var(--font-mono); }
 .returned-result .text-button { height: auto; min-height: 28px; padding: 0 2px; text-align: left; overflow-wrap: anywhere; }
 .file-chip { height: auto; max-width: 100%; justify-content: flex-start; gap: 10px; padding: 8px 12px; text-align: left; font-weight: 400; }
 .file-chip > svg { color: var(--accent-light); }

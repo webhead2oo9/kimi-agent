@@ -13,9 +13,13 @@ remembers the last selected chat on that device when it still exists.
 
 Choose **Branch from here** on a saved message to explore a separate path with
 the conversation copied only through that message. A parent link stays above the
-branch, and the parent gets an **Open branch** link. **Bring to parent** copies a
+branch and takes you back to the starting message, loading earlier history when
+needed. Dividers distinguish copied history from new work. The parent gets an
+**Open branch** link. **Bring to parent** copies a
 completed response back as user-provided context; it does not start a model turn
-or repeat tool actions. Running work, approvals, and tool state are not copied.
+or repeat tool actions. A confirmation appears in the parent, and the response
+stays marked **Brought to parent** when the branch is reopened. Running work,
+approvals, and tool state are not copied.
 Branches keep the same owner, server, and channel access checks. They share the
 user's server workspace, so edits to workspace files affect both conversations.
 Up to 1,000 saved messages can be copied in one branch; larger histories require
@@ -23,6 +27,12 @@ choosing an earlier message.
 
 The composer supports text, attachments, and Stop. Plans appear directly in the
 conversation, update as work progresses, and stay with the response in history.
+**Copy response** copies the response's Markdown; fenced code blocks have a
+**Copy code** button that preserves code whitespace. If clipboard permission is
+unavailable in the Discord client, a dialog offers selected text for manual copy.
+Temporary Discord verification failures reconnect with backoff and resume from
+the last received event. New content is withheld until access is verified;
+expired sessions and revoked permissions require reopening the Activity.
 The work panel contains file previews and downloads, the member's server
 workspace, coding task progress and input, and scheduled-task Test preview /
 Approve / Reject controls.
@@ -255,8 +265,10 @@ Idle chats use `TRANSCRIPT_RETENTION_DAYS` (30 by default). File copies follow t
 existing workspace file expiry and privacy cleanup. An old message can therefore
 outlive its attachment; downloads then report that the file expired. Deleting a
 chat stops its active work, removes its private snapshots and transcript, and
-keeps the shared server workspace. Branches and returned results keep their own
-copies of available attachments, subject to the same file quotas and retention.
+keeps the shared server workspace. The deletion dialog explains that branches
+and results already brought into other conversations remain. Branches and
+returned results keep their own copies of available attachments, subject to the
+same file quotas and retention.
 Deleting the source chat does not delete those copies. Already expired files
 remain marked expired. Full privacy deletion revokes sessions and
 removes owned transcripts, task records, and generated jobs through the existing

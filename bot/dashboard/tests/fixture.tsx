@@ -16,7 +16,7 @@ const events: ChatEvent[] = [
   { id: 1, kind: "user_message", created_at: now - 150, payload: { turn_id: "first", text: "Can you help me put together a weekly digest for our community? I'd like something useful and easy to skim." } },
   { id: 2, kind: "plan", created_at: now - 148, payload: { turn_id: "first", steps: [{ content: "Gather community highlights", status: "in_progress" }, { content: "Draft the digest", status: "pending" }] } },
   { id: 3, kind: "plan", created_at: now - 142, payload: { turn_id: "first", steps: [{ content: "Gather community highlights", status: "completed" }, { content: "Draft the digest", status: "completed" }] } },
-  { id: 4, kind: "turn_finished", created_at: now - 140, payload: { turn_id: "first", status: "completed", text: "I've drafted a weekly digest that brings the useful bits together: **what we made, what we learned, and what's coming next.**\n\nThe attached notes are a starting point. You can edit the tone and sections before we schedule anything.\n\n| Section | What goes in it |\n| --- | --- |\n| This week | Project updates and good conversations |\n| Worth a look | Links shared by the community |\n| Coming up | Events and ways to get involved |", files: [file], task_preview: { id: "task", revision: 1, name: "Friday community digest", status: "pending", text: "Every Friday at **4:00 PM America/Los_Angeles**, summarize this week's highlights for #community-updates.\n\nYou can test a sample before approving.", details: "Reads messages from the workshop and posts one digest in community-updates. Owner: Charlie. Schedule: weekly.", skill: "# Weekly digest\n\nCollect useful updates from this week. Write three short sections, cite original messages, and invite people to the next event.", python: null } } },
+  { id: 4, kind: "turn_finished", created_at: now - 140, payload: { turn_id: "first", status: "completed", text: "I've drafted a weekly digest that brings the useful bits together: **what we made, what we learned, and what's coming next.**\n\nExample format:\n\n```text\nThis week: community highlights\n```\n\nThe attached notes are a starting point. You can edit the tone and sections before we schedule anything.\n\n| Section | What goes in it |\n| --- | --- |\n| This week | Project updates and good conversations |\n| Worth a look | Links shared by the community |\n| Coming up | Events and ways to get involved |", files: [file], task_preview: { id: "task", revision: 1, name: "Friday community digest", status: "pending", text: "Every Friday at **4:00 PM America/Los_Angeles**, summarize this week's highlights for #community-updates.\n\nYou can test a sample before approving.", details: "Reads messages from the workshop and posts one digest in community-updates. Owner: Charlie. Schedule: weekly.", skill: "# Weekly digest\n\nCollect useful updates from this week. Write three short sections, cite original messages, and invite people to the next event.", python: null } } },
 ];
 const histories = new Map<string, ChatEvent[]>([["brief", events], ["project", []]]);
 const subscriptions = new Map<string, (events: ChatEvent[]) => void>();
@@ -29,7 +29,7 @@ api.request = async <T,>(path: string, method = "GET", body?: unknown): Promise<
   let result: unknown = {};
   if (path === "/chats" && method === "POST") { const chat = { ...chats[0], id: crypto.randomUUID(), title: "New chat", parent_id: null, parent_title: null }; chats.unshift(chat); histories.set(chat.id, []); result = chat; }
   else if (path === "/chats") result = { chats: [...chats] };
-  else if (path.endsWith("/events")) result = { events: histories.get(chatId) || [] };
+  else if (path.includes("/events")) { const before = Number(new URL(path, location.origin).searchParams.get("before")) || Infinity; result = { events: (histories.get(chatId) || []).filter(event => event.id < before).slice(-200) }; }
   else if (path.endsWith("/branches") && current) {
     const branch = { ...current, id: crypto.randomUUID(), title: `Branch · ${current.title}`, parent_id: current.id, parent_title: current.title, parent_event_id: data?.event_id };
     chats.unshift(branch);
@@ -40,7 +40,10 @@ api.request = async <T,>(path: string, method = "GET", body?: unknown): Promise<
   }
   else if (path.endsWith("/return-result") && current?.parent_id) {
     const selected = histories.get(chatId)!.find(event => event.id === data?.event_id)!;
-    const returned = { id: nextEventId++, kind: "branch_result", created_at: now, payload: { text: selected.payload.text, source_chat_id: current.id, source_title: current.title } };
+    selected.payload.returned_to_parent = true;
+    const returned = { id: nextEventId++, kind: "branch_result", created_at: now, payload: { text: selected.payload.text, source_chat_id: current.id, source_event_id: selected.id, source_title: current.title } };
+    const receipt = { id: nextEventId++, kind: "branch_returned", created_at: now, payload: { event_id: selected.id } };
+    histories.get(chatId)!.push(receipt); subscriptions.get(chatId)?.([receipt]);
     histories.get(current.parent_id)!.push(returned); subscriptions.get(current.parent_id)?.([returned]);
     result = chats.find(chat => chat.id === current.parent_id);
   }

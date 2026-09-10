@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -19,6 +20,21 @@ def auth():
         max_sessions=4,
         http=None,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+async def test_discord_verification_preserves_sessions_during_transient_errors(status):
+    service = auth()
+    response = MagicMock()
+    response.__aenter__ = AsyncMock(return_value=SimpleNamespace(status=status))
+    response.__aexit__ = AsyncMock(return_value=False)
+    service._http = SimpleNamespace(request=MagicMock(return_value=response))
+    expected = (
+        web.HTTPServiceUnavailable if status == 429 or status >= 500 else web.HTTPUnauthorized
+    )
+    with pytest.raises(expected):
+        await service._json("GET", "https://discord.example.test/session")
 
 
 def request(method="POST", *, cookie="", origin="https://42.discordsays.com", csrf=""):

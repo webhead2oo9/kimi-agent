@@ -71,8 +71,11 @@ export interface ChatEvent {
     chat_id?: string;
     title?: string;
     source_chat_id?: string;
+    source_event_id?: number;
     source_title?: string;
     render_markdown?: boolean;
+    event_id?: number;
+    returned_to_parent?: boolean;
   };
 }
 

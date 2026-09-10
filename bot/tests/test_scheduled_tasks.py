@@ -12,6 +12,8 @@ import pytest_asyncio
 from pydantic import ValidationError
 
 from app.scheduled_tasks import ScheduledTaskService
+from app.task_publisher import TaskPublisher
+from utils.privacy_barrier import UserPrivacyBarrier
 from app.task_access import TaskAccess, TaskPolicy, may_manage
 from storage.db import Database
 from storage.scheduled_tasks import ScheduledTaskStore
@@ -19,10 +21,40 @@ from tools.registry import MessageContext, ToolRegistry, TurnOutbox
 from tools.workspace.common import UserLocks
 from storage.conversations import ConversationStore
 from discord_adapter.gateway import DiscordGateway
-import app.scheduled_tasks as scheduled_module
+import app.task_executor as scheduled_module
+import app.task_authority as authority_module
 from tools.scheduled_tasks import TaskDefinition, init_task_tools
 from trust.tiers import TrustTier
 from utils.schedules import Schedule
+
+
+def complete_runtime(runtime):
+    """Compose focused tests with harmless defaults for unrelated components."""
+    defaults = {
+        "store": Mock(),
+        "bot": SimpleNamespace(),
+        "tools": SimpleNamespace(),
+        "access": SimpleNamespace(),
+        "privacy": UserPrivacyBarrier(),
+        "user_blocked": AsyncMock(return_value=False),
+        "settings": SimpleNamespace(),
+        "gateway": Mock(),
+        "moderation": None,
+    }
+    for key, value in defaults.items():
+        if not hasattr(runtime, key):
+            setattr(runtime, key, value)
+    for key, value in {"tree": Mock(), "add_view": Mock()}.items():
+        if not hasattr(runtime.bot, key):
+            setattr(runtime.bot, key, value)
+    for key, value in {
+        "registry": ToolRegistry(),
+        "plugin_privacy_callbacks": Mock(),
+        "workspace_locks": UserLocks(),
+    }.items():
+        if not hasattr(runtime.tools, key):
+            setattr(runtime.tools, key, value)
+    return runtime
 
 
 @pytest_asyncio.fixture
@@ -272,7 +304,7 @@ def test_management_scope_and_notification_prefix():
     assert may_manage(context(), task)
     assert not may_manage(context(user_id="11"), task)
     assert not may_manage(context(guild_id="101", trust_tier=TrustTier.STAFF), task)
-    assert ScheduledTaskService._notify_content("Update", ["10"], ["20"]) == "<@10> <@&20>\nUpdate"
+    assert TaskPublisher.notify_content("Update", ["10"], ["20"]) == "<@10> <@&20>\nUpdate"
 
 
 @pytest.mark.asyncio
@@ -297,10 +329,7 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(
     registry = ToolRegistry()
     home = SimpleNamespace(id=200, name="development")
     providers = {role: object() for role in ("chat", "scheduled", "compaction")}
-    service = object.__new__(ScheduledTaskService)
-    service._token = "worker"
-    service._posts = {run_id: [{"channel_id": "300", "content": "Must not publish"}]}
-    service.r = SimpleNamespace(
+    runtime = SimpleNamespace(
         store=store,
         tools=SimpleNamespace(registry=registry, workspace_locks=UserLocks()),
         conversations=ConversationStore(store.db),
@@ -320,9 +349,14 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(
         ),
         privacy=SimpleNamespace(activity=None),
     )
+    service = ScheduledTaskService(complete_runtime(runtime))
+    service.authority.token = "worker"
+    service.runs.register(run_id, task)
+    service.runs[run_id].posts.append({"channel_id": "300", "content": "Must not publish"})
     ctx = context(scheduled_run_id=run_id)
-    service.fresh = AsyncMock(return_value=ctx)
+    service.authority.fresh = AsyncMock(return_value=ctx)
     monkeypatch.setattr(scheduled_module, "load_blocked_tools", lambda *args: frozenset())
+    monkeypatch.setattr(authority_module, "load_blocked_tools", lambda *args: frozenset())
     monkeypatch.setattr(scheduled_module, "load_tool_configs", lambda *args: {})
 
     async def run(request):
@@ -342,7 +376,9 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(
         )
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
-    await service._execute(task, run_id, ctx, TaskDefinition.model_validate(task["definition"]))
+    await service.executor.execute(
+        task, run_id, ctx, TaskDefinition.model_validate(task["definition"])
+    )
     assert await store.deliveries() == []
     assert (await store.history(task["id"]))[0]["status"] == "no_change"
     assert (await store.get(task["id"]))["state"] == {"release": "v1", "_task_initialized": True}
@@ -648,9 +684,7 @@ async def preview_fixture(store, *, can_close=True):
         proposer_id="10",
         definition=definition(),
     )
-    service = object.__new__(ScheduledTaskService)
     channel = MagicMock(spec=discord.Thread)
-    service._preview_lock = asyncio.Lock()
     channel.id = 400
     channel.owner_id = 99
     channel.archived = channel.locked = False
@@ -662,16 +696,17 @@ async def preview_fixture(store, *, can_close=True):
     channel.edit = AsyncMock()
     channel.send = AsyncMock(return_value=SimpleNamespace(id=501))
     channel.get_partial_message.return_value.edit = AsyncMock()
-    service.r = SimpleNamespace(
+    runtime = SimpleNamespace(
         store=store,
         privacy=UserPrivacyBarrier(),
         access=SimpleNamespace(context=AsyncMock(return_value=context(trust_tier=TrustTier.STAFF))),
         bot=SimpleNamespace(get_channel=lambda _: channel),
         conversations=SimpleNamespace(get_thread_creator_user_id=AsyncMock(return_value="10")),
     )
-    service.previews = TaskPreviewStore(store.db)
-    service.fresh = AsyncMock(side_effect=lambda ctx: ctx)
-    service._validate_definition = AsyncMock()
+    service = ScheduledTaskService(complete_runtime(runtime))
+    service.approvals.previews = TaskPreviewStore(store.db)
+    service.authority.fresh = AsyncMock(side_effect=lambda ctx: ctx)
+    service.authority.validate_definition = AsyncMock()
     interaction = SimpleNamespace(
         guild_id=100, channel_id=400, user=member, message=SimpleNamespace(id=500)
     )
@@ -683,7 +718,7 @@ async def preview_fixture(store, *, can_close=True):
 @pytest.mark.parametrize("can_close", [True, False])
 async def test_decision_updates_receipt_and_closes_only_with_permission(store, approve, can_close):
     service, task_id, channel, interaction = await preview_fixture(store, can_close=can_close)
-    result = await service.confirm(interaction, task_id, 1, approve=approve)
+    result = await service.approvals.confirm(interaction, task_id, 1, approve=approve)
     assert ("activated" if approve else "denied") in result
     edit = channel.get_partial_message.return_value.edit
     edit.assert_awaited_once()
@@ -701,7 +736,7 @@ async def test_decision_updates_receipt_and_closes_only_with_permission(store, a
         assert channel.send.call_args.kwargs["allowed_mentions"].everyone is False
         assert channel.edit.call_args.kwargs["locked"] is True
         assert channel.edit.call_args.kwargs["archived"] is True
-    assert "already" in await service.confirm(interaction, task_id, 1, approve=approve)
+    assert "already" in await service.approvals.confirm(interaction, task_id, 1, approve=approve)
     assert channel.edit.await_count == int(can_close)
     assert channel.send.await_count == int(can_close)
 
@@ -713,7 +748,7 @@ async def test_other_staff_cannot_decide_requesters_revision(store, approve):
     service.r.access.context.return_value = context(user_id="20", trust_tier=TrustTier.STAFF)
     interaction.user.id = 20
     with pytest.raises(ValueError, match="Only the person"):
-        await service.confirm(interaction, task_id, 1, approve=approve)
+        await service.approvals.confirm(interaction, task_id, 1, approve=approve)
     assert (await store.get(task_id))["active_revision"] is None
     channel.get_partial_message.return_value.edit.assert_not_awaited()
 
@@ -726,16 +761,16 @@ async def test_activation_survives_receipt_failure_and_reconciles_after_restart(
     service, task_id, channel, interaction = await preview_fixture(store)
     edit = channel.get_partial_message.return_value.edit
     edit.side_effect = discord.HTTPException(SimpleNamespace(status=503, reason="down"), "down")
-    result = await service.confirm(interaction, task_id, 1)
+    result = await service.approvals.confirm(interaction, task_id, 1)
     assert "decision succeeded" in result
     assert (await store.get(task_id))["active_revision"] == 1
     channel.edit.assert_not_awaited()
-    service.previews = TaskPreviewStore(store.db)
+    service.approvals.previews = TaskPreviewStore(store.db)
     edit.side_effect = None
-    await service.reconcile_previews(message_id="500")
+    await service.approvals.reconcile(message_id="500")
     channel.edit.assert_awaited_once()
     channel.send.assert_awaited_once()
-    assert await service.previews.updates(message_id="500") == []
+    assert await service.approvals.previews.updates(message_id="500") == []
 
 
 @pytest.mark.asyncio
@@ -758,17 +793,17 @@ async def test_signoff_precedes_closure_and_is_not_repeated_after_close_failure(
 
     channel.send.side_effect = signoff
     channel.edit.side_effect = close
-    assert "decision succeeded" in await service.confirm(interaction, task_id, 1)
+    assert "decision succeeded" in await service.approvals.confirm(interaction, task_id, 1)
     assert (await store.get(task_id))["active_revision"] == 1
-    service.previews = TaskPreviewStore(store.db)
-    assert await service.reconcile_previews(message_id="500")
+    service.approvals.previews = TaskPreviewStore(store.db)
+    assert await service.approvals.reconcile(message_id="500")
     assert events == ["signoff", "close", "close"]
     channel.send.assert_awaited_once()
     # Changing task status must not try to edit or reopen an archived receipt.
     channel.get_partial_message.return_value.edit.reset_mock()
     await store.set_status(task_id, "paused")
-    assert await service.previews.updates() == []
-    await service.reconcile_previews()
+    assert await service.approvals.previews.updates() == []
+    await service.approvals.reconcile()
     channel.get_partial_message.return_value.edit.assert_not_awaited()
 
 
@@ -776,8 +811,8 @@ async def test_signoff_precedes_closure_and_is_not_repeated_after_close_failure(
 async def test_concurrent_receipt_reconciliation_sends_one_signoff(store):
     service, task_id, channel, _ = await preview_fixture(store)
     await store.activate(task_id, 1, "10", 100, reset_state=False)
-    await service.previews.remember(task_id, 1, "400", "500")
-    assert all(await asyncio.gather(service.reconcile_previews(), service.reconcile_previews()))
+    await service.approvals.previews.remember(task_id, 1, "400", "500")
+    assert all(await asyncio.gather(service.approvals.reconcile(), service.approvals.reconcile()))
     channel.send.assert_awaited_once()
     channel.edit.assert_awaited_once()
 
@@ -815,7 +850,7 @@ async def test_v12_migration_requeues_open_approved_threads_without_changing_tas
 @pytest.mark.asyncio
 async def test_superseded_preview_removes_buttons_without_closing_thread(store):
     service, task_id, channel, _ = await preview_fixture(store)
-    await service.previews.remember(task_id, 1, "400", "500")
+    await service.approvals.previews.remember(task_id, 1, "400", "500")
     await store.draft(
         task_id=task_id,
         guild_id="100",
@@ -825,7 +860,7 @@ async def test_superseded_preview_removes_buttons_without_closing_thread(store):
         definition=definition(),
         expected_revision=1,
     )
-    await service.reconcile_previews()
+    await service.approvals.reconcile()
     assert "Superseded" in channel.get_partial_message.return_value.edit.call_args.kwargs["content"]
     channel.edit.assert_not_awaited()
 
@@ -835,9 +870,9 @@ async def test_draft_queues_preview_on_original_context_and_limits_llm_reply(sto
     from dataclasses import replace
 
     service, _, _, _ = await preview_fixture(store)
-    service._moderate = AsyncMock()
+    service.authority.moderate = AsyncMock()
     service.r.access.owner_allowed = AsyncMock()
-    service.fresh = AsyncMock(side_effect=lambda ctx: replace(ctx))
+    service.authority.fresh = AsyncMock(side_effect=lambda ctx: replace(ctx))
     caller = context(context_key="root")
     result = json.loads(
         await service.manage({"action": "draft", "definition": definition()}, caller)
@@ -863,7 +898,7 @@ async def test_preview_delivery_uses_quiet_thread_and_separate_short_notice(stor
     sent = SimpleNamespace(id=500, jump_url="https://discord.com/channels/100/400/500")
     expected.send = AsyncMock(return_value=sent)
     service.r.access.channel = AsyncMock(return_value=original)
-    service._moderate = AsyncMock()
+    service.authority.moderate = AsyncMock()
     boundary = SimpleNamespace(
         create_handoff_thread=AsyncMock(return_value=None if location == "fallback" else thread)
     )
@@ -893,7 +928,7 @@ async def test_preview_delivery_uses_quiet_thread_and_separate_short_notice(stor
 @pytest.mark.asyncio
 async def test_preview_references_cascade_on_task_deletion(store):
     service, task_id, _, _ = await preview_fixture(store)
-    await service.previews.remember(task_id, 1, "400", "500")
+    await service.approvals.previews.remember(task_id, 1, "400", "500")
     await store.delete(task_id)
     async with store.db.conn.execute("SELECT count(*) FROM scheduled_task_previews") as cursor:
         assert (await cursor.fetchone())[0] == 0
@@ -957,7 +992,7 @@ async def test_decision_keeps_threads_needed_by_approved_tasks_open(store, use, 
         definition=config,
     )
     await store.activate(other_id, 1, "10", 100, reset_state=False)
-    await service.confirm(interaction, task_id, 1, approve=approve)
+    await service.approvals.confirm(interaction, task_id, 1, approve=approve)
     channel.edit.assert_not_awaited()
     assert "left open" in channel.get_partial_message.return_value.edit.call_args.kwargs["content"]
 
@@ -984,7 +1019,7 @@ async def test_deny_edit_keeps_previous_version_destination_open(store):
         definition=definition(),
         expected_revision=2,
     )
-    await service.confirm(interaction, task_id, 3, approve=False)
+    await service.approvals.confirm(interaction, task_id, 3, approve=False)
     channel.edit.assert_not_awaited()
     assert (await store.get(task_id))["active_revision"] == 2
 
@@ -1009,15 +1044,15 @@ async def test_publication_hint_reaches_model_without_private_task_context(store
     )
     delivery = (await store.deliveries())[0]
     await store.delivery_status(delivery["id"], "sent", message_id="500")
-    service = object.__new__(ScheduledTaskService)
-    service.r = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    runtime = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    service = ScheduledTaskService(complete_runtime(runtime))
     message = SimpleNamespace(
         id=500,
         channel=SimpleNamespace(id=300, name="updates"),
         content="Public digest",
         created_at=datetime(2026, 9, 9, 8, tzinfo=UTC),
     )
-    await service._record_message(context(), message)
+    await service.publisher.record_message(context(), message)
     key = "scheduled-publication:300:500"
     # A later task edit must not rename the historical run in the reply hint.
     await store.draft(
@@ -1030,7 +1065,7 @@ async def test_publication_hint_reaches_model_without_private_task_context(store
         expected_revision=1,
     )
     registry = ToolRegistry()
-    registry.prompt_instructions = service.wizard_instructions
+    registry.prompt_instructions = service.manager.wizard_instructions
     provider = _CapturingProvider()
     monkeypatch.setattr(core, "build_system_prompt", lambda **kwargs: "System policy")
     await run_conversation(
@@ -1059,25 +1094,31 @@ async def test_publication_hint_reaches_model_without_private_task_context(store
         "SECRET_STATE",
     ):
         assert secret not in prompt
-    assert await service.wizard_instructions("20", "999", key) == ""
-    assert await service.wizard_instructions("20", None, key) == ""
-    assert await service.wizard_instructions("20", "100", "scheduled-publication:301:500") == ""
+    assert await service.manager.wizard_instructions("20", "999", key) == ""
+    assert await service.manager.wizard_instructions("20", None, key) == ""
+    assert (
+        await service.manager.wizard_instructions("20", "100", "scheduled-publication:301:500")
+        == ""
+    )
     await store.delete(task["id"])
-    assert await service.wizard_instructions("20", "100", key) == ""
+    assert await service.manager.wizard_instructions("20", "100", key) == ""
 
 
 @pytest.mark.asyncio
 async def test_manual_publication_has_no_scheduled_task_hint(store):
-    service = object.__new__(ScheduledTaskService)
-    service.r = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    runtime = SimpleNamespace(store=store, conversations=ConversationStore(store.db))
+    service = ScheduledTaskService(complete_runtime(runtime))
     message = SimpleNamespace(
         id=501,
         channel=SimpleNamespace(id=300, name="updates"),
         content="Manual post",
         created_at=datetime.now(UTC),
     )
-    await service._record_message(context(), message)
-    assert await service.wizard_instructions("10", "100", "scheduled-publication:300:501") == ""
+    await service.publisher.record_message(context(), message)
+    assert (
+        await service.manager.wizard_instructions("10", "100", "scheduled-publication:300:501")
+        == ""
+    )
 
 
 @pytest.mark.asyncio
@@ -1087,10 +1128,8 @@ async def test_manual_publication_has_no_scheduled_task_hint(store):
 async def test_discovery_returns_destinations_independently(failure):
     page = {"sources": {"200": "general"}, "next_cursor": "400", "has_more": True}
     discovery = AsyncMock(return_value=page, side_effect=failure)
-    service = object.__new__(ScheduledTaskService)
     ctx = context()
-    service.fresh = AsyncMock(return_value=ctx)
-    service.r = SimpleNamespace(
+    runtime = SimpleNamespace(
         gateway=SimpleNamespace(discover_discord_channels=discovery),
         settings=SimpleNamespace(discord_search_excluded_channel_ids=frozenset()),
         access=SimpleNamespace(
@@ -1098,6 +1137,8 @@ async def test_discovery_returns_destinations_independently(failure):
             channel=AsyncMock(side_effect=[SimpleNamespace(id=300, name="reports"), ValueError()]),
         ),
     )
+    service = ScheduledTaskService(complete_runtime(runtime))
+    service.authority.fresh = AsyncMock(return_value=ctx)
     result = json.loads(await service.discover({"cursor": "200"}, ctx))
     assert result["destinations"] == {"300": "reports"}
     discovery.assert_awaited_once_with(

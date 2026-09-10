@@ -1,6 +1,7 @@
 """Compact, deterministic approval text; Discord renders local dates/countdowns."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 
 from zoneinfo import ZoneInfo
 from typing import Any
@@ -46,7 +47,7 @@ def native_time(timestamp: float) -> str:
     return f"<t:{stamp}:F> · <t:{stamp}:R>"
 
 
-def render_task_details(task: dict[str, Any], definition: TaskDefinition) -> str:
+def render_task_details(task: Mapping[str, Any], definition: TaskDefinition) -> str:
     """Readable, complete approval settings accompanying the separate task skill."""
     schedule = definition.schedule
     start = schedule.start.astimezone(ZoneInfo(schedule.timezone))
@@ -141,7 +142,7 @@ def render_task_details(task: dict[str, Any], definition: TaskDefinition) -> str
 
 
 def render_preview(
-    task: dict[str, Any],
+    task: Mapping[str, Any],
     definition: TaskDefinition,
     *,
     now: float,

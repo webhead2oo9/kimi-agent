@@ -15,10 +15,10 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 
-import app.scheduled_tasks as scheduled_module
+import app.task_executor as scheduled_module
+import app.task_authority as authority_module
 import app.task_python as python_module
 import app.tools as app_tools
-from app.task_controls import TaskControls
 from app.task_preview import render_task_details
 from app.task_python import TaskPythonRunner, _read_result, execution_slot, package_config
 from sandbox.runner import SandboxConfig, SandboxResult, build_sandbox_command
@@ -122,8 +122,8 @@ async def run_task(box, *, mode="python_only", inputs=(), **changes):
         python={"code": "pass\n", "inputs": list(inputs)},
         **changes,
     )
-    await service.r.store.lease(service._token, time.time())
-    await service._run(task["id"])
+    await service.r.store.lease(service.authority.token, time.time())
+    await service.scheduler.run(task["id"])
     return await service.r.store.get(task["id"])
 
 
@@ -489,7 +489,7 @@ async def test_python_respects_dispatch_denylist_including_preview(
     python_harness, monkeypatch, tool
 ):
     box = python_harness
-    monkeypatch.setattr(scheduled_module, "load_blocked_tools", lambda *args: frozenset({tool}))
+    monkeypatch.setattr(authority_module, "load_blocked_tools", lambda *args: frozenset({tool}))
     source = (
         {"kind": "https", "name": "x", "url": "https://example.org"}
         if tool == "fetch_url"
@@ -499,7 +499,7 @@ async def test_python_respects_dispatch_denylist_including_preview(
         box.service, execution="python_only", python={"code": "pass", "inputs": [source]}
     )
     with pytest.raises(ValueError, match="current access"):
-        await box.service.test_preview(context(), task_id, 1)
+        await box.service.executor.test_preview(context(), task_id, 1)
     box.process.assert_not_awaited()
 
 
@@ -515,7 +515,7 @@ async def test_preview_returns_private_files_without_state_or_history(python_har
     box.files = {"outputs/report.csv": b"count\n1\n"}
     task_id = await draft(box.service, execution="python_only", python={"code": "pass"})
     before = await box.service.r.store.get(task_id)
-    result = await box.service.test_preview(context(), task_id, 1)
+    result = await box.service.executor.test_preview(context(), task_id, 1)
     assert result["files"] == [("report.csv", None, b"count\n1\n")]
     assert await box.service.r.store.get(task_id) == before
     assert await box.service.r.store.history(task_id) == []
@@ -530,7 +530,7 @@ async def test_preview_returns_private_files_without_state_or_history(python_har
         captured.extend((file.filename, file.fp.read()) for file in kwargs.get("files", []))
 
     shown.followup.send.side_effect = send
-    await TaskControls(box.service)._test_result(shown, result)
+    await box.service.controls._test_result(shown, result)
     assert captured == [("report.csv", b"count\n1\n")]
     box.service.r.providers.resolve.assert_not_called()
 
@@ -545,7 +545,7 @@ async def test_preview_rejects_revision_decided_during_python(python_harness):
 
     box.during = reject
     with pytest.raises(ValueError, match="decided or replaced"):
-        await box.service.test_preview(context(), task_id, 1)
+        await box.service.executor.test_preview(context(), task_id, 1)
     assert not box.requests[0].root.exists()
     assert await box.service.r.store.history(task_id) == []
 
@@ -561,7 +561,7 @@ async def test_cancelled_preview_cleans_scratch_and_does_not_commit(python_harne
         await asyncio.Event().wait()
 
     box.during = wait
-    preview = asyncio.create_task(box.service.test_preview(context(), task_id, 1))
+    preview = asyncio.create_task(box.service.executor.test_preview(context(), task_id, 1))
     await asyncio.wait_for(started.wait(), 5)
     await box.service._cancel(task_id)
     assert preview.cancelled()

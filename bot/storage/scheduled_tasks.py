@@ -5,16 +5,24 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from storage.db import Database
+from storage.task_types import (
+    DeliveryRecord,
+    DeliverySummary,
+    RunRecord,
+    SavedTaskFile,
+    TaskHistory,
+    TaskRecord,
+)
 
 
 class ScheduledTaskStore:
     def __init__(self, database: Database) -> None:
         self.db = database
 
-    async def get(self, task_id: str, *, active: bool = False) -> dict[str, Any]:
+    async def get(self, task_id: str, *, active: bool = False) -> TaskRecord:
         revision = "active_revision" if active else "revision"
         async with self.db.conn.execute(
             f"SELECT t.*, r.definition_json, r.proposer_id, r.approval_status FROM scheduled_tasks t "
@@ -28,7 +36,109 @@ class ScheduledTaskStore:
         result = dict(row)
         result["definition"] = json.loads(result.pop("definition_json"))
         result["state"] = json.loads(result.pop("state_json"))
-        return result
+        return cast(TaskRecord, result)
+
+    async def wizard(
+        self, owner_id: str, guild_id: str, key: str, *, instructions_only: bool = False
+    ) -> dict[str, Any] | None:
+        async with self.db.conn.execute(
+            "SELECT w.* FROM scheduled_task_wizards w LEFT JOIN scheduled_tasks t ON t.id=w.task_id "
+            "LEFT JOIN scheduled_task_revisions r ON r.task_id=t.id AND r.revision=t.revision "
+            "WHERE w.owner_id=? AND w.guild_id=? AND w.context_key=? AND "
+            "(?=0 OR w.task_id IS NULL OR w.context_key LIKE 'task-edit:%' OR "
+            "(r.approval_status='pending' AND (t.active_revision IS NULL OR t.revision!=t.active_revision)))",
+            (owner_id, guild_id, key, instructions_only),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def bind_wizard(
+        self, owner_id: str, guild_id: str, key: str, task_id: str | None
+    ) -> None:
+        async with self.db.write_transaction() as conn:
+            await conn.execute(
+                "INSERT INTO scheduled_task_wizards(owner_id,guild_id,context_key,task_id) VALUES(?,?,?,?) "
+                "ON CONFLICT(owner_id,guild_id,context_key) DO UPDATE SET task_id=excluded.task_id",
+                (owner_id, guild_id, key, task_id),
+            )
+
+    async def cancel_wizard(self, owner_id: str, guild_id: str, key: str) -> None:
+        async with self.db.write_transaction() as conn:
+            await conn.execute(
+                "DELETE FROM scheduled_task_wizards WHERE owner_id=? AND guild_id=? AND context_key=?",
+                (owner_id, guild_id, key),
+            )
+
+    async def place_wizard(
+        self, owner_id: str, guild_id: str, key: str, *, in_channel: bool
+    ) -> None:
+        async with self.db.write_transaction() as conn:
+            await conn.execute(
+                "UPDATE scheduled_task_wizards SET approval_in_channel=? "
+                "WHERE owner_id=? AND guild_id=? AND context_key=?",
+                (in_channel, owner_id, guild_id, key),
+            )
+
+    async def revision_approval(self, task_id: str, revision: int) -> tuple[str, str] | None:
+        async with self.db.conn.execute(
+            "SELECT proposer_id,approval_status FROM scheduled_task_revisions WHERE task_id=? AND revision=?",
+            (task_id, revision),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (str(row[0]), str(row[1])) if row is not None else None
+
+    async def persistent_views(self) -> tuple[list[tuple[str, int]], list[str]]:
+        async with self.db.conn.execute(
+            "SELECT task_id,revision FROM scheduled_task_revisions"
+        ) as cursor:
+            revisions = [(str(row[0]), int(row[1])) for row in await cursor.fetchall()]
+        async with self.db.conn.execute("SELECT id FROM scheduled_tasks") as cursor:
+            tasks = [str(row[0]) for row in await cursor.fetchall()]
+        return revisions, tasks
+
+    async def owner_tasks(self, owner_id: str) -> list[str]:
+        async with self.db.conn.execute(
+            "SELECT id FROM scheduled_tasks WHERE owner_id=?", (owner_id,)
+        ) as cursor:
+            return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def clear_owner_wizards(self, owner_id: str) -> None:
+        async with self.db.write_transaction() as conn:
+            await conn.execute("DELETE FROM scheduled_task_wizards WHERE owner_id=?", (owner_id,))
+
+    async def task_history(self, task_id: str) -> TaskHistory:
+        async with self.db.conn.execute(
+            "SELECT d.id,d.run_id,d.channel_id,d.status,d.message_id,d.error FROM "
+            "scheduled_task_deliveries d JOIN scheduled_task_runs r ON r.id=d.run_id "
+            "WHERE r.task_id=? ORDER BY d.id DESC LIMIT 100",
+            (task_id,),
+        ) as cursor:
+            deliveries = [cast(DeliverySummary, dict(row)) for row in await cursor.fetchall()]
+        return {"runs": await self.history(task_id), "deliveries": deliveries}
+
+    async def save_files(
+        self, run_id: str, files: list[tuple[str, str | None, bytes]]
+    ) -> list[int]:
+        ids: list[int] = []
+        async with self.db.write_transaction() as conn:
+            for filename, description, data in files:
+                cursor = await conn.execute(
+                    "INSERT INTO scheduled_task_files(run_id,filename,description,data) VALUES(?,?,?,?)",
+                    (run_id, filename, description, data),
+                )
+                assert cursor.lastrowid is not None
+                ids.append(cursor.lastrowid)
+        return ids
+
+    async def output_file(self, run_id: str, file_id: int) -> SavedTaskFile:
+        async with self.db.conn.execute(
+            "SELECT filename,description,data FROM scheduled_task_files WHERE id=? AND run_id=?",
+            (file_id, run_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("Saved task attachment is unavailable")
+        return cast(SavedTaskFile, dict(row))
 
     async def list_tasks(
         self, guild_id: str, owner_id: str | None, *, limit: int = 100, offset: int = 0
@@ -334,7 +444,7 @@ class ScheduledTaskStore:
         ) as cursor:
             return [str(row[0]) for row in await cursor.fetchall()]
 
-    async def claim(self, task: dict[str, Any], next_run: float | None) -> str | None:
+    async def claim(self, task: TaskRecord, next_run: float | None) -> str | None:
         run_id = uuid.uuid4().hex
         async with self.db.immediate_write_transaction() as conn:
             cursor = await conn.execute(
@@ -415,7 +525,7 @@ class ScheduledTaskStore:
             (run_id, run_id),
         )
 
-    async def deliveries(self) -> list[dict[str, Any]]:
+    async def deliveries(self) -> list[DeliveryRecord]:
         async with self.db.conn.execute(
             "SELECT d.*,r.task_id,r.revision,r.status AS run_status,r.detail AS run_detail FROM scheduled_task_deliveries d "
             "JOIN scheduled_task_runs r ON r.id=d.run_id "
@@ -423,7 +533,7 @@ class ScheduledTaskStore:
             "AND ((d.is_log=1 AND r.status!='delivery') OR (r.status='delivery' AND t.status='active' AND d.is_log=0)) ORDER BY d.id LIMIT 20",
             (time.time(),),
         ) as cursor:
-            return [dict(row) for row in await cursor.fetchall()]
+            return [cast(DeliveryRecord, dict(row)) for row in await cursor.fetchall()]
 
     async def delivery_status(
         self,
@@ -483,13 +593,13 @@ class ScheduledTaskStore:
             row = await cursor.fetchone()
         return dict(row) if row is not None else None
 
-    async def history(self, task_id: str) -> list[dict[str, Any]]:
+    async def history(self, task_id: str) -> list[RunRecord]:
         async with self.db.conn.execute(
             "SELECT id,revision,scheduled_for,status,detail,created_at,finished_at "
             "FROM scheduled_task_runs WHERE task_id=? ORDER BY rowid DESC LIMIT 30",
             (task_id,),
         ) as cursor:
-            return [dict(row) for row in await cursor.fetchall()]
+            return [cast(RunRecord, dict(row)) for row in await cursor.fetchall()]
 
     async def prune(self) -> None:
         async with self.db.write_transaction() as conn:

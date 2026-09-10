@@ -10,9 +10,11 @@ import discord
 import pytest
 import pytest_asyncio
 
-import app.scheduled_tasks as scheduled_module
-from app.scheduled_tasks import ScheduledTaskService, TaskConfirmation
-from app.task_controls import TaskControls, TaskManageEntry
+import app.task_executor as scheduled_module
+import app.task_authority as authority_module
+from app.scheduled_tasks import ScheduledTaskService
+from app.task_controls import TaskConfirmation
+from app.task_controls import TaskManageEntry
 from storage.conversations import ConversationStore
 from storage.db import Database
 from storage.scheduled_tasks import ScheduledTaskStore
@@ -84,6 +86,7 @@ async def harness(tmp_path, monkeypatch):
     )
     service = ScheduledTaskService(runtime)
     monkeypatch.setattr(scheduled_module, "load_blocked_tools", lambda *args: frozenset())
+    monkeypatch.setattr(authority_module, "load_blocked_tools", lambda *args: frozenset())
     monkeypatch.setattr(scheduled_module, "load_tool_configs", lambda *args: {})
     try:
         yield service, home, destination
@@ -188,7 +191,7 @@ async def test_preview_reads_and_captures_posts_without_publishing_or_saving_sta
         return model_result()
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
-    result = await service.test_preview(context(), task_id, 1)
+    result = await service.executor.test_preview(context(), task_id, 1)
     assert result["outcome"] == expected
     assert len(result["posts"]) == int(expected == "completed")
     if expected == "no_change":
@@ -200,7 +203,7 @@ async def test_preview_reads_and_captures_posts_without_publishing_or_saving_sta
     write.assert_not_awaited()
     home.send.assert_not_awaited()
     destination.send.assert_not_awaited()
-    assert service._tests == service._posts == service._run_tasks == {}
+    assert service.executor.tests == service.runs == {}
     service.r.usage.record_turn.assert_awaited()
     assert service.r.providers.resolve.call_args_list[0].args[0] == "scheduled"
     async with service.r.store.db.conn.execute(
@@ -227,7 +230,7 @@ async def test_preview_returns_needs_input_privately_and_leaves_approval_pending
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
     event = interaction()
-    card = TaskConfirmation(service, task_id, 1)
+    card = TaskConfirmation(service.controls, task_id, 1)
     assert card.is_persistent()
     await card.children[0].callback(event)
     assert event.sent[0]["ephemeral"] is True
@@ -265,9 +268,9 @@ async def test_preview_stops_if_draft_or_authority_changes(harness, monkeypatch,
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
     with pytest.raises(ValueError):
-        await service.test_preview(context(), task_id, 1)
+        await service.executor.test_preview(context(), task_id, 1)
     assert await service.r.store.history(task_id) == []
-    assert service._tests == service._posts == service._run_tasks == {}
+    assert service.executor.tests == service.runs == {}
     destination.send.assert_not_awaited()
 
 
@@ -276,12 +279,14 @@ async def test_only_requester_can_test_pending_revision(harness):
     service, _, _ = harness
     task_id = await draft(service)
     # Staff may manage the task, but cannot test someone else's proposal.
-    service.fresh = AsyncMock(side_effect=lambda ctx: ctx)
+    service.authority.fresh = AsyncMock(side_effect=lambda ctx: ctx)
     with pytest.raises(ValueError, match="Only the person"):
-        await service.test_preview(context(user_id="11", trust_tier=TrustTier.STAFF), task_id, 1)
+        await service.executor.test_preview(
+            context(user_id="11", trust_tier=TrustTier.STAFF), task_id, 1
+        )
     await service.r.store.reject(task_id, 1, "10")
     with pytest.raises(ValueError, match="decided or replaced"):
-        await service.test_preview(context(), task_id, 1)
+        await service.executor.test_preview(context(), task_id, 1)
 
 
 @pytest.mark.asyncio
@@ -295,13 +300,13 @@ async def test_duplicate_preview_is_rejected_and_cancellation_cleans_up(harness,
         await asyncio.Event().wait()
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
-    test = asyncio.create_task(service.test_preview(context(), task_id, 1))
+    test = asyncio.create_task(service.executor.test_preview(context(), task_id, 1))
     await asyncio.wait_for(started.wait(), 2)
     with pytest.raises(ValueError, match="already running"):
-        await service.test_preview(context(), task_id, 1)
+        await service.executor.test_preview(context(), task_id, 1)
     await service._cancel(task_id)
     assert test.cancelled()
-    assert service._tests == service._posts == service._run_tasks == {}
+    assert service.executor.tests == service.runs == {}
     assert await service.r.store.history(task_id) == []
 
 
@@ -312,7 +317,7 @@ async def test_tasks_panel_pages_and_rechecks_permissions(harness):
     await draft(service, owner_id="11", name="Someone else's task")
     await draft(service, guild_id="101", name="Another server")
     event = interaction()
-    controls = TaskControls(service)
+    controls = service.controls
     await controls.handle(event, "list")
     panel = event.sent[-1]
     assert panel["ephemeral"] is True
@@ -329,7 +334,7 @@ async def test_tasks_panel_pages_and_rechecks_permissions(harness):
         ids[0],
     ]
     forbidden = interaction(user_id=11)
-    await TaskManageEntry(service, ids[0]).children[0].callback(forbidden)
+    await TaskManageEntry(service.controls, ids[0]).children[0].callback(forbidden)
     assert forbidden.sent[-1]["content"] == "Task not found"
     service.r.user_blocked.return_value = True
     revoked = interaction()
@@ -341,7 +346,7 @@ async def test_tasks_panel_pages_and_rechecks_permissions(harness):
 async def test_manage_buttons_pause_resume_and_confirm_deletion(harness):
     service, _, _ = harness
     task = await active_task(service.r.store)
-    controls = TaskControls(service)
+    controls = service.controls
     event = interaction()
     await controls.handle(event, "inspect", task_id=task["id"])
     pause = next(item for item in event.sent[-1]["view"].children if item.label == "Pause")
@@ -363,17 +368,17 @@ async def test_manage_buttons_pause_resume_and_confirm_deletion(harness):
 async def test_active_cards_refresh_status_and_survive_restart(harness, monkeypatch):
     service, home, _ = harness
     task = await active_task(service.r.store)
-    await service.previews.remember(task["id"], 1, "200", "500")
-    await service.reconcile_previews()
+    await service.approvals.previews.remember(task["id"], 1, "200", "500")
+    await service.approvals.reconcile()
     edit = home.get_partial_message.return_value.edit
     assert "Task active" in edit.call_args.kwargs["content"]
     assert edit.call_args.kwargs["view"].is_persistent()
-    assert await service.previews.updates() == []
+    assert await service.approvals.previews.updates() == []
     await service.r.store.set_status(task["id"], "paused")
-    await service.reconcile_previews()
+    await service.approvals.reconcile()
     assert "Task paused" in edit.call_args.kwargs["content"]
     assert "None scheduled" in edit.call_args.kwargs["content"]
-    monkeypatch.setattr(service, "_loop", AsyncMock())
+    monkeypatch.setattr(service.scheduler, "loop", AsyncMock())
     await service.start()
     ids = {
         item.custom_id
@@ -388,15 +393,15 @@ async def test_active_cards_refresh_status_and_survive_restart(harness, monkeypa
 async def test_existing_pending_card_gains_preview_button_once(harness):
     service, home, _ = harness
     task_id = await draft(service)
-    await service.previews.remember(task_id, 1, "200", "500")
-    await service.reconcile_previews()
+    await service.approvals.previews.remember(task_id, 1, "200", "500")
+    await service.approvals.reconcile()
     edit = home.get_partial_message.return_value.edit
     assert [item.label for item in edit.call_args.kwargs["view"].children] == [
         "Test preview",
         "Approve",
         "Reject",
     ]
-    assert await service.previews.updates() == []
+    assert await service.approvals.previews.updates() == []
 
 
 @pytest.mark.asyncio
@@ -412,7 +417,7 @@ async def test_private_panel_navigation_updates_original_response(harness):
         event.response.type = discord.InteractionResponseType.deferred_message_update
 
     event.response.defer.side_effect = defer
-    await TaskControls(service).handle(event, "list")
+    await service.controls.handle(event, "list")
     event.followup.send.assert_not_awaited()
     payload = event.edit_original_response.call_args.kwargs
     assert payload["attachments"] == []
@@ -427,7 +432,7 @@ async def test_edit_starts_owner_scoped_conversation_for_selected_task(harness):
     service, home, _ = harness
     task = await active_task(service.r.store)
     event = interaction()
-    await TaskControls(service).handle(event, "edit", task_id=task["id"])
+    await service.controls.handle(event, "edit", task_id=task["id"])
     home.send.assert_awaited_once()
     assert "Reply to this message" in home.send.call_args.args[0]
     conv = await service.r.conversations.get_continuation_conversation_for_reply(
@@ -436,11 +441,11 @@ async def test_edit_starts_owner_scoped_conversation_for_selected_task(harness):
         requester_user_id="10",
     )
     assert conv is not None and conv.access_scope == "owner_only"
-    assert task["id"] in await service.wizard_instructions("10", "100", conv.key)
-    assert await service.wizard_instructions("11", "100", conv.key) == ""
+    assert task["id"] in await service.manager.wizard_instructions("10", "100", conv.key)
+    assert await service.manager.wizard_instructions("11", "100", conv.key) == ""
     setup = json.loads(await service.manage({"action": "setup"}, context(context_key=conv.key)))
     assert setup["task_id"] == task["id"]
-    assert task["id"] in await service.wizard_instructions("10", "100", conv.key)
+    assert task["id"] in await service.manager.wizard_instructions("10", "100", conv.key)
     await service.r.store.draft(
         task_id=task["id"],
         guild_id="100",
@@ -451,7 +456,7 @@ async def test_edit_starts_owner_scoped_conversation_for_selected_task(harness):
         expected_revision=1,
     )
     await service.r.store.activate(task["id"], 2, "10", 100, reset_state=False)
-    assert await service.wizard_instructions("10", "100", conv.key) == ""
+    assert await service.manager.wizard_instructions("10", "100", conv.key) == ""
 
 
 @pytest.mark.asyncio
@@ -508,6 +513,6 @@ async def test_preview_copies_saved_state_and_honors_draft_reset(harness, monkey
         return model_result()
 
     monkeypatch.setattr(scheduled_module, "run_conversation", run)
-    await service.test_preview(context(), task["id"], 2)
+    await service.executor.test_preview(context(), task["id"], 2)
     assert await store.get(task["id"]) == before
     assert await store.history(task["id"]) == history

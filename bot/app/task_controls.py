@@ -1,6 +1,8 @@
 """Proposal-style Discord controls with private, freshly authorized task management."""
 
 from __future__ import annotations
+from storage.task_types import TaskRecord
+from app.task_runtime import PreviewResult
 
 import io
 import json
@@ -18,22 +20,68 @@ from trust.tiers import TrustTier
 from utils.privacy_barrier import PrivacyDeletionPendingError
 
 if TYPE_CHECKING:
-    from app.scheduled_tasks import ScheduledTaskService
+    from app.task_runtime import ScheduledTaskRuntime
+    from app.task_authority import TaskAuthority
+    from app.task_manager import TaskManager
+    from app.task_executor import TaskExecutor
+    from app.task_approvals import TaskApprovals
 
 log = logging.getLogger(__name__)
+
+
+class TaskConfirmation(discord.ui.View):
+    def __init__(self, controls: TaskControls, task_id: str, revision: int) -> None:
+        super().__init__(timeout=None)
+        self.controls, self.task_id, self.revision = controls, task_id, revision
+        preview: discord.ui.Button[TaskConfirmation] = discord.ui.Button(
+            label="Test preview", custom_id=f"task-test:{task_id}:{revision}"
+        )
+
+        async def test_preview(interaction: discord.Interaction) -> None:
+            await controls.handle(interaction, "test_preview", task_id=task_id, revision=revision)
+
+        preview.callback = test_preview  # type: ignore[method-assign]
+        self.add_item(preview)
+        for label, prefix, style, approve in (
+            ("Approve", "task-confirm", discord.ButtonStyle.success, True),
+            ("Reject", "task-deny", discord.ButtonStyle.danger, False),
+        ):
+            button: discord.ui.Button[TaskConfirmation] = discord.ui.Button(
+                label=label,
+                style=style,
+                custom_id=f"{prefix}:{task_id}:{revision}",
+            )
+
+            async def callback(interaction: discord.Interaction, approve: bool = approve) -> None:
+                await self.decide(interaction, approve=approve)
+
+            button.callback = callback  # type: ignore[method-assign]
+            self.add_item(button)
+
+    async def decide(self, interaction: discord.Interaction, *, approve: bool) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            notice = await self.controls.approvals.confirm(
+                interaction, self.task_id, self.revision, approve=approve
+            )
+        except (ValueError, discord.HTTPException) as exc:
+            notice = str(exc)[:1500]
+        await interaction.followup.send(
+            notice, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
 
 
 class TaskManageEntry(discord.ui.View):
     """Durable entry point; all details and actions are resolved at click time."""
 
-    def __init__(self, service: ScheduledTaskService, task_id: str) -> None:
+    def __init__(self, controls: TaskControls, task_id: str) -> None:
         super().__init__(timeout=None)
         button: discord.ui.Button[TaskManageEntry] = discord.ui.Button(
             label="Manage", custom_id=f"task-manage:{task_id}", style=discord.ButtonStyle.primary
         )
 
         async def callback(interaction: discord.Interaction) -> None:
-            await TaskControls(service).handle(interaction, "inspect", task_id=task_id)
+            await controls.handle(interaction, "inspect", task_id=task_id)
 
         button.callback = callback  # type: ignore[method-assign]
         self.add_item(button)
@@ -109,8 +157,16 @@ class TaskAnswer(discord.ui.Modal, title="Answer and resume task"):
 
 
 class TaskControls:
-    def __init__(self, service: ScheduledTaskService) -> None:
-        self.service = service
+    def __init__(
+        self,
+        runtime: ScheduledTaskRuntime,
+        authority: TaskAuthority,
+        manager: TaskManager,
+        executor: TaskExecutor,
+        approvals: TaskApprovals,
+    ) -> None:
+        self.r, self.authority, self.manager = runtime, authority, manager
+        self.executor, self.approvals = executor, approvals
 
     async def handle(
         self,
@@ -131,21 +187,21 @@ class TaskControls:
         try:
             if interaction.guild_id is None or interaction.channel_id is None:
                 raise ValueError("Use /tasks in the task's server")
-            async with self.service.r.privacy.activity(str(interaction.user.id)):
-                ctx = await self.service.r.access.context(
+            async with self.r.privacy.activity(str(interaction.user.id)):
+                ctx = await self.r.access.context(
                     str(interaction.guild_id),
                     str(interaction.user.id),
                     str(interaction.channel_id),
                 )
-                ctx = await self.service.fresh(ctx)
+                ctx = await self.authority.fresh(ctx)
                 if action == "list":
                     await self._list(interaction, ctx, page)
                     return
-                task = await self.service._task(ctx, task_id)
+                task = await self.manager.task(ctx, task_id)
                 if action == "test_preview":
                     if revision is None:
                         raise ValueError("Choose the proposal revision to test")
-                    result = await self.service.test_preview(ctx, task_id, revision)
+                    result = await self.executor.test_preview(ctx, task_id, revision)
                     await self._test_result(interaction, result)
                     return
                 if action == "history":
@@ -171,18 +227,9 @@ class TaskControls:
                     return
                 notice = ""
                 if action != "inspect":
-                    result = json.loads(
-                        await self.service.manage(
-                            {
-                                "action": "delete" if action == "delete_confirmed" else action,
-                                "task_id": task_id,
-                                "answer": answer,
-                            },
-                            ctx,
-                        )
+                    await self.manager.action(
+                        ctx, task_id, "delete" if action == "delete_confirmed" else action, answer
                     )
-                    if "error" in result:
-                        raise ValueError(result["error"])
                     if action == "delete_confirmed":
                         await self._list(interaction, ctx, 0, notice="Task deleted.")
                         return
@@ -192,7 +239,7 @@ class TaskControls:
                         "run_now": "Run requested.",
                         "retry_delivery": "Saved delivery queued for retry.",
                     }.get(action, "Task updated.")
-                    task = await self.service._task(ctx, task_id)
+                    task = await self.manager.task(ctx, task_id)
                 await self._detail(interaction, ctx, task, notice=notice)
         except TimeoutError:
             await self._send(
@@ -231,7 +278,7 @@ class TaskControls:
         self, interaction: discord.Interaction, ctx: MessageContext, page: int, *, notice: str = ""
     ) -> None:
         page = max(0, page)
-        rows = await self.service.r.store.list_tasks(
+        rows = await self.r.store.list_tasks(
             ctx.guild_id or "",
             None if ctx.trust_tier >= TrustTier.STAFF else ctx.user_id,
             limit=11,
@@ -267,17 +314,17 @@ class TaskControls:
         self,
         interaction: discord.Interaction,
         ctx: MessageContext,
-        task: dict[str, Any],
+        task: TaskRecord,
         *,
         notice: str = "",
     ) -> None:
         active = (
-            await self.service.r.store.get(task["id"], active=True)
+            await self.r.store.get(task["id"], active=True)
             if task["active_revision"] is not None
             else task
         )
         definition = TaskDefinition.model_validate(active["definition"])
-        history = await self.service.r.store.history(task["id"])
+        history = await self.r.store.history(task["id"])
         latest = history[0] if history else None
         embed = discord.Embed(
             title=clip(definition.name, 100),
@@ -328,23 +375,18 @@ class TaskControls:
             view.action("Run now", "run_now", task_id=task["id"])
             if latest and latest["status"] == "needs_input":
                 view.action("Answer & resume", "answer", task_id=task["id"])
-            if await self.service.r.store.can_retry_delivery(task["id"]):
+            if await self.r.store.can_retry_delivery(task["id"]):
                 view.action("Retry delivery", "retry_delivery", task_id=task["id"])
         if pending and task["proposer_id"] == ctx.user_id:
             view.action(
                 "Test preview", "test_preview", task_id=task["id"], revision=task["revision"]
             )
-            async with self.service.r.store.db.conn.execute(
-                "SELECT channel_id,message_id FROM scheduled_task_previews WHERE task_id=? "
-                "AND revision=? ORDER BY rowid DESC LIMIT 1",
-                (task["id"], task["revision"]),
-            ) as cursor:
-                proposal = await cursor.fetchone()
+            proposal = await self.approvals.previews.latest(task["id"], task["revision"])
             if proposal:
                 view.add_item(
                     discord.ui.Button(
                         label="Open proposal",
-                        url=f"https://discord.com/channels/{ctx.guild_id}/{proposal['channel_id']}/{proposal['message_id']}",
+                        url=f"https://discord.com/channels/{ctx.guild_id}/{proposal[0]}/{proposal[1]}",
                     )
                 )
         view.action("History", "history", task_id=task["id"])
@@ -354,13 +396,9 @@ class TaskControls:
         await self._send(interaction, content=notice or None, embed=embed, view=view)
 
     async def _history(
-        self, interaction: discord.Interaction, ctx: MessageContext, task: dict[str, Any]
+        self, interaction: discord.Interaction, ctx: MessageContext, task: TaskRecord
     ) -> None:
-        result = json.loads(
-            await self.service.manage({"action": "history", "task_id": task["id"]}, ctx)
-        )
-        if "error" in result:
-            raise ValueError(result["error"])
+        result = await self.manager.history(ctx, task["id"])
         entries = []
         for run in result["runs"][:8]:
             links = [
@@ -388,14 +426,14 @@ class TaskControls:
             file.close()
 
     async def _edit(
-        self, interaction: discord.Interaction, ctx: MessageContext, task: dict[str, Any]
+        self, interaction: discord.Interaction, ctx: MessageContext, task: TaskRecord
     ) -> None:
-        await self.service.r.access.owner_allowed(ctx)
-        channel = await self.service.r.access.channel(ctx, ctx.channel_id, posting=False)
+        await self.r.access.owner_allowed(ctx)
+        channel = await self.r.access.channel(ctx, ctx.channel_id, posting=False)
         prompt = f"Editing task **{clip(task['definition']['name'], 100)}**. Reply to this message with the changes you want."
         message = await channel.send(prompt, allowed_mentions=discord.AllowedMentions.none())
         key = f"task-edit:{task['id']}:{message.id}"
-        conversation_id = await self.service.r.conversations.get_or_create(
+        conversation_id = await self.r.conversations.get_or_create(
             key,
             channel.name,
             guild_id=ctx.guild_id,
@@ -404,7 +442,7 @@ class TaskControls:
             owner_user_id=ctx.user_id,
             access_scope="owner_only",
         )
-        await self.service.r.conversations.save_channel_messages(
+        await self.r.conversations.save_channel_messages(
             conversation_id,
             [
                 ChannelMessageRecord(
@@ -418,13 +456,13 @@ class TaskControls:
             ],
             context_channel_id=ctx.channel_id,
         )
-        await self.service._bind_wizard(replace(ctx, context_key=key), task["id"])
+        await self.manager.bind_wizard(replace(ctx, context_key=key), task["id"])
         await self._send(
             interaction,
             content=f"[Continue editing here]({message.jump_url}). Changes will need a new approval.",
         )
 
-    async def _test_result(self, interaction: discord.Interaction, result: dict[str, Any]) -> None:
+    async def _test_result(self, interaction: discord.Interaction, result: PreviewResult) -> None:
         outcome = {
             "completed": "Would publish" if result["posts"] else "Would finish without a post",
             "no_change": "Would not publish",

@@ -11,6 +11,15 @@ class TaskPreviewStore:
     def __init__(self, db: Database) -> None:
         self.db = db
 
+    async def latest(self, task_id: str, revision: int) -> tuple[str, str] | None:
+        async with self.db.conn.execute(
+            "SELECT channel_id,message_id FROM scheduled_task_previews WHERE task_id=? "
+            "AND revision=? ORDER BY rowid DESC LIMIT 1",
+            (task_id, revision),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (str(row[0]), str(row[1])) if row is not None else None
+
     async def remember(self, task_id: str, revision: int, channel_id: str, message_id: str) -> None:
         async with self.db.write_transaction() as conn:
             await conn.execute(

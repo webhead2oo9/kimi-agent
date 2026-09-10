@@ -45,11 +45,75 @@ async def test_exa_contents_matches_document_id_not_display_url() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["exa", "tinyfish"])
+@pytest.mark.parametrize(
+    "failed",
+    [
+        "https://example.com/page/",
+        "http://example.com/page",
+        "https://example.com/page?ref=other",
+    ],
+)
+async def test_contents_preserves_failures_for_distinct_requested_urls(
+    provider: str, failed: str
+) -> None:
+    original = "https://example.com/page"
+    post = RecordingPost(
+        {
+            "results": [
+                {
+                    "id": original,
+                    "url": original,
+                    "final_url": "https://example.com/destination",
+                    "text": "read",
+                }
+            ],
+            "statuses": [{"id": original, "status": "success"}, {"id": failed, "status": "error"}],
+            "errors": [{"url": failed, "error": "unavailable"}],
+        }
+    )
+    backend = (
+        ExaSearchBackend("secret", request=post)
+        if provider == "exa"
+        else TinyFishSearchBackend("secret", request=post)
+    )
+    response = await backend.contents(ContentsRequest((original, failed), "text"))
+    assert response.failed_urls == (failed,)
+    assert len(response.results) == 1
+    if provider == "tinyfish":
+        assert response.results[0].url == "https://example.com/destination"
+
+
+@pytest.mark.asyncio
+async def test_exa_success_status_without_usable_result_is_reported_missing() -> None:
+    original = "https://example.com/page"
+    missing = "https://example.com/missing"
+    post = RecordingPost(
+        {
+            "results": [
+                {"id": original, "url": original, "text": "read"},
+                {"id": missing, "url": "invalid"},
+            ],
+            "statuses": [
+                {"id": original, "status": "success"},
+                {"id": missing, "status": "success"},
+            ],
+        }
+    )
+    response = await ExaSearchBackend("secret", request=post).contents(
+        ContentsRequest((original, missing), "text")
+    )
+    assert response.failed_urls == (missing,)
+
+
+@pytest.mark.asyncio
 async def test_brave_rejects_unsupported_country_before_network() -> None:
     post = RecordingPost({})
-    with pytest.raises(SearchProviderError, match="does not support this country"):
+    with pytest.raises(SearchProviderError, match="does not support this country") as exc:
         await BraveSearchBackend("secret", request=post).search(SearchRequest("q", 1, country="ZZ"))
     assert not post.calls
+    # The shared tool takes country codes, not Brave's ALL sentinel.
+    assert "ALL" not in str(exc.value)
 
 
 @pytest.mark.asyncio

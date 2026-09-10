@@ -88,20 +88,25 @@ class ExaSearchBackend:
         successful = _successful_content_ids(statuses)
         if not successful:
             raise SearchProviderError("Exa could not read the requested pages.")
-        results = tuple(
-            result
-            for item in raw_results
-            if isinstance(item, dict)
-            and canonical_url(clean_text(item.get("id") or item.get("url"))) in successful
-            for result in _normalize_results([item], request.content_mode)
-        )
+        results: list[SearchResult] = []
+        completed: set[str] = set()
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            identity = item.get("id") or item.get("url")
+            if not isinstance(identity, str) or identity.strip() not in successful:
+                continue
+            normalized = _normalize_results([item], request.content_mode)
+            if normalized:
+                results.extend(normalized)
+                completed.add(identity.strip())
         if not results:
             raise SearchProviderError("Exa returned an invalid response shape.")
         return BackendResponse(
             provider=self.name,
-            results=results,
+            results=tuple(results),
             reported_cost_usd=_cost_dollars(response.payload),
-            failed_urls=tuple(url for url in request.urls if canonical_url(url) not in successful),
+            failed_urls=tuple(url for url in request.urls if url not in completed),
         )
 
     async def _post(self, path: str, payload: dict[str, Any]) -> HttpResponse:
@@ -150,11 +155,12 @@ def _successful_content_ids(raw: object) -> set[str]:
     if not isinstance(raw, list):
         return set()
     return {
-        canonical_url(clean_text(item.get("id")))
+        item["id"].strip()
         for item in raw
         if isinstance(item, dict)
         and item.get("status") == "success"
-        and canonical_url(clean_text(item.get("id")))
+        and isinstance(item.get("id"), str)
+        and item["id"].strip()
     }
 
 

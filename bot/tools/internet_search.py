@@ -271,6 +271,21 @@ def _render_response(
     if len(encoded) <= max_chars:
         return encoded
     payload["truncated"] = True
+    if failed_urls:
+        # Failure reporting must not crowd successful pages out of the response.
+        failures = list(failed_urls)
+        while failures and len(json.dumps(failures, ensure_ascii=False)) > max_chars // 3:
+            failures.pop()
+        if len(failures) != len(failed_urls):
+            payload["failed_url_count"] = len(failed_urls)
+            payload["message"] = "Some requested pages could not be read."
+        if failures:
+            payload["failed_urls"] = failures
+        else:
+            payload.pop("failed_urls", None)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        if len(encoded) <= max_chars:
+            return encoded
     while cards:
         # Bound the serialized response, including metadata and JSON escapes.
         card = max(cards, key=lambda item: len(json.dumps(item, ensure_ascii=False)))
@@ -285,6 +300,7 @@ def _render_response(
         if len(encoded) <= max_chars:
             return encoded
     payload.pop("failed_urls", None)
+    payload.pop("failed_url_count", None)
     payload.pop("message", None)
     encoded = json.dumps(payload)
     return encoded if len(encoded) <= max_chars else "0"

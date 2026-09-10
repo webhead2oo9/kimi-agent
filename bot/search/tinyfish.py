@@ -95,25 +95,43 @@ class TinyFishSearchBackend:
             result
             for batch_result in batch_results
             if batch_result is not None
-            for result in batch_result
+            for result in batch_result.results
         ]
         if not results:
             # Per-URL failures ride along with HTTP 200 in errors[], so an empty
             # result set is the only signal that every page failed.
             raise SearchProviderError("TinyFish could not read the requested pages.")
-        completed = {canonical_url(result.url) for result in results}
         return BackendResponse(
             provider=self.name,
             results=tuple(results),
-            failed_urls=tuple(url for url in request.urls if canonical_url(url) not in completed),
+            failed_urls=tuple(
+                url
+                for batch, response in zip(batches, batch_results, strict=True)
+                for url in (response.failed_urls if response is not None else batch)
+            ),
         )
 
-    async def _try_fetch_batch(self, urls: tuple[str, ...]) -> tuple[SearchResult, ...] | None:
+    async def _try_fetch_batch(self, urls: tuple[str, ...]) -> BackendResponse | None:
         try:
             response = await self._post_fetch(urls)
-            return _normalize_fetch_results(_required_list(response.payload, "results"))
+            raw_results = _required_list(response.payload, "results")
         except SearchProviderError:
             return None
+        results: list[SearchResult] = []
+        completed: set[str] = set()
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_fetch_results([item])
+            identity = item.get("url") or item.get("final_url")
+            if normalized and isinstance(identity, str):
+                results.extend(normalized)
+                completed.add(identity.strip())
+        return BackendResponse(
+            provider=self.name,
+            results=tuple(results),
+            failed_urls=tuple(url for url in urls if url not in completed),
+        )
 
     async def _get_search(self, params: dict[str, str]) -> HttpResponse:
         response = await self._get(
@@ -176,7 +194,7 @@ def _normalize_fetch_results(raw: list[object]) -> tuple[SearchResult, ...]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        url = clean_text(item.get("url")) or clean_text(item.get("final_url"))
+        url = clean_text(item.get("final_url")) or clean_text(item.get("url"))
         if not canonical_url(url):
             continue
         results.append(

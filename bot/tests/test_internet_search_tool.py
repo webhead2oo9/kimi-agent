@@ -41,6 +41,21 @@ def test_partial_contents_reports_missing_urls() -> None:
     assert len(output["results"]) == 1
 
 
+def test_large_failure_list_preserves_successful_page() -> None:
+    from tools.internet_search import _render_response
+
+    rendered = _render_response(
+        (SearchResult("read", "https://example.com/read", ("useful content",)),),
+        300,
+        ("https://example.com/" + "x" * 25000,),
+    )
+    output = json.loads(rendered)
+    assert len(rendered) <= 300
+    assert output["results"][0]["content"] == "useful content"
+    assert output["failed_url_count"] == 1
+    assert output["truncated"] is True
+
+
 def test_400_character_queries_have_independent_word_limit() -> None:
     from tools.internet_search import _search_request
 

@@ -89,7 +89,7 @@ class BraveSearchBackend:
             if request.country not in BRAVE_COUNTRIES:
                 raise SearchProviderError(
                     "Brave does not support this country; omit country or use one of: "
-                    + ", ".join(sorted(BRAVE_COUNTRIES))
+                    + ", ".join(sorted(BRAVE_COUNTRIES - {"ALL"}))
                 )
             payload["country"] = request.country
         if request.start_published_date and request.end_published_date:

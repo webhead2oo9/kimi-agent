@@ -19,7 +19,7 @@ Each result carries `title`, `url`, the useful `content`, and the publication da
 
 If only some pages can be read, the tool returns those pages and tells the model which URLs need another attempt.
 
-`INTERNET_SEARCH_MAX_OUTPUT_CHARS` limits the whole tool response. Lower limits can shorten page text or leave out results; the default is 24,000 characters.
+`INTERNET_SEARCH_MAX_OUTPUT_CHARS` limits the search results and page-reading status returned per call. Lower limits can shorten page text or leave out results; the default is 24,000 characters. The bot adds a small safety note outside this limit.
 
 
 Timeouts and complete provider failures return an `error` object, distinct from an empty search result. This lets the model distinguish a failed search from a search with no matches.

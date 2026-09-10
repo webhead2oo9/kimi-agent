@@ -40,6 +40,13 @@ class TaskRecord(TypedDict):
     read_failure_streak: NotRequired[int]
 
 
+class DueTask(TypedDict):
+    id: str
+    owner_id: str
+    next_run: float
+    execution: Literal["llm", "python_gate", "python_only"]
+
+
 class RunRecord(TypedDict):
     id: str
     revision: int

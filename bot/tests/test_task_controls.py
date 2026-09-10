@@ -75,6 +75,9 @@ async def harness(tmp_path, monkeypatch):
         moderation=None,
         semaphore=asyncio.Semaphore(2),
         settings=SimpleNamespace(
+            scheduled_task_llm_max_concurrency=2,
+            scheduled_task_python_max_concurrency=2,
+            scheduled_task_delivery_max_concurrency=2,
             bot_name="Kimi",
             react_max_iterations=20,
             react_max_tokens=4000,

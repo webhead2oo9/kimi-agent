@@ -900,3 +900,49 @@ async def test_live_python_reuses_packages_offline_and_keeps_workspace_private(
     assert module.read_text() == 'VALUE = "installed package"\n'
     assert secret.read_text() == "not mounted"
     assert not list(owner_files.parent.glob("jobs/*"))
+
+
+@pytest.mark.asyncio
+async def test_admitted_gate_cleans_up_before_waiting_and_runs_script_once(
+    python_harness, monkeypatch
+):
+    from tests.test_task_scheduler import task, until
+
+    box = python_harness
+    service = box.service
+    service.scheduler._llm_limit = service.scheduler._python_limit = 1
+    blocker = await task(service.r.store, "10", due=1)
+    gate = await task(service.r.store, "20", mode="python_gate", due=2)
+    box.result = {
+        "outcome": "invoke_llm",
+        "state": {"candidate": "v2"},
+        "detail": "Changed",
+        "llm_context": "Check v2",
+    }
+    release = asyncio.Event()
+    called = []
+
+    async def llm(record, run_id, ctx, definition, **kwargs):
+        called.append(record["id"])
+        if record["id"] == blocker["id"]:
+            await release.wait()
+        else:
+            assert kwargs["python_execution"].result.llm_context == "Check v2"
+        await service.publisher.finish(record, run_id, "no_change", "Checked", {}, [])
+
+    monkeypatch.setattr(service.executor, "execute_llm", llm)
+    await service.scheduler.start()
+    await until(
+        lambda: (
+            gate["id"] in service.scheduler._admitted
+            and service.scheduler._admitted[gate["id"]].lane == "waiting"
+        )
+    )
+    assert called == [blocker["id"]]
+    assert len(box.requests) == 1
+    assert not box.requests[0].root.exists()
+    assert not service.r.tools.code_exec_guards.semaphore.locked()
+    release.set()
+    await until(lambda: gate["id"] in called)
+    assert len(box.requests) == 1
+    assert called == [blocker["id"], gate["id"]]

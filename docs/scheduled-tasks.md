@@ -181,8 +181,23 @@ run once, at their first occurrence.
 
 The wizard saves `catch_up` or `skip` for missed occurrences. Catch-up runs once,
 coalescing the backlog; skip records occurrences more than 60 seconds late without
-executing them. There are two scheduled workers, with one outstanding execution
-per task. Normal turn budgets and workspace locks also apply.
+executing them. Separate deployment pools default to two LLM executions, two Python
+executions, and two runs publishing concurrently. Configure them with
+`SCHEDULED_TASK_LLM_MAX_CONCURRENCY`, `SCHEDULED_TASK_PYTHON_MAX_CONCURRENCY`, and
+`SCHEDULED_TASK_DELIVERY_MAX_CONCURRENCY`. Shared provider/sandbox caps, normal turn
+budgets, and workspace locks still apply.
+
+Admission rotates across owners and selects their oldest eligible occurrence, with
+one executing occurrence per owner and one outstanding occurrence per task.
+A Python gate reserves bounded handoff capacity before starting, then releases its
+Python slot while waiting for an LLM slot. The handoff queue is bounded by the
+Python pool size; Python-only checks remain eligible when it is full. Waiting
+gates keep their run record and do not rerun their script on admission.
+
+Different runs publish concurrently, with ordered chunks within each run and state
+committed only after every required destination succeeds. A delayed chunk blocks
+later chunks of that run. Approval-card updates and publication run independently;
+neither waits in the lease-renewal loop.
 
 Pausing stops future occurrences, interrupts active execution and preview tests,
 and cancels pending publication. Already-sent messages remain in Discord. Resume

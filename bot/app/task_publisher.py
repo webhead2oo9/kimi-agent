@@ -1,7 +1,7 @@
 """Publication capture, durable delivery, and public conversation mapping."""
 
 from __future__ import annotations
-from storage.task_types import TaskRecord
+from storage.task_types import TaskRecord, DeliveryRecord
 import asyncio
 import json
 import io
@@ -197,86 +197,111 @@ class TaskPublisher:
         return f"{prefix}\n{content}" if prefix else content
 
     async def deliver_pending(self) -> None:
-        for delivery in await self.r.store.deliveries():
-            try:
-                task = await self.r.store.get(delivery["task_id"], active=True)
-            except ValueError:
-                continue
-            payload = json.loads(delivery["payload_json"])
-            sending = False
-            if delivery["is_log"] and not payload.get("management"):
-                payload["content"] = (
-                    f"Task {task['id']} (revision {delivery['revision']}): "
-                    f"{delivery['run_status']}. {delivery['run_detail']}"
-                )[:1800]
-            try:
-                async with self.r.privacy.activity(task["owner_id"]):
-                    ctx = await self.r.access.context(
-                        task["guild_id"], task["owner_id"], task["channel_id"]
-                    )
-                    ctx = await self.authority.fresh(ctx)
-                    await self.r.access.owner_allowed(ctx)
-                    channel = await self.r.access.channel(
-                        ctx, delivery["channel_id"], posting=not payload.get("management")
-                    )
-                    mentions = await self.r.access.mentions(
-                        ctx,
-                        channel,
-                        payload.get("mention_users", []),
-                        payload.get("mention_roles", []),
-                    )
-                    await self.authority.moderate(ctx, payload["content"], Direction.OUTPUT)
-                    files: list[discord.File] = []
-                    try:
-                        for file_id in payload.get("file_ids", []):
-                            row = await self.r.store.output_file(delivery["run_id"], file_id)
-                            if len(row["data"]) > channel.guild.filesize_limit:
-                                raise ValueError(
-                                    "Saved attachment exceeds the destination upload limit"
-                                )
-                            files.append(
-                                discord.File(
-                                    io.BytesIO(row["data"]),
-                                    filename=row["filename"],
-                                    description=row["description"],
-                                )
+        workers: dict[str, asyncio.Task[None]] = {}
+        attempted: set[str] = set()
+        limit = self.r.settings.scheduled_task_delivery_max_concurrency
+        try:
+            while True:
+                for run_id in await self.r.store.delivery_runs(limit - len(workers), attempted):
+                    attempted.add(run_id)
+                    workers[run_id] = asyncio.create_task(self._deliver_run(run_id))
+                if not workers:
+                    return
+                done, _ = await asyncio.wait(workers.values(), return_when=asyncio.FIRST_COMPLETED)
+                for result in await asyncio.gather(*done, return_exceptions=True):
+                    if isinstance(result, Exception):
+                        log.error("Task publication worker failed", exc_info=result)
+                workers = {
+                    run_id: worker for run_id, worker in workers.items() if worker not in done
+                }
+        finally:
+            for worker in workers.values():
+                worker.cancel()
+            await asyncio.gather(*workers.values(), return_exceptions=True)
+
+    async def _deliver_run(self, run_id: str) -> None:
+        while pending := await self.r.store.deliveries(run_id=run_id):
+            if not await self._deliver(pending[0]):
+                return
+
+    async def _deliver(self, delivery: DeliveryRecord) -> bool:
+        try:
+            task = await self.r.store.get(delivery["task_id"], active=True)
+        except ValueError:
+            return False
+        payload = json.loads(delivery["payload_json"])
+        sending = False
+        if delivery["is_log"] and not payload.get("management"):
+            payload["content"] = (
+                f"Task {task['id']} (revision {delivery['revision']}): "
+                f"{delivery['run_status']}. {delivery['run_detail']}"
+            )[:1800]
+        try:
+            async with self.r.privacy.activity(task["owner_id"]):
+                ctx = await self.r.access.context(
+                    task["guild_id"], task["owner_id"], task["channel_id"]
+                )
+                ctx = await self.authority.fresh(ctx)
+                await self.r.access.owner_allowed(ctx)
+                channel = await self.r.access.channel(
+                    ctx, delivery["channel_id"], posting=not payload.get("management")
+                )
+                mentions = await self.r.access.mentions(
+                    ctx,
+                    channel,
+                    payload.get("mention_users", []),
+                    payload.get("mention_roles", []),
+                )
+                await self.authority.moderate(ctx, payload["content"], Direction.OUTPUT)
+                files: list[discord.File] = []
+                try:
+                    for file_id in payload.get("file_ids", []):
+                        row = await self.r.store.output_file(delivery["run_id"], file_id)
+                        if len(row["data"]) > channel.guild.filesize_limit:
+                            raise ValueError(
+                                "Saved attachment exceeds the destination upload limit"
                             )
-                        embed = (
-                            build_embed(EmbedSpec(**payload["embed"]))
-                            if payload.get("embed")
-                            else None
+                        files.append(
+                            discord.File(
+                                io.BytesIO(row["data"]),
+                                filename=row["filename"],
+                                description=row["description"],
+                            )
                         )
-                        if not await self.r.store.begin_delivery(
-                            delivery["id"], self.authority.token
-                        ):
-                            continue
-                        sending = True
-                        message = await channel.send(
-                            payload["content"], allowed_mentions=mentions, files=files, embed=embed
-                        )
-                    finally:
-                        for file in files:
-                            file.close()
-                    await self.r.store.delivery_status(
-                        delivery["id"], "sent", message_id=str(message.id)
+                    embed = (
+                        build_embed(EmbedSpec(**payload["embed"])) if payload.get("embed") else None
                     )
-                    if not delivery["is_log"]:
-                        try:
-                            await self.record_message(ctx, message)
-                        except Exception:
-                            log.exception("Sent task message could not be mapped to a conversation")
-            except discord.HTTPException as exc:
-                # A returned rejection is retryable; transport ambiguity is handled separately.
-                status = "pending" if exc.status == 429 and delivery["attempts"] < 10 else "failed"
-                if sending and exc.status >= 500:
-                    status = "uncertain"
-                await self.r.store.delivery_status(delivery["id"], status, error=str(exc))
-                if status in {"failed", "uncertain"} and not delivery["is_log"]:
-                    await self.r.store.attention(task["id"], delivery["run_id"])
-            except Exception as exc:
-                log.warning("Task delivery failed", exc_info=True)
+                    if not await self.r.store.begin_delivery(delivery["id"], self.authority.token):
+                        return False
+                    sending = True
+                    message = await channel.send(
+                        payload["content"], allowed_mentions=mentions, files=files, embed=embed
+                    )
+                finally:
+                    for file in files:
+                        file.close()
                 await self.r.store.delivery_status(
-                    delivery["id"], "uncertain" if sending else "failed", error=str(exc)
+                    delivery["id"], "sent", message_id=str(message.id)
                 )
                 if not delivery["is_log"]:
-                    await self.r.store.attention(task["id"], delivery["run_id"])
+                    try:
+                        await self.record_message(ctx, message)
+                    except Exception:
+                        log.exception("Sent task message could not be mapped to a conversation")
+            return True
+        except discord.HTTPException as exc:
+            # A returned rejection is retryable; transport ambiguity is handled separately.
+            status = "pending" if exc.status == 429 and delivery["attempts"] < 10 else "failed"
+            if sending and exc.status >= 500:
+                status = "uncertain"
+            await self.r.store.delivery_status(delivery["id"], status, error=str(exc))
+            if status in {"failed", "uncertain"} and not delivery["is_log"]:
+                await self.r.store.attention(task["id"], delivery["run_id"])
+        except Exception as exc:
+            log.warning("Task delivery failed", exc_info=True)
+            await self.r.store.delivery_status(
+                delivery["id"], "uncertain" if sending else "failed", error=str(exc)
+            )
+            if not delivery["is_log"]:
+                await self.r.store.attention(task["id"], delivery["run_id"])
+        return False

@@ -11,6 +11,7 @@ from storage.db import Database
 from storage.task_types import (
     DeliveryRecord,
     DeliverySummary,
+    DueTask,
     RunRecord,
     SavedTaskFile,
     TaskHistory,
@@ -390,6 +391,10 @@ class ScheduledTaskStore:
             cursor = await conn.execute(
                 "UPDATE scheduled_task_deliveries SET status='sending',attempts=attempts+1 WHERE id=? "
                 "AND status='pending' AND EXISTS(SELECT 1 FROM scheduled_task_runner WHERE token=? AND expires_at>?) "
+                "AND NOT EXISTS(SELECT 1 FROM scheduled_task_deliveries earlier "
+                "WHERE earlier.run_id=scheduled_task_deliveries.run_id "
+                "AND earlier.is_log=scheduled_task_deliveries.is_log "
+                "AND earlier.id<scheduled_task_deliveries.id AND earlier.status IN ('pending','sending')) "
                 "AND EXISTS(SELECT 1 FROM scheduled_task_runs r JOIN scheduled_tasks t ON t.id=r.task_id "
                 "WHERE r.id=scheduled_task_deliveries.run_id AND (scheduled_task_deliveries.is_log=1 OR "
                 "(t.status='active' AND r.status='delivery')))",
@@ -436,13 +441,27 @@ class ScheduledTaskStore:
             )
 
     async def due(self, now: float) -> list[str]:
+        return [item["id"] for item in await self.due_candidates(now)]
+
+    async def due_candidates(self, now: float) -> list[DueTask]:
+        """Oldest eligible task per owner and mode; no global backlog truncation."""
         async with self.db.conn.execute(
-            "SELECT id FROM scheduled_tasks WHERE status='active' AND next_run<=? "
-            "AND NOT EXISTS(SELECT 1 FROM scheduled_task_runs r WHERE r.task_id=scheduled_tasks.id "
-            "AND r.status IN ('running','delivery')) ORDER BY next_run LIMIT 10",
+            "WITH candidates AS (SELECT t.id,t.owner_id,t.next_run,"
+            "COALESCE(json_extract(v.definition_json,'$.execution'),'llm') AS execution,"
+            "ROW_NUMBER() OVER (PARTITION BY t.owner_id,"
+            "COALESCE(json_extract(v.definition_json,'$.execution'),'llm') "
+            "ORDER BY t.next_run,t.created_at,t.id) AS position "
+            "FROM scheduled_tasks t JOIN scheduled_task_revisions v ON v.task_id=t.id "
+            "AND v.revision=t.active_revision WHERE t.status='active' AND t.next_run<=? "
+            "AND NOT EXISTS(SELECT 1 FROM scheduled_task_runs r WHERE r.task_id=t.id "
+            "AND r.status IN ('running','delivery')) "
+            "AND NOT EXISTS(SELECT 1 FROM scheduled_task_runs r JOIN scheduled_tasks owner_task "
+            "ON owner_task.id=r.task_id WHERE owner_task.owner_id=t.owner_id AND r.status='running')) "
+            "SELECT id,owner_id,next_run,execution FROM candidates WHERE position=1 "
+            "ORDER BY next_run,id",
             (now,),
         ) as cursor:
-            return [str(row[0]) for row in await cursor.fetchall()]
+            return [cast(DueTask, dict(row)) for row in await cursor.fetchall()]
 
     async def claim(self, task: TaskRecord, next_run: float | None) -> str | None:
         run_id = uuid.uuid4().hex
@@ -450,8 +469,17 @@ class ScheduledTaskStore:
             cursor = await conn.execute(
                 "UPDATE scheduled_tasks SET next_run=? WHERE id=? AND status='active' "
                 "AND active_revision=? AND next_run=? AND NOT EXISTS "
-                "(SELECT 1 FROM scheduled_task_runs WHERE task_id=? AND status IN ('running','delivery'))",
-                (next_run, task["id"], task["active_revision"], task["next_run"], task["id"]),
+                "(SELECT 1 FROM scheduled_task_runs WHERE task_id=? AND status IN ('running','delivery')) "
+                "AND NOT EXISTS(SELECT 1 FROM scheduled_task_runs r JOIN scheduled_tasks t ON t.id=r.task_id "
+                "WHERE t.owner_id=? AND r.status='running')",
+                (
+                    next_run,
+                    task["id"],
+                    task["active_revision"],
+                    task["next_run"],
+                    task["id"],
+                    task["owner_id"],
+                ),
             )
             if cursor.rowcount != 1:
                 return None
@@ -525,13 +553,33 @@ class ScheduledTaskStore:
             (run_id, run_id),
         )
 
-    async def deliveries(self) -> list[DeliveryRecord]:
+    async def delivery_runs(self, limit: int, excluded: set[str]) -> list[str]:
+        """Choose runs, rather than chunks, so a long post cannot occupy the pool."""
+        async with self.db.conn.execute(
+            "SELECT d.run_id,MIN(d.id) AS first_id FROM scheduled_task_deliveries d "
+            "JOIN scheduled_task_runs r ON r.id=d.run_id "
+            "JOIN scheduled_tasks t ON t.id=r.task_id WHERE d.status='pending' AND d.retry_at<=? "
+            "AND ((d.is_log=1 AND r.status!='delivery') OR "
+            "(r.status='delivery' AND t.status='active' AND d.is_log=0)) "
+            "AND NOT EXISTS(SELECT 1 FROM scheduled_task_deliveries earlier "
+            "WHERE earlier.run_id=d.run_id AND earlier.is_log=d.is_log AND earlier.id<d.id "
+            "AND earlier.status IN ('pending','sending')) GROUP BY d.run_id ORDER BY first_id",
+            (time.time(),),
+        ) as cursor:
+            return [str(row[0]) for row in await cursor.fetchall() if row[0] not in excluded][
+                :limit
+            ]
+
+    async def deliveries(self, *, run_id: str | None = None) -> list[DeliveryRecord]:
         async with self.db.conn.execute(
             "SELECT d.*,r.task_id,r.revision,r.status AS run_status,r.detail AS run_detail FROM scheduled_task_deliveries d "
             "JOIN scheduled_task_runs r ON r.id=d.run_id "
             "JOIN scheduled_tasks t ON t.id=r.task_id WHERE d.status='pending' AND d.retry_at<=? "
-            "AND ((d.is_log=1 AND r.status!='delivery') OR (r.status='delivery' AND t.status='active' AND d.is_log=0)) ORDER BY d.id LIMIT 20",
-            (time.time(),),
+            "AND ((d.is_log=1 AND r.status!='delivery') OR (r.status='delivery' AND t.status='active' AND d.is_log=0)) "
+            "AND (? IS NULL OR (d.run_id=? AND NOT EXISTS(SELECT 1 FROM scheduled_task_deliveries earlier "
+            "WHERE earlier.run_id=d.run_id AND earlier.is_log=d.is_log AND earlier.id<d.id "
+            "AND earlier.status IN ('pending','sending')))) ORDER BY d.id LIMIT 20",
+            (time.time(), run_id, run_id),
         ) as cursor:
             return [cast(DeliveryRecord, dict(row)) for row in await cursor.fetchall()]
 

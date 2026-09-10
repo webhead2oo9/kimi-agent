@@ -54,6 +54,10 @@ def complete_runtime(runtime):
     }.items():
         if not hasattr(runtime.tools, key):
             setattr(runtime.tools, key, value)
+    for field in ("llm", "python", "delivery"):
+        name = f"scheduled_task_{field}_max_concurrency"
+        if not hasattr(runtime.settings, name):
+            setattr(runtime.settings, name, 2)
     return runtime
 
 

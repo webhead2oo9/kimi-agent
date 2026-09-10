@@ -1,7 +1,9 @@
 """Runner lease, occurrence admission, and cancellation lifecycle."""
 
 from __future__ import annotations
-from storage.task_types import TaskRecord
+from dataclasses import dataclass
+from typing import Literal
+from storage.task_types import TaskRecord, DueTask
 import asyncio
 import logging
 import time
@@ -18,6 +20,14 @@ from app.task_publisher import TaskPublisher
 from app.task_approvals import TaskApprovals
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Admission:
+    candidate: DueTask
+    lane: Literal["llm", "python", "waiting"]
+    handoff_reserved: bool = False
+    ready: asyncio.Future[None] | None = None
 
 
 class TaskScheduler:
@@ -37,6 +47,12 @@ class TaskScheduler:
         self._publisher: asyncio.Task[None] | None = None
         self._approval_worker: asyncio.Task[bool] | None = None
         self._owns_lease = False
+        self._admitted: dict[str, Admission] = {}
+        self._owner_turn: dict[str, int] = {}
+        self._turn = 0
+        self._wakeup = asyncio.Event()
+        self._llm_limit = runtime.settings.scheduled_task_llm_max_concurrency
+        self._python_limit = runtime.settings.scheduled_task_python_max_concurrency
 
     async def close(self) -> None:
         await self.executor.close()
@@ -48,6 +64,7 @@ class TaskScheduler:
             worker.cancel()
         await asyncio.gather(*self._workers.values(), return_exceptions=True)
         self._workers.clear()
+        self._admitted.clear()
         if self._approval_worker is not None:
             self._approval_worker.cancel()
             await asyncio.gather(self._approval_worker, return_exceptions=True)
@@ -66,6 +83,9 @@ class TaskScheduler:
         if worker is not None:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+            self._workers.pop(task_id, None)
+            self._admitted.pop(task_id, None)
+            self._wakeup.set()
 
     async def delete_user(
         self, user_id: str, scope: PrivacyDeletionScope
@@ -79,26 +99,100 @@ class TaskScheduler:
             True, (f"Deleted {len(ids)} scheduled task(s), skills, and run records.",)
         )
 
+    async def _stop_workers(self) -> None:
+        tasks: list[asyncio.Task[None] | asyncio.Task[bool]] = [*self._workers.values()]
+        if self._publisher is not None:
+            tasks.append(self._publisher)
+        if self._approval_worker is not None:
+            tasks.append(self._approval_worker)
+        for worker in tasks:
+            worker.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._workers.clear()
+        self._admitted.clear()
+
+    def _slots_used(self, lane: str) -> int:
+        return sum(admission.lane == lane for admission in self._admitted.values())
+
+    async def admit_due(self, now: float) -> None:
+        # The loop is the sole admission writer. Workers only yield/release their
+        # existing reservations and wake it. Last admission rotates busy owners
+        # behind others, while timestamps preserve order within an owner.
+        candidates = await self.r.store.due_candidates(now)
+        candidates.extend(
+            admission.candidate
+            for admission in self._admitted.values()
+            if admission.lane == "waiting"
+        )
+        candidates.sort(
+            key=lambda item: (
+                self._owner_turn.get(item["owner_id"], 0),
+                item["next_run"],
+                item["id"],
+            )
+        )
+        for candidate in candidates:
+            task_id, owner_id = candidate["id"], candidate["owner_id"]
+            admitted = self._admitted.get(task_id)
+            if admitted is not None:
+                if admitted.lane != "waiting" or self._slots_used("llm") >= self._llm_limit:
+                    continue
+                assert admitted.ready is not None
+                if admitted.ready.done():
+                    continue
+                admitted.lane = "llm"
+                admitted.handoff_reserved = False
+                admitted.ready.set_result(None)
+                self._wakeup.set()  # A previously skipped gate can now reserve handoff capacity.
+            else:
+                if any(item.candidate["owner_id"] == owner_id for item in self._admitted.values()):
+                    continue
+                lane: Literal["llm", "python"] = (
+                    "llm" if candidate["execution"] == "llm" else "python"
+                )
+                limit = self._llm_limit if lane == "llm" else self._python_limit
+                if self._slots_used(lane) >= limit:
+                    continue
+                gate = candidate["execution"] == "python_gate"
+                if (
+                    gate
+                    and sum(item.handoff_reserved for item in self._admitted.values())
+                    >= self._python_limit
+                ):
+                    continue
+                self._admitted[task_id] = Admission(candidate, lane, gate)
+                self._workers[task_id] = asyncio.create_task(self.run(task_id))
+            self._turn += 1
+            self._owner_turn[owner_id] = self._turn
+        # Forget owners once they have neither due nor admitted work.
+        owners = {item["owner_id"] for item in candidates} | {
+            item.candidate["owner_id"] for item in self._admitted.values()
+        }
+        self._owner_turn = {
+            owner: turn for owner, turn in self._owner_turn.items() if owner in owners
+        }
+
+    async def _handoff(self, task_id: str) -> None:
+        admission = self._admitted[task_id]
+        assert admission.lane == "python" and admission.handoff_reserved
+        admission.lane = "waiting"
+        admission.ready = asyncio.get_running_loop().create_future()
+        self._wakeup.set()
+        await admission.ready
+
     async def loop(self) -> None:
+        last_pruned = 0.0
         while True:
+            self._wakeup.clear()
             try:
                 if not await self.r.store.lease(self.authority.token, time.time()):
                     self._owns_lease = False
-                    for worker in list(self._workers.values()):
-                        worker.cancel()
-                    if self._publisher is not None:
-                        self._publisher.cancel()
-                    if self._approval_worker is not None:
-                        self._approval_worker.cancel()
+                    await self._stop_workers()
                 else:
                     if not self._owns_lease:
                         await self.r.store.recover()
                         self._owns_lease = True
-                    for task_id in await self.r.store.due(time.time()):
-                        if len(self._workers) >= 2:
-                            break
-                        if task_id not in self._workers:
-                            self._workers[task_id] = asyncio.create_task(self.run(task_id))
+                    await self.admit_due(time.time())
                     if self._publisher is None or self._publisher.done():
                         if self._publisher is not None:
                             await asyncio.gather(self._publisher, return_exceptions=True)
@@ -107,12 +201,18 @@ class TaskScheduler:
                         if self._approval_worker is not None:
                             await asyncio.gather(self._approval_worker, return_exceptions=True)
                         self._approval_worker = asyncio.create_task(self.approvals.reconcile())
-                    await self.r.store.prune()
+                    if time.monotonic() - last_pruned >= 3600:
+                        await self.r.store.prune()
+                        last_pruned = time.monotonic()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Scheduled task tick failed")
-            await asyncio.sleep(5)
+            try:
+                async with asyncio.timeout(5):
+                    await self._wakeup.wait()
+            except TimeoutError:
+                pass
 
     async def run(self, task_id: str) -> None:
         run_id: str | None = None
@@ -136,7 +236,15 @@ class TaskScheduler:
                         task, run_id, "no_change", "Missed occurrence skipped", task["state"], []
                     )
                     return
-                await self.executor.execute(task, run_id, ctx, definition)
+                await self.executor.execute(
+                    task,
+                    run_id,
+                    ctx,
+                    definition,
+                    before_handoff=(lambda: self._handoff(task_id))
+                    if task_id in self._admitted
+                    else None,
+                )
         except asyncio.CancelledError:
             if run_id and task:
                 await self.publisher.finish(
@@ -158,6 +266,8 @@ class TaskScheduler:
             if run_id:
                 self.runs.pop(run_id, None)
             self._workers.pop(task_id, None)
+            self._admitted.pop(task_id, None)
+            self._wakeup.set()
 
     async def start(self) -> None:
         if self._loop_task is None:

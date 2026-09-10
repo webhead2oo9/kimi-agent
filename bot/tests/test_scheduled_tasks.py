@@ -512,6 +512,35 @@ async def test_successful_run_fences_late_commit_of_older_state(store):
 
 
 @pytest.mark.asyncio
+async def test_old_delivery_does_not_commit_state_into_new_revision(store):
+    task = await active_task(store)
+    run_id = await store.claim(task, 100.0)
+    await store.finish(
+        run_id,
+        "delivery",
+        "Old revision output",
+        {"cursor": "old-revision"},
+        [{"channel_id": "300", "content": "Old output"}],
+    )
+
+    await store.draft(
+        task_id=task["id"],
+        guild_id="100",
+        owner_id="10",
+        channel_id="200",
+        proposer_id="10",
+        expected_revision=1,
+        definition=definition(name="New revision"),
+    )
+    await store.activate(task["id"], 2, "10", 200.0, reset_state=False)
+
+    delivery = (await store.deliveries())[0]
+    await store.delivery_status(delivery["id"], "sent", message_id="900")
+
+    assert (await store.get(task["id"]))["state"] == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["asc", "desc"])
 async def test_history_traverses_more_than_100_messages_without_gaps(order):
     start = datetime(2025, 1, 1, tzinfo=UTC)

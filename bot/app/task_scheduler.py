@@ -222,6 +222,15 @@ class TaskScheduler:
         try:
             task = await self.r.store.get(task_id, active=True)
             definition = TaskDefinition.from_stored(task["definition"])
+            admission = self._admitted.get(task_id)
+            if admission is not None and (
+                task["active_revision"] != admission.candidate["active_revision"]
+                or task["next_run"] != admission.candidate["next_run"]
+                or definition.execution != admission.candidate["execution"]
+            ):
+                # An approval or reschedule raced the due snapshot. Release its
+                # reservation and let admission choose the current revision/lane.
+                return
             now = time.time()
             run_id = await self.r.store.claim(task, definition.schedule.next_after(now))
             if run_id is None:

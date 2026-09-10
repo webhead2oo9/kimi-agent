@@ -43,6 +43,7 @@ class TaskRecord(TypedDict):
 class DueTask(TypedDict):
     id: str
     owner_id: str
+    active_revision: int
     next_run: float
     execution: Literal["llm", "python_gate", "python_only"]
 

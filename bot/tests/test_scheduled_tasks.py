@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -841,7 +842,7 @@ async def test_v12_migration_requeues_open_approved_threads_without_changing_tas
     await previews.rendered("500", "activated:active:100", closed=True)
     await db.close()
     # Restore the prior on-disk schema and the receipt state produced by that release.
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN signoff_message_id")
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN thread_closed")
         conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN read_failure_streak")
@@ -950,7 +951,7 @@ async def test_v10_migration_preserves_approved_task_and_pending_draft(tmp_path)
     from storage.task_schema import TASK_SCHEMA
 
     path = tmp_path / "v10.db"
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(
             'CREATE TABLE schema_version(version INTEGER PRIMARY KEY,name TEXT,applied_at TEXT); INSERT INTO schema_version VALUES(10,"scheduled_tasks","then");'
             + TASK_SCHEMA

@@ -253,3 +253,81 @@ async def test_slow_approval_and_publication_do_not_stop_lease_renewal(harness, 
     # Cancellation during a send is left ambiguous for restart recovery.
     await store.recover()
     assert (await store.deliveries()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "before,after",
+    [("llm", "python_gate"), ("python_gate", "llm"), ("python_only", "llm"), ("llm", "llm")],
+)
+async def test_reapproval_after_admission_releases_stale_reservation(
+    harness, monkeypatch, before, after
+):
+    service, _, _ = harness
+    store, scheduler = service.r.store, service.scheduler
+    original = await task(store, "10", mode=before)
+    reading, release = asyncio.Event(), asyncio.Event()
+    get = store.get
+
+    async def delayed_get(task_id, *, active=False):
+        if active and not release.is_set():
+            reading.set()
+            await release.wait()
+        return await get(task_id, active=active)
+
+    observed = []
+
+    async def execute(record, run_id, ctx, definition, **kwargs):
+        admitted = scheduler._admitted[record["id"]]
+        observed.append((definition.execution, admitted.lane, admitted.handoff_reserved))
+        await service.publisher.finish(record, run_id, "no_change", "Checked", {}, [])
+
+    monkeypatch.setattr(store, "get", delayed_get)
+    monkeypatch.setattr(service.authority, "validate_definition", AsyncMock())
+    monkeypatch.setattr(service.executor, "execute", execute)
+    await store.lease(service.authority.token, time.time())
+    await scheduler.admit_due(10)
+    await reading.wait()
+    await store.draft(
+        task_id=original["id"],
+        guild_id="100",
+        owner_id="10",
+        channel_id="200",
+        proposer_id="10",
+        expected_revision=1,
+        definition=definition(execution=after, python={"code": "pass"} if after != "llm" else None),
+    )
+    await store.activate(original["id"], 2, "10", 2, reset_state=False)
+    release.set()
+    await asyncio.gather(*scheduler._workers.values())
+    assert not observed and not scheduler._admitted
+    assert await store.history(original["id"]) == []
+    await scheduler.admit_due(10)
+    await asyncio.gather(*scheduler._workers.values())
+    assert observed == [(after, "llm" if after == "llm" else "python", after == "python_gate")]
+    assert (await store.get(original["id"]))["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_after_due_snapshot_does_not_execute_future_occurrence(
+    harness, monkeypatch
+):
+    service, _, _ = harness
+    store, scheduler = service.r.store, service.scheduler
+    original = await task(store, "10")
+    query = store.due_candidates
+
+    async def reschedule(now):
+        candidates = await query(now)
+        await store.set_status(original["id"], "active", next_run=1000)
+        return candidates
+
+    monkeypatch.setattr(store, "due_candidates", reschedule)
+    execute = AsyncMock()
+    monkeypatch.setattr(service.executor, "execute", execute)
+    await scheduler.admit_due(10)
+    await asyncio.gather(*scheduler._workers.values())
+    execute.assert_not_awaited()
+    assert await store.history(original["id"]) == []
+    assert not scheduler._admitted
+    assert (await store.get(original["id"]))["next_run"] == 1000

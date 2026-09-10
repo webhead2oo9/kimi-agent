@@ -446,7 +446,7 @@ class ScheduledTaskStore:
     async def due_candidates(self, now: float) -> list[DueTask]:
         """Oldest eligible task per owner and mode; no global backlog truncation."""
         async with self.db.conn.execute(
-            "WITH candidates AS (SELECT t.id,t.owner_id,t.next_run,"
+            "WITH candidates AS (SELECT t.id,t.owner_id,t.active_revision,t.next_run,"
             "COALESCE(json_extract(v.definition_json,'$.execution'),'llm') AS execution,"
             "ROW_NUMBER() OVER (PARTITION BY t.owner_id,"
             "COALESCE(json_extract(v.definition_json,'$.execution'),'llm') "
@@ -457,7 +457,7 @@ class ScheduledTaskStore:
             "AND r.status IN ('running','delivery')) "
             "AND NOT EXISTS(SELECT 1 FROM scheduled_task_runs r JOIN scheduled_tasks owner_task "
             "ON owner_task.id=r.task_id WHERE owner_task.owner_id=t.owner_id AND r.status='running')) "
-            "SELECT id,owner_id,next_run,execution FROM candidates WHERE position=1 "
+            "SELECT id,owner_id,active_revision,next_run,execution FROM candidates WHERE position=1 "
             "ORDER BY next_run,id",
             (now,),
         ) as cursor:

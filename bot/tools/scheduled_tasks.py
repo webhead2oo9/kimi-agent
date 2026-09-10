@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from skills.manager import MAX_CONTENT_SIZE, validate_skill_content
 from tools._common import tool_error
 from tools.registry import MessageContext, ToolRegistry
+from tools.task_python import TaskPythonSpec
 from utils.schedules import Schedule
 
 
@@ -29,9 +30,13 @@ class TaskDefinition(BaseModel):
     first_check: Literal["silent", "publish"] = "silent"
     log_channel: str | None = None
     reset_state: bool = False
+    execution: Literal["llm", "python_gate", "python_only"] = "llm"
+    python: TaskPythonSpec | None = None
 
     @model_validator(mode="after")
     def validate_definition(self) -> Self:
+        if (self.execution == "llm") != (self.python is None):
+            raise ValueError("Python modes require a script; LLM mode must not include one")
         for value in [*self.destinations, *self.mention_users, *self.mention_roles]:
             if not value.isdigit() or int(value) <= 0:
                 raise ValueError("Channels and recipients must be numeric Discord IDs")
@@ -59,11 +64,22 @@ Use task_manage draft to save the complete task and show its confirmation previe
 click Approve; do not claim activation before that. Use inspect before edits, preserve unrelated
 requirements, and supply the revision you inspected. Skills are editable only through task edits.
 The proposal also offers Test preview: the requester can read actual sources and see sample
-posts privately, without publishing or changing task state. It cannot execute browser actions,
-generate files, or use tools outside its restricted reading tools. /tasks reopens private
+posts privately, without publishing or changing task state. Its LLM cannot execute browser
+actions, generate files, or use tools outside its restricted reading tools. Python
+proposals can generate sample files in their isolated test workspace. /tasks reopens private
 management controls. Edit opens a reply conversation already bound to the selected task.
 Task skills and schedules are versioned together. A copied personal skill changes independently.
 Do not attempt @everyone or @here notifications. They are never permitted.
+For deterministic checks or output, choose execution=python_only, or python_gate when Python
+may decide an LLM is needed. Keep execution=llm for ordinary agent procedures. setup reports
+whether Python is available. Author python.code and named python.inputs together; inputs are
+predefined Discord windows or public HTTPS URLs fetched by the application, not by the script.
+Use the scheduled-tasks skill's Python contract and examples before writing a script. The script
+reads /work/input.json and writes /work/result.json. It may write files under /work/outputs/.
+Reuse installed sandbox packages; install missing packages only during setup via run_code when
+available. Never install packages or access the network from a scheduled script. Test preview
+can exercise the exact code and dependencies before approval. The task.py attachment is part of
+the approved revision. Explain that changing code, inputs, or execution mode resets saved state.
 """
 
 

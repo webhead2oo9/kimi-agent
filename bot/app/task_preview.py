@@ -6,6 +6,13 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from tools.scheduled_tasks import TaskDefinition
+from tools.task_python import DiscordPythonInput
+
+EXECUTION_LABELS = {
+    "llm": "LLM procedure",
+    "python_gate": "Python with optional LLM handoff",
+    "python_only": "Python only",
+}
 
 
 def clip(value: str, limit: int) -> str:
@@ -54,6 +61,8 @@ def render_task_details(task: dict[str, Any], definition: TaskDefinition) -> str
         f"Revision {task['revision']} · Task ID: {task['id']}",
         "## Objective",
         definition.objective,
+        "## Execution",
+        EXECUTION_LABELS[definition.execution],
         "## Sources",
         "\n".join(f"- {source}" for source in definition.sources) or "No sources specified.",
         "## Schedule",
@@ -98,8 +107,36 @@ def render_task_details(task: dict[str, Any], definition: TaskDefinition) -> str
         if definition.reset_state
         else "Keep the existing state.",
         "## Procedure",
-        "The complete instructions are in the attached SKILL.md. Approval applies to these settings and that skill together.",
+        (
+            "The complete instructions are in the attached SKILL.md. Approval applies to these settings, "
+            "that skill, and the attached task.py when present."
+        ),
     ]
+    if definition.python is not None:
+        inputs = []
+        for source in definition.python.inputs:
+            if isinstance(source, DiscordPythonInput):
+                window = (
+                    f"since the last successful check; initial lookback {source.lookback_seconds} seconds"
+                    if source.window == "since_success"
+                    else f"rolling window of {source.lookback_seconds} seconds"
+                )
+                inputs.append(f"- {source.name}: {channel(source.channel_id)}; {window}.")
+            else:
+                inputs.append(f"- {source.name}: HTTPS GET {source.url}")
+        lines.extend(
+            [
+                "## Python inputs",
+                "\n".join(inputs)
+                or "No external inputs; the script receives run metadata and saved state.",
+                "## Python environment and output",
+                (
+                    "The script runs offline with existing sandbox packages. Package versions may change "
+                    "between runs. Text and selected files are delivered to the destinations above. "
+                    "A failed check requires attention; it does not fall back to an LLM."
+                ),
+            ]
+        )
     return "\n\n".join(lines) + "\n"
 
 
@@ -138,6 +175,7 @@ def render_preview(
     lines.extend(
         [
             f"Objective: {clip(definition.objective, 180)}",
+            f"Execution: {EXECUTION_LABELS[definition.execution]}",
             f"Schedule: {schedule_label(definition)}",
             f"Schedule timezone: {definition.schedule.timezone}",
             "Destination: " + ", ".join(f"<#{x}>" for x in definition.destinations),

@@ -10,6 +10,13 @@ Each run is Python, a shell script, or a workspace file run directly (`auto` pic
 
 The optional [durable coding agent](coding-agent.md) uses the same sandbox for longer jobs. A coding job may get more wall-clock and CPU time, but no extra files, network access, syscalls, quota, or credentials. For both ordinary runs and coding jobs, systemd also gets its own deadline (`RuntimeMaxSec`), so a run that somehow outlives Kimi's timer is still killed.
 
+[Scheduled Python tasks](scheduled-python.md) also reuse this sandbox and its
+packages. They always execute offline in a temporary job directory, with the
+owner's existing `.venv` mounted read-only when present. Declared Discord and public
+HTTPS inputs are fetched by the application before execution. No package installation
+occurs during a scheduled check or test preview. Setup reports this capability only
+when the normal code tool and the offline sandbox profile are available.
+
 ## Pick a network mode
 
 `CODE_EXEC_NETWORK_MODE` applies to the whole deployment. The model cannot change it for a call.

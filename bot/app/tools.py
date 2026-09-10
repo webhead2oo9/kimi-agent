@@ -109,6 +109,7 @@ class RuntimeTools:
     video_service: VideoUnderstandingService
     code_sandbox_config: SandboxConfig | None = None
     code_exec_guards: CodeExecRuntimeGuards | None = None
+    task_python_sandbox_config: SandboxConfig | None = None
     plugin_settings: PluginSettingsRegistry | None = None
     plugin_privacy_callbacks: PrivacyDeletionCallbackRegistry = field(
         default_factory=PrivacyDeletionCallbackRegistry
@@ -316,6 +317,7 @@ def build_runtime_tools(
         video_service=video_service,
         code_sandbox_config=code_sandbox_config,
         code_exec_guards=code_exec_guards if code_sandbox_config is not None else None,
+        task_python_sandbox_config=_task_python_sandbox_config(code_sandbox_config),
         plugin_settings=plugin_settings,
         plugin_privacy_callbacks=plugin_privacy_callbacks,
         module_manager=module_manager,
@@ -734,6 +736,19 @@ def build_sandbox_config(settings: Settings) -> SandboxConfig:
         max_env_bytes=settings.code_exec_env_dir_max_mb * 1024 * 1024,
         max_env_files=settings.code_exec_env_dir_max_files,
     )
+
+
+def _task_python_sandbox_config(config: SandboxConfig | None) -> SandboxConfig | None:
+    """Scheduled checks use a separately verified offline profile of code execution."""
+    if config is None:
+        return None
+    if config.network_mode == "none":
+        return config  # This exact profile already passed registration's probe.
+    offline = replace(config, network_mode="none")
+    if not sandbox_available(offline):
+        log.warning("Scheduled Python is unavailable: the offline sandbox probe failed")
+        return None
+    return offline
 
 
 def _register_code_exec(

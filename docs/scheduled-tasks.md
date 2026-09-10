@@ -2,7 +2,9 @@
 
 Kimi can run an approved procedure once or repeatedly without an incoming message.
 Each task owns an automatically generated instruction skill, a schedule, saved notes,
-and run history. Task skills are loaded before execution, remain available through
+and run history. [Scheduled Python](scheduled-python.md) can check conditions
+before invoking an LLM or publish deterministic text and files. During LLM runs,
+task skills are loaded before execution, remain available through
 compaction, and stay separate from the normal shared and personal skill catalogs.
 
 The built-in [scheduled-tasks skill](../bot/skills/builtin/scheduled-tasks/SKILL.md)
@@ -84,14 +86,17 @@ loads a conversational wizard and remembers setup in the conversation. Kimi asks
 for missing sources, timing, destinations, conditions, and output requirements.
 Use `cancel_setup` to stop an unfinished wizard.
 
-Kimi writes the dedicated skill while preparing a draft. The preview includes the
-interpreted schedule and attached complete settings and `SKILL.md`. Click **Approve** to activate that exact revision, or **Reject** to reject it. Changed or already-used previews cannot be
+Kimi writes the dedicated skill while preparing a draft, plus a Python script when
+that execution mode is selected. The preview includes the execution mode,
+interpreted schedule, complete settings, `SKILL.md`, and `task.py` when applicable.
+Click **Approve** to activate that exact revision, or **Reject** to reject it. Changed or already-used previews cannot be
 confirmed. A draft without valid skill instructions cannot activate.
 
 Owners can inspect, edit, pause, resume, delete, and run their tasks immediately.
 Staff can manage tasks in their server, but execution always uses the owner's
 current authority. Edits require a new confirmation and apply to subsequent runs;
-an existing run keeps its approved revision. Changing the sources or condition
+an existing run keeps its approved revision. Changing sources, condition, Python
+code, input declarations, or execution mode
 resets saved comparison state, as shown in the preview.
 
 Ask Kimi to copy a task's skill to personal skills with a chosen kebab-case name.
@@ -114,22 +119,25 @@ edit still requires a new proposal approval.
 ## Test a proposal
 
 Before approval, the requester can click **Test preview**. The test uses the
-scheduled-task model, the exact pending revision, and a copy of saved state (or an
+pending revision's execution mode and a copy of saved state (or an
 empty baseline when the draft requests a reset). It reads real sources and returns
 a private result: what it would publish, why it would stay silent, or what input or
 unsupported action prevents completion. Sample posts and their destination IDs are
-included in a downloadable preview. A silent first check reports that it would
+included in a downloadable preview; direct Python output can include private sample
+files. The scheduled-task model runs only for LLM tasks or a Python gate's handoff.
+A silent first check reports that it would
 establish a baseline without posting.
 
 Tests cannot publish messages or change the schedule, approval, saved task state,
 or run/delivery history. Discord posts are captured in memory. Only Discord
 history/search, member/channel discovery, and internet search are allowed for
-reading; browser actions, workspace tools, generated files, and other tools are
-unavailable. Tool restrictions apply at dispatch, including tools registered while
+reading by the LLM; browser actions, workspace tools, LLM-generated files, and other
+tools are unavailable. Python reads its predefined inputs and may create files in
+its isolated temporary workspace. Tool restrictions apply at dispatch, including tools registered while
 a test is running. The test stops if the draft is decided or replaced, or access
 is revoked. A test is not proof that a later run or an unsupported action will succeed.
 
-Tests incur normal model/search usage and have a two-minute limit, with at most two
+Tests incur model/search usage when those services run and have a two-minute limit, with at most two
 concurrent tests and one per task. They do not consume a scheduled occurrence;
 approval remains a separate action. Preview working conversations are owner-scoped
 and covered by the existing privacy deletion controls.
@@ -142,7 +150,8 @@ cursor, previous findings, or the last reporting window. It can use Kimi's norma
 available tools. Live-message thread handoff and starting a detached coding task
 are unavailable during scheduled runs.
 
-The agent must finish through `task_complete`:
+The agent must finish through `task_complete`; Python supplies the equivalent
+outcome in its [result file](scheduled-python.md#script-contract):
 
 | Outcome | Behavior |
 | --- | --- |

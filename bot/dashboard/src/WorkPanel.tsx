@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronRight, Code2, Download, FileText, Folder, FolderOpen, LoaderCircle, Play, RefreshCw, Send, Square, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Code2, Eye, FileText, Folder, FolderOpen, LoaderCircle, Play, RefreshCw, Send, Square, X } from "lucide-react";
 import type { Connection } from "./api";
 import { Markdown } from "./Markdown";
 import { FileButton, readableSize } from "./App";
@@ -79,13 +79,13 @@ function FilePreview({ file, connection, onBack }: { file: FileRecord; connectio
     void connection.api.request<Preview>(`/files/${file.id}/preview`).then(result => { if (live) setPreview(result); }).catch((error: Error) => { if (live) setError(error.message); });
     return () => { live = false; };
   }, [file.id, connection.api]);
-  return <div className="preview-shell"><button className="text-button preview-back" onClick={onBack}><ArrowLeft size={14} /> Back</button><div className="preview-filename"><FileText size={20} /><div><strong>{file.filename}</strong><small>{readableSize(file.size)}</small></div></div><a className="download-button" href={`/api/files/${file.id}/content`} download={file.filename}><Download size={15} /> Download original</a><div className="preview-content">
+  return <div className="preview-shell"><button className="text-button preview-back" onClick={onBack}><ArrowLeft size={14} /> Back</button><div className="preview-filename"><FileText size={20} /><div><strong>{file.filename}</strong><small>{readableSize(file.size)}</small></div></div><a className="download-button" href={`/api/files/${file.id}/content`} download={file.filename}><Eye size={15} /> View original</a><div className="preview-content">
     {error && <p role="alert">{error}</p>}{!preview && !error && <p role="status">Preparing preview…</p>}
     {preview?.kind === "image" && <img className="image-preview" src={`/api/files/${file.id}/content?image=1`} alt={file.filename} />}
     {preview?.kind === "text" && <pre className="text-preview">{preview.text}</pre>}
     {preview?.kind === "markdown" && <Markdown text={preview.text || ""} openLink={connection.openLink} />}
-    {preview?.kind === "download" && <p className="muted">{preview.notice || "Download this file to open it in its original application."}</p>}
-    {preview?.truncated && <p className="notice">Showing the beginning of this file. Download it for the full content.</p>}
+    {preview?.kind === "download" && <p className="muted">{preview.notice || "Open the original file in a compatible application."}</p>}
+    {preview?.truncated && <p className="notice">Showing the beginning of this file. View the original for the full content.</p>}
   </div></div>;
 }
 

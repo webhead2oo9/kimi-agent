@@ -14,7 +14,7 @@ test("saved chat, preview, task review and responsive navigation", async ({ page
   await page.screenshot({ path: testInfo.outputPath("work.png"), fullPage: true });
   await page.getByRole("button", { name: /community-notes.md/ }).last().click();
   await expect(page.getByRole("heading", { name: "Community notes", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Download original" })).toHaveAttribute("href", "/api/files/digest/content");
+  await expect(page.getByRole("link", { name: "View original" })).toHaveAttribute("href", "/api/files/digest/content");
   await page.getByRole("button", { name: "Close work panel" }).click();
   const plan = page.getByRole("main").getByRole("region", { name: "Plan" });
   await expect(plan).toHaveCount(1);

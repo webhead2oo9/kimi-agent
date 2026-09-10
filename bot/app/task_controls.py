@@ -8,11 +8,13 @@ import io
 import json
 import logging
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import discord
 
-from app.task_preview import clip, native_time, schedule_label
+from app.task_preview import clip
+from app.task_schedule import native_time, schedule_label
 from storage.conversations import ChannelMessageRecord
 from tools.registry import MessageContext
 from tools.scheduled_tasks import TaskDefinition
@@ -288,7 +290,7 @@ class TaskControls:
         lines = [
             f"**{clip(row['name'], 100)}** · {row['status']}\n"
             + (
-                f"Next: <t:{int(row['next_run'])}:R>"
+                f"Next: {native_time(row['next_run'])}"
                 if row["status"] == "active" and row["next_run"]
                 else "No run scheduled"
             )
@@ -323,7 +325,7 @@ class TaskControls:
             if task["active_revision"] is not None
             else task
         )
-        definition = TaskDefinition.model_validate(active["definition"])
+        definition = TaskDefinition.from_stored(active["definition"])
         history = await self.r.store.history(task["id"])
         latest = history[0] if history else None
         embed = discord.Embed(
@@ -333,7 +335,8 @@ class TaskControls:
         )
         embed.add_field(name="Status", value=task["status"].replace("attention", "Needs attention"))
         embed.add_field(
-            name="Schedule", value=f"{schedule_label(definition)}\n{definition.schedule.timezone}"
+            name="Schedule",
+            value=f"{schedule_label(definition.schedule)}\n{definition.schedule.timezone}",
         )
         embed.add_field(
             name="Next run",
@@ -350,7 +353,7 @@ class TaskControls:
         if latest:
             embed.add_field(
                 name="Last run",
-                value=f"{latest['status']} · <t:{int(latest['created_at'])}:R>\n"
+                value=f"{latest['status']} · {native_time(latest['created_at'])}\n"
                 + clip(latest["detail"], 800),
                 inline=False,
             )
@@ -407,7 +410,7 @@ class TaskControls:
                 if d["run_id"] == run["id"] and d["status"] == "sent"
             ][:3]
             entries.append(
-                f"**{run['status']}** · <t:{int(run['created_at'])}:f>\n"
+                f"**{run['status']}** · {native_time(run['created_at'])}\n"
                 + clip(run["detail"], 250)
                 + ("\n" + " · ".join(links) if links else "")
             )
@@ -417,8 +420,27 @@ class TaskControls:
         view = TaskPanel(self, ctx.user_id)
         view.action("Back to task", "inspect", task_id=task["id"])
         # The attachment preserves detailed delivery errors and the full retained history.
+        exported = {
+            **result,
+            "runs": [
+                {
+                    **run,
+                    **{
+                        key: datetime.fromtimestamp(value, UTC).isoformat()
+                        if value is not None
+                        else None
+                        for key, value in (
+                            ("created_at", run["created_at"]),
+                            ("scheduled_for", run["scheduled_for"]),
+                            ("finished_at", run["finished_at"]),
+                        )
+                    },
+                }
+                for run in result["runs"]
+            ],
+        }
         file = discord.File(
-            io.BytesIO(json.dumps(result, indent=2).encode()), filename="task-history.json"
+            io.BytesIO(json.dumps(exported, indent=2).encode()), filename="task-history.json"
         )
         try:
             await self._send(interaction, embed=embed, view=view, file=file)

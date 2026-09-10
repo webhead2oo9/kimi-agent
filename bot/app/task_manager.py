@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 import discord
@@ -15,6 +15,8 @@ from tools.scheduled_tasks import TaskDefinition, WIZARD
 from trust.tiers import TrustTier
 from storage.task_types import TaskRecord, TaskHistory
 from app.task_runtime import ScheduledTaskRuntime
+from app.task_schedule import interpret_schedule, native_time
+from utils.schedules import Schedule
 
 from app.task_authority import TaskAuthority
 
@@ -45,6 +47,7 @@ class TaskManager:
             origin = await self.r.store.publication_context(guild_id, key)
             if origin is not None:
                 if origin["published_at"] is not None:
+                    origin["published_at_native_time"] = native_time(origin["published_at"])
                     origin["published_at"] = datetime.fromtimestamp(
                         origin["published_at"], UTC
                     ).isoformat()
@@ -82,8 +85,9 @@ class TaskManager:
                     ctx.user_id, ctx.guild_id or "", ctx.context_key
                 )
                 selected_id = selected["task_id"] if selected else None
-            if selected_id:
-                await self.authority.task(ctx, str(selected_id))
+            selected_task = (
+                await self.authority.task(ctx, str(selected_id)) if selected_id else None
+            )
             await self.bind_wizard(ctx, str(selected_id) if selected_id else None)
             if "approval_in_channel" in args:
                 if not isinstance(args["approval_in_channel"], bool):
@@ -100,11 +104,20 @@ class TaskManager:
                 "definition_schema": TaskDefinition.model_json_schema(),
                 "python_available": await self.authority.python_available(ctx),
                 "task_id": selected_id,
+                "current_task": self._task_response(selected_task) if selected_task else None,
+            }
+        if action == "validate_schedule":
+            await self.r.access.owner_allowed(ctx)
+            schedule = Schedule.model_validate(args.get("schedule"))
+            return {
+                **interpret_schedule(schedule, time.time()),
+                "instructions": "Use native_time values verbatim when showing concrete dates/times. Recurrence uses the stated schedule timezone; Discord renders each instant in the viewer's local timezone.",
             }
         if action == "list":
-            return await self.r.store.list_tasks(
+            rows = await self.r.store.list_tasks(
                 ctx.guild_id or "", None if ctx.trust_tier >= TrustTier.STAFF else ctx.user_id
             )
+            return [{**row, "native_times": self._native_times(row)} for row in rows]
         task_id = args.get("task_id")
         task = await self.authority.task(ctx, str(task_id)) if task_id else None
         if action == "draft":
@@ -119,7 +132,7 @@ class TaskManager:
             )
             await self.authority.validate_definition(owner_ctx, definition)
             if task and task["active_revision"] is not None:
-                previous = TaskDefinition.model_validate(
+                previous = TaskDefinition.from_stored(
                     (await self.r.store.get(task["id"], active=True))["definition"]
                 )
                 if (
@@ -154,14 +167,21 @@ class TaskManager:
                 "revision": task["revision"],
                 "status": "awaiting_confirmation",
                 "preview_delivery": "queued_separate_message",
+                "schedule_preview": interpret_schedule(definition.schedule, time.time()),
                 "instructions": "The application will provide the user the full task information, skill/settings attachments, and Test preview/Approve/Reject buttons in a separate message when this turn is delivered. Do not repeat any of that information or ask for textual confirmation. Reply only briefly that the task is pending approval. Do not claim it is active or that the preview has already been sent.",
             }
         if task is None:
             raise ValueError("task_id is required")
         if action == "inspect":
-            return task
+            return self._task_response(task)
         if action == "history":
-            return await self.r.store.task_history(task["id"])
+            task_history = await self.r.store.task_history(task["id"])
+            return {
+                **task_history,
+                "runs": [
+                    {**run, "native_times": self._native_times(run)} for run in task_history["runs"]
+                ],
+            }
         if action == "pause":
             await self.r.store.set_status(task["id"], "paused")
             await self.cancel(task["id"])
@@ -176,7 +196,7 @@ class TaskManager:
             owner_ctx = await self.r.access.context(
                 task["guild_id"], task["owner_id"], task["channel_id"]
             )
-            definition = TaskDefinition.model_validate(active["definition"])
+            definition = TaskDefinition.from_stored(active["definition"])
             await self.authority.validate_definition(
                 owner_ctx, definition, validate_execution=action != "retry_delivery"
             )
@@ -207,7 +227,7 @@ class TaskManager:
         elif action == "export_skill":
             if task["owner_id"] != ctx.user_id:
                 raise ValueError("Only the task owner may copy its skill to personal skills")
-            definition = TaskDefinition.model_validate(task["definition"])
+            definition = TaskDefinition.from_stored(task["definition"])
             error = await asyncio.to_thread(
                 self.r.tools.personal_skill_manager.create,
                 ctx.user_id,
@@ -220,6 +240,24 @@ class TaskManager:
         else:
             raise ValueError("Unknown task action")
         return {"task_id": task["id"], "action": action, "ok": True}
+
+    @staticmethod
+    def _native_times(record: Mapping[str, Any]) -> dict[str, str]:
+        return {
+            key: native_time(record[key])
+            for key in ("created_at", "updated_at", "next_run", "scheduled_for", "finished_at")
+            if record.get(key) is not None
+        }
+
+    @classmethod
+    def _task_response(cls, task: TaskRecord) -> dict[str, Any]:
+        definition = TaskDefinition.from_stored(task["definition"])
+        return {
+            **task,
+            "definition": definition.model_dump(mode="json"),
+            "native_times": cls._native_times(task),
+            "schedule_preview": interpret_schedule(definition.schedule, time.time()),
+        }
 
     async def discover(self, args: dict[str, Any], ctx: MessageContext) -> Any:
         ctx = await self.authority.fresh(ctx)

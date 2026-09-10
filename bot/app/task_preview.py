@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from zoneinfo import ZoneInfo
 from typing import Any
 
+from app.task_schedule import interpret_schedule, native_time, schedule_label
 from tools.scheduled_tasks import TaskDefinition
 from tools.task_python import DiscordPythonInput
 
@@ -19,32 +20,6 @@ EXECUTION_LABELS = {
 def clip(value: str, limit: int) -> str:
     value = " ".join(value.split())
     return value if len(value) <= limit else value[: limit - 1] + "…"
-
-
-def schedule_label(definition: TaskDefinition) -> str:
-    s = definition.schedule
-    local = s.start.astimezone(ZoneInfo(s.timezone))
-    clock = local.strftime("%H:%M")
-    if s.kind == "interval":
-        seconds = s.interval_seconds or 60
-        if seconds % 3600 == 0:
-            return f"Every {seconds // 3600} hour(s)"
-        if seconds % 60 == 0:
-            return f"Every {seconds // 60} minute(s)"
-        return f"Every {seconds} seconds"
-    if s.kind == "once":
-        return f"Once, {local.strftime('%d %b %Y at %H:%M')}"
-    if s.kind == "weekly":
-        days = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        return f"{', '.join(days[d] for d in sorted(set(s.weekdays)))} at {clock}"
-    if s.kind == "monthly":
-        return f"Monthly on day {s.month_day} at {clock}"
-    return f"{'Weekdays' if s.kind == 'weekdays' else 'Daily'} at {clock}"
-
-
-def native_time(timestamp: float) -> str:
-    stamp = int(timestamp)
-    return f"<t:{stamp}:F> · <t:{stamp}:R>"
 
 
 def render_task_details(task: Mapping[str, Any], definition: TaskDefinition) -> str:
@@ -67,9 +42,9 @@ def render_task_details(task: Mapping[str, Any], definition: TaskDefinition) -> 
         "## Sources",
         "\n".join(f"- {source}" for source in definition.sources) or "No sources specified.",
         "## Schedule",
-        f"- Frequency: {schedule_label(definition)}",
+        f"- Frequency: {schedule_label(definition.schedule, exported=True)}",
         f"- Timezone: {schedule.timezone}",
-        f"- Start: {start.strftime('%A, %d %B %Y at %H:%M:%S')} (UTC{start.strftime('%z')})",
+        f"- Start: {start.isoformat()}",
         "- After downtime: "
         + (
             "Run once to catch up, combining any missed occurrences."
@@ -174,11 +149,12 @@ def render_preview(
     if state == "activated" and task.get("active_revision", task["revision"]) != task["revision"]:
         lines.append("This approved revision was replaced. Open Manage for the current task.")
         return "\n".join(lines)
+    interpreted = interpret_schedule(definition.schedule, now)
     lines.extend(
         [
             f"Objective: {clip(definition.objective, 180)}",
             f"Execution: {EXECUTION_LABELS[definition.execution]}",
-            f"Schedule: {schedule_label(definition)}",
+            f"Schedule: {interpreted['recurrence']}",
             f"Schedule timezone: {definition.schedule.timezone}",
             "Destination: " + ", ".join(f"<#{x}>" for x in definition.destinations),
             "Post when: " + clip(definition.condition or "Every successful run", 180),
@@ -189,13 +165,7 @@ def render_preview(
         if next_run is not None and task.get("task_status", "active") == "active":
             times.append(next_run)
     else:
-        after = now
-        for _ in range(3):
-            candidate = definition.schedule.next_after(after)
-            if candidate is None:
-                break
-            times.append(candidate)
-            after = candidate
+        times = [item["unix"] for item in interpreted["next_runs"]]
     lines.append("Next run" + ("s" if len(times) > 1 else "") + " (your local time):")
     lines.extend(native_time(t) for t in times)
     if not times:

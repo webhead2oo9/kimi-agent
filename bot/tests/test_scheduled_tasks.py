@@ -130,12 +130,17 @@ def test_calendar_skips_dst_gap_and_fires_fold_once():
 
 
 def test_monthly_skips_missing_dates_and_intervals_do_not_drift():
-    monthly = Schedule(kind="monthly", start=datetime(2030, 1, 31, 9, tzinfo=UTC), month_day=31)
+    monthly = Schedule(
+        kind="monthly", start=datetime(2030, 1, 31, 9, tzinfo=UTC), month_day=31, timezone="UTC"
+    )
     assert monthly.preview(datetime(2030, 2, 1, tzinfo=UTC).timestamp(), 1) == [
         "2030-03-31T09:00:00+00:00"
     ]
     interval = Schedule(
-        kind="interval", start=datetime(2030, 1, 1, tzinfo=UTC), interval_seconds=3600
+        kind="interval",
+        start=datetime(2030, 1, 1, tzinfo=UTC),
+        interval_seconds=3600,
+        timezone="UTC",
     )
     start = interval.start.timestamp()
     assert interval.next_after(start + 3601) == start + 7200
@@ -666,7 +671,7 @@ def test_preview_uses_native_times_and_omits_verbose_details():
     details = render_task_details(task, d)
     assert details.startswith("# Task: Development digest")
     assert d.objective in details and d.condition in details
-    assert "Europe/Berlin" in details and "09:00:00" in details and "UTC+0100" in details
+    assert "Europe/Berlin" in details and "2030-01-01T09:00:00+01:00" in details
     assert "https://discord.com/channels/100/300" in details
     assert "https://discord.com/channels/100/400" in details
     assert "https://discord.com/users/13" in details and "Role 20" in details

@@ -1332,4 +1332,6 @@ and bounded caller-workspace reads. This uses the existing workspace byte limits
 see [module file access](module-files.md) for the SDK and capability requirements.
 
 Server fragments can enable [scheduled tasks](scheduled-tasks.md#enable-a-server),
-set the minimum creator tier and timezone, and allow cross-channel destinations.
+set the minimum creator tier and suggested timezone, and allow cross-channel destinations.
+Task setup asks for a timezone when the user's intent is unclear; the server value
+does not silently select a timezone for a new task.

@@ -221,7 +221,7 @@ class TaskScheduler:
         task: TaskRecord | None = None
         try:
             task = await self.r.store.get(task_id, active=True)
-            definition = TaskDefinition.model_validate(task["definition"])
+            definition = TaskDefinition.from_stored(task["definition"])
             now = time.time()
             run_id = await self.r.store.claim(task, definition.schedule.next_after(now))
             if run_id is None:

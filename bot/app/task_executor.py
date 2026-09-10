@@ -63,7 +63,7 @@ class TaskExecutor:
         ctx = await self.authority.fresh(ctx)
         task = await self.authority.task(ctx, task_id)
         self.authority.check_test_revision(task, ctx, revision)
-        definition = TaskDefinition.model_validate(task["definition"])
+        definition = TaskDefinition.from_stored(task["definition"])
         if task_id in self.tests:
             raise ValueError("A test preview is already running for this task")
         if len(self.tests) >= 2:

@@ -66,4 +66,4 @@ class ActiveRun:
 
 class ActiveRuns(dict[str, ActiveRun]):
     def register(self, run_id: str, task: TaskRecord) -> None:
-        self[run_id] = ActiveRun(task, TaskDefinition.model_validate(task["definition"]))
+        self[run_id] = ActiveRun(task, TaskDefinition.from_stored(task["definition"]))

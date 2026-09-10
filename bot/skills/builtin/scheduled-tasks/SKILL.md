@@ -54,9 +54,12 @@ delivery, and creating forum posts are unsupported. Never attempt `@here` or
 `@everyone` notifications; there is no override. User and role pings require
 explicitly selected recipients and current permission.
 
-Explicitly confirm the IANA timezone, using the server default unless the user
-chooses another, such as `America/New_York`. Resolve ambiguous abbreviations or
-relative dates before drafting. Encode `start` with a UTC offset appropriate to
+Reuse an explicit timezone already supplied in the current setup conversation,
+or the unchanged timezone of a task being edited. Ask for the intended timezone
+only when it is missing or ambiguous; resolve abbreviations such as `CST` and
+unclear relative dates before drafting. The server default is a suggestion, not
+permission to assume a timezone. Submit an explicit IANA timezone, such as
+`America/New_York` or `UTC`. Encode `start` with a UTC offset appropriate to
 the intended date and timezone; do not hardcode today's offset for future dates.
 Supported schedules are once, intervals of at least 60 seconds, daily, weekdays,
 weekly (Monday=0), and monthly. Calendar schedules follow local time, skip
@@ -65,6 +68,12 @@ once at the first occurrence. Fixed intervals remain anchored to their start.
 `catch_up` coalesces missed occurrences into one run; `skip` skips occurrences
 more than 60 seconds late. A scheduled condition is checked by polling, not an
 instant event subscription.
+
+Call `task_manage` with `action: "validate_schedule"` and `schedule` before drafting
+to check the application's interpreted recurrence, timezone, and next three runs.
+Use the returned `native_time` strings verbatim for concrete run dates/times;
+never calculate Unix timestamps yourself. The same interpretation accompanies
+draft, inspect, and setup responses for an existing task.
 
 ## Write the task's own skill
 
@@ -227,7 +236,11 @@ tested. The requester must still click Approve separately.
 The host displays upcoming runs using native Discord timestamps, including full
 dates and relative times (`<t:UNIX:F>` and `<t:UNIX:R>`). These render in each
 viewer's local timezone; the displayed IANA schedule timezone remains the rule
-for execution. Do not reconstruct or repeat the preview's timestamp list.
+for execution. Use this full-date and relative pair for all concrete task instants
+in your own replies, taking values from `validate_schedule` or management response
+`native_times`. Recurrence descriptions use wall-clock time plus the schedule's
+IANA timezone. Do not reconstruct or repeat the preview's timestamp list. Downloaded
+settings and history use explicit ISO timestamps with offsets instead of Discord markup.
 
 ## Finish an unattended run
 

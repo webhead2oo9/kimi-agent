@@ -150,7 +150,7 @@ class TaskPublisher:
         *,
         recover_reads: bool = True,
     ) -> None:
-        definition = TaskDefinition.model_validate(task["definition"])
+        definition = TaskDefinition.from_stored(task["definition"])
         deliveries: list[dict[str, Any]] = []
         for post in posts:
             for index, chunk in enumerate(

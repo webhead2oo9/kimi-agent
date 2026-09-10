@@ -175,8 +175,20 @@ disabled; there is no override.**
 ## Timing and recovery
 
 Schedules support a single timestamp, fixed intervals of at least 60 seconds, and
-daily, weekday, weekly, or monthly local calendar times. Store an explicit IANA
-timezone. Intervals stay anchored to their starting time. Calendar schedules skip
+daily, weekday, weekly, or monthly local calendar times. New submissions require
+an explicit IANA timezone. Setup reuses a timezone explicitly given in the current
+conversation or an unchanged timezone when editing. If it is missing or ambiguous,
+the assistant should ask before drafting; the server default is only a suggestion.
+The application validates the timezone field but cannot verify that the assistant
+asked the conversational question. Older stored definitions without a timezone
+retain their original UTC interpretation.
+
+Use `task_manage` with `action: "validate_schedule"` and a `schedule` object to see
+the interpreted recurrence, timezone, and next three occurrences before drafting.
+Each occurrence includes an application-calculated `native_time` string with both
+Discord's full date (`F`) and relative time (`R`); setup, draft, and inspect return
+the same interpretation. Reuse those strings when presenting concrete run times.
+Intervals stay anchored to their starting time. Calendar schedules skip
 nonexistent daylight-saving times and unavailable month dates; repeated local times
 run once, at their first occurrence.
 
@@ -267,8 +279,11 @@ Kimi's ordinary reply uses a labeled **Review task** link to the pending approva
 skill or settings.
 
 Previews show a readable schedule and the task's IANA timezone. Upcoming dates and
-countdowns use Discord timestamps, displayed in each viewer's local timezone;
-this does not change the task schedule. You may choose a different timezone per task.
+countdowns use Discord's full-date and relative timestamp pair, displayed in each viewer's local timezone;
+this does not change the task schedule. Task lists, management details, and history
+use the same pair for concrete instants; recurrence descriptions retain wall-clock
+time and the IANA timezone. You may choose a different timezone per task. Downloaded
+settings and history use ISO timestamps with explicit offsets, without Discord markup.
 Full settings are attached as readable `task-details.md`, with the complete
 instructions in `SKILL.md`.
 

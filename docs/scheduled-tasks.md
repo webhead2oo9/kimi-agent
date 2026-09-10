@@ -184,6 +184,14 @@ coalescing the backlog; skip records occurrences more than 60 seconds late witho
 executing them. There are two scheduled workers, with one outstanding execution
 per task. Normal turn budgets and workspace locks also apply.
 
+Pausing stops future occurrences, interrupts active execution and preview tests,
+and cancels pending publication. Already-sent messages remain in Discord. Resume
+schedules the next future occurrence; it does not continue the interrupted run or
+restore cancelled delivery chunks. Inspect history and destinations before using
+**Run now** to deliberately start over. If a one-off time has passed, use **Run now**
+or approve a new schedule; a one-off task requiring attention can also resume
+immediately.
+
 SQLite revisions, occurrence claims, and a renewable process lease prevent duplicate
 claims. Restart recovery does not replay interrupted agent actions. Generated
 publication is saved separately, including attachment bytes (up to 25 MiB total

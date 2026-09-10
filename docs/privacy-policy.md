@@ -5,7 +5,7 @@ and files in your own workspace during a tool call. Any upload to another servic
 or additional storage by a module is covered by that module's privacy notice.
 The file API itself makes no network requests.
 
-_Last updated: 2026-09-09_
+_Last updated: 2026-09-10_
 
 > **Deployment template.** Before publishing this policy, check that the
 > services, retention periods, moderation features, and contact route it
@@ -88,10 +88,14 @@ Depending on the features a server enables, Kimi handles:
   The lookup goes to the AI provider as context for that one reply and is not
   stored.
 - **Scheduled tasks**: the task description, its dedicated instruction skill,
-  schedule, sources, destinations, comparison notes, run outcomes, and saved output
-  attachments. These instructions and relevant tool results go to the selected AI
-  provider on each run. Definitions and current notes remain until deleted; terminal
-  run records and attachments are removed after 30 days once no delivery is pending.
+  Python source and declared inputs when used, schedule, sources, destinations,
+  comparison notes, run outcomes, and saved output attachments. Instructions and
+  relevant tool results go to the selected AI provider during LLM execution or a
+  Python gate's handoff to the LLM. Python-only checks and gates without a handoff
+  do not call the generation model; configured moderation can still send proposed
+  content to its service. Declared public web inputs make requests to those sites
+  before Python runs offline. Definitions and current notes remain until deleted;
+  terminal run records and attachments are removed after 30 days once no delivery is pending.
   Full `/privacy` deletion cancels your tasks and removes this local data.
 - **Usage records**: how many tokens each reply used and what it cost, plus
   short-lived counters that enforce per-user limits on some tools. None of this

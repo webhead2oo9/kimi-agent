@@ -271,8 +271,10 @@ selection, schedules, last outcomes, history, and eligible recovery actions.
 and preserve unrelated settings when drafting changes. **Answer & resume** accepts
 input for a paused question. Controls always recheck current authorization.
 
-- `pause` stops future work and retains the task and its skill. Use this for a
-  temporary stop. `resume` schedules the next future occurrence; `run_now`
+- `pause` stops future occurrences, interrupts active execution and preview tests,
+  and cancels pending publication. It retains the task, skill, and already-sent
+  messages. `resume` schedules the next future occurrence; it does not continue
+  an interrupted run or restore cancelled output. `run_now`
   deliberately requests an immediate run of an approved revision. Supply an
   explicit user's response in `answer` when addressing a task's pending question.
 - `retry_delivery` retries saved output without running the model or Python again.

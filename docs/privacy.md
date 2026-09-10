@@ -589,5 +589,10 @@ Clearing the persona removes it from SQLite. The memory-forget path
 retained data.
 
 [Scheduled tasks](scheduled-tasks.md#stored-data) store owner-scoped definitions,
-task skills, comparison state, run history, and saved publication attachments.
+task skills, Python source and declared inputs when used, comparison state, run
+history, and saved publication attachments. [Scheduled Python](scheduled-python.md)
+fetches declared inputs into a temporary job directory and runs offline; raw inputs
+are removed with that job unless the script includes them in saved state or output.
+Only LLM execution or a gate handoff sends task instructions and observations to
+the generation provider. Configured moderation still applies to proposed content.
 Full privacy deletion cancels owned tasks and removes that data.

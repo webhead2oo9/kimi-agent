@@ -7,8 +7,7 @@ import json
 import os
 import shutil
 import stat
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +24,7 @@ from tools.task_python import (
     TaskPythonResult,
     user_task_state,
 )
-from tools.workspace.common import UserLocks, scrub_user_paths, workspace_activity
+from tools.workspace.common import code_execution_slot, scrub_user_paths, workspace_activity
 from utils.asyncio import await_uncancellable
 
 if TYPE_CHECKING:
@@ -36,32 +35,6 @@ if TYPE_CHECKING:
 MAX_INPUT_BYTES = 10 * 1024 * 1024
 MAX_HISTORY_PAGES = 100
 FETCH_TIMEOUT_SECONDS = 60
-
-
-@asynccontextmanager
-async def execution_slot(
-    semaphore: asyncio.Semaphore, locks: UserLocks, ctx: MessageContext
-) -> AsyncIterator[None]:
-    """Bound resource acquisition so opposing lock orders always make progress.
-
-    An LLM turn can already own its workspace when it calls run_code, whereas a
-    standalone code call takes the semaphore first. Neither ordering is safe for
-    an unattended competitor. Release the workspace if the code slot does not
-    arrive promptly, allowing a code call that already owns that slot to proceed.
-    """
-    while True:
-        async with workspace_activity(locks, ctx):
-            try:
-                async with asyncio.timeout(0.1):
-                    await semaphore.acquire()
-            except TimeoutError:
-                pass
-            else:
-                try:
-                    yield
-                finally:
-                    semaphore.release()
-                return
 
 
 @dataclass(frozen=True)
@@ -177,7 +150,7 @@ class TaskPythonRunner:
             raise ValueError("Scheduled Python requires an available offline code sandbox")
         assert definition.python is not None
         spec = definition.python
-        async with execution_slot(guards.semaphore, self.tools.workspace_locks, ctx):
+        async with workspace_activity(self.tools.workspace_locks, ctx):
             await guard("run_code")
             root: Path | None = None
 
@@ -215,7 +188,14 @@ class TaskPythonRunner:
                 )
                 active_config = await asyncio.to_thread(package_config, config, owner_files)
                 await guard("run_code")
-                execution = await run_python_in_sandbox(active_config, root, root / "task.py")
+                async with code_execution_slot(
+                    guards.semaphore,
+                    workspace_activity(
+                        self.tools.workspace_locks, replace(ctx, workspace_lock_held=True)
+                    ),
+                ):
+                    await guard("run_code")
+                    execution = await run_python_in_sandbox(active_config, root, root / "task.py")
                 await guard("run_code")
                 if execution.exit_code != 0 or execution.timed_out or execution.quota_exceeded:
                     reason = "timed out" if execution.timed_out else "failed"

@@ -20,7 +20,7 @@ import app.task_authority as authority_module
 import app.task_python as python_module
 import app.tools as app_tools
 from app.task_preview import render_task_details
-from app.task_python import TaskPythonRunner, _read_result, execution_slot, package_config
+from app.task_python import TaskPythonRunner, _read_result, package_config
 from sandbox.runner import SandboxConfig, SandboxResult, build_sandbox_command
 from sandbox.runner import run_python_in_sandbox as real_run_python
 from sandbox.runner import sandbox_available
@@ -30,7 +30,7 @@ from tests.test_task_controls import draft, harness as harness, interaction
 from tools.scheduled_tasks import TaskDefinition
 from tools.task_python import INPUT_STATE_KEY, TaskPythonResult, TaskPythonSpec
 from tools.workspace.config import WorkspaceToolConfig
-from tools.workspace.common import UserLocks, workspace_activity
+from tools.workspace.common import UserLocks, workspace_activity, code_execution_slot
 from trust.tiers import TrustTier
 from workspace import WorkspaceManager
 
@@ -650,7 +650,7 @@ async def test_python_does_not_reserve_code_slot_while_waiting_for_llm_workspace
 
     async def python():
         started.set()
-        async with execution_slot(semaphore, locks, ctx):
+        async with code_execution_slot(semaphore, workspace_activity(locks, ctx)):
             pass
 
     async with locks.activity(ctx.workspace_key):
@@ -665,23 +665,39 @@ async def test_python_does_not_reserve_code_slot_while_waiting_for_llm_workspace
 
 
 @pytest.mark.asyncio
-async def test_python_releases_workspace_for_existing_semaphore_first_code_call():
+async def test_code_slot_fail_fast_releases_workspace_without_consuming_capacity():
     locks, semaphore, ctx = UserLocks(), asyncio.Semaphore(1), context()
-    started = asyncio.Event()
-
-    async def python():
-        started.set()
-        async with execution_slot(semaphore, locks, ctx):
-            pass
-
     async with semaphore:
-        competitor = asyncio.create_task(python())
-        await started.wait()
-        # Simulate an ordinary code call that reserved the code slot first.
-        async with asyncio.timeout(1), workspace_activity(locks, ctx):
-            pass
-    await asyncio.wait_for(competitor, 1)
+        with pytest.raises(RuntimeError, match="sandbox is busy"):
+            async with code_execution_slot(semaphore, workspace_activity(locks, ctx), wait=False):
+                pytest.fail("A busy managed job must not run")
+        assert not locks.for_user(ctx.workspace_key).locked()
+    async with code_execution_slot(semaphore, workspace_activity(locks, ctx), wait=False):
+        pass
     assert not semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_python_input_fetch_does_not_reserve_code_capacity(python_harness):
+    box = python_harness
+    started = asyncio.Event()
+    release = asyncio.Event()
+    semaphore = box.service.r.tools.code_exec_guards.semaphore = asyncio.Semaphore(1)
+
+    async def history(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return {"messages": [], "has_more": False, "next_cursor": None}
+
+    box.service.r.gateway.collect_channel_history.side_effect = history
+    task = asyncio.create_task(run_task(box, inputs=[DISCORD_INPUT]))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        async with asyncio.timeout(1), semaphore:
+            box.process.assert_not_called()
+    finally:
+        release.set()
+        await task
 
 
 @pytest.mark.asyncio
@@ -695,7 +711,7 @@ async def test_multiple_python_waiters_make_progress(capacity, shared_workspace)
     async def python(index):
         nonlocal active
         task_ctx = ctx if shared_workspace else replace(ctx, user_id=str(1000 + index))
-        async with execution_slot(semaphore, locks, task_ctx):
+        async with code_execution_slot(semaphore, workspace_activity(locks, task_ctx)):
             active += 1
             assert active <= capacity
             await asyncio.sleep(0)
@@ -722,7 +738,7 @@ async def test_execution_slot_cancellation_releases_both_resources(phase):
 
     async def competitor():
         started.set()
-        async with execution_slot(semaphore, locks, ctx):
+        async with code_execution_slot(semaphore, workspace_activity(locks, ctx)):
             executing.set()
             await asyncio.Event().wait()
 
@@ -744,7 +760,7 @@ async def test_execution_slot_cancellation_releases_both_resources(phase):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled()
-    async with asyncio.timeout(1), execution_slot(semaphore, locks, ctx):
+    async with asyncio.timeout(1), code_execution_slot(semaphore, workspace_activity(locks, ctx)):
         pass
     assert not semaphore.locked()
 

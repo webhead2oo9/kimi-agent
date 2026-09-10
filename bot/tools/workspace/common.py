@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -201,6 +201,26 @@ class UserLocks:
             async with self._condition:
                 self._maintenance_active = False
                 self._condition.notify_all()
+
+
+@asynccontextmanager
+async def code_execution_slot(
+    semaphore: asyncio.Semaphore,
+    workspace: AbstractAsyncContextManager[None],
+    *,
+    wait: bool = True,
+) -> AsyncIterator[None]:
+    """Acquire workspace ownership before code capacity for every semaphore caller.
+
+    A caller already owning its workspace passes the child-operation context.
+    The fail-fast branch preserves managed jobs' admission policy without taking
+    a global slot while waiting for a workspace held by another code caller.
+    """
+    async with workspace:
+        if not wait and semaphore.locked():
+            raise RuntimeError("The shared execution sandbox is busy; retry this coding job later.")
+        async with semaphore:
+            yield
 
 
 @asynccontextmanager

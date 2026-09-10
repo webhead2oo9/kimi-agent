@@ -25,6 +25,7 @@ from storage.coding_tasks import ACTIVE_JOB_STATUSES, CodingJobStatus, CodingTas
 from storage.usage import UsageStore
 from tools.code_exec import CodeExecRuntimeGuards
 from tools.workspace import UserLocks
+from tools.workspace.common import code_execution_slot
 from trust.tiers import TrustTier
 from utils.asyncio import await_uncancellable
 from workspace import WorkspaceKey, WorkspaceManager
@@ -194,7 +195,7 @@ class CodingJobManager:
         return self._config.network_mode == "netns"
 
     @asynccontextmanager
-    async def _run_lease(self, user_id: str) -> AsyncIterator[None]:
+    async def _run_lease(self, user_id: str, workspace_key: WorkspaceKey) -> AsyncIterator[None]:
         """Hold the sandbox's process-wide lease for one job.
 
         Host/none modes keep the fail-fast semaphore check. In netns mode the
@@ -205,14 +206,19 @@ class CodingJobManager:
         """
 
         if not self.uses_netns:
-            semaphore = self._runtime_guards.semaphore
-            if semaphore.locked():
-                raise RuntimeError(
-                    "The shared execution sandbox is busy; retry this coding job later."
-                )
-            async with semaphore:
+            async with code_execution_slot(
+                self._runtime_guards.semaphore,
+                self._workspace_locks.owned_operation(workspace_key),
+                wait=False,
+            ):
                 yield
             return
+        async with self._workspace_locks.owned_operation(workspace_key):
+            async with self._network_lease(user_id):
+                yield
+
+    @asynccontextmanager
+    async def _network_lease(self, user_id: str) -> AsyncIterator[None]:
         lease = self._runtime_guards.netns_lease
         # Do not inspect locked() first: the same user's browser can acquire
         # between that observation and our separately scheduled acquire().
@@ -327,10 +333,7 @@ class CodingJobManager:
             task = await self._store.get_task(job.task_id)
             if task is None:
                 raise RuntimeError("parent coding task no longer exists")
-            async with (
-                self._workspace_locks.owned_operation(workspace_key),
-                self._run_lease(task.user_id),
-            ):
+            async with self._run_lease(task.user_id, workspace_key):
                 if self._config.network_mode != "none":
                     quota_error = await self._runtime_guards.reserve_network_run(
                         usage_store=self._usage_store,

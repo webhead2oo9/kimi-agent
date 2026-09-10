@@ -598,7 +598,8 @@ class ScheduledTaskStore:
             "read_failure_streak=CASE WHEN ? THEN 0 ELSE read_failure_streak END,"
             "status=CASE WHEN next_run IS NULL THEN 'completed' ELSE status END "
             "WHERE status='active' AND EXISTS (SELECT 1 FROM scheduled_task_runs r WHERE r.id=? "
-            "AND r.task_id=scheduled_tasks.id AND r.state_generation=scheduled_tasks.state_generation)",
+            "AND r.task_id=scheduled_tasks.id AND r.revision=scheduled_tasks.active_revision "
+            "AND r.state_generation=scheduled_tasks.state_generation)",
             (run_id, recovery is not None, run_id),
         )
         if cursor.rowcount == 1 and recovery is not None:

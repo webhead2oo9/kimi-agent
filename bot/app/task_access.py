@@ -1,6 +1,7 @@
 """Fresh Discord authority for task owners and cross-channel publication."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 
 import asyncio
 from collections.abc import Callable
@@ -176,7 +177,7 @@ class TaskAccess:
         )
 
 
-def may_manage(ctx: MessageContext, task: dict[str, Any]) -> bool:
+def may_manage(ctx: MessageContext, task: Mapping[str, Any]) -> bool:
     return ctx.guild_id == task["guild_id"] and (
         ctx.user_id == task["owner_id"] or ctx.trust_tier >= TrustTier.STAFF
     )

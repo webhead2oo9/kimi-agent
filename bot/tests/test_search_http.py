@@ -10,6 +10,27 @@ from search import http
 from search.types import SearchProviderError
 
 
+def test_provider_validation_error_does_not_echo_input() -> None:
+    from search.http import provider_error
+    from search.types import HttpResponse
+
+    response = HttpResponse(
+        422,
+        {
+            "error": {
+                "detail": "secret",
+                "meta": {
+                    "errors": [{"loc": ["body", "country"], "input": "secret", "msg": "secret"}]
+                },
+            }
+        },
+        {},
+    )
+    message = str(provider_error("Brave", response))
+    assert "country" in message
+    assert "secret" not in message
+
+
 class _Content:
     def __init__(self, body: bytes) -> None:
         self.body = body

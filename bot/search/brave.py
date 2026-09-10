@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from search.http import post_json
+from search.http import post_json, provider_error
 from search.normalize import canonical_url, clean_text, filter_results, unique_content
 from search.types import (
     BackendResponse,
@@ -11,6 +11,50 @@ from search.types import (
     SearchProviderError,
     SearchRequest,
     SearchResult,
+)
+
+# SearchCountry in Brave's LLM Context API schema (not the localization header enum).
+BRAVE_COUNTRIES = frozenset(
+    [
+        "AR",
+        "AU",
+        "AT",
+        "BE",
+        "BR",
+        "CA",
+        "CL",
+        "DK",
+        "FI",
+        "FR",
+        "DE",
+        "GR",
+        "HK",
+        "IN",
+        "ID",
+        "IT",
+        "JP",
+        "KR",
+        "MY",
+        "MX",
+        "NL",
+        "NZ",
+        "NO",
+        "CN",
+        "PL",
+        "PT",
+        "PH",
+        "RU",
+        "SA",
+        "ZA",
+        "ES",
+        "SE",
+        "CH",
+        "TW",
+        "TR",
+        "GB",
+        "US",
+        "ALL",
+    ]
 )
 
 
@@ -42,6 +86,11 @@ class BraveSearchBackend:
             "safesearch": self._safesearch,
         }
         if request.country:
+            if request.country not in BRAVE_COUNTRIES:
+                raise SearchProviderError(
+                    "Brave does not support this country; omit country or use one of: "
+                    + ", ".join(sorted(BRAVE_COUNTRIES - {"ALL"}))
+                )
             payload["country"] = request.country
         if request.start_published_date and request.end_published_date:
             payload["freshness"] = f"{request.start_published_date}to{request.end_published_date}"
@@ -57,7 +106,7 @@ class BraveSearchBackend:
             self._timeout_seconds,
         )
         if not 200 <= response.status < 300:
-            raise SearchProviderError(f"Brave returned HTTP {response.status}.")
+            raise provider_error("Brave", response)
         _validate_payload(response.payload)
         results = _normalize_results(response.payload)
         if _has_grounding_items(response.payload) and not results:

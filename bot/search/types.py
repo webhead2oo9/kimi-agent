@@ -56,6 +56,7 @@ class BackendResponse:
     provider: str
     results: tuple[SearchResult, ...]
     reported_cost_usd: float | None = None
+    failed_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

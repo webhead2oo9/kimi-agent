@@ -17,6 +17,56 @@ from tools.registry import BudgetName, MessageContext, ToolRegistry, TurnBudget
 from trust.tiers import TrustTier
 
 
+@pytest.mark.parametrize("cap", [1, 40, 300, 24000])
+def test_serialized_output_budget_includes_metadata_and_escaping(cap: int) -> None:
+    from tools.internet_search import _render_response
+
+    result = SearchResult('"' * 30000, "https://example.com", ("\\" * 30000,), author="a" * 30000)
+    rendered = _render_response((result,), cap)
+    assert len(rendered) <= cap
+    json.loads(rendered)
+
+
+def test_partial_contents_reports_missing_urls() -> None:
+    from tools.internet_search import _render_response
+
+    output = json.loads(
+        _render_response(
+            (SearchResult("read", "https://example.com/read"),),
+            24000,
+            ("https://example.com/missing",),
+        )
+    )
+    assert output["failed_urls"] == ["https://example.com/missing"]
+    assert len(output["results"]) == 1
+
+
+def test_large_failure_list_preserves_successful_page() -> None:
+    from tools.internet_search import _render_response
+
+    rendered = _render_response(
+        (SearchResult("read", "https://example.com/read", ("useful content",)),),
+        300,
+        ("https://example.com/" + "x" * 25000,),
+    )
+    output = json.loads(rendered)
+    assert len(rendered) <= 300
+    assert output["results"][0]["content"] == "useful content"
+    assert output["failed_url_count"] == 1
+    assert output["truncated"] is True
+
+
+def test_400_character_queries_have_independent_word_limit() -> None:
+    from tools.internet_search import _search_request
+
+    allowed = " ".join(["abcdefg"] * 49 + ["abcdefgh"])
+    rejected = " ".join(["abcd"] * 79 + ["abcde"])
+    assert len(allowed) == len(rejected) == 400
+    assert _search_request({"query": allowed}, 10, "highlights").query == allowed
+    with pytest.raises(ValueError, match="50 words"):
+        _search_request({"query": rejected}, 10, "highlights")
+
+
 @dataclass
 class FakeBackend:
     name: str

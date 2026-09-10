@@ -85,7 +85,10 @@ def init_internet_search_tool(registry: ToolRegistry, config: InternetSearchConf
                         consume_call=consume_call,
                     )
             await _record_costs(ctx, response, config, request_mode)
-            return _render_response(response.results, config.max_output_chars)
+            failed_urls = tuple(
+                url for backend in response.responses for url in backend.failed_urls
+            )
+            return _render_response(response.results, config.max_output_chars, failed_urls)
         except SearchBudgetExceeded:
             return tool_error(BUDGET_EXCEEDED_MESSAGE)
         except TimeoutError:
@@ -112,7 +115,8 @@ def init_internet_search_tool(registry: ToolRegistry, config: InternetSearchConf
                 },
                 "query": {
                     "type": "string",
-                    "description": "Search query. Required when mode is search.",
+                    "maxLength": MAX_QUERY_CHARS,
+                    "description": "Search query, at most 400 characters and 50 words. Required when mode is search.",
                 },
                 "urls": {
                     "type": "array",
@@ -239,9 +243,14 @@ async def _record_costs(
         )
 
 
-def _render_response(results: tuple[SearchResult, ...], max_chars: int) -> str:
+def _render_response(
+    results: tuple[SearchResult, ...], max_chars: int, failed_urls: tuple[str, ...] = ()
+) -> str:
     if not results:
-        return json.dumps({"results": [], "message": "No matching results found."})
+        empty = json.dumps({"results": [], "message": "No matching results found."})
+        if len(empty) <= max_chars:
+            return empty
+        return '{"results":[]}' if max_chars >= 14 else "0"
     per_result = max(1, max_chars // len(results))
     cards: list[dict[str, Any]] = []
     for result in results:
@@ -254,7 +263,47 @@ def _render_response(results: tuple[SearchResult, ...], max_chars: int) -> str:
         if content:
             card["content"] = _truncate(content, per_result)
         cards.append(card)
-    return json.dumps({"results": cards})
+    payload: dict[str, Any] = {"results": cards}
+    if failed_urls:
+        payload["failed_urls"] = list(failed_urls)
+        payload["message"] = "Some pages could not be read; retry those URLs separately."
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if len(encoded) <= max_chars:
+        return encoded
+    payload["truncated"] = True
+    if failed_urls:
+        # Failure reporting must not crowd successful pages out of the response.
+        failures = list(failed_urls)
+        while failures and len(json.dumps(failures, ensure_ascii=False)) > max_chars // 3:
+            failures.pop()
+        if len(failures) != len(failed_urls):
+            payload["failed_url_count"] = len(failed_urls)
+            payload["message"] = "Some requested pages could not be read."
+        if failures:
+            payload["failed_urls"] = failures
+        else:
+            payload.pop("failed_urls", None)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        if len(encoded) <= max_chars:
+            return encoded
+    while cards:
+        # Bound the serialized response, including metadata and JSON escapes.
+        card = max(cards, key=lambda item: len(json.dumps(item, ensure_ascii=False)))
+        field = max(
+            (key for key in card if key != "url"), key=lambda key: len(str(card[key])), default=None
+        )
+        if field and len(str(card[field])) > 32:
+            card[field] = str(card[field])[: len(str(card[field])) // 2]
+        else:
+            cards.remove(card)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        if len(encoded) <= max_chars:
+            return encoded
+    payload.pop("failed_urls", None)
+    payload.pop("failed_url_count", None)
+    payload.pop("message", None)
+    encoded = json.dumps(payload)
+    return encoded if len(encoded) <= max_chars else "0"
 
 
 def _truncate(value: str, limit: int) -> str:

@@ -99,6 +99,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _STATUS_REACTION_CLEANUP_TIMEOUT_SECONDS = 2.0
+_BACKGROUND_REACTION_CLEANUPS: set[asyncio.Task[None]] = set()
 
 
 class BlockedUserCheck(Protocol):
@@ -783,14 +784,21 @@ async def remove_processing_reaction(
                 cancellation = exc
 
     if not removal.done():
-        removal.cancel()
 
         def consume_result(completed: asyncio.Task[None]) -> None:
+            _BACKGROUND_REACTION_CLEANUPS.discard(completed)
             with suppress(asyncio.CancelledError, Exception):
                 completed.result()
 
+        # Discord.py waits inside the request while a route bucket is rate limited.
+        # Keep a strong reference so that wait can finish after the response path's
+        # small cosmetic-cleanup budget expires.
+        _BACKGROUND_REACTION_CLEANUPS.add(removal)
         removal.add_done_callback(consume_result)
-        log.warning("Timed out removing Discord processing reaction")
+        log.info(
+            "Discord processing reaction removal exceeded %.1fs; continuing in background",
+            timeout,
+        )
     else:
         try:
             removal.result()

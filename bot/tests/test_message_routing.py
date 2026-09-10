@@ -1967,27 +1967,35 @@ async def test_cancellation_during_processing_reaction_cleanup_finishes_removal(
 
 
 @pytest.mark.asyncio
-async def test_processing_reaction_cleanup_is_bounded(
+async def test_processing_reaction_cleanup_continues_after_bounded_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_test_app(monkeypatch)
     cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
     cleanup_cancelled = asyncio.Event()
 
     async def stuck_remove(_message: discord.Message, _emoji: str) -> None:
         cleanup_started.set()
         try:
-            await asyncio.Event().wait()
+            await release_cleanup.wait()
         except asyncio.CancelledError:
             cleanup_cancelled.set()
             raise
+        cleanup_finished.set()
 
     monkeypatch.setattr(app.discord_gateway, "remove_status_reaction", stuck_remove)
     message = _trigger_message(content="hello everyone", author_id=123, author_name="Alice")
 
     await remove_processing_reaction(app, message, timeout=0.01)
     await cleanup_started.wait()
-    await cleanup_cancelled.wait()
+    assert not cleanup_cancelled.is_set()
+    assert not cleanup_finished.is_set()
+
+    release_cleanup.set()
+    await cleanup_finished.wait()
+    assert not cleanup_cancelled.is_set()
 
 
 def _enable_thread_handoff(app, store: ConversationStore) -> ThreadHandoffManager:

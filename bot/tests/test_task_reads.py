@@ -5,6 +5,7 @@ import json
 import socket
 import sqlite3
 import time
+from contextlib import closing
 from types import SimpleNamespace
 from datetime import timedelta
 from unittest.mock import AsyncMock
@@ -239,7 +240,7 @@ async def test_v12_upgrade_adds_empty_streak_without_changing_approved_task(tmp_
     store = ScheduledTaskStore(db)
     task = await active_task(store)
     await db.close()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("ALTER TABLE scheduled_tasks DROP COLUMN read_failure_streak")
         connection.execute("DELETE FROM schema_version WHERE version=13")
     await db.connect()
@@ -324,3 +325,32 @@ async def test_exhausted_inputs_keep_state_and_each_run_log(python_harness, monk
     await box.service.scheduler.run(task["id"])
     assert (await box.service.r.store.get(task["id"]))["read_failure_streak"] == 0
     assert box.process.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_private_thread_recipient_preflight_retries_membership(harness, monkeypatch):
+    from app.task_access import TaskAccess
+
+    monkeypatch.setattr(reads, "RETRY_DELAYS", (0, 0))
+    service, _, destination = harness
+    access = TaskAccess(service.r.bot, service.r.settings, None, lambda: {100})
+    member = SimpleNamespace(id=11)
+    bot_member = SimpleNamespace(id=99)
+    destination.guild.me = bot_member
+    destination.guild.fetch_member = AsyncMock(return_value=member)
+    destination.type = discord.ChannelType.private_thread
+    destination.permissions_for = lambda actor: SimpleNamespace(
+        view_channel=True, read_message_history=True, manage_threads=False
+    )
+    destination.fetch_member = AsyncMock(side_effect=http_error(503))
+    monkeypatch.setattr(service.r.access, "mentions", access.mentions)
+    task = await active_task(service.r.store, mention_users=["11"])
+    execute = AsyncMock()
+    monkeypatch.setattr(service.executor, "execute", execute)
+    await service.r.store.lease(service.authority.token, time.time())
+    await service.scheduler.run(task["id"])
+    current = await service.r.store.get(task["id"])
+    assert current["status"] == "active" and current["read_failure_streak"] == 1
+    assert destination.fetch_member.await_count == 3
+    assert (await service.r.store.history(task["id"]))[0]["status"] == "read_failed"
+    execute.assert_not_awaited()

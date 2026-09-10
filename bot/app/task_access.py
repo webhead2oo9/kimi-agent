@@ -156,7 +156,9 @@ class TaskAccess:
             if not user.isdigit():
                 raise ValueError("User recipients must be numeric IDs")
             member = await channel.guild.fetch_member(int(user))
-            if not await _search_channel_accessible(channel, member, channel.guild.me):
+            if not await _search_channel_accessible(
+                channel, member, channel.guild.me, propagate_http_errors=True
+            ):
                 raise ValueError("A recipient cannot access this destination")
         selected: list[discord.Role] = []
         for token in roles:

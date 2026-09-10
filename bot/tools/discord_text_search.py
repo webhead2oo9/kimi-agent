@@ -180,7 +180,9 @@ def init_discord_text_search_tool(
         name=TOOL_NAME,
         description=(
             "Search Discord guild message text in channels the requesting member can read. "
-            "Omit channels to search all accessible, non-excluded channels."
+            "Omit channels to search all accessible, non-excluded channels. "
+            "Read surrounding discussion with get_channel_context using a result's "
+            "channel_id and its message_id as around_message_id."
         ),
         parameters={
             "type": "object",

@@ -190,6 +190,14 @@ page is not a complete history. Use a bounded window suited to the task and
 follow pagination until the relevant evidence is complete or the budget is
 exhausted; disclose incomplete coverage instead of claiming a full check.
 
+The optional `channel` also accepts a name or mention in the current guild;
+omit channel selection to use the run's current channel. Never select a channel
+from another guild. Use an exact ID for duplicate names or archived threads.
+To inspect a search hit's surrounding discussion, pass its `channel_id` and
+its `message_id` as `around_message_id`. Here `limit` counts the entire window,
+including the hit. Do not combine that read with `before`, `after`, or `cursor`;
+use the returned `older` or `newer` argument object for the next call instead.
+
 `discord_text_search` supports text or filter-only searches, date/message bounds,
 author IDs, and channel filters (`channels` is a comma-separated string of IDs).
 Do not combine `before` with `before_message_id`, or `after` with

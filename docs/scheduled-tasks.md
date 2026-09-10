@@ -256,12 +256,20 @@ send requires inspecting the destination before deliberately starting a new run;
 it cannot be automatically retried. The reported-change baseline advances only
 after all destination messages succeed.
 
-`get_channel_context` supports explicit channels, timestamp windows, ascending or
-descending order, and continuation cursors. Keep its returned `window_end` as
-`before` while paging. Each page contains at most 100 messages and a bounded text
+`get_channel_context` supports an optional channel name, mention, or ID in the
+task's server, timestamp windows, ascending or descending order, and continuation
+cursors. Omit the channel to use the run's current channel. Search permissions
+and exclusions apply; channel IDs from other servers are rejected. Duplicate
+accessible names and archived threads require an exact ID. Keep its returned
+`window_end` as `before` while paging. Each page contains at most 100 messages and a bounded text
 payload; follow `next_cursor` to continue. `discord_text_search` supports filter-only
 queries and date bounds, and reports pagination/indexing limits. History is fetched
 live rather than kept in a separate Discord archive.
+
+To read around a search result, pass its `channel_id` and use its `message_id`
+as `around_message_id` in `get_channel_context`. The limit includes the selected
+message and its neighbours. Use the returned `older` or `newer` arguments for further pages;
+do not combine the initial around-message read with timestamps or a cursor.
 
 ## Stored data
 

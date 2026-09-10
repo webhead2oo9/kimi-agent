@@ -96,8 +96,25 @@ the outbox because they are live ReAct-loop state rather than reply artifacts.
 | `block_user` | Core | Member | Stop the current speaker from using the bot. It cannot target another user, and staff cannot be self-blocked through this tool. |
 
 `get_channel_context` reads the live Discord window without adding any of
-those messages to the rooted transcript. `discord_text_search` resolves a fresh,
-permission-checked positive channel scope for every call. Omitting its channel
+those messages to the rooted transcript. Ask for a specific channel, for example
+“Read the last 30 messages in #development.” Its optional `channel` accepts a
+name, mention, or ID; omitting it uses the current channel. Names resolve only
+within the current server, and duplicate accessible names require an exact ID.
+Active threads can be selected by name; archived threads require an ID, which
+`discord_channels` can discover. Both the requester and bot must be able to read
+the target, and `DISCORD_SEARCH_EXCLUDED_CHANNELS` applies. A channel ID from
+another server is rejected before its messages are fetched.
+
+To inspect a search hit in context, `get_channel_context` accepts the result's
+`channel_id` and its `message_id` as `around_message_id`. The requested `limit`
+counts the entire window, including the hit itself, up to 100 messages. This
+window defaults to chronological order and can be smaller when the text budget
+is reached. Use the returned `older` or `newer` arguments as a fresh call to
+continue in that direction. An around-message read cannot also set `before`,
+`after`, or `cursor`.
+
+`discord_text_search` resolves a fresh, permission-checked positive channel scope
+for every call. Omitting its channel
 filter searches all eligible channels; an explicit CSV of channel IDs narrows it.
 See [configuration](configuration.md#discord-text-search-gated).
 

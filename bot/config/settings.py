@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # this has no waiter queue: excess work is rejected with a retry message.
     turn_max_concurrency: int = 16
     turn_max_concurrency_per_user: int = 2
+    # Independent scheduled execution and publication pools. Shared provider and
+    # sandbox limits still apply inside these admission boundaries.
+    scheduled_task_llm_max_concurrency: int = Field(default=2, ge=1)
+    scheduled_task_python_max_concurrency: int = Field(default=2, ge=1)
+    scheduled_task_delivery_max_concurrency: int = Field(default=2, ge=1)
     # Sampling temperature for chat-based providers (openai_compat/openrouter).
     # None omits the param so the endpoint default applies. Other providers
     # ignore this field.

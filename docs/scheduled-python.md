@@ -35,8 +35,13 @@ and tier restrictions apply to proposals and execution.
 Runs reuse code execution's concurrency, CPU, memory, process, workspace, output,
 and wall-time limits. Input acquisition has a separate 60-second ceiling and does
 not reserve code-execution capacity; that slot is acquired only when Python is
-ready to launch. Workspace protection remains in place throughout the check. There
-are still two scheduled workers and one outstanding execution per task. Previews
+ready to launch. Workspace protection remains in place throughout the check.
+Separate scheduled pools default to two Python executions and two LLM executions,
+with one executing occurrence per owner and one outstanding occurrence per task.
+A gate releases its Python slot and scratch workspace before waiting for the LLM;
+its script is not rerun. Reserved gate handoffs are bounded by the Python pool size,
+and Python-only tasks can still run while that queue is full. See the
+[deployment limits](scheduled-tasks.md#timing-and-recovery). Previews
 retain their two-minute ceiling, two-test concurrency limit, and one test per task.
 
 Python uses a temporary owner-scoped job directory containing inputs and outputs;

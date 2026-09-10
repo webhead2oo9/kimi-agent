@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 import discord
 from agent.compaction import CompactionConfig, Compactor
@@ -96,6 +97,7 @@ class TaskExecutor:
         definition: TaskDefinition,
         *,
         preview_actor: MessageContext | None = None,
+        before_handoff: Callable[[], Awaitable[None]] | None = None,
     ) -> PreviewResult | None:
         if definition.python is None:
             return await self.execute_llm(
@@ -125,6 +127,8 @@ class TaskExecutor:
         await guard("run_code")
         if execution.result.outcome == "invoke_llm":
             try:
+                if before_handoff is not None:
+                    await before_handoff()
                 return await self.execute_llm(
                     task,
                     run_id,

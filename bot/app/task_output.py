@@ -3,14 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
 from discord_adapter.io import prepare_attachment_delivery
 from providers.assets import write_generated_assets
-from providers.types import GeneratedAsset
+from providers.types import ContentPart, GeneratedAsset
 from tools.registry import TurnOutbox
+from utils.image_types import sniff_image_media_type
+
+
+def snapshot_images(files: list[tuple[str, str | None, bytes]]) -> list[ContentPart]:
+    """Present deterministic image files to the configured output moderation boundary."""
+    images = []
+    for _name, _description, data in files:
+        if media_type := sniff_image_media_type(data):
+            images.append(
+                ContentPart.from_image_url(
+                    url=f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}",
+                    media_type=media_type,
+                )
+            )
+    return images
 
 
 def snapshot_output(

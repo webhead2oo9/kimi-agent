@@ -437,6 +437,9 @@ class TaskControls:
         ]
         for post in result["posts"]:
             report.extend([f"\n## Destination: {post['channel_id']}", post["content"]])
+        samples = result.get("files", [])
+        if samples:
+            report.append("## Sample files\n" + "\n".join(name for name, _, _ in samples))
         embed = discord.Embed(
             title=clip(f"Test preview: {result['task_name']}", 200),
             description=f"**{outcome}**\n{clip(result['detail'], 1200)}",
@@ -459,3 +462,18 @@ class TaskControls:
             await self._send(interaction, embed=embed, file=file)
         finally:
             file.close()
+        for offset in range(0, len(samples), 10):
+            attachments = [
+                discord.File(io.BytesIO(data), filename=name, description=description)
+                for name, description, data in samples[offset : offset + 10]
+            ]
+            try:
+                await interaction.followup.send(
+                    content="Private sample files from this test preview.",
+                    files=attachments,
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            finally:
+                for attachment in attachments:
+                    attachment.close()

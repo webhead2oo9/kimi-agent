@@ -33,6 +33,14 @@ class TaskDefinition(BaseModel):
     execution: Literal["llm", "python_gate", "python_only"] = "llm"
     python: TaskPythonSpec | None = None
 
+    @classmethod
+    def from_stored(cls, value: dict[str, Any]) -> Self:
+        """Read old definitions with their original UTC default; new submissions stay strict."""
+        schedule = value.get("schedule")
+        if isinstance(schedule, dict) and "timezone" not in schedule:
+            value = {**value, "schedule": {**schedule, "timezone": "UTC"}}
+        return cls.model_validate(value)
+
     @model_validator(mode="after")
     def validate_definition(self) -> Self:
         if (self.execution == "llm") != (self.python is None):
@@ -55,8 +63,14 @@ Keep setup conversation where the user is speaking. Approval is published separa
 in a quiet thread when outside a thread. If the user asks to keep approval here, pass
 approval_in_channel=true to setup. After draft, say only that approval is pending; the host
 publishes the full preview and button separately. Never repeat the skill or settings.
-Explicitly confirm the scheduling timezone; use the server default unless the user chooses another
-valid IANA timezone. Native Discord run times display in each viewer's local timezone.
+Use a timezone the user explicitly supplied in the current setup conversation, or preserve an
+unchanged timezone when editing. If it is missing or ambiguous (for example CST), ask which
+timezone they intend before drafting; a server default is only a suggestion, never assumed consent.
+Require an explicit IANA timezone in the submitted schedule. Do not ask again when it is clear.
+Call validate_schedule with the schedule to verify the interpreted recurrence and next runs.
+Use its native_time values verbatim whenever showing concrete run dates/times: Discord's full
+date and relative pair display in each viewer's local timezone. Recurrence labels retain the
+schedule's wall-clock time and timezone. Do not calculate Unix timestamps yourself.
 For change monitoring ask whether the first check should be silent (default) or publish a baseline.
 Write a dedicated skill: goal, sources, steps, state to retain, condition checks before actions,
 output format, when to do nothing, and failure handling. Never invent tools or available access.
@@ -105,6 +119,7 @@ def init_task_tools(
                         "setup",
                         "cancel_setup",
                         "draft",
+                        "validate_schedule",
                         "list",
                         "inspect",
                         "pause",
@@ -121,6 +136,10 @@ def init_task_tools(
                     "description": "setup only: true when the user explicitly wants the approval in the current channel.",
                 },
                 "task_id": {"type": "string"},
+                "schedule": {
+                    "type": "object",
+                    "description": "validate_schedule only: schedule with explicit IANA timezone. Returns interpreted recurrence and native Discord run timestamps.",
+                },
                 "expected_revision": {"type": "integer"},
                 "answer": {
                     "type": "string",

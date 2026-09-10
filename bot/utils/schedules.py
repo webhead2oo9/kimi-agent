@@ -15,7 +15,7 @@ class Schedule(BaseModel):
 
     kind: Literal["once", "interval", "daily", "weekdays", "weekly", "monthly"]
     start: datetime
-    timezone: str = "UTC"
+    timezone: str = Field(description="Explicit IANA timezone, for example America/New_York or UTC")
     interval_seconds: StrictInt | None = Field(default=None, ge=60)
     weekdays: list[StrictInt] = Field(default_factory=list)
     month_day: StrictInt | None = Field(default=None, ge=1, le=31)

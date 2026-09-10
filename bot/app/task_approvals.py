@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import asyncio
 import io
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -58,7 +59,7 @@ class TaskApprovals:
             task = await self.authority.task(ctx, request.task_id)
             if task["revision"] != request.revision or task["proposer_id"] != ctx.user_id:
                 raise ValueError("This draft was replaced; request its latest preview")
-            definition = TaskDefinition.model_validate(task["definition"])
+            definition = TaskDefinition.from_stored(task["definition"])
             await self.authority.validate_definition(ctx, definition)
             target = await self.r.access.channel(ctx, ctx.channel_id, posting=False)
             fallback = False
@@ -141,7 +142,7 @@ class TaskApprovals:
                     task["guild_id"], task["owner_id"], task["channel_id"]
                 )
                 owner = await self.authority.fresh(owner)
-                definition = TaskDefinition.model_validate(task["definition"])
+                definition = TaskDefinition.from_stored(task["definition"])
                 await self.authority.validate_definition(owner, definition)
                 next_run = definition.schedule.next_after(time.time())
                 if next_run is None:
@@ -185,7 +186,7 @@ class TaskApprovals:
                         raise ValueError("Approval channel unavailable")
                     if str(channel.guild.id) != row["guild_id"]:
                         raise ValueError("Approval server mismatch")
-                    definition = TaskDefinition.model_validate_json(row["definition_json"])
+                    definition = TaskDefinition.from_stored(json.loads(row["definition_json"]))
                     needed_by_task = bool(
                         row["close_pending"]
                         and isinstance(channel, discord.Thread)

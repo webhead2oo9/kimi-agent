@@ -39,7 +39,12 @@ class FetchResult:
 
 
 class FetchUrlError(ValueError):
-    pass
+    def __init__(
+        self, message: str, *, status: int | None = None, retry_after: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
 
 
 def safe_filename(value: str) -> str:
@@ -227,7 +232,11 @@ async def fetch_url_to_file(
                         current_url = urljoin(current_url, location)
                         continue
                     if response.status >= 400:
-                        raise FetchUrlError(f"URL fetch failed with HTTP {response.status}")
+                        raise FetchUrlError(
+                            f"URL fetch failed with HTTP {response.status}",
+                            status=response.status,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
                     filename = _filename_from_content_disposition(
                         response.headers.get("Content-Disposition")
                     )

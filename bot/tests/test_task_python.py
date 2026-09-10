@@ -447,6 +447,7 @@ async def test_public_input_uses_bounded_download_and_offline_script(python_harn
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["redirect", "timeout"])
 async def test_failed_public_input_is_not_no_change(python_harness, monkeypatch, failure):
+    monkeypatch.setattr("app.task_reads.RETRY_DELAYS", (0, 0))
     box = python_harness
     monkeypatch.setattr(
         python_module,
@@ -458,7 +459,7 @@ async def test_failed_public_input_is_not_no_change(python_harness, monkeypatch,
     task = await run_task(
         box, inputs=[{"kind": "https", "name": "x", "url": "https://example.org"}]
     )
-    assert task["status"] == "attention"
+    assert task["status"] == ("attention" if failure == "redirect" else "active")
     box.process.assert_not_awaited()
 
 

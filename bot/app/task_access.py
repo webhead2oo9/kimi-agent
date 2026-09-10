@@ -114,7 +114,9 @@ class TaskAccess:
         parent = getattr(channel, "parent_id", None) or channel.id
         if self.settings.allowed_channels and parent not in self.settings.allowed_channels:
             raise ValueError("Channel is outside the bot's operating boundaries")
-        if not await _search_channel_accessible(channel, member, guild.me):
+        if not await _search_channel_accessible(
+            channel, member, guild.me, propagate_http_errors=True
+        ):
             raise ValueError("Channel is unavailable to you or the bot")
         if posting:
             if channel.id not in policy.destinations and parent not in policy.destinations:

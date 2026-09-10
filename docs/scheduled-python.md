@@ -98,7 +98,9 @@ attachment bytes are not fetched.
 All inputs together are limited to 10 MiB and 100 Discord history pages, with up
 to 100 messages per page. Existing download, redirect, file, and workspace limits
 can be stricter. Failing any input or exhausting a limit fails the check. Partial
-history is never silently presented as complete.
+history is never silently presented as complete. Temporary input-read failures get
+up to three attempts within a shared 60-second deadline, using the same Discord
+window on each attempt. The script starts only after every input is complete.
 
 ## Script contract
 
@@ -201,10 +203,14 @@ and skipped checks incur no generation or compaction calls; handoffs incur norma
 model usage.
 
 History identifies Python-only completion or Python-to-LLM handoff and Python
-duration. Exceptions, timeouts, invalid results, denied inputs, and missing packages
-put the task into its existing attention state. Inspect the failure, repair the
-environment or approve a revised script, then resume/run it. Failure is not “no
-change” and does not trigger automatic LLM fallback.
+duration. Exhausted temporary preflight/input reads record `read_failed`: recurring
+tasks keep their schedule and saved state, with one home-channel notice per outage
+and another on successful recovery. One-time tasks require attention. See the
+[read retry policy](scheduled-tasks.md#timing-and-recovery) for limits and logging.
+Execution exceptions/timeouts, invalid results, denied inputs, and missing packages
+require attention. Inspect the failure, repair the environment or approve a revised
+script, then resume/run it. Failure is not “no change” and does not trigger automatic
+LLM fallback or rerun Python.
 
 Successful `no_change` checks commit state and input cursors immediately. Published
 results commit them after all destination messages succeed. `needs_input` asks

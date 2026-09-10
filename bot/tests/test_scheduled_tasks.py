@@ -839,7 +839,8 @@ async def test_v12_migration_requeues_open_approved_threads_without_changing_tas
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN signoff_message_id")
         conn.execute("ALTER TABLE scheduled_task_previews DROP COLUMN thread_closed")
-        conn.execute("DELETE FROM schema_version WHERE version=12")
+        conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN read_failure_streak")
+        conn.execute("DELETE FROM schema_version WHERE version>=12")
     await db.connect()
     try:
         assert await store.get(task["id"]) == task

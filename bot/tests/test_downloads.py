@@ -53,6 +53,19 @@ def download_response(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_download_preserves_http_read_failure_metadata(tmp_path, download_response):
+    download_response.status = 429
+    download_response.headers = {"Retry-After": "4"}
+    destination = tmp_path / "input"
+    with pytest.raises(FetchUrlError) as error:
+        await downloads.fetch_url_to_file(
+            "https://example.com/input", destination, max_bytes=100, timeout_seconds=1
+        )
+    assert error.value.status == 429 and error.value.retry_after == "4"
+    assert not destination.exists()
+
+
+@pytest.mark.asyncio
 async def test_download_streams_to_destination_off_event_loop(
     monkeypatch, tmp_path, download_response
 ):

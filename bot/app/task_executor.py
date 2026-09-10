@@ -14,6 +14,7 @@ from agent.context import ConversationContext
 from agent.core import ConversationRunRequest, ConversationRunResult, run_conversation
 from app.task_output import snapshot_images, snapshot_output
 from app.task_python import PythonExecution, TaskPythonRunner
+from app.task_reads import retry_read
 from config.fragments.tool_config import load_tool_configs
 from config.fragments.tool_policy import load_blocked_tools
 from config.model_config import Scope
@@ -109,12 +110,15 @@ class TaskExecutor:
                 ctx, task, run_id, preview_actor=preview_actor, python_tool=tool
             )
 
-        await guard("run_code")
-        targets = [
-            await self.r.access.channel(ctx, target, posting=True)
-            for target in definition.destinations
-        ]
-        output_channel = min(targets, key=lambda channel: channel.guild.filesize_limit)
+        async def preflight() -> Any:
+            await guard("run_code")
+            targets = [
+                await self.r.access.channel(ctx, target, posting=True)
+                for target in definition.destinations
+            ]
+            return min(targets, key=lambda channel: channel.guild.filesize_limit)
+
+        output_channel = await retry_read(preflight)
         execution = await TaskPythonRunner(self.r.tools, self.r.gateway).run(
             definition,
             ctx,
@@ -162,7 +166,11 @@ class TaskExecutor:
         python_execution: PythonExecution | None = None,
     ) -> PreviewResult | None:
         registry = self.r.tools.registry
-        home = await self.r.access.channel(ctx, ctx.channel_id, posting=False)
+
+        async def home_channel() -> Any:
+            return await self.r.access.channel(ctx, ctx.channel_id, posting=False)
+
+        home = await retry_read(home_channel) if python_execution is None else await home_channel()
         parent_id = str(getattr(home, "parent_id", None) or home.id)
         blocked = await asyncio.to_thread(load_blocked_tools, ctx.guild_id or "", parent_id)
         blocked |= {

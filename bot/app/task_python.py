@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from app.task_output import snapshot_output
+from app.task_reads import TaskReadError, retry_read
 from sandbox.runner import SandboxConfig, run_python_in_sandbox
 from tools.downloads import fetch_url_to_file
 from tools.registry import MessageContext, TurnOutbox
@@ -151,7 +152,7 @@ class TaskPythonRunner:
         assert definition.python is not None
         spec = definition.python
         async with workspace_activity(self.tools.workspace_locks, ctx):
-            await guard("run_code")
+            await retry_read(lambda: guard("run_code"))
             root: Path | None = None
 
             def create() -> Path:
@@ -165,8 +166,10 @@ class TaskPythonRunner:
             try:
                 root = await await_uncancellable(asyncio.to_thread(create))
                 now = datetime.now(UTC)
-                async with asyncio.timeout(FETCH_TIMEOUT_SECONDS):
-                    inputs, cursors = await self._inputs(definition, ctx, root, state, now, guard)
+                inputs, cursors = await retry_read(
+                    lambda: self._inputs(definition, ctx, root, state, now, guard),
+                    timeout_seconds=FETCH_TIMEOUT_SECONDS,
+                )
                 payload = {
                     "task_id": task_id,
                     "revision": revision,
@@ -187,14 +190,14 @@ class TaskPythonRunner:
                     self.tools.workspace_manager.user_files_dir, ctx.workspace_key
                 )
                 active_config = await asyncio.to_thread(package_config, config, owner_files)
-                await guard("run_code")
+                await retry_read(lambda: guard("run_code"))
                 async with code_execution_slot(
                     guards.semaphore,
                     workspace_activity(
                         self.tools.workspace_locks, replace(ctx, workspace_lock_held=True)
                     ),
                 ):
-                    await guard("run_code")
+                    await retry_read(lambda: guard("run_code"))
                     execution = await run_python_in_sandbox(active_config, root, root / "task.py")
                 await guard("run_code")
                 if execution.exit_code != 0 or execution.timed_out or execution.quota_exceeded:
@@ -233,8 +236,11 @@ class TaskPythonRunner:
                     )
                 )
                 return PythonExecution(result, files, cursors, execution.duration_ms)
-            except TimeoutError as exc:
-                raise ValueError("Python input acquisition exceeded its 60-second limit") from exc
+            except TaskReadError as exc:
+                exc.args = (
+                    scrub_user_paths(str(exc), self.tools.workspace_manager, ctx.workspace_key),
+                )
+                raise
             except (OSError, ValueError, RecursionError) as exc:
                 detail = scrub_user_paths(str(exc), self.tools.workspace_manager, ctx.workspace_key)
                 raise ValueError(f"Scheduled Python: {detail[:2500]}") from exc

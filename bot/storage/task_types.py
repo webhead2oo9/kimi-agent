@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
 
 TaskStatus = Literal["draft", "active", "paused", "attention", "completed", "rejected"]
 RunStatus = Literal[
@@ -37,7 +37,7 @@ class TaskRecord(TypedDict):
     approval_status: ApprovalStatus
     definition: dict[str, Any]
     state: dict[str, Any]
-    read_failure_streak: NotRequired[int]
+    read_failure_streak: int
 
 
 class DueTask(TypedDict):

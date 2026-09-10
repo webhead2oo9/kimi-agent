@@ -106,7 +106,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "task_thread_closure"
+        assert version_row["name"] == "task_read_recovery"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
@@ -118,6 +118,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
                 (10, "scheduled_tasks"),
                 (11, "task_previews"),
                 (12, "task_thread_closure"),
+                (13, "task_read_recovery"),
             ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -274,7 +275,8 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (10, "scheduled_tasks"),
         (11, "task_previews"),
         (12, "task_thread_closure"),
-        (13, "add_note"),
+        (13, "task_read_recovery"),
+        (14, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -286,7 +288,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 7
+        assert row[0] == 8
     finally:
         await reopened.close()
 
@@ -320,7 +322,8 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (10, "scheduled_tasks"),
         (11, "task_previews"),
         (12, "task_thread_closure"),
-        (13, "add_note"),
+        (13, "task_read_recovery"),
+        (14, "add_note"),
     ]
 
 

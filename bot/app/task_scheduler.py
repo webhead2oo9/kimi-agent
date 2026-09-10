@@ -10,6 +10,8 @@ import time
 from tools.scheduled_tasks import TaskDefinition
 from utils.plugin_privacy import PrivacyDeletionCallbackResult, PrivacyDeletionScope
 from app.task_runtime import ScheduledTaskRuntime, ActiveRuns
+from app.task_reads import TaskReadError, retry_read
+from tools.registry import MessageContext
 
 from app.task_authority import TaskAuthority
 
@@ -226,14 +228,26 @@ class TaskScheduler:
                 return
             self.runs.register(run_id, task)
             async with self.r.privacy.activity(task["owner_id"]):
-                ctx = await self.r.access.context(
-                    task["guild_id"], task["owner_id"], task["channel_id"], run_id=run_id
-                )
-                ctx = await self.authority.fresh(ctx)
-                await self.authority.validate_definition(ctx, definition)
+
+                async def preflight() -> MessageContext:
+                    assert task is not None
+                    owner = await self.r.access.context(
+                        task["guild_id"], task["owner_id"], task["channel_id"], run_id=run_id
+                    )
+                    owner = await self.authority.fresh(owner)
+                    await self.authority.validate_definition(owner, definition)
+                    return owner
+
+                ctx = await retry_read(preflight)
                 if definition.schedule.missed == "skip" and now - (task["next_run"] or now) > 60:
                     await self.publisher.finish(
-                        task, run_id, "no_change", "Missed occurrence skipped", task["state"], []
+                        task,
+                        run_id,
+                        "no_change",
+                        "Missed occurrence skipped",
+                        task["state"],
+                        [],
+                        recover_reads=False,
                     )
                     return
                 await self.executor.execute(
@@ -260,7 +274,12 @@ class TaskScheduler:
             log.exception("Scheduled task %s failed", task_id)
             if run_id and task:
                 await self.publisher.finish(
-                    task, run_id, "failed", str(exc)[:1000], task["state"], []
+                    task,
+                    run_id,
+                    "read_failed" if isinstance(exc, TaskReadError) and exc.retryable else "failed",
+                    str(exc)[:1000],
+                    task["state"],
+                    [],
                 )
         finally:
             if run_id:

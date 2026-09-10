@@ -73,6 +73,9 @@ class DashboardAccess:
             or not await asyncio.to_thread(self._guild_enabled, guild_id)
         ):
             raise web.HTTPForbidden(reason="The dashboard is disabled in this server")
+        allowed_users = self.settings.dashboard_allowed_user_id_set
+        if allowed_users and user_id not in allowed_users:
+            raise web.HTTPForbidden(reason="Dashboard access is currently limited to invited users")
         if await self.user_blocked(user_id):
             raise web.HTTPForbidden(reason="You cannot use the dashboard right now")
         guild = self.bot.get_guild(int(guild_id))
@@ -129,6 +132,8 @@ class DashboardAccess:
                 reason="Your current channel access could not be verified"
             ) from None
         tier = await asyncio.to_thread(self.trust.resolve, member, user_id, guild_id)
+        if tier < TrustTier(self.settings.dashboard_min_tier):
+            raise web.HTTPForbidden(reason="Your server trust tier does not have dashboard access")
         return DashboardContext(member, channel, tier)
 
     async def consent_required(self, user_id: str) -> bool:

@@ -25,6 +25,9 @@ class DashboardConversation:
     title: str
     created_at: float
     updated_at: float
+    parent_id: str | None = None
+    parent_event_id: int | None = None
+    parent_title: str | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -68,8 +71,11 @@ class DashboardBusyError(ValueError):
 _CHAT_SELECT = """
 SELECT d.id, d.conversation_id, c.key, c.owner_user_id AS user_id,
     c.guild_id, c.channel_id, d.parent_channel_id, c.channel_name,
-    d.title, d.created_at, d.updated_at
+    d.title, d.created_at, d.updated_at,
+    b.parent_id, b.parent_event_id, coalesce(p.title,b.parent_title) AS parent_title
 FROM dashboard_conversations d JOIN conversations c ON c.id=d.conversation_id
+LEFT JOIN dashboard_branches b ON b.dashboard_id=d.id
+LEFT JOIN dashboard_conversations p ON p.id=b.parent_id
 WHERE c.access_scope='owner_only'
 """
 

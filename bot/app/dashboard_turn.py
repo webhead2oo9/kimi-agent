@@ -375,6 +375,7 @@ class DashboardTurns:
                                 stop_event=stop,
                                 existing_conversation_id=chat.conversation_id,
                                 hooks=self.hooks,
+                                command_template="dashboard",
                                 extra_blocked_tools=_MESSAGE_BOUND_TOOLS,
                                 recent_image_lookback=0,
                                 timeout_seconds=self.settings.dashboard_turn_timeout_seconds,

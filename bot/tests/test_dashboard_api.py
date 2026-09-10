@@ -6,15 +6,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.dashboard import Dashboard
 from app.dashboard_auth import SESSION_COOKIE, DashboardAuth, DashboardSession
+from app.dashboard_files import DashboardFiles
 from storage.dashboard import DashboardStore
 from storage.db import Database
+from tests.test_dashboard_store import saved_turn
 from tests.helpers import make_settings
 from utils.privacy_barrier import UserPrivacyBarrier
+from tools.workspace.common import UserLocks
+from workspace import WorkspaceManager
 
 
 @pytest_asyncio.fixture
@@ -36,7 +40,12 @@ async def api(tmp_path):
         settings=make_settings(),
         store=store,
         access=access,
-        files=SimpleNamespace(upload_limit=10000),
+        files=DashboardFiles(
+            store=store,
+            workspace=WorkspaceManager(tmp_path / "workspace"),
+            locks=UserLocks(),
+            settings=make_settings(),
+        ),
         turns=turns,
         tasks=None,
         privacy=UserPrivacyBarrier(),
@@ -121,6 +130,80 @@ async def test_http_requires_session_csrf_origin_and_object_body(api):
     chat = await create(api[1])
     assert (await client.post(f"/api/chats/{chat.id}/messages", json=[])).status == 400
     assert (await client.get("/api/ws")).status == 400
+
+
+@pytest.mark.asyncio
+async def test_branch_api_keeps_ownership_access_and_idempotent_return(api):
+    client, service = api
+    parent = await create(service)
+    selected = await saved_turn(service.store, parent)
+    path = f"/api/chats/{parent.id}/branches"
+    body = {"event_id": selected.id, "request_id": "fork"}
+    response = await client.post(path, json=body)
+    assert response.status == 201
+    branch = await response.json()
+    assert branch["parent_id"] == parent.id
+    assert (await (await client.post(path, json=body)).json())["id"] == branch["id"]
+    branch_record = await service.store.get(branch["id"], user_id="1", guild_id="2")
+    answer = await saved_turn(service.store, branch_record, "Alternative", "The branch result")
+    returned = await client.post(
+        f"/api/chats/{branch['id']}/return-result", json={"event_id": answer.id}
+    )
+    assert returned.status == 200 and (await returned.json())["id"] == parent.id
+    service.turns.submit.assert_not_awaited()
+    assert (await client.post(path, json=body, headers={"X-CSRF-Token": "wrong"})).status == 403
+    for event_id in (True, 0, "1", 2**63):
+        assert (await client.post(path, json={**body, "event_id": event_id})).status == 400
+    foreign = await create(service, user="9")
+    assert (await client.post(f"/api/chats/{foreign.id}/branches", json=body)).status == 404
+    service.access.consent_required.return_value = True
+    assert (await client.post(path, json=body)).status == 403
+    service.access.consent_required.return_value = False
+    service.access.resolve.side_effect = web.HTTPForbidden(reason="Revoked")
+    assert (await client.post(path, json=body)).status == 403
+    assert (
+        await client.post(f"/api/chats/{branch['id']}/return-result", json={"event_id": answer.id})
+    ).status == 403
+
+
+@pytest.mark.asyncio
+async def test_dashboard_access_denial_covers_existing_sessions_and_websockets(api):
+    client, service = api
+    chat = await create(service)
+    await service.store.event(chat.id, "turn_finished", {"text": "Private result"})
+    service.access.resolve.side_effect = web.HTTPForbidden(
+        reason="Dashboard access is currently limited to invited users"
+    )
+    for path in ("/api/session", "/api/chats", f"/api/chats/{chat.id}/events"):
+        response = await client.get(path)
+        assert response.status == 403
+        assert "limited to invited users" in (await response.json())["error"]
+    response = await client.post(
+        f"/api/chats/{chat.id}/messages", json={"text": "hello", "request_id": "r"}
+    )
+    assert response.status == 403
+    service.turns.submit.assert_not_awaited()
+    async with client.ws_connect(f"/api/ws?chat={chat.id}") as ws:
+        message = await ws.receive(timeout=3)
+        assert message.type == WSMsgType.CLOSE
+        assert message.data == 1008
+
+
+@pytest.mark.asyncio
+async def test_dashboard_access_denial_revokes_new_login_before_returning_credentials(api):
+    client, service = api
+    session = service.auth._sessions["token"]
+    service.auth.login = AsyncMock(return_value=(session, "private-oauth-token"))
+    service.access.resolve.side_effect = web.HTTPForbidden(
+        reason="Dashboard access is currently limited to invited users"
+    )
+    response = await client.post(
+        "/api/auth", json={"code": "code", "state": "state", "instance_id": "instance"}
+    )
+    assert response.status == 403
+    assert SESSION_COOKIE not in response.cookies
+    assert "access_token" not in await response.json()
+    assert not service.auth._sessions
 
 
 @pytest.mark.asyncio

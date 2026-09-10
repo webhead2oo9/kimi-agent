@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import os
 import shutil
@@ -10,6 +11,8 @@ import stat
 import tempfile
 import time
 from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,6 +21,7 @@ from aiohttp import web
 
 from config.settings import Settings
 from storage.dashboard import DashboardConversation, DashboardFile, DashboardStore
+from storage.dashboard_branches import FileCopier
 from tools.downloads import safe_filename
 from tools.workspace.common import UserLocks
 from tools.workspace.documents import (
@@ -32,6 +36,7 @@ from workspace import WorkspaceKey, WorkspaceManager, workspace_owner_key
 
 PREVIEW_CHARS = 100_000
 _RASTER_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+log = logging.getLogger(__name__)
 
 
 def read_regular(path: Path, limit: int) -> bytes:
@@ -196,6 +201,82 @@ class DashboardFiles:
         except OSError, ValueError:
             raise web.HTTPGone(reason="This file expired or is no longer available") from None
 
+    @asynccontextmanager
+    async def branch_copies(self, owner: DashboardConversation) -> AsyncIterator[FileCopier]:
+        """Lease files before the DB transaction; the caller persists copied metadata.
+
+        Wrap the whole context and transaction in await_uncancellable so writes
+        and rollback cleanup finish together even if the HTTP client disconnects.
+        """
+        created: list[tuple[Path, str]] = []
+        key = WorkspaceKey(f"dashboard-files:{workspace_owner_key(owner.user_id, owner.guild_id)}")
+
+        async def copy(file_id: str, destination: str) -> DashboardFile | None:
+            source = await self.store.file(file_id, user_id=owner.user_id, guild_id=owner.guild_id)
+            if source is None:
+                return None
+            try:
+                payload = await self.payload(source)
+            except web.HTTPGone:
+                return None
+            async with self.store.db.conn.execute(
+                "SELECT coalesce(sum(size),0),count(*) FROM dashboard_files "
+                "WHERE owner_user_id=? AND guild_id=? AND created_at>?",
+                (owner.user_id, owner.guild_id, time.time() - self.settings.workspace_file_ttl),
+            ) as cursor:
+                row = await cursor.fetchone()
+            assert row is not None
+            if (
+                row[0] + len(payload) > self.settings.workspace_tool_max_user_bytes
+                or row[1] >= 1000
+            ):
+                raise web.HTTPConflict(
+                    reason="Dashboard file quota reached; let older files expire"
+                )
+            name = safe_filename(source.filename)[:180]
+
+            def write() -> str:
+                directory = self.workspace.generated_job_dir(
+                    self.context(destination, source.kind), uuid4().hex, owner_user_id=owner.user_id
+                )
+                path = directory / name
+                relative = self.workspace.relative_generated_file_path(path)
+                created.append((directory, relative))
+                with path.open("xb") as output:
+                    output.write(payload)
+                path.chmod(0o600)
+                return relative
+
+            path = await asyncio.to_thread(write)
+            return DashboardFile(
+                uuid4().hex,
+                destination,
+                owner.user_id,
+                owner.guild_id,
+                path,
+                name,
+                source.media_type,
+                len(payload),
+                source.kind,
+                time.time(),
+            )
+
+        async with self.locks.activity(key):
+            try:
+                yield copy
+            except BaseException:
+                # Retain committed copies if a later read failed. Only remove
+                # this attempt's paths that have no durable metadata reference.
+                for directory, relative in created:
+                    async with self.store.db.conn.execute(
+                        "SELECT 1 FROM dashboard_files WHERE path=? LIMIT 1",
+                        (relative,),
+                    ) as cursor:
+                        referenced = await cursor.fetchone()
+                    if referenced is None:
+                        await asyncio.to_thread(shutil.rmtree, directory)
+                raise
+
     async def delete_chat(self, chat: DashboardConversation) -> None:
         """Remove private snapshots before their quota records are deleted."""
         key = workspace_owner_key(chat.user_id, chat.guild_id)
@@ -256,11 +337,14 @@ class DashboardFiles:
         for raw in paths[:10]:
 
             def read(raw: str = raw) -> tuple[str, bytes]:
-                path = Path(raw)
+                # The shared turn runner stages files relative to WORKSPACE_DIR
+                # when that setting is relative. Make the path absolute without
+                # resolving symlinks; read_regular must still reject those.
+                path = Path(raw).absolute()
                 roots = self.workspace.allowed_output_roots(
                     key, context_key=source_context or chat.key
                 )
-                if not path.is_absolute() or not any(path.is_relative_to(root) for root in roots):
+                if not any(path.is_relative_to(root) for root in roots):
                     raise ValueError("Output is outside this conversation's files")
                 return path.name, read_regular(path, self.settings.workspace_tool_max_file_bytes)
 
@@ -270,8 +354,11 @@ class DashboardFiles:
                     chat, name, payload, kind="output", workspace_guard_held=True
                 )
                 results.append(record.public())
-            except OSError, ValueError, web.HTTPException:
-                results.append({"filename": "Attachment", "expired": True})
+            except (OSError, ValueError, web.HTTPException) as exc:
+                log.warning("Dashboard attachment snapshot failed (%s)", type(exc).__name__)
+                results.append(
+                    {"filename": safe_filename(Path(raw).name)[:180], "unavailable": True}
+                )
         return results
 
     async def workspace_files(

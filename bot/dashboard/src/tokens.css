@@ -1,17 +1,36 @@
 :root {
+  --font: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   --canvas: #1a1c23;
   --sidebar: #17191f;
   --panel: #181a21;
   --surface: #242630;
   --hover: #2d2f3a;
+  --composer: #22242c;
+  --code: #111319;
   --border: #ffffff0c;
   --border-strong: #ffffff19;
   --text: #e3e3ed;
+  --text-soft: #dedfe6;
   --muted: #999aa9;
   --faint: #6d7083;
   --accent: #aa98de;
   --accent-light: #c7b9ed;
+  --accent-tint: #aa98de1a;
+  --accent-tint-soft: #aa98de0d;
+  --accent-tint-strong: #aa98de33;
+  --accent-border: #aa98de40;
+  --on-accent: #191529;
+  --success: #a3c9b4;
+  --success-tint: #a3c9b41a;
+  --success-border: #a3c9b440;
+  --warning: #d1b67c;
+  --warning-tint: #d1b67c1a;
   --danger: #e9a3ad;
+  --danger-solid: #b24254;
+  --danger-tint: #b2425414;
+  --user-avatar: #39443f;
+  --on-user-avatar: #b7c7c0;
   /* Discord's documented insets include the Activity chrome on mobile. */
   --safe-top: var(--discord-safe-area-inset-top, env(safe-area-inset-top, 0px));
   --safe-bottom: var(--discord-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));

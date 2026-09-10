@@ -1345,9 +1345,13 @@ does not silently select a timezone for a new task.
 ## Discord Activity dashboard
 
 The owner-only saved-chat Activity is disabled by default. Its environment-only
-settings are `DASHBOARD_ENABLED`, `DASHBOARD_HOST`, `DASHBOARD_PORT`,
+settings are `DASHBOARD_ENABLED`, `DASHBOARD_ALLOWED_USER_IDS`,
+`DASHBOARD_MIN_TIER`, `DASHBOARD_HOST`, `DASHBOARD_PORT`,
 `DASHBOARD_CLIENT_SECRET`, `DASHBOARD_FRONTEND_DIR`, `DASHBOARD_SESSION_SECONDS`,
 `DASHBOARD_MAX_SESSIONS`, `DASHBOARD_TURN_TIMEOUT_SECONDS`, and
 `DASHBOARD_MAX_MESSAGE_CHARS`. Each active server must also opt in with the live
-frontmatter flag `dashboard: {enabled: true}`. See the
+frontmatter flag `dashboard: {enabled: true}`. The optional comma-separated user
+allowlist and minimum tier (`member`, `regular`, or `staff`) both apply; staff
+and the owner do not bypass the allowlist. Both settings require a restart.
+See the
 [dashboard guide](dashboard.md) for defaults, bounds, authentication, and deployment.

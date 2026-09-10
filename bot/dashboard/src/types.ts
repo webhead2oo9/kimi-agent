@@ -21,6 +21,9 @@ export interface Chat {
   title: string;
   created_at: number;
   updated_at: number;
+  parent_id?: string | null;
+  parent_event_id?: number | null;
+  parent_title?: string | null;
 }
 
 export interface FileRecord {
@@ -30,6 +33,7 @@ export interface FileRecord {
   media_type?: string;
   kind?: string;
   expired?: boolean;
+  unavailable?: boolean;
 }
 
 export interface TaskPreview {
@@ -63,6 +67,12 @@ export interface ChatEvent {
     revision?: number;
     outcome?: string;
     posts?: { channel_id: string; content: string }[];
+    role?: "user" | "assistant";
+    chat_id?: string;
+    title?: string;
+    source_chat_id?: string;
+    source_title?: string;
+    render_markdown?: boolean;
   };
 }
 
@@ -97,6 +107,28 @@ export function isResponding(events: ChatEvent[]): boolean {
     else if (["user_message", "activity", "plan"].includes(event.kind)) active.add(turn);
   }
   return active.size > 0;
+}
+
+export function conversationTimeline(events: ChatEvent[]): ChatEvent[] {
+  const timeline: ChatEvent[] = [];
+  const plans = new Map<string, number>();
+  for (const event of events) {
+    if (event.kind === "plan") {
+      const turn = event.payload.turn_id || `plan:${event.id}`;
+      const index = plans.get(turn);
+      if (index === undefined) {
+        plans.set(turn, timeline.length);
+        timeline.push(event);
+      } else {
+        // Keep one live checklist in its original place within this response.
+        timeline[index] = { ...event, id: timeline[index].id };
+      }
+    } else if (["user_message", "turn_finished", "task_action_result", "history_message", "branch_created", "branch_result"].includes(event.kind)
+      || event.kind === "coding_task" && !activeCodingStates.has(event.payload.status || "")) {
+      timeline.push(event);
+    }
+  }
+  return timeline;
 }
 
 export function latestWork(events: ChatEvent[]) {

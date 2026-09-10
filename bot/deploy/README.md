@@ -11,6 +11,11 @@ files in private deployment configuration. Its `TasksMax`, `MemoryMax`, and
 skill descendants; tune them to the host instead of removing the aggregate
 backstop.
 
+`kimi-dashboard-tunnel.service.example` runs a Cloudflare Tunnel connector as the
+unprivileged bot user and reads its token from a private file. Follow the
+[dashboard development walkthrough](../../docs/dashboard-cloudflare.md) for
+installation, Cloudflare and Discord portal setup, and verification.
+
 | Directory | Applies when |
 |---|---|
 | [`betterwright/`](betterwright/README.md) | The browser tool is enabled. Installs the pinned BetterWright runtime outside the checkout. |

@@ -10,10 +10,10 @@ from pathlib import Path
 import aiosqlite
 
 from storage.task_schema import TASK_SCHEMA
-from storage.dashboard_schema import DASHBOARD_SCHEMA
+from storage.dashboard_schema import DASHBOARD_BRANCH_SCHEMA, DASHBOARD_SCHEMA
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -734,6 +734,10 @@ async def _add_dashboard(conn: aiosqlite.Connection) -> None:
             await conn.execute(statement)
 
 
+async def _add_dashboard_branches(conn: aiosqlite.Connection) -> None:
+    await conn.execute(DASHBOARD_BRANCH_SCHEMA)
+
+
 _MIGRATIONS: dict[int, Migration] = {
     8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
     9: ("image_usage_reservations", _add_image_usage_reservations),
@@ -742,6 +746,7 @@ _MIGRATIONS: dict[int, Migration] = {
     12: ("task_thread_closure", _add_task_thread_closure),
     13: ("task_read_recovery", _add_task_read_recovery),
     14: ("assistant_dashboard", _add_dashboard),
+    15: ("dashboard_branches", _add_dashboard_branches),
 }
 
 
@@ -869,6 +874,7 @@ class Database:
             await _add_task_thread_closure(conn)
             await _add_task_read_recovery(conn)
             await _add_dashboard(conn)
+            await _add_dashboard_branches(conn)
             await _record_schema_version(
                 conn,
                 _BASELINE_SCHEMA_VERSION,

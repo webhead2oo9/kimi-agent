@@ -20,6 +20,8 @@ The rest is reference material.
   access tiers, scopes, prompt override, and reset behavior.
 - [Private Discord dashboard](dashboard.md): optional Activity, saved chats, files,
   task review, authentication, and deployment.
+- [Dashboard through Cloudflare Tunnel](dashboard-cloudflare.md): reproducible
+  development-host setup, connector service, and Discord/Cloudflare portal steps.
 - [Development](development.md): running isolated local and test instances.
 - [Public source and private instance data](instance-data.md): what belongs in
   Git and what stays deployment-owned.

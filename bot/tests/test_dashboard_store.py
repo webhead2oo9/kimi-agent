@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import time
+import asyncio
+import json
 from dataclasses import asdict
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
 from storage.dashboard import DashboardBusyError, DashboardStore
+from storage.dashboard_branches import DashboardBranches
+from storage.conversations import ChannelMessageRecord
 from storage.db import Database
 
 
@@ -153,3 +158,183 @@ async def test_work_cards_survive_history_pagination_and_keep_latest_revision(st
     assert len(cards) == 2
     assert cards[0].payload["task_preview"]["revision"] == 2
     assert cards[1].payload["status"] == "waiting_for_input"
+
+
+async def saved_turn(store, current, text="Question", answer="Answer", files=None):
+    turn, _ = await store.accept(
+        current, request_id=str(time.time_ns()), text=text, files=files or []
+    )
+    await store.conversations.save_channel_messages(
+        current.conversation_id,
+        [
+            ChannelMessageRecord(
+                None, "user", current.user_id, "User", text, source_id=f"dashboard:{turn}:user"
+            ),
+            ChannelMessageRecord(
+                None, "assistant", None, None, answer, source_id=f"dashboard:{turn}:assistant"
+            ),
+        ],
+    )
+    await store.finish_turn(
+        current.id,
+        turn,
+        "completed",
+        {"text": answer, "files": files or [], "task_preview": {"id": "schedule"}},
+    )
+    return (await store.events(current.id))[-1]
+
+
+@pytest.mark.asyncio
+async def test_branch_copies_only_selected_context_without_running_work(store):
+    parent = await chat(store)
+    selected = await saved_turn(
+        store, parent, files=[{"id": "original-file", "filename": "notes.txt"}]
+    )
+    await saved_turn(store, parent, "Later question", "Later answer")
+    branches = DashboardBranches(store, copy_file=AsyncMock(return_value=None))
+    first, retry = await asyncio.gather(
+        *[branches.fork(parent, event_id=selected.id, request_id="same-request") for _ in range(2)]
+    )
+    assert first == retry
+    assert first.parent_id == parent.id and first.parent_event_id == selected.id
+    assert first.channel_id == parent.channel_id and first.user_id == parent.user_id
+    history = await store.conversations.load_recent_conversation_messages(first.conversation_id)
+    assert [message.content[0].text for message in history] == ["User: Question", "Answer"]
+    events = await store.events(first.id)
+    assert [event.kind for event in events] == ["history_message", "history_message"]
+    assert events[-1].payload["files"][0] == {"filename": "notes.txt", "expired": True}
+    assert all(
+        "task_preview" not in event.payload and "turn_id" not in event.payload for event in events
+    )
+    assert await store.work_events(first.id) == []
+    async with store.db.conn.execute(
+        "SELECT count(*) FROM dashboard_turns WHERE dashboard_id=?", (first.id,)
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
+    # Re-branching inherited context is supported, without inventing source messages.
+    nested = await branches.fork(first, event_id=events[-1].id, request_id="nested")
+    assert nested.parent_id == first.id
+    assert len(await store.events(nested.id)) == 2
+    await store.delete(parent)
+    orphan = await store.get(first.id, user_id="1", guild_id="2")
+    assert orphan.parent_id is None and orphan.parent_title is not None
+    assert (
+        len(await store.conversations.load_recent_conversation_messages(first.conversation_id)) == 2
+    )
+    await store.conversations.delete_user_data("1")
+    async with store.db.conn.execute("SELECT count(*) FROM dashboard_branches") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_branch_return_adds_selected_result_as_context_once(store):
+    parent = await chat(store)
+    selected = await saved_turn(store, parent)
+    branches = DashboardBranches(store)
+    branch = await branches.fork(parent, event_id=selected.id, request_id="fork")
+    answer = await saved_turn(store, branch, "Try another way", "Alternative result")
+    await saved_turn(store, branch, "More", "Do not bring this back")
+    await branches.return_result(branch, parent, event_id=answer.id)
+    await branches.return_result(branch, parent, event_id=answer.id)
+    returned = [event for event in await store.events(parent.id) if event.kind == "branch_result"]
+    assert len(returned) == 1 and returned[0].payload["text"] == "Alternative result"
+    history = await store.conversations.load_recent_conversation_messages(parent.conversation_id)
+    assert history[-1].role == "user"
+    assert "Alternative result" in history[-1].content[0].text
+    assert "Do not bring this back" not in history[-1].content[0].text
+    nested = await branches.fork(parent, event_id=returned[0].id, request_id="returned-context")
+    copied = (await store.events(nested.id))[-1].payload
+    assert copied["render_markdown"] is True
+    assert copied["source_chat_id"] == branch.id
+    assert copied["text"] == "Alternative result"
+    await store.accept(parent, request_id="busy", text="Keep working", files=[])
+    with pytest.raises(DashboardBusyError, match="finish"):
+        await branches.return_result(
+            branch, parent, event_id=(await store.events(branch.id))[-1].id
+        )
+
+
+@pytest.mark.asyncio
+async def test_branch_rejects_foreign_unpersisted_and_reused_events(store):
+    parent, other = await chat(store), await chat(store, user_id="9")
+    own_event = await saved_turn(store, parent)
+    foreign = await saved_turn(store, other)
+    branches = DashboardBranches(store)
+    with pytest.raises(LookupError):
+        await branches.fork(parent, event_id=foreign.id, request_id="foreign")
+    await branches.fork(parent, event_id=own_event.id, request_id="retry")
+    with pytest.raises(DashboardBusyError, match="another message"):
+        await branches.fork(parent, event_id=own_event.id - 1, request_id="retry")
+    await store.accept(parent, request_id="unfinished", text="Still being saved", files=[])
+    with pytest.raises(DashboardBusyError, match="saved conversation"):
+        await branches.fork(
+            parent, event_id=(await store.events(parent.id))[-1].id, request_id="unfinished"
+        )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_branch_migration_preserves_existing_chats(tmp_path):
+    path = tmp_path / "upgrade.db"
+    db = Database(path)
+    await db.connect()
+    store = DashboardStore(db)
+    parent = await chat(store)
+    selected = await saved_turn(store, parent)
+    async with db.write_transaction() as conn:
+        await conn.execute("DROP TABLE dashboard_branches")
+        await conn.execute("DELETE FROM schema_version WHERE version=15")
+    await db.close()
+    await db.connect()
+    try:
+        restored = await store.get(parent.id, user_id="1", guild_id="2")
+        branch = await DashboardBranches(store).fork(
+            restored, event_id=selected.id, request_id="after-upgrade"
+        )
+        assert branch.parent_id == parent.id
+        assert len(await store.events(branch.id)) == 2
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_branch_metadata_ignores_coding_progress_and_keeps_timed_out_results(store):
+    parent = await chat(store)
+    await saved_turn(store, parent, files=[{"filename": "early.txt", "unavailable": True}])
+    async with store.db.write_transaction() as conn:
+        await conn.executemany(
+            "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,created_at) VALUES(?,'coding_task',?,?)",
+            [
+                (
+                    parent.id,
+                    json.dumps({"id": "coding", "status": "running", "text": str(i)}),
+                    time.time(),
+                )
+                for i in range(1001)
+            ],
+        )
+    await store.conversations.save_channel_messages(
+        parent.conversation_id,
+        [
+            ChannelMessageRecord(
+                None, "assistant", None, None, "Partial result", source_id="coding:coding:final"
+            )
+        ],
+    )
+    await store.event(
+        parent.id,
+        "coding_task",
+        {
+            "id": "coding",
+            "status": "timed_out",
+            "text": "Partial result",
+            "files": [{"filename": "partial.txt", "unavailable": True}],
+        },
+    )
+    selected = (await store.events(parent.id))[-1]
+    branch = await DashboardBranches(store).fork(
+        parent, event_id=selected.id, request_id="with-progress"
+    )
+    history = await store.events(branch.id)
+    assert len(history) == 3
+    assert history[0].payload["files"][0]["filename"] == "early.txt"
+    assert history[-1].payload["files"][0]["filename"] == "partial.txt"

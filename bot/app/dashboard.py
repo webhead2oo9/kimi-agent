@@ -30,9 +30,16 @@ from app.dashboard_files import DashboardFiles
 from app.dashboard_tasks import DashboardTasks
 from app.dashboard_turn import DashboardTurns
 from config.settings import Settings
-from storage.dashboard import DashboardConversation, DashboardFile, DashboardStore
+from storage.dashboard import (
+    DashboardBusyError,
+    DashboardConversation,
+    DashboardFile,
+    DashboardStore,
+)
+from storage.dashboard_branches import DashboardBranches
 from utils.plugin_privacy import PrivacyDeletionCallbackResult, PrivacyDeletionScope
 from utils.privacy_barrier import PrivacyDeletionPendingError, UserPrivacyBarrier
+from utils.asyncio import await_uncancellable
 
 log = logging.getLogger(__name__)
 _SESSION = web.RequestKey("dashboard_session", DashboardSession)
@@ -164,6 +171,8 @@ class Dashboard:
                 web.delete("/api/chats/{chat}", self.delete_chat),
                 web.get("/api/chats/{chat}/events", self.events),
                 web.post("/api/chats/{chat}/messages", self.message),
+                web.post("/api/chats/{chat}/branches", self.branch_chat),
+                web.post("/api/chats/{chat}/return-result", self.return_branch_result),
                 web.post("/api/chats/{chat}/stop", self.stop),
                 web.post("/api/chats/{chat}/upload", self.upload),
                 web.get("/api/chats/{chat}/files", self.file_list),
@@ -415,6 +424,71 @@ class Dashboard:
 
     async def get_chat(self, request: web.Request) -> web.Response:
         return web.json_response((await self._chat(request)).public())
+
+    async def _branch_access(self, chat: DashboardConversation) -> None:
+        await self.access.resolve(
+            user_id=chat.user_id,
+            guild_id=chat.guild_id,
+            channel_id=chat.channel_id,
+            continuing=True,
+        )
+        if await self.access.consent_required(chat.user_id):
+            raise web.HTTPForbidden(reason="Accept the privacy notice before chatting")
+
+    @staticmethod
+    def _branch_event(body: dict[str, Any]) -> int:
+        event_id = body.get("event_id")
+        if type(event_id) is not int or event_id <= 0 or event_id > 2**63 - 1:
+            raise web.HTTPBadRequest(reason="Choose a saved message")
+        return event_id
+
+    async def branch_chat(self, request: web.Request) -> web.Response:
+        chat = await self._chat(request)
+        await self._branch_access(chat)
+        body = await object_body(request)
+        event_id = self._branch_event(body)
+        request_id = text_field(body, "request_id")
+        if not request_id or len(request_id) > 128:
+            raise web.HTTPBadRequest(reason="Invalid branch request")
+
+        async def fork() -> DashboardConversation:
+            async with self.files.branch_copies(chat) as copy_file:
+                return await DashboardBranches(self.store, copy_file=copy_file).fork(
+                    chat, event_id=event_id, request_id=request_id
+                )
+
+        try:
+            branch = await await_uncancellable(fork())
+        except LookupError as exc:
+            raise web.HTTPNotFound(reason=str(exc)) from None
+        except DashboardBusyError as exc:
+            raise web.HTTPConflict(reason=str(exc)) from None
+        return web.json_response(branch.public(), status=201)
+
+    async def return_branch_result(self, request: web.Request) -> web.Response:
+        branch = await self._chat(request)
+        if branch.parent_id is None:
+            raise web.HTTPNotFound(reason="Parent conversation no longer exists")
+        parent = await self._chat(request, branch.parent_id)
+        await self._branch_access(parent)
+        event_id = self._branch_event(await object_body(request))
+
+        async def bring_back() -> None:
+            async with self.files.branch_copies(branch) as copy_file:
+                await DashboardBranches(self.store, copy_file=copy_file).return_result(
+                    branch, parent, event_id=event_id
+                )
+
+        try:
+            await await_uncancellable(bring_back())
+        except LookupError as exc:
+            raise web.HTTPNotFound(reason=str(exc)) from None
+        except DashboardBusyError as exc:
+            raise web.HTTPConflict(reason=str(exc)) from None
+        updated = await self.store.get(parent.id, user_id=parent.user_id, guild_id=parent.guild_id)
+        if updated is None:
+            raise web.HTTPNotFound(reason="Parent conversation no longer exists")
+        return web.json_response(updated.public())
 
     async def delete_chat(self, request: web.Request) -> web.Response:
         session = request[_SESSION]

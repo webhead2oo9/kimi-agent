@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, ChevronLeft, Files, Hash, LockKeyhole, Menu, MessageSquare, MoreHorizontal, Paperclip, Plus, Search, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronLeft, CornerUpLeft, Files, GitBranch, Hash, LockKeyhole, Menu, MoreHorizontal, Paperclip, Plus, Search, Square, Trash2, X } from "lucide-react";
 import type { Connection } from "./api";
 import { ApiError } from "./api";
 import { Markdown } from "./Markdown";
 import { WorkPanel } from "./WorkPanel";
-import { activeCodingStates, isResponding, latestWork, mergeEvents, type Chat, type ChatEvent, type FileRecord, type Session } from "./types";
+import { conversationTimeline, isResponding, latestWork, mergeEvents, type Chat, type ChatEvent, type FileRecord, type Session } from "./types";
 
 type Draft = { text: string; files: FileRecord[] };
 const emptyDraft: Draft = { text: "", files: [] };
@@ -15,8 +15,9 @@ export function readableSize(size = 0): string {
 }
 
 export function FileButton({ file, onSelect }: { file: FileRecord; onSelect: (file: FileRecord) => void }) {
-  return <button className="file-chip" disabled={!file.id || file.expired} onClick={() => onSelect(file)}>
-    <Files size={18} /><span><strong>{file.filename}</strong><small>{file.expired ? "File expired" : readableSize(file.size)}</small></span>
+  const detail = file.expired ? "File expired" : file.unavailable || !file.id ? "File unavailable" : readableSize(file.size);
+  return <button className="file-chip" aria-label={`${file.filename} ${detail}`} disabled={!file.id || file.expired || file.unavailable} onClick={() => onSelect(file)}>
+    <Files size={18} /><span><strong>{file.filename}</strong><small>{detail}</small></span>
   </button>;
 }
 
@@ -39,9 +40,12 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(() => window.matchMedia("(min-width: 1100px)").matches);
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
-  const [connected, setConnected] = useState(false);
+  // null until the socket reports, so the header only flags a real drop.
+  const [connected, setConnected] = useState<boolean | null>(null);
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [branching, setBranching] = useState(false);
+  const branchRequests = useRef(new Map<string, string>());
   const [optimisticBusy, setOptimisticBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [menu, setMenu] = useState<string | null>(null);
@@ -56,6 +60,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const draft = activeId ? drafts[activeId] || emptyDraft : emptyDraft;
   const busy = isResponding(events) || optimisticBusy === activeId && activeId !== null;
   const rememberKey = `kimi-dashboard:last:${session.user_id}:${session.guild_id}`;
+  const initial = displayName.trim()[0]?.toUpperCase() || "Y";
 
   const report = useCallback((error: unknown) => {
     if (error instanceof ApiError && error.status === 401) {
@@ -96,7 +101,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   useEffect(() => {
     let live = true;
     let unsubscribe: (() => void) | undefined;
-    setEvents([]); setFiles([]); setSelectedFile(null); setConnected(false);
+    setEvents([]); setFiles([]); setSelectedFile(null); setConnected(null); setMoreHistory(false); setHistoryLoading(false);
     followEnd.current = true;
     if (!activeId || expired) return;
     try { localStorage.setItem(rememberKey, activeId); } catch { /* optional preference */ }
@@ -113,7 +118,8 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         if (incoming.some(event => event.kind === "turn_finished")) {
           setOptimisticBusy(null); void refreshChats().catch(report); refreshFiles();
         }
-        if (incoming.some(event => ["coding_task", "task_action_result"].includes(event.kind))) refreshFiles();
+        if (incoming.some(event => ["coding_task", "task_action_result", "branch_result"].includes(event.kind))) refreshFiles();
+        if (incoming.some(event => ["branch_created", "branch_result"].includes(event.kind))) void refreshChats().catch(report);
       }, (connected, accessExpired) => {
         if (!live) return;
         setConnected(connected);
@@ -143,6 +149,40 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     } catch (error) { report(error); return null; }
   };
   const selectFile = (file: FileRecord) => { setSelectedFile(file); setWorkOpen(true); };
+  const openChat = async (id: string) => {
+    const from = activeId;
+    try {
+      const chat = await api.request<Chat>(`/chats/${encodeURIComponent(id)}`);
+      setChats(previous => [chat, ...previous.filter(item => item.id !== chat.id)]);
+      if (currentChatId.current === from) choose(chat.id);
+    } catch (error) { report(error); }
+  };
+  const branchFrom = async (eventId: number) => {
+    if (!activeId || branching || expired) return;
+    const chatId = activeId;
+    const key = `${chatId}:${eventId}`;
+    const requestId = branchRequests.current.get(key) || crypto.randomUUID();
+    branchRequests.current.set(key, requestId);
+    setBranching(true); setError("");
+    try {
+      const branch = await api.request<Chat>(`/chats/${chatId}/branches`, "POST", { event_id: eventId, request_id: requestId });
+      branchRequests.current.delete(key);
+      setChats(previous => [branch, ...previous.filter(chat => chat.id !== branch.id)]);
+      if (currentChatId.current === chatId) { choose(branch.id); requestAnimationFrame(() => composer.current?.focus()); }
+    } catch (error) { report(error); }
+    finally { setBranching(false); }
+  };
+  const bringToParent = async (eventId: number) => {
+    if (!activeId || !active?.parent_id || branching || expired) return;
+    const chatId = activeId;
+    setBranching(true); setError("");
+    try {
+      const parent = await api.request<Chat>(`/chats/${chatId}/return-result`, "POST", { event_id: eventId });
+      setChats(previous => [parent, ...previous.filter(chat => chat.id !== parent.id)]);
+      if (currentChatId.current === chatId) choose(parent.id);
+    } catch (error) { report(error); }
+    finally { setBranching(false); }
+  };
   const send = async () => {
     if (!activeId || sending || uploading || busy || !draft.text.trim() && !draft.files.length) return;
     const chatId = activeId;
@@ -153,7 +193,15 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     setSending(true); setOptimisticBusy(chatId); setError(""); followEnd.current = true;
     try {
       await api.request(`/chats/${chatId}/messages`, "POST", { ...payload, request_id: requestId });
-      updateDraft(chatId, emptyDraft); pending.current = null;
+      setDrafts(previous => {
+        const current = previous[chatId];
+        if (!current) return previous;
+        return { ...previous, [chatId]: {
+          text: current.text === payload.text ? "" : current.text,
+          files: current.files.filter(file => !payload.file_ids.includes(file.id!)),
+        } };
+      });
+      pending.current = null;
       void refreshChats().catch(report);
     } catch (error) { setOptimisticBusy(null); report(error); }
     finally { setSending(false); composer.current?.focus(); }
@@ -187,58 +235,65 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     } catch (error) { report(error); }
   };
 
-  const messages = events.filter(event => event.kind === "user_message" || event.kind === "turn_finished" || event.kind === "task_action_result" || event.kind === "coding_task" && !activeCodingStates.has(event.payload.status || ""));
-  const activity = [...events].reverse().find(event => event.kind === "activity")?.payload.label;
+  const messages = conversationTimeline(events);
+  const completedTurns = new Set(events.filter(event => event.kind === "turn_finished").map(event => event.payload.turn_id));
+  const activity = [...events].reverse().find(event => event.kind === "activity" && !completedTurns.has(event.payload.turn_id))?.payload.label;
   const work = latestWork(events);
   const visibleChats = chats.filter(chat => chat.title.toLowerCase().includes(search.toLowerCase()));
 
   return <div className={`app-shell ${workOpen ? "with-work" : ""}`}>
     {sidebarOpen && <button className="drawer-scrim" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />}
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-label="Saved conversations">
-      <div className="brand"><div className="kimi-mark small">k</div><span>{session.bot_name}<small>Your assistant</small></span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={19} /></button></div>
-      <button className="new-chat primary" onClick={() => void newChat()} disabled={expired}><Plus size={18} /> New chat</button>
+      <div className="brand"><div className="kimi-mark">k</div><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
+      <button className="new-chat" onClick={() => void newChat()} disabled={expired}><Plus size={16} /> New chat</button>
       <label className="chat-search"><Search size={15} /><input aria-label="Search conversations" placeholder="Find a conversation" value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <div className="sidebar-label">YOUR CONVERSATIONS</div>
+      <div className="sidebar-label">Recent</div>
       <nav className="chat-list" aria-label="Conversations">
         {loading && <p className="muted small-text">Loading conversations…</p>}
         {!loading && !visibleChats.length && <p className="muted small-text">{search ? "No matching conversations." : "A fresh start is one message away."}</p>}
         {visibleChats.map(chat => <div className={`chat-row ${chat.id === activeId ? "selected" : ""}`} key={chat.id}>
-          <button className="chat-choice" onClick={() => choose(chat.id)} aria-current={chat.id === activeId ? "page" : undefined}><MessageSquare size={16} /><span>{chat.title}</span></button>
+          <button className="chat-choice" aria-label={chat.title} onClick={() => choose(chat.id)} aria-current={chat.id === activeId ? "page" : undefined}>{chat.parent_title && <GitBranch size={14} aria-hidden="true" />}<span>{chat.title}</span></button>
           <button className="icon-button chat-menu" aria-label={`Options for ${chat.title}`} aria-expanded={menu === chat.id} onClick={() => setMenu(menu === chat.id ? null : chat.id)}><MoreHorizontal size={16} /></button>
           {menu === chat.id && <div className="context-menu"><button onClick={() => { setDialog({ kind: "rename", chat }); setMenu(null); }}>Rename</button><button className="danger-text" onClick={() => { setDialog({ kind: "delete", chat }); setMenu(null); }}><Trash2 size={14} /> Delete</button></div>}
         </div>)}
         {moreChats && <button className="text-button" onClick={() => void api.request<{ chats: Chat[] }>(`/chats?before=${chatCursor?.updated_at}&before_id=${chatCursor?.id}`).then(result => { setChats(previous => [...previous, ...result.chats.filter(chat => !previous.some(item => item.id === chat.id))]); setMoreChats(result.chats.length === 100); setChatCursor(result.chats.at(-1) || null); }).catch(report)}>Older conversations</button>}
       </nav>
-      <footer className="sidebar-footer"><div className="profile-avatar">{displayName[0]?.toUpperCase() || "Y"}</div><div><strong>{displayName}</strong><small><LockKeyhole size={11} /> Private to you in this server</small></div></footer>
     </aside>
 
     <main className="chat-main">
       <header className="chat-header">
         <button className="icon-button mobile-only" aria-label="Open conversations" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-        <div className="chat-heading"><strong>{active?.title || "A little space to think"}</strong><span><Hash size={12} />{active?.channel_name || "Your server"}<i />{activeId ? connected ? "Connected" : "Reconnecting…" : "Private conversations"}</span></div>
-        <button className={`work-toggle ${workOpen ? "active" : ""}`} onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
+        <div className="chat-heading"><strong>{active?.title || session.bot_name}</strong>{active && <span><Hash size={12} />{active.channel_name}{connected === false && <><i /><span className="status-pill reconnecting" role="status">Reconnecting…</span></>}</span>}</div>
+        <button className={`work-toggle ${workOpen ? "active" : ""}`} aria-label="Work" onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
       </header>
+      {active?.parent_title && <div className="branch-banner"><GitBranch size={16} /><div>{active.parent_id ? <button className="text-button" onClick={() => void openChat(active.parent_id!)}><CornerUpLeft size={14} />Parent: {active.parent_title}</button> : <span>Parent conversation deleted</span>}<p>Context copied through the selected message. Workspace files are shared.</p></div></div>}
       {error && <div className="notice error" role="alert"><span>{error}</span>{expired ? <button onClick={() => location.reload()}>Reconnect</button> : <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
       {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2><p>{session.consent_text}</p><button className="primary" onClick={() => void api.request("/consent", "POST", { accept: true }).then(() => setSession({ ...session, consent_required: false })).catch(report)}>Accept and continue</button></div>}
       <div className="message-scroll" ref={history} onScroll={() => { const node = history.current; if (node) followEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
-        {!activeId && !loading && !expired && <div className="empty-state"><div className="welcome-mark">✳</div><p className="eyebrow">A CONVERSATION, JUST FOR YOU</p><h1>What are we making<br />today?</h1><p>Start with a question, a file, or a half-formed idea.<br />We’ll take it from there.</p><button className="primary" onClick={() => void newChat()}><Plus size={17} /> Start a conversation</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
-        {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><div className="kimi-mark">k</div><h2>Hey, {displayName.split(" ")[0]}.</h2><p>What’s on your mind?</p></div>}
+        {!activeId && !loading && !expired && <div className="empty-state"><div className="kimi-mark large">k</div><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
+        {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><div className="kimi-mark large">k</div><h2>What are we working on?</h2></div>}
         {historyLoading && <p className="loading-history" role="status">Opening conversation…</p>}
         {moreHistory && <button className="history-more text-button" onClick={() => void older()}>Load earlier messages</button>}
         <div className="messages">
           {!expired && messages.map(event => {
-            const user = event.kind === "user_message";
+            if (event.kind === "plan") return <PlanCard key={event.id} event={event} />;
+            if (event.kind === "branch_created") return <div className="branch-link" key={event.id}><GitBranch size={15} /><span>Conversation branched</span><button className="text-button" onClick={() => void openChat(event.payload.chat_id!)}>Open branch</button></div>;
+            const user = event.kind === "user_message" || event.kind === "branch_result" || event.kind === "history_message" && event.payload.role === "user";
             const p = event.payload;
+            const branchable = ["user_message", "history_message", "branch_result"].includes(event.kind) || ["turn_finished", "coding_task"].includes(event.kind) && p.status === "completed";
+            const canReturn = active?.parent_id && ["turn_finished", "coding_task"].includes(event.kind) && p.status === "completed";
             return <article key={event.id} className={`message ${user ? "user-message" : "assistant-message"}`}>
-              {!user && <div className="message-avatar kimi-mark">k</div>}
+              {user ? <div className="message-avatar profile-avatar">{initial}</div> : <div className="message-avatar kimi-mark">k</div>}
               <div className="message-body"><div className="message-meta"><strong>{user ? "You" : session.bot_name}</strong><time dateTime={new Date(event.created_at * 1000).toISOString()}>{new Date(event.created_at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>{event.kind === "task_action_result" && <span className="pill">Task review</span>}</div>
                 {event.kind === "coding_task" && <span className="result-label">Coding task · {(p.status || "finished").replaceAll("_", " ")}</span>}
                 {event.kind === "turn_finished" && p.status !== "completed" && <span className="result-label">{p.status === "cancelled" ? "Response stopped" : "Response interrupted"}</span>}
-                {p.text && (user ? <p className="user-text">{p.text}</p> : <Markdown text={p.text} openLink={openLink} />)}
+                {p.source_chat_id && <div className="returned-result"><CornerUpLeft size={14} /><span>Brought back from </span><button className="text-button" onClick={() => void openChat(p.source_chat_id!)}>{p.source_title}</button></div>}
+                {p.text && (user && event.kind !== "branch_result" && !p.render_markdown ? <p className="user-text">{p.text}</p> : <Markdown text={p.text} openLink={openLink} />)}
                 {p.posts?.map((post, index) => <details key={index} className="sample-post"><summary>Sample for channel {post.channel_id}</summary><Markdown text={post.content} openLink={openLink} /></details>)}
                 {!!p.files?.length && <div className="message-files">{p.files.map((file, index) => <FileButton key={file.id || index} file={file} onSelect={selectFile} />)}</div>}
                 {p.task_preview && <button className="review-link" onClick={() => { setSelectedFile(null); setWorkOpen(true); }}><Check size={16} /> Review “{p.task_preview.name}”<ChevronLeft size={16} className="reverse" /></button>}
                 {p.coding_task_id && <button className="review-link" onClick={() => setWorkOpen(true)}>Follow coding progress <ChevronLeft size={16} className="reverse" /></button>}
+                {branchable && <div className="message-actions"><button className="text-button" disabled={branching || session.consent_required} onClick={() => void branchFrom(event.id)} title="Start a new conversation with context through this message"><GitBranch size={13} />Branch from here</button>{canReturn && <button className="text-button" disabled={branching || session.consent_required} onClick={() => void bringToParent(event.id)} title="Add this response to the parent conversation without starting a new reply"><CornerUpLeft size={13} />Bring to parent</button>}</div>}
               </div>
             </article>;
           })}
@@ -249,11 +304,10 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         <form className={`composer ${busy ? "responding" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}>
           {!!draft.files.length && <div className="draft-files">{draft.files.map(file => <span key={file.id}><Paperclip size={13} />{file.filename}<button type="button" aria-label={`Remove ${file.filename}`} onClick={() => updateDraft(activeId, { files: draft.files.filter(item => item.id !== file.id) })}><X size={13} /></button></span>)}</div>}
           <textarea ref={composer} aria-label={`Message ${session.bot_name}`} placeholder={`Message ${session.bot_name}…`} value={draft.text} maxLength={session.max_message_chars} disabled={session.consent_required || expired} rows={2} onChange={event => updateDraft(activeId, { text: event.target.value })} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !window.matchMedia("(pointer: coarse)").matches) { event.preventDefault(); void send(); } }} />
-          <div className="composer-tools"><input ref={uploadInput} type="file" multiple className="visually-hidden" tabIndex={-1} onChange={event => void attach(event.target.files)} /><button className="icon-button" type="button" aria-label="Attach files" disabled={uploading || expired || session.consent_required} onClick={() => uploadInput.current?.click()}><Paperclip size={19} /></button><span className="composer-hint">{uploading ? "Uploading…" : `${readableSize(session.max_upload_bytes)} per message`}</span>
-            {busy ? <button type="button" className="send-button stop-button" aria-label="Stop response" onClick={() => void api.request(`/chats/${activeId}/stop`, "POST", {}).then(() => setOptimisticBusy(null)).catch(report)}><Square size={16} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Send message" disabled={sending || uploading || expired || session.consent_required || !draft.text.trim() && !draft.files.length}><ArrowUp size={20} /></button>}
+          <div className="composer-tools"><input ref={uploadInput} type="file" multiple className="visually-hidden" tabIndex={-1} onChange={event => void attach(event.target.files)} /><button className="icon-button" type="button" aria-label="Attach files" disabled={uploading || expired || session.consent_required} onClick={() => uploadInput.current?.click()}><Paperclip size={18} /></button>{uploading && <span className="small-text muted" role="status">Uploading…</span>}
+            {busy ? <button type="button" className="send-button stop-button" aria-label="Stop response" onClick={() => void api.request(`/chats/${activeId}/stop`, "POST", {}).then(() => setOptimisticBusy(null)).catch(report)}><Square size={16} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Send message" disabled={sending || uploading || expired || session.consent_required || !draft.text.trim() && !draft.files.length}><ArrowUp size={18} /></button>}
           </div>
         </form>
-        <p className="retention-note"><LockKeyhole size={10} />{session.retention_days ? `Chats expire after ${session.retention_days} days without activity.` : "Chats are kept until you delete them."} Your files follow the server’s file retention.</p>
       </div>}
     </main>
 
@@ -266,6 +320,19 @@ export function DashboardApp({ connection }: { connection: Connection }) {
       setDialog(null);
     }} />}
   </div>;
+}
+
+function PlanCard({ event }: { event: ChatEvent }) {
+  const steps = event.payload.steps || [];
+  if (!steps.length) return null;
+  const completed = steps.filter(step => step.status === "completed").length;
+  return <section className="conversation-plan" aria-labelledby={`plan-${event.id}`}>
+    <div className="plan-heading"><h3 id={`plan-${event.id}`}>Plan</h3><span role="status">{completed} of {steps.length} done</span></div>
+    <ol className="plan">{steps.map((step, index) => <li key={index} className={step.status} aria-current={step.status === "in_progress" ? "step" : undefined}>
+      <span className="step-marker" aria-hidden="true">{step.status === "completed" ? <Check size={12} /> : index + 1}</span>
+      <span><span className="visually-hidden">{step.status.replaceAll("_", " ")}: </span>{step.content}</span>
+    </li>)}</ol>
+  </section>;
 }
 
 function ChatDialog({ dialog, onClose, onSubmit }: { dialog: NonNullable<Dialog>; onClose: () => void; onSubmit: (title: string) => Promise<void> }) {

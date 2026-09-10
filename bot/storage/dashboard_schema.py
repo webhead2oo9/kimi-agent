@@ -67,3 +67,14 @@ CREATE TABLE IF NOT EXISTS dashboard_actions (
     UNIQUE(dashboard_id,request_id)
 );
 """
+
+DASHBOARD_BRANCH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dashboard_branches (
+    dashboard_id TEXT PRIMARY KEY REFERENCES dashboard_conversations(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES dashboard_conversations(id) ON DELETE SET NULL,
+    parent_event_id INTEGER REFERENCES dashboard_events(id) ON DELETE SET NULL,
+    parent_title TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    UNIQUE(parent_id,request_id)
+);
+"""

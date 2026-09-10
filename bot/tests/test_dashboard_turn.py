@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -35,14 +36,15 @@ from utils.privacy_barrier import UserPrivacyBarrier
 from workspace import WorkspaceManager, workspace_owner_key
 
 
-@pytest_asyncio.fixture
-async def surface(tmp_path):
+@pytest_asyncio.fixture(params=[False, True], ids=["absolute-workspace", "relative-workspace"])
+async def surface(tmp_path, monkeypatch, request):
+    monkeypatch.chdir(tmp_path)
     db = Database(tmp_path / "turn.db")
     await db.connect()
     store = DashboardStore(db)
     settings = make_settings()
     locks, privacy, operations = UserLocks(), UserPrivacyBarrier(), ActiveOperationRegistry()
-    workspace = WorkspaceManager(tmp_path / "work")
+    workspace = WorkspaceManager(Path("work") if request.param else tmp_path / "work")
     files = DashboardFiles(store=store, workspace=workspace, locks=locks, settings=settings)
     member = SimpleNamespace(
         id=1, display_name="Charlie", guild=SimpleNamespace(id=2, name="Test guild")
@@ -87,6 +89,7 @@ async def surface(tmp_path):
         assert source.workspace_key == workspace_owner_key("1", "2")
         assert "move_to_thread" in kwargs["extra_blocked_tools"]
         assert "discord_text_search" not in kwargs["extra_blocked_tools"]
+        assert kwargs["command_template"] == "dashboard"
         return make_turn_dependencies(
             context_manager=ContextManager(store.conversations),
             workspace_dir=tmp_path / "work",
@@ -175,8 +178,13 @@ async def test_shared_turn_pipeline_moderates_images_stages_files_and_persists_p
     assert events[-1].payload["status"] == "completed"
     assert events[-1].payload["text"] == "Here is your file."
     assert events[-1].payload["files"][0]["filename"] == "answer.txt"
+    record = await surface.store.file(
+        events[-1].payload["files"][0]["id"], user_id="1", guild_id="2"
+    )
+    assert await surface.files.payload(record) == b"result"
     assert len(surface.executed) == 1
     request = surface.executed[0]
+    assert request.command_template == "dashboard"
     assert request.trigger_discord_message_id == ""
     assert request.context.key == surface.chat.key
     assert len(request.attachments) == 2

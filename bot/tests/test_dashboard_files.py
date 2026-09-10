@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -8,19 +9,22 @@ from aiohttp import web
 
 from app.dashboard_files import DashboardFiles, read_regular
 from storage.dashboard import DashboardStore
+from storage.dashboard_branches import DashboardBranches
 from storage.db import Database
 from tests.helpers import make_settings
+from tests.test_dashboard_store import saved_turn
 from tools.workspace.common import UserLocks
 from workspace import WorkspaceManager, workspace_owner_key
 
 
-@pytest_asyncio.fixture
-async def files(tmp_path):
+@pytest_asyncio.fixture(params=[False, True], ids=["absolute-workspace", "relative-workspace"])
+async def files(tmp_path, monkeypatch, request):
+    monkeypatch.chdir(tmp_path)
     db = Database(tmp_path / "files.db")
     await db.connect()
     service = DashboardFiles(
         store=DashboardStore(db),
-        workspace=WorkspaceManager(tmp_path / "work"),
+        workspace=WorkspaceManager(Path("work") if request.param else tmp_path / "work"),
         locks=UserLocks(),
         settings=make_settings(),
     )
@@ -58,13 +62,32 @@ async def test_workspace_snapshots_are_immutable_and_chat_deletion_keeps_shared_
     saved = await files.snapshot_workspace(own, "notes.txt")
     path.write_text("changed")
     assert await files.payload(saved) == b"first"
-    assert (await files.snapshot(own, ("/etc/passwd",)))[0]["expired"]
+    assert (await files.snapshot(own, ("/etc/passwd",)))[0]["unavailable"]
     with pytest.raises(ValueError):
         await files.snapshot_workspace(own, "../outside")
     await files.delete_chat(own)
     with pytest.raises(web.HTTPGone):
         await files.payload(saved)
     assert path.read_text() == "changed"
+
+
+@pytest.mark.asyncio
+async def test_output_snapshot_keeps_content_and_rejects_linked_or_foreign_sources(files):
+    own, other = await chat(files), await chat(files, "9")
+    directory = files.workspace.generated_job_dir(own.key, "delivery-test")
+    source = directory / "answer.txt"
+    source.write_text("delivered content")
+    saved = (await files.snapshot(own, (str(source),)))[0]
+    assert saved["filename"] == "answer.txt"
+    record = await files.store.file(saved["id"], user_id=own.user_id, guild_id=own.guild_id)
+    assert await files.payload(record) == b"delivered content"
+    assert (await files.preview(record))["text"] == "delivered content"
+    assert (await files.snapshot(other, (str(source),)))[0]["unavailable"]
+    linked = directory / "link.txt"
+    linked.symlink_to(source.absolute())
+    assert (await files.snapshot(own, (str(linked),)))[0]["unavailable"]
+    os.link(source, directory / "hardlink.txt")
+    assert (await files.snapshot(own, (str(source),)))[0]["unavailable"]
 
 
 def test_read_regular_rejects_symlinks_hardlinks_directories_and_oversize(tmp_path):
@@ -148,3 +171,73 @@ async def test_snapshot_finishes_when_maintenance_queues_behind_existing_workspa
             assert not entered.is_set()
         await maintenance
     assert entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_branch_and_returned_attachments_survive_source_deletion(files):
+    parent = await chat(files)
+    original = await files.save(parent, "notes.txt", b"Original notes", kind="output")
+    selected = await saved_turn(files.store, parent, files=[original.public()])
+    async with files.branch_copies(parent) as copy_file:
+        branches = DashboardBranches(files.store, copy_file=copy_file)
+        branch = await branches.fork(parent, event_id=selected.id, request_id="fork")
+        retry = await branches.fork(parent, event_id=selected.id, request_id="fork")
+    assert branch == retry
+    copies = await files.store.files(branch)
+    assert len(copies) == 1  # A repeated card and HTTP retry reuse the same copy.
+    assert copies[0].id != original.id
+    await files.delete_chat(parent)
+    assert await files.payload(copies[0]) == b"Original notes"
+    answer = await saved_turn(files.store, branch, answer="**Result**", files=[copies[0].public()])
+    async with files.branch_copies(branch) as copy_file:
+        branches = DashboardBranches(files.store, copy_file=copy_file)
+        await branches.return_result(branch, parent, event_id=answer.id)
+        await branches.return_result(branch, parent, event_id=answer.id)
+    returned = (await files.store.events(parent.id))[-1].payload["files"][0]
+    result = await files.store.file(returned["id"], user_id="1", guild_id="2")
+    assert result.dashboard_id == parent.id and result.id != copies[0].id
+    await files.delete_chat(branch)
+    await files.store.delete(branch)
+    assert await files.payload(result) == b"Original notes"
+    assert len(await files.store.files(parent)) == 2
+
+
+@pytest.mark.asyncio
+async def test_branch_quota_failure_rolls_back_history_and_copied_files(files, monkeypatch):
+    parent = await chat(files)
+    originals = [
+        await files.save(parent, name, b"ok", kind="output") for name in ("a.txt", "b.txt")
+    ]
+    selected = await saved_turn(
+        files.store, parent, files=[record.public() for record in originals]
+    )
+    monkeypatch.setattr(files.settings, "workspace_tool_max_user_bytes", 6)
+    before = set(files.workspace._base_dir.rglob("*.txt"))
+    with pytest.raises(web.HTTPConflict, match="quota"):
+        async with files.branch_copies(parent) as copy_file:
+            await DashboardBranches(files.store, copy_file=copy_file).fork(
+                parent, event_id=selected.id, request_id="quota"
+            )
+    assert await files.store.list_chats(user_id="1", guild_id="2") == [
+        await files.store.get(parent.id, user_id="1", guild_id="2")
+    ]
+    assert set(files.workspace._base_dir.rglob("*.txt")) == before
+    assert all(event.kind != "branch_created" for event in await files.store.events(parent.id))
+
+
+@pytest.mark.asyncio
+async def test_branch_copies_expired_and_foreign_files_as_expired_cards(files):
+    parent, foreign = await chat(files), await chat(files, "9")
+    private = await files.save(foreign, "private.txt", b"secret", kind="output")
+    expired = await files.save(parent, "old.txt", b"expired", kind="output")
+    await files.delete_chat(parent)
+    selected = await saved_turn(files.store, parent, files=[private.public(), expired.public()])
+    async with files.branch_copies(parent) as copy_file:
+        branch = await DashboardBranches(files.store, copy_file=copy_file).fork(
+            parent, event_id=selected.id, request_id="expired"
+        )
+    assert await files.store.files(branch) == []
+    assert (await files.store.events(branch.id))[-1].payload["files"] == [
+        {"filename": "private.txt", "expired": True},
+        {"filename": "old.txt", "expired": True},
+    ]

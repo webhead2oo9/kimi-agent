@@ -11,9 +11,21 @@ text channel or thread. Each **New chat** starts a separate conversation, like a
 fresh “hey kimi.” The sidebar supports rename, delete, and older history. Reopening
 remembers the last selected chat on that device when it still exists.
 
-The composer supports text, attachments, and Stop. The work panel contains file
-previews and downloads, the member's server workspace, current plans, coding task
-progress and input, and scheduled-task Test preview / Approve / Reject controls.
+Choose **Branch from here** on a saved message to explore a separate path with
+the conversation copied only through that message. A parent link stays above the
+branch, and the parent gets an **Open branch** link. **Bring to parent** copies a
+completed response back as user-provided context; it does not start a model turn
+or repeat tool actions. Running work, approvals, and tool state are not copied.
+Branches keep the same owner, server, and channel access checks. They share the
+user's server workspace, so edits to workspace files affect both conversations.
+Up to 1,000 saved messages can be copied in one branch; larger histories require
+choosing an earlier message.
+
+The composer supports text, attachments, and Stop. Plans appear directly in the
+conversation, update as work progresses, and stay with the response in history.
+The work panel contains file previews and downloads, the member's server
+workspace, coding task progress and input, and scheduled-task Test preview /
+Approve / Reject controls.
 Approving a scheduled task authorizes its configured server posts through the
 existing scheduler. Deleting a chat does not delete its approved schedules.
 
@@ -25,13 +37,53 @@ requires permission to post and an open, unlocked thread. Private-thread
 membership and fresh parent overwrites are checked. Unsupported launch contexts
 are rejected with an explanation.
 
-Model routing, persona, server/channel instructions, trust tiers, consent,
+Model routing, persona, server instructions, trust tiers, consent,
 moderation, tool policy, and turn admission use the existing bot services. Files
 share the same `(user, server)` workspace as ordinary guild chat. This is separate
 from the guild-less `/chat` workspace. Message-bound thread controls are hidden in
 the Activity because there is no public Discord message to move or pause.
 
+## Dashboard instructions and tool policy
+
+Dashboard turns use their own full prompt, `config/prompts/commands/dashboard.md`.
+It explains the private saved-chat surface, inline plans, file previews, task
+approvals, and why Discord thread controls are unavailable. It uses web Markdown,
+including tables. The default includes server instructions and intentionally
+omits the originating channel's conversational instructions; channel access,
+trust, tool restrictions, and moderation still apply.
+
+Copy the complete template to
+`<CONFIG_DIR>/prompts/commands/dashboard.local.md` to customize this deployment,
+or `prompts/commands/dashboard/<guild_id>.md` for one server. Both override paths
+are gitignored in the checkout. The server-specific file wins over `.local.md`,
+which wins over `dashboard.md`. External config trees without a dashboard
+template use the shipped dashboard default rather than a Discord channel prompt.
+Full overrides replace the whole layout, so preserve the required safety and
+surface instructions; see [prompt templates](../bot/config/prompts/README.md).
+
+The selected file supports frontmatter just like channel fragments:
+
+```yaml
+---
+pinned_tools: [extract_document_text]
+blocked_tools: [build_discord_embed]
+---
+```
+
+Use registered tool names (at most 64 per list). Pins add to existing server and
+channel pins and remain subject to tool availability and trust checks. Blocks
+add to global, server, channel, and fixed dashboard restrictions; pinning a tool
+cannot override a block or enable Discord thread controls. Invalid policy reloads
+retain the last valid policy, or fail the turn if no valid policy has been loaded.
+The body and policy are read on each turn; edits need no restart. Ordinary Discord
+chat does not use this dashboard configuration. Model routing can target this
+surface through `overrides.commands.dashboard` in `models.yaml`.
+
 ## Operator setup
+
+For a development host using a Cloudflare-managed domain, follow the
+[Cloudflare Tunnel walkthrough](dashboard-cloudflare.md), including its service
+template, portal settings, verification, and stopping procedure.
 
 Use a separate Discord application and isolated instance paths for the first live
 smoke test; follow [development](development.md) and
@@ -48,7 +100,9 @@ existing bot token. Never put either secret in frontend files or URL mappings.
 
    The bot serves `bot/dashboard/dist` by default. Deployment must build it or
    copy that build to the deployed checkout. The listener refuses to start with
-   the feature enabled if the build or client secret is missing.
+   the feature enabled if the build or client secret is missing. The build
+   bundles its own font files under `assets/`, so the page loads nothing from
+   third-party hosts and needs no extra Discord URL mapping.
 
 2. In the Discord Developer Portal for that same application, enable Activities
    and configure a root URL mapping (`/`) to your HTTPS reverse-proxy hostname.
@@ -105,6 +159,33 @@ existing bot token. Never put either secret in frontend files or URL mappings.
    discord.py version does not model primary entry-point commands. Recheck it
    when upgrading discord.py against Discord's
    [application-command reference](https://docs.discord.com/developers/interactions/application-commands).
+
+### Restricting who can use the dashboard
+
+Set `DASHBOARD_ALLOWED_USER_IDS` to a comma-separated list of Discord user IDs
+to limit testing to selected people. Keep real IDs in the private environment
+file. `DASHBOARD_MIN_TIER` sets a minimum server trust tier: `member`, `regular`,
+or `staff`.
+
+| Audience | `DASHBOARD_ALLOWED_USER_IDS` | `DASHBOARD_MIN_TIER` |
+| --- | --- | --- |
+| Selected testers | Their comma-separated user IDs | `member` |
+| Regulars and staff | Empty | `regular` |
+| Staff | Empty | `staff` |
+| All otherwise eligible members | Empty | `member` |
+
+When both restrictions are configured, users must satisfy both. The allowlist
+does not grant a trust tier, bypass channel permissions, or override a user
+block. Staff and the bot owner do not bypass it. Defaults preserve access for
+otherwise eligible members in enabled servers. These settings are
+environment-only and require a bot restart, which clears existing dashboard
+sessions.
+
+The Activity launcher may remain visible. Unapproved users who open it receive
+an access-denied message before a dashboard session is delivered. `/dashboard`
+also checks access, and API requests and WebSocket connections use the same
+authorization boundary. This application policy applies in addition to
+Discord's separate restrictions on launching undistributed Activities.
 
 The remaining environment settings are:
 
@@ -166,12 +247,18 @@ are refused. Images are decoded before inline display. Text, Markdown, CSV, and
 supported document text are previewed; original files remain downloadable.
 HTML and SVG are never executed in the preview. Remote Markdown images appear
 as links, so merely opening a response does not fetch them.
+Both relative and absolute `WORKSPACE_DIR` paths are supported. If an output cannot
+be copied for delivery, its card keeps the filename and says **File unavailable**;
+this does not mean that the file's retention period has elapsed.
 
 Idle chats use `TRANSCRIPT_RETENTION_DAYS` (30 by default). File copies follow the
 existing workspace file expiry and privacy cleanup. An old message can therefore
 outlive its attachment; downloads then report that the file expired. Deleting a
 chat stops its active work, removes its private snapshots and transcript, and
-keeps the shared server workspace. Full privacy deletion revokes sessions and
+keeps the shared server workspace. Branches and returned results keep their own
+copies of available attachments, subject to the same file quotas and retention.
+Deleting the source chat does not delete those copies. Already expired files
+remain marked expired. Full privacy deletion revokes sessions and
 removes owned transcripts, task records, and generated jobs through the existing
 deletion pipeline. Operators retain the access described in the
 [privacy policy](privacy-policy.md).

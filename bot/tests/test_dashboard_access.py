@@ -86,3 +86,67 @@ async def test_continuing_rechecks_posting_permission_and_blocked_user(tmp_path)
     access.user_blocked.return_value = True
     with pytest.raises(web.HTTPForbidden):
         await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", list(TrustTier))
+async def test_unlisted_users_cannot_access_dashboard_even_as_owner_or_staff(tmp_path, tier):
+    access, guild, _, _, _ = setup(tmp_path)
+    access.settings.dashboard_allowed_user_ids = "9"
+    access.settings.owner_user_id = "1"
+    access.trust.resolve = lambda *_: tier
+    with pytest.raises(web.HTTPForbidden, match="limited to invited users"):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+    guild.fetch_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_listed_user_remains_subject_to_channel_permissions_and_blocks(tmp_path):
+    access, _, _, _, permissions = setup(tmp_path)
+    access.settings.dashboard_allowed_user_ids = "9, 1"
+    await access.resolve(user_id="1", guild_id="2", channel_id="3", continuing=True)
+    permissions.view_channel = False
+    with pytest.raises(web.HTTPForbidden):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+    permissions.view_channel = True
+    access.user_blocked.return_value = True
+    with pytest.raises(web.HTTPForbidden):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowlist", ["", "1"])
+@pytest.mark.parametrize("minimum", list(TrustTier))
+@pytest.mark.parametrize("tier", list(TrustTier))
+async def test_dashboard_minimum_tier_applies_with_or_without_an_allowlist(
+    tmp_path, allowlist, minimum, tier
+):
+    access, _, _, _, _ = setup(tmp_path)
+    access.settings.dashboard_allowed_user_ids = allowlist
+    access.settings.dashboard_min_tier = minimum.value
+    access.trust.resolve = lambda *_: tier
+    if tier < minimum:
+        with pytest.raises(web.HTTPForbidden, match="trust tier"):
+            await access.resolve(user_id="1", guild_id="2", channel_id="3")
+    else:
+        ctx = await access.resolve(user_id="1", guild_id="2", channel_id="3")
+        assert ctx.tier == tier
+
+
+@pytest.mark.parametrize("value", ["someone", "1,staff", ", ,", "1;2", "\u00b2"])
+def test_invalid_dashboard_allowlist_fails_closed(value):
+    with pytest.raises(ValueError, match="DASHBOARD_ALLOWED_USER_IDS"):
+        make_settings(dashboard_allowed_user_ids=value)
+
+
+def test_dashboard_access_settings_read_environment(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_ALLOWED_USER_IDS", " 1, 9,1 ")
+    monkeypatch.setenv("DASHBOARD_MIN_TIER", " REGULAR ")
+    settings = make_settings()
+    assert settings.dashboard_allowed_user_id_set == {"1", "9"}
+    assert settings.dashboard_min_tier == "regular"
+
+
+def test_invalid_dashboard_minimum_tier_fails_closed():
+    with pytest.raises(ValueError, match="DASHBOARD_MIN_TIER"):
+        make_settings(dashboard_min_tier="everyone")

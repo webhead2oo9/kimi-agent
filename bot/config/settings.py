@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # Optional private guild chat delivered through a Discord Activity. The
     # listener belongs behind an HTTPS reverse proxy and never opens by default.
     dashboard_enabled: bool = False
+    dashboard_allowed_user_ids: str = ""
+    dashboard_min_tier: str = "member"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8088, ge=1, le=65535)
     dashboard_client_secret: SecretStr = SecretStr("")
@@ -835,12 +837,13 @@ class Settings(BaseSettings):
             raise ValueError("X_SEARCH_AUTH_MODE must be one of: auto, oauth, api_key")
         return normalized
 
-    @field_validator("code_exec_min_tier")
+    @field_validator("code_exec_min_tier", "dashboard_min_tier")
     @classmethod
-    def _validate_code_exec_min_tier(cls, value: str) -> str:
+    def _validate_min_tier(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip().lower()
         if normalized not in {"member", "regular", "staff"}:
-            raise ValueError("CODE_EXEC_MIN_TIER must be one of: member, regular, staff")
+            label = (info.field_name or "min_tier").upper()
+            raise ValueError(f"{label} must be one of: member, regular, staff")
         return normalized
 
     @field_validator("code_exec_network_mode")
@@ -1042,6 +1045,16 @@ class Settings(BaseSettings):
                 raise ValueError(f"{label} entry {token!r} is not a numeric Discord user ID")
         return value
 
+    @field_validator("dashboard_allowed_user_ids")
+    @classmethod
+    def _validate_dashboard_allowed_user_ids(cls, value: str) -> str:
+        tokens = [token.strip() for token in value.split(",") if token.strip()]
+        if value.strip() and not tokens:
+            raise ValueError("DASHBOARD_ALLOWED_USER_IDS must contain numeric Discord user IDs")
+        if any(not token.isascii() or not token.isdigit() for token in tokens):
+            raise ValueError("DASHBOARD_ALLOWED_USER_IDS must contain numeric Discord user IDs")
+        return ",".join(tokens)
+
     @field_validator("owner_user_id")
     @classmethod
     def _validate_owner_user_id(cls, value: str) -> str:
@@ -1132,6 +1145,10 @@ class Settings(BaseSettings):
                 "MODERATION_OUTPUT_EXEMPT_TIER must be blank or one of: member, regular, staff"
             )
         return normalized
+
+    @property
+    def dashboard_allowed_user_id_set(self) -> frozenset[str]:
+        return frozenset(self.dashboard_allowed_user_ids.split(",")) - {""}
 
     @property
     def allowed_channels(self) -> set[int]:

@@ -1,0 +1,200 @@
+"""Compact, deterministic approval text; Discord renders local dates/countdowns."""
+
+from __future__ import annotations
+from collections.abc import Mapping
+
+from zoneinfo import ZoneInfo
+from typing import Any
+
+from app.task_schedule import interpret_schedule, native_time, schedule_label
+from tools.scheduled_tasks import TaskDefinition
+from tools.task_python import DiscordPythonInput
+
+EXECUTION_LABELS = {
+    "llm": "LLM procedure",
+    "python_gate": "Python with optional LLM handoff",
+    "python_only": "Python only",
+}
+
+
+def clip(value: str, limit: int) -> str:
+    value = " ".join(value.split())
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def render_task_details(task: Mapping[str, Any], definition: TaskDefinition) -> str:
+    """Readable, complete approval settings accompanying the separate task skill."""
+    schedule = definition.schedule
+    start = schedule.start.astimezone(ZoneInfo(schedule.timezone))
+
+    def channel(channel_id: str) -> str:
+        return (
+            f"[Channel {channel_id}](https://discord.com/channels/{task['guild_id']}/{channel_id})"
+        )
+
+    lines = [
+        f"# Task: {clip(definition.name, 100)}",
+        f"Revision {task['revision']} · Task ID: {task['id']}",
+        "## Objective",
+        definition.objective,
+        "## Execution",
+        EXECUTION_LABELS[definition.execution],
+        "## Sources",
+        "\n".join(f"- {source}" for source in definition.sources) or "No sources specified.",
+        "## Schedule",
+        f"- Frequency: {schedule_label(definition.schedule, exported=True)}",
+        f"- Timezone: {schedule.timezone}",
+        f"- Start: {start.isoformat()}",
+        "- After downtime: "
+        + (
+            "Run once to catch up, combining any missed occurrences."
+            if schedule.missed == "catch_up"
+            else "Skip occurrences more than 60 seconds late."
+        ),
+        "## Publication",
+        "Destinations:\n" + "\n".join(f"- {channel(target)}" for target in definition.destinations),
+        "Publish when:\n" + (definition.condition or "Every successful run."),
+        "First check: "
+        + (
+            "No conditional baseline; perform the task normally."
+            if not definition.condition
+            else (
+                "Establish the baseline silently, without publishing."
+                if definition.first_check == "silent"
+                else "Publish the initial baseline."
+            )
+        ),
+        "## Notifications",
+        "Users:\n"
+        + (
+            "\n".join(
+                f"- [User {user}](https://discord.com/users/{user})"
+                for user in definition.mention_users
+            )
+            or "None."
+        ),
+        "Roles:\n" + ("\n".join(f"- Role {role}" for role in definition.mention_roles) or "None."),
+        "## Run log",
+        channel(definition.log_channel)
+        if definition.log_channel
+        else "Internal task history only.",
+        "## Saved comparison state",
+        "Reset when this revision is approved."
+        if definition.reset_state
+        else "Keep the existing state.",
+        "## Procedure",
+        (
+            "The complete instructions are in the attached SKILL.md. Approval applies to these settings, "
+            "that skill, and the attached task.py when present."
+        ),
+    ]
+    if definition.python is not None:
+        inputs = []
+        for source in definition.python.inputs:
+            if isinstance(source, DiscordPythonInput):
+                window = (
+                    f"since the last successful check; initial lookback {source.lookback_seconds} seconds"
+                    if source.window == "since_success"
+                    else f"rolling window of {source.lookback_seconds} seconds"
+                )
+                inputs.append(f"- {source.name}: {channel(source.channel_id)}; {window}.")
+            else:
+                inputs.append(f"- {source.name}: HTTPS GET {source.url}")
+        lines.extend(
+            [
+                "## Python inputs",
+                "\n".join(inputs)
+                or "No external inputs; the script receives run metadata and saved state.",
+                "## Python environment and output",
+                (
+                    "The script runs offline with existing sandbox packages. Package versions may change "
+                    "between runs. Text and selected files are delivered to the destinations above. "
+                    "Temporary input-read failures keep recurring checks scheduled. Execution failures "
+                    "require attention; they do not fall back to an LLM."
+                ),
+            ]
+        )
+    return "\n\n".join(lines) + "\n"
+
+
+def render_preview(
+    task: Mapping[str, Any],
+    definition: TaskDefinition,
+    *,
+    now: float,
+    state: str = "pending",
+    next_run: float | None = None,
+) -> str:
+    title = {
+        "pending": "Task proposal",
+        "activated": "Task activated",
+        "denied": "Task denied",
+        "superseded": "Superseded",
+    }[state]
+    if state == "activated":
+        title = "Task " + task.get("task_status", "active").replace("attention", "needs attention")
+        if task.get("active_revision", task["revision"]) != task["revision"]:
+            title = "Approved task revision"
+    lines = [
+        f"**{title}: {clip(definition.name, 100)}**",
+        f"Revision {task['revision']} · Task `{task.get('task_id', task.get('id'))}`",
+    ]
+    if state in {"denied", "superseded"}:
+        lines.append(
+            "This revision will not run. Any previously approved version is unchanged."
+            if state == "denied"
+            else "A newer draft replaced this preview. Use its approval message."
+        )
+        return "\n".join(lines)
+    if state == "activated" and task.get("active_revision", task["revision"]) != task["revision"]:
+        lines.append("This approved revision was replaced. Open Manage for the current task.")
+        return "\n".join(lines)
+    interpreted = interpret_schedule(definition.schedule, now)
+    lines.extend(
+        [
+            f"Objective: {clip(definition.objective, 180)}",
+            f"Execution: {EXECUTION_LABELS[definition.execution]}",
+            f"Schedule: {interpreted['recurrence']}",
+            f"Schedule timezone: {definition.schedule.timezone}",
+            "Destination: " + ", ".join(f"<#{x}>" for x in definition.destinations),
+            "Post when: " + clip(definition.condition or "Every successful run", 180),
+        ]
+    )
+    times: list[float] = []
+    if state == "activated":
+        if next_run is not None and task.get("task_status", "active") == "active":
+            times.append(next_run)
+    else:
+        times = [item["unix"] for item in interpreted["next_runs"]]
+    lines.append("Next run" + ("s" if len(times) > 1 else "") + " (your local time):")
+    lines.extend(native_time(t) for t in times)
+    if not times:
+        lines.append(
+            "None; update the schedule before approval."
+            if state == "pending"
+            else "None scheduled."
+        )
+    if state == "pending":
+        lines.append(
+            f"First check: {definition.first_check} · Missed runs: {definition.schedule.missed}"
+        )
+        recipients = [
+            *(f"<@{x}>" for x in definition.mention_users),
+            *(f"<@&{x}>" for x in definition.mention_roles),
+        ]
+        shown = ", ".join(recipients[:3]) or "none"
+        if len(recipients) > 3:
+            shown += f" (+{len(recipients) - 3} in task-details.md)"
+        lines.append(
+            f"Notify: {shown} · Log: "
+            + (f"<#{definition.log_channel}>" if definition.log_channel else "internal history")
+        )
+        if definition.reset_state:
+            lines.append("**Saved comparison state will be reset.**")
+        lines.append(
+            "Full instructions and settings are attached. Test preview privately before approving. "
+            "Only the requester can test, approve, or reject."
+        )
+    else:
+        lines.append("Open Manage for private controls and run history.")
+    return "\n".join(lines)

@@ -9,8 +9,10 @@ from pathlib import Path
 
 import aiosqlite
 
+from storage.task_schema import TASK_SCHEMA
+
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 13
 _BASELINE_SCHEMA_VERSION = 7
 _BASELINE_SCHEMA_NAME = "core_v7_baseline"
 
@@ -668,9 +670,64 @@ async def _add_image_usage_reservations(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX idx_image_usage_time ON image_usage_reservations(created_at)")
 
 
+async def _add_scheduled_tasks(conn: aiosqlite.Connection) -> None:
+    for statement in TASK_SCHEMA.split(";"):
+        if statement.strip():
+            await conn.execute(statement)
+
+
+async def _add_task_previews(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "ALTER TABLE scheduled_task_revisions ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'pending'"
+    )
+    await conn.execute(
+        "UPDATE scheduled_task_revisions SET approval_status='approved' WHERE EXISTS (SELECT 1 FROM scheduled_tasks t WHERE t.id=task_id AND t.active_revision=scheduled_task_revisions.revision)"
+    )
+    await conn.execute(
+        "ALTER TABLE scheduled_task_wizards ADD COLUMN approval_in_channel INTEGER NOT NULL DEFAULT 0"
+    )
+    await conn.execute("""CREATE TABLE scheduled_task_previews (
+        message_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        task_id TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        desired_state TEXT NOT NULL DEFAULT 'pending',
+        rendered_state TEXT NOT NULL DEFAULT 'pending',
+        next_run REAL,
+        close_pending INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        retry_at REAL NOT NULL DEFAULT 0
+    )""")
+    await conn.execute(
+        "CREATE INDEX task_preview_task ON scheduled_task_previews(task_id,revision)"
+    )
+
+
+async def _add_task_thread_closure(conn: aiosqlite.Connection) -> None:
+    await conn.execute("ALTER TABLE scheduled_task_previews ADD COLUMN signoff_message_id TEXT")
+    await conn.execute(
+        "ALTER TABLE scheduled_task_previews ADD COLUMN thread_closed INTEGER NOT NULL DEFAULT 0"
+    )
+    # Reconcile approval threads left open by the initial management-card release.
+    await conn.execute(
+        "UPDATE scheduled_task_previews SET close_pending=1,attempts=0,retry_at=0 "
+        "WHERE desired_state='activated'"
+    )
+
+
+async def _add_task_read_recovery(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "ALTER TABLE scheduled_tasks ADD COLUMN read_failure_streak INTEGER NOT NULL DEFAULT 0"
+    )
+
+
 _MIGRATIONS: dict[int, Migration] = {
     8: ("privacy_plugin_callbacks", _add_privacy_plugin_callbacks),
     9: ("image_usage_reservations", _add_image_usage_reservations),
+    10: ("scheduled_tasks", _add_scheduled_tasks),
+    11: ("task_previews", _add_task_previews),
+    12: ("task_thread_closure", _add_task_thread_closure),
+    13: ("task_read_recovery", _add_task_read_recovery),
 }
 
 
@@ -793,6 +850,10 @@ class Database:
 
         if current == 0:
             await conn.executescript(_SCHEMA_SQL)
+            await _add_scheduled_tasks(conn)
+            await _add_task_previews(conn)
+            await _add_task_thread_closure(conn)
+            await _add_task_read_recovery(conn)
             await _record_schema_version(
                 conn,
                 _BASELINE_SCHEMA_VERSION,

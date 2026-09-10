@@ -65,6 +65,7 @@ from modules.events import EventBusImpl
 from modules.guild_settings import GuildSettingsService
 from modules.http import ModuleHttpRuntime
 from modules.scheduler import DurableScheduler
+from app.scheduled_tasks import ScheduledTaskService
 from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from storage.auto_retain import AutoRetainStore
 from storage.blocked_users import BlockedUserStore
@@ -162,6 +163,7 @@ class LifecycleResources:
     user_app_chat: UserAppChatController
     work_cancellation: WorkCancellationCoordinator
     callbacks: LifecycleCallbacks
+    scheduled_tasks: ScheduledTaskService | None = None
 
 
 def settings_secret_values(settings: Settings) -> tuple[str, ...]:
@@ -363,6 +365,8 @@ class ApplicationLifecycle:
         await drain_confirmed_privacy_deletions()
         await stop_event_writer()
         await resources.coding_tasks.close()
+        if resources.scheduled_tasks is not None:
+            await resources.scheduled_tasks.close()
         try:
             await resources.tools.browser_service.close()
         except Exception:
@@ -820,6 +824,8 @@ class ApplicationLifecycle:
         # replayed and their barriers are installed. This prevents recovered
         # work from racing a deletion request during READY initialization.
         await resources.coding_tasks.start()
+        if resources.scheduled_tasks is not None:
+            await resources.scheduled_tasks.start()
 
     async def resume_pending_privacy_deletions(
         self,

@@ -22,6 +22,7 @@ SHIPPED_BUILTIN_NAMES = {
     "coding-work",
     "embed",
     "image-generation",
+    "scheduled-tasks",
     "start-thread",
     "workspace",
 }

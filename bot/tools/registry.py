@@ -83,6 +83,13 @@ class TurnHandoff:
 
 
 @dataclass(frozen=True)
+class TaskPreviewRequest:
+    task_id: str
+    revision: int
+    in_channel: bool = False
+
+
+@dataclass(frozen=True)
 class TurnOutbox:
     """Immutable reply artifacts carried intact from tools to surface delivery."""
 
@@ -93,6 +100,7 @@ class TurnOutbox:
     allowed_file_roots: tuple[str | Path, ...] = ()
     embed: EmbedSpec | None = None
     embed_attachment: EmbedAttachment | None = None
+    task_preview: TaskPreviewRequest | None = None
     thread_request: ThreadRequest | None = None
     thread_close_request: ThreadCloseRequest | None = None
     terminal_handoff: TurnHandoff | None = None
@@ -218,6 +226,10 @@ class MessageContext:
     channel_id: str
     thread_id: str | None
     trust_tier: TrustTier
+    # Host-owned unattended identity and completion rail; never tool arguments.
+    scheduled_run_id: str = ""
+    scheduled_result: dict[str, Any] | None = None
+    before_tool: Callable[[MessageContext], Awaitable[None]] | None = None
     conversation_id: int | None = None
     channel_name: str = ""
     # Opaque platform actor for permission-sensitive tools. Discord entry paths
@@ -456,6 +468,7 @@ class ToolEntry:
 
 class ToolRegistry:
     def __init__(self, owner_user_id: str = "") -> None:
+        self.prompt_instructions: Callable[[str, str | None, str], Awaitable[str]] | None = None
         self._core_tools: dict[str, ToolEntry] = {}
         self._search_tools: dict[str, ToolEntry] = {}
         self._owner_user_id = owner_user_id
@@ -873,6 +886,10 @@ class ToolRegistry:
         return None
 
     async def dispatch(self, name: str, args: dict, ctx: MessageContext) -> str:
+        if ctx.before_tool is not None:
+            await ctx.before_tool(ctx)
+        if ctx.scheduled_result:
+            return tool_error("The scheduled run has already completed")
         gate_error = self.dispatch_gate(name, ctx)
         if gate_error is not None:
             return gate_error

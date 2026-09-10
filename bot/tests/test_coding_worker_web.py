@@ -1,6 +1,7 @@
 """Web tools for the durable coding worker and the netns lease handoff."""
 
 from __future__ import annotations
+from workspace import WorkspaceKey
 
 import asyncio
 import json
@@ -253,7 +254,7 @@ async def test_netns_job_yields_the_browser_then_acquires(tmp_path: Path) -> Non
     manager = _manager(tmp_path, guards, "netns")
     assert manager.uses_netns is True
 
-    async with manager._run_lease("u1"):
+    async with manager._run_lease("u1", WorkspaceKey("u1")):
         assert lease.locked() is True
 
     assert yielded == ["u1"]
@@ -282,7 +283,7 @@ async def test_netns_job_cancellation_during_release_does_not_leak_lease(
     manager = _manager(tmp_path, guards, "netns")
 
     async def run() -> None:
-        async with manager._run_lease("u1"):
+        async with manager._run_lease("u1", WorkspaceKey("u1")):
             pass
 
     task = asyncio.create_task(run())
@@ -311,7 +312,7 @@ async def test_netns_job_yields_without_racy_locked_precheck(tmp_path: Path) -> 
     )
     manager = _manager(tmp_path, guards, "netns")
 
-    async with manager._run_lease("u1"):
+    async with manager._run_lease("u1", WorkspaceKey("u1")):
         assert lease.locked() is True
 
     assert yielded == ["u1"]
@@ -336,7 +337,7 @@ async def test_netns_job_times_out_when_lease_stays_held(
     manager = _manager(tmp_path, guards, "netns")
 
     with pytest.raises(RuntimeError, match="busy"):
-        async with manager._run_lease("u1"):
+        async with manager._run_lease("u1", WorkspaceKey("u1")):
             raise AssertionError("lease must not be acquired")
 
     assert lease.locked() is True
@@ -349,12 +350,12 @@ async def test_host_mode_job_keeps_fail_fast_semaphore(tmp_path: Path) -> None:
     await guards.semaphore.acquire()
     try:
         with pytest.raises(RuntimeError, match="busy"):
-            async with manager._run_lease("u1"):
+            async with manager._run_lease("u1", WorkspaceKey("u1")):
                 raise AssertionError("semaphore must not be acquired")
     finally:
         guards.semaphore.release()
 
-    async with manager._run_lease("u1"):
+    async with manager._run_lease("u1", WorkspaceKey("u1")):
         assert guards.semaphore.locked() is True
     assert guards.semaphore.locked() is False
 

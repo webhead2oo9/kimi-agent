@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -115,9 +118,11 @@ class DiscordGateway:
         *,
         bot_user_provider: Callable[[], Any | None],
         trust_resolver: TrustResolver | None = None,
+        search_excluded_channel_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._bot_user_provider = bot_user_provider
         self._trust_resolver = trust_resolver
+        self._search_excluded_channel_ids = search_excluded_channel_ids
         self._turn_sources: dict[tuple[str, str], dict[int, Any]] = {}
         self._next_turn_source_binding_id = 0
         self._discord_search_archive_cache: OrderedDict[
@@ -211,6 +216,17 @@ class DiscordGateway:
             raise ValueError("Discord search channel scope is unavailable.") from exc
 
     def _discord_search_actors(self, ctx: MessageContext) -> tuple[Any, Any, Any]:
+        if ctx.scheduled_run_id:
+            member = ctx.platform_member
+            guild = getattr(member, "guild", None)
+            if (
+                guild is None
+                or str(getattr(guild, "id", "")) != ctx.guild_id
+                or str(getattr(member, "id", "")) != ctx.user_id
+                or guild.me is None
+            ):
+                raise ValueError("Scheduled task's Discord identity is unavailable")
+            return guild, member, guild.me
         source = self._turn_source(ctx)
         guild = getattr(source, "guild", None)
         member = getattr(source, "author", None)
@@ -256,11 +272,50 @@ class DiscordGateway:
                 or str(getattr(getattr(channel, "guild", None), "id", "")) != str(guild.id)
                 or not _is_search_message_channel(channel)
                 or _search_channel_is_excluded(channel, excluded_channel_ids)
-                or not await _search_channel_accessible(channel, member, bot_member)
+                or not await _search_channel_accessible(
+                    channel, member, bot_member, propagate_http_errors=True
+                )
             ):
                 raise ValueError(unavailable)
             channels[requested_id] = _search_channel_name(channel)
         return channels
+
+    async def discover_discord_channels(
+        self,
+        ctx: MessageContext,
+        *,
+        excluded_channel_ids: frozenset[str],
+        cursor: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Page readable sources; cursors are offsets in the current accessible inventory."""
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit must be an integer between 1 and 200")
+        if cursor not in (None, "") and (
+            not isinstance(cursor, str)
+            or not cursor.isascii()
+            or not cursor.isdecimal()
+            or len(cursor) > 10
+        ):
+            raise ValueError("cursor must be a channel discovery continuation offset")
+        offset = int(cursor or "0")
+        guild, member, bot_member = self._discord_search_actors(ctx)
+        sources: dict[str, str] = {}
+        index = 0
+        async with aclosing(
+            self._iter_accessible_search_channels(guild, member, bot_member, excluded_channel_ids)
+        ) as channels:
+            async for channel_id, name in channels:
+                if index >= offset:
+                    sources[channel_id] = name
+                    if len(sources) == limit:
+                        return {
+                            "sources": sources,
+                            "next_cursor": str(offset + limit),
+                            "has_more": True,
+                        }
+                index += 1
+        return {"sources": sources, "next_cursor": None, "has_more": False}
 
     async def _resolve_all_search_channels(
         self,
@@ -270,6 +325,22 @@ class DiscordGateway:
         excluded_channel_ids: frozenset[str],
     ) -> dict[str, str]:
         channels: dict[str, str] = {}
+        async with aclosing(
+            self._iter_accessible_search_channels(guild, member, bot_member, excluded_channel_ids)
+        ) as available:
+            async for channel_id, name in available:
+                channels[channel_id] = name
+                _check_discord_search_scope_size(channels)
+        return channels
+
+    async def _iter_accessible_search_channels(
+        self,
+        guild: Any,
+        member: Any,
+        bot_member: Any,
+        excluded_channel_ids: frozenset[str],
+    ) -> AsyncGenerator[tuple[str, str]]:
+        channels: dict[str, str] = {}
         archive_parents: list[Any] = []
         for channel in guild.channels:
             if _search_channel_is_excluded(channel, excluded_channel_ids):
@@ -278,39 +349,33 @@ class DiscordGateway:
                 channel, member, bot_member
             ):
                 channels[str(channel.id)] = _search_channel_name(channel)
-                _check_discord_search_scope_size(channels)
+                yield str(channel.id), channels[str(channel.id)]
             if hasattr(channel, "archived_threads") and await _search_channel_accessible(
                 channel, member, bot_member
             ):
                 archive_parents.append(channel)
 
         for thread in guild.threads:
-            await _add_search_thread(
-                channels,
-                thread,
-                member,
-                bot_member,
-                excluded_channel_ids,
-            )
-            _check_discord_search_scope_size(channels)
+            count = len(channels)
+            await _add_search_thread(channels, thread, member, bot_member, excluded_channel_ids)
+            if len(channels) > count:
+                yield str(thread.id), channels[str(thread.id)]
 
         for parent in archive_parents:
-            async for thread in self._iter_archived_search_threads(parent, bot_member):
-                await _add_search_thread(
-                    channels,
-                    thread,
-                    member,
-                    bot_member,
-                    excluded_channel_ids,
-                )
-                _check_discord_search_scope_size(channels)
-        return channels
+            async with aclosing(self._iter_archived_search_threads(parent, bot_member)) as archived:
+                async for thread in archived:
+                    count = len(channels)
+                    await _add_search_thread(
+                        channels, thread, member, bot_member, excluded_channel_ids
+                    )
+                    if len(channels) > count:
+                        yield str(thread.id), channels[str(thread.id)]
 
     async def _iter_archived_search_threads(
         self,
         parent: Any,
         bot_member: Any,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any]:
         discovery_mode = _archive_discovery_mode(parent, bot_member)
         cache_key = (str(getattr(parent, "id", "")), discovery_mode)
         cached_threads = self._cached_discord_search_archives(cache_key)
@@ -411,6 +476,83 @@ class DiscordGateway:
             log.warning("Could not read recent Discord channel context", exc_info=True)
             raise DiscordGatewayError("Could not read recent channel context.") from exc
 
+    async def collect_channel_history(self, ctx: MessageContext, args: dict) -> dict[str, object]:
+        channel_id = str(args.get("channel_id") or ctx.channel_id)
+        if not channel_id.isdigit():
+            raise ValueError("channel_id must be numeric")
+        # Exclusions apply identically to search and history.
+        channels = await self.resolve_discord_search_channels(
+            ctx,
+            requested_channel_ids=(channel_id,),
+            excluded_channel_ids=self._search_excluded_channel_ids,
+        )
+        guild, _member, _bot = self._discord_search_actors(ctx)
+        channel = guild.get_channel_or_thread(int(channel_id)) or await guild.fetch_channel(
+            int(channel_id)
+        )
+        if channel_id not in channels:
+            raise ValueError("Channel unavailable")
+
+        def timestamp(value: object) -> datetime:
+            parsed = datetime.fromisoformat(str(value))
+            if parsed.tzinfo is None:
+                raise ValueError("History timestamps need a UTC offset")
+            return parsed
+
+        upper = timestamp(args["before"]) if args.get("before") else datetime.now(UTC)
+        lower = timestamp(args["after"]) if args.get("after") else None
+        if lower is not None and lower >= upper:
+            raise ValueError("after must precede before")
+        order = args.get("order", "desc")
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be asc or desc")
+        limit = max(1, min(int(args.get("limit", 100)), 100))
+        before: Any = upper
+        after: Any = lower
+        cursor = args.get("cursor")
+        if cursor:
+            if not isinstance(cursor, str) or not cursor.isdigit():
+                raise ValueError("cursor must be a message ID from the previous page")
+            if order == "asc":
+                after = discord.Object(int(cursor))
+            else:
+                before = discord.Object(int(cursor))
+        results: list[dict[str, object]] = []
+        size = 0
+        has_more = False
+        async for message in channel.history(
+            limit=limit + 1, before=before, after=after, oldest_first=order == "asc"
+        ):
+            if message.created_at >= upper or (lower and message.created_at <= lower):
+                continue
+            item = {
+                "id": str(message.id),
+                "author_id": str(message.author.id),
+                "author": message.author.display_name,
+                "content": message.content,
+                "timestamp": message.created_at.isoformat(),
+                "url": message.jump_url,
+                "attachments": [
+                    {"index": i + 1, "filename": a.filename}
+                    for i, a in enumerate(message.attachments)
+                ],
+            }
+            item_size = len(json.dumps(item))
+            if len(results) >= limit or (results and size + item_size > 32_000):
+                has_more = True
+                break
+            results.append(item)
+            size += item_size
+        return {
+            "channel_id": channel_id,
+            "messages": results,
+            "count": len(results),
+            "window_end": upper.isoformat(),
+            "order": order,
+            "has_more": has_more,
+            "next_cursor": results[-1]["id"] if results and has_more else None,
+        }
+
     async def resolve_member(
         self,
         ctx: MessageContext,
@@ -418,7 +560,11 @@ class DiscordGateway:
         user_id: str | None = None,
         query: str | None = None,
     ) -> MemberLookup:
-        source = self._turn_source(ctx)
+        if ctx.scheduled_run_id:
+            guild, _member, _bot = self._discord_search_actors(ctx)
+            source = ctx.platform_member
+        else:
+            source = self._turn_source(ctx)
         if source is None:
             raise DiscordGatewayError("Current Discord source is unavailable.")
         guild = getattr(source, "guild", None)
@@ -638,7 +784,9 @@ def _archive_discovery_mode(parent: Any, bot_member: Any) -> str:
     return "joined_private"
 
 
-async def _search_channel_accessible(channel: Any, member: Any, bot_member: Any) -> bool:
+async def _search_channel_accessible(
+    channel: Any, member: Any, bot_member: Any, *, propagate_http_errors: bool = False
+) -> bool:
     permissions_for = getattr(channel, "permissions_for", None)
     if not callable(permissions_for):
         return False
@@ -660,12 +808,18 @@ async def _search_channel_accessible(channel: Any, member: Any, bot_member: Any)
     need_bot = not bool(getattr(bot_permissions, "manage_threads", False))
     if not need_member and not need_bot:
         return True
-    if need_member and not await _private_thread_has_member(channel, member):
+    if need_member and not await _private_thread_has_member(
+        channel, member, propagate_http_errors=propagate_http_errors
+    ):
         return False
-    return not need_bot or await _private_thread_has_member(channel, bot_member)
+    return not need_bot or await _private_thread_has_member(
+        channel, bot_member, propagate_http_errors=propagate_http_errors
+    )
 
 
-async def _private_thread_has_member(channel: Any, member: Any) -> bool:
+async def _private_thread_has_member(
+    channel: Any, member: Any, *, propagate_http_errors: bool = False
+) -> bool:
     fetch_member = getattr(channel, "fetch_member", None)
     member_id = getattr(member, "id", None)
     if not callable(fetch_member) or member_id is None:
@@ -673,7 +827,11 @@ async def _private_thread_has_member(channel: Any, member: Any) -> bool:
     try:
         await fetch_member(int(member_id))
         return True
-    except discord.Forbidden, discord.NotFound, discord.HTTPException:
+    except discord.Forbidden, discord.NotFound:
+        return False
+    except discord.HTTPException:
+        if propagate_http_errors:
+            raise
         return False
 
 

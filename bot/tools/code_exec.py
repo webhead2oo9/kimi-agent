@@ -45,6 +45,7 @@ from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import (
     ATTACHMENT_HINT,
     UserLocks,
+    code_execution_slot,
     quota_ok,
     scrub_user_paths,
     tool_error,
@@ -184,6 +185,15 @@ def init_code_exec_tool(
         netns_conflict=netns_conflict,
     )
 
+    @asynccontextmanager
+    async def _resources(run_lease: asyncio.Semaphore | NetnsLease, ctx: MessageContext):
+        if isinstance(run_lease, asyncio.Semaphore):
+            async with code_execution_slot(run_lease, workspace_activity(locks, ctx)):
+                yield
+        else:
+            async with run_lease, workspace_activity(locks, ctx):
+                yield
+
     async def _reserve_network_quota(ctx: MessageContext, operation: str) -> str | None:
         """Check-and-reserve one network-run slot; None if allowed. STAFF exempt."""
         return await guards.reserve_network_run(
@@ -227,7 +237,7 @@ def init_code_exec_tool(
                 else guards.semaphore
             )
             try:
-                async with run_lease, workspace_activity(locks, ctx):
+                async with _resources(run_lease, ctx):
                     return await _run_workspace_file_impl(
                         args,
                         ctx,
@@ -286,11 +296,8 @@ def init_code_exec_tool(
 
             workspace_dir = workspace_manager.user_files_dir(ctx.workspace_key)
             interpreter = "default"
-            # Plain sandboxes use their concurrency semaphore. Networked sandboxes
-            # instead use the single shared netns lease, which is also held for a
-            # browser worker's complete lifetime. The per-workspace lock serializes
-            # either kind of run against file writes. Order is always global lease
-            # -> workspace lock, and write tools take only the latter, so no deadlock.
+            # Semaphore callers own their workspace before acquiring code capacity.
+            # The persistent network namespace retains its separate lease policy.
             async with _no_op_async_context():
                 # The before/after workspace walks are offloaded off the event loop:
                 # a large workspace (up to CODE_EXEC_MAX_WORKSPACE_FILES) must not

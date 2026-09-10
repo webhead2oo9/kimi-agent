@@ -501,6 +501,9 @@ class RoleAssignments(BaseModel):
     # unchanged and leaves every coding-task control unregistered.
     coding: str | None = None
     coding_fallbacks: list[str] = Field(default_factory=list)
+    # Optional model for scheduled task execution, independent of chat selection.
+    scheduled: str | None = Field(default=None, min_length=1)
+    scheduled_fallbacks: list[str] = Field(default_factory=list)
     # Optional stateful video understanding specialist. Unset leaves the video tool
     # unregistered even when VIDEO_UNDERSTANDING_ENABLED is true. Fallbacks are not
     # supported because stored Interaction chains are stateful at Google.
@@ -611,8 +614,9 @@ class ModelConfig(BaseModel):
             self._require_model(f"roles.{role_name}", model_name)
         if self.roles.chat_images is not None:
             self._require_image_capability("roles.chat_images", self.roles.chat_images)
-        if self.roles.coding is not None:
-            self._require_capabilities("roles.coding", self.roles.coding, {"text", "tool_calling"})
+        for role in ("coding", "scheduled"):
+            if (model_name := getattr(self.roles, role)) is not None:
+                self._require_capabilities(f"roles.{role}", model_name, {"text", "tool_calling"})
         if self.roles.video is not None:
             self._require_capabilities("roles.video", self.roles.video, {"video_input"})
             provider_type = self.providers[self.models[self.roles.video].provider].type
@@ -642,13 +646,14 @@ class ModelConfig(BaseModel):
         if self.roles.chat_images is not None:
             for index, model_name in enumerate(self.roles.chat_images_fallbacks):
                 self._require_image_capability(f"roles.chat_images_fallbacks[{index}]", model_name)
-        if self.roles.coding is not None:
-            for index, model_name in enumerate(self.roles.coding_fallbacks):
-                self._require_capabilities(
-                    f"roles.coding_fallbacks[{index}]",
-                    model_name,
-                    {"text", "tool_calling"},
-                )
+        for role in ("coding", "scheduled"):
+            if getattr(self.roles, role) is not None:
+                for index, model_name in enumerate(self.roles.fallbacks_for(role)):
+                    self._require_capabilities(
+                        f"roles.{role}_fallbacks[{index}]",
+                        model_name,
+                        {"text", "tool_calling"},
+                    )
         for model_name in self.selectable_chat_models:
             self._require_model("selectable_chat_models", model_name)
             provider_type = self.providers[self.models[model_name].provider].type
@@ -797,6 +802,9 @@ class ModelConfig(BaseModel):
         if include_coding and self.roles.coding is not None:
             names.add(self.roles.coding)
             names.update(self.roles.coding_fallbacks)
+        if self.roles.scheduled is not None:
+            names.add(self.roles.scheduled)
+            names.update(self.roles.scheduled_fallbacks)
         return names
 
     def profile_for_model(self, model_name: str) -> ProviderProfile:

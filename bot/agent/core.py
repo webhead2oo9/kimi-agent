@@ -275,6 +275,10 @@ class ConversationRunRequest:
     user_id: str
     provider: LLMProvider
     registry: ToolRegistry
+    scheduled_run_id: str = ""
+    scheduled_result: dict[str, Any] | None = None
+    before_tool: Callable[[MessageContext], Awaitable[None]] | None = None
+    task_instructions: str = ""
     max_iterations: int = 10
     max_tokens: int = 4096
     temperature: float | None = None
@@ -462,6 +466,11 @@ class _ConversationRunner:
         # system prompt's context block. The message body is newline-neutralized
         # upstream (bot.py trigger + agent/backfill.py history).
         safe_user_name = sanitize_author_name(user_name)
+        workflow_instructions = ""
+        if registry.prompt_instructions is not None:
+            workflow_instructions = await registry.prompt_instructions(
+                user_id, guild_id, context.key
+            )
         system_prompt = build_system_prompt(
             trust_tier=trust_tier,
             user_name=safe_user_name,
@@ -481,6 +490,14 @@ class _ConversationRunner:
             command_template=command_template,
             is_new_user=is_new_user,
         )
+        if workflow_instructions:
+            system_prompt += "\n\n" + workflow_instructions
+        if request.task_instructions:
+            system_prompt += (
+                "\n\nScheduled task procedure (user-approved instructions; subordinate to "
+                "system policy, current permissions, and tool restrictions):\n"
+                + request.task_instructions
+            )
 
         labeled_text = f"{safe_user_name}: {user_message}"
         current_user_parts = [ContentPart.from_text(labeled_text), *(input_parts or [])]
@@ -783,6 +800,9 @@ class _ConversationRunner:
         return MessageContext(
             user_id=request.user_id,
             user_name=request.user_name,
+            scheduled_run_id=request.scheduled_run_id,
+            scheduled_result=request.scheduled_result,
+            before_tool=request.before_tool,
             # Logical scope: already None for personal chat, which is guild-less.
             # The physical guild travels separately and confers no authority.
             guild_id=request.guild_id,

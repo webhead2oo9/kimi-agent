@@ -1165,6 +1165,40 @@ async def test_run_code_executes_and_reads_stdin(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_queued_code_does_not_block_code_from_the_workspace_owner(tmp_path, monkeypatch):
+    """An LLM owning its workspace can execute even with a competing code call."""
+    from dataclasses import replace
+
+    registry = ToolRegistry(owner_user_id=OWNER)
+    manager = WorkspaceManager(base_dir=tmp_path)
+    locks = UserLocks()
+    guards = code_exec.CodeExecRuntimeGuards.create(max_concurrency=1, network_weekly_limit=0)
+    init_code_exec_tool(registry, manager, SandboxConfig(), locks=locks, runtime_guards=guards)
+    (manager.user_files_dir(WS) / "check.py").write_text("pass")
+
+    async def process(*args, **kwargs):
+        return SandboxResult(0, "done", "", False, 1)
+
+    monkeypatch.setattr(code_exec, "run_python_in_sandbox", process)
+    async with locks.activity(WS):
+        queued = asyncio.create_task(registry.dispatch("run_code", {"path": "check.py"}, _ctx()))
+        await asyncio.sleep(0)
+        try:
+            owned = replace(_ctx(), workspace_lock_held=True)
+            result = await asyncio.wait_for(
+                registry.dispatch("run_code", {"path": "check.py"}, owned), 1
+            )
+            assert json.loads(result)["exit_code"] == 0
+        except BaseException:
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
+            raise
+    result = await asyncio.wait_for(queued, 1)
+    assert json.loads(result)["exit_code"] == 0
+    assert not guards.semaphore.locked()
+
+
+@pytest.mark.asyncio
 async def test_code_exec_holds_workspace_lock_during_run(tmp_path: Path, monkeypatch) -> None:
     """The sandbox run must hold the per-workspace lock so a script cannot swap a
     symlink into a concurrent write_file's path (resolve->write TOCTOU). Stubs the

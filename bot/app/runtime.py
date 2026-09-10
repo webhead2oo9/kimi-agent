@@ -77,6 +77,9 @@ from skills.loader import SkillsIndexCache
 from app.learn_log import build_learn_log_feed
 from storage.blocked_users import BlockedUserStore
 from storage.coding_tasks import CodingTaskStore
+from storage.scheduled_tasks import ScheduledTaskStore
+from app.scheduled_tasks import ScheduledTaskRuntime, ScheduledTaskService
+from app.task_access import TaskAccess
 from storage.image_distillations import ImageDistillationStore
 from storage.model_selection import ModelSelectionStore
 from storage.conversations import ConversationStore
@@ -269,6 +272,7 @@ class KimiApplication:
                 thread_handoff=lambda: self.thread_handoff,
                 coding=lambda: self.lifecycle.resources.coding_tasks,
                 moderation_service=lambda: self.moderation_service,
+                task_previews=lambda: self.lifecycle.resources.scheduled_tasks,
             ),
         )
 
@@ -535,6 +539,7 @@ def build_app(settings: Settings) -> KimiApplication:
     gateway = DiscordGateway(
         bot_user_provider=lambda: bot.user,
         trust_resolver=trust_resolver,
+        search_excluded_channel_ids=settings.discord_search_excluded_channel_ids,
     )
     provider_manager = build_provider_manager(settings)
     registry = ToolRegistry()
@@ -668,6 +673,23 @@ def build_app(settings: Settings) -> KimiApplication:
             strip_message_invocation=application.message_controller.strip_message_invocation,
         ),
     )
+    scheduled_tasks = ScheduledTaskService(
+        ScheduledTaskRuntime(
+            bot=bot,
+            settings=settings,
+            tools=application.tools,
+            store=ScheduledTaskStore(database),
+            conversations=repositories.conversation_store,
+            usage=repositories.usage_store,
+            providers=provider_manager,
+            gateway=gateway,
+            access=TaskAccess(bot, settings, trust_resolver, application.active_guilds),
+            privacy=application.privacy_barrier,
+            user_blocked=application.user_blocked,
+            semaphore=application.llm_semaphore,
+            moderation=moderation_service,
+        )
+    )
     work_cancellation: WorkCancellationCoordinator | None = None
 
     async def cancel_personal_work(
@@ -736,6 +758,7 @@ def build_app(settings: Settings) -> KimiApplication:
             command_sync=command_sync,
             coding_tasks=coding_task_controller,
             module_manager=application.tools.module_manager,
+            scheduled_tasks=scheduled_tasks,
             trust_resolver=trust_resolver,
             context_manager=context_manager,
             turn_runner=turn_runner,

@@ -56,6 +56,10 @@ The rest is reference material.
   VPN modes, deployment, privacy, and upgrades.
 - [Visual rendering](visual-rendering.md): one-call charts and constrained
   Mermaid diagrams through the ephemeral offline browser runtime.
+- [Scheduled Python](scheduled-python.md): deterministic checks, LLM gates, inputs,
+  sandbox packages, file output, and recovery.
+- [Scheduled tasks](scheduled-tasks.md): guided task skills, conditional execution,
+  cross-channel publication, scheduling, and delivery recovery.
 - [Personal skills](personal-skills.md): reusable instructions owned by a user.
 - [Persona overrides](persona.md): per-user compiled response styles.
 - [Discord embeds](embeds.md): building rich replies.

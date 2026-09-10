@@ -16,6 +16,9 @@ class _Gateway:
         self.error = error
         self.limits: list[int] = []
 
+    async def collect_channel_history(self, ctx: MessageContext, args: dict) -> dict[str, object]:
+        return {"messages": [], "next_cursor": None}
+
     async def collect_recent_channel_context(
         self,
         ctx: MessageContext,

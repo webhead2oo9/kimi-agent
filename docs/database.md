@@ -2,11 +2,12 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v9 and the minimum supported baseline is v7.
+The current schema version is v12 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
-and v9 paid-image reservation migration; existing v7/v8 databases upgrade in
-place. Databases below v7 or above this release's supported version are
-rejected. Optional application modules own their own schemas and versions.
+v9 paid-image reservation migration, and v10–v12 scheduled-task migrations;
+existing v7–v11 databases upgrade in place. Databases below v7 or above this
+release's supported version are rejected. Optional application modules own their
+own schemas and versions.
 
 ## Contents
 
@@ -76,8 +77,8 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` builds the complete core schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8 and v9 changes after the v7 baseline.
-- Core tables have no separate startup-only schema helpers: every addition belongs in both the flattened fresh schema and an ordered migration.
+- `_SCHEMA_SQL` and the core schema helpers build the complete schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8–v12 changes after the v7 baseline.
+- Every core schema addition must support both fresh initialization and an ordered migration; shared helpers can serve both paths.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
 - Stores under `storage/` can assume `Database.connect()` has already brought the database to the current supported schema.
@@ -86,12 +87,13 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 
 `Database.connect()` creates the current schema for an empty database and
 records the v7 baseline as `core_v7_baseline`, followed by v8
-`privacy_plugin_callbacks` and v9 `image_usage_reservations`. Existing v7/v8
+`privacy_plugin_callbacks`, v9 `image_usage_reservations`, v10 `scheduled_tasks`,
+v11 `task_previews`, and v12 `task_thread_closure`. Existing v7–v11
 databases retain their data and complete version ledger, including rows from
 earlier upgrades.
 
 The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old
-transcript-format conversion have been removed. A database at v7 or v8
+transcript-format conversion have been removed. A database at v7 through v11
 automatically applies the remaining migrations; no manual operator action is
 needed. When restoring an older backup, use a release compatible with that
 backup; this release cannot upgrade a pre-v7 database. Do not change the schema
@@ -235,3 +237,17 @@ The bot records the deletion request before it begins and blocks new activity fo
 Deleting SQLite transcript data leaves the model and paid-tool ledgers alone,
 anonymizes paid-image reservations as described above, and leaves active
 rate-limit markers alone too.
+
+## Scheduled task storage
+
+[Scheduled tasks](scheduled-tasks.md) add core task definitions and immutable revisions,
+conversation setup markers, occurrence records, saved output files and deliveries,
+and a singleton runner lease in schema v10. Terminal runs are pruned after 30 days
+once no publication is pending. Full privacy deletion removes the owner’s task data.
+
+Schema v11 adds approval decisions, preview message references and bounded message-update
+retries. It preserves v10 tasks and records their active revisions as approved.
+
+Schema v12 records approval-thread sign-off messages and completed closures. It
+queues approved threads left open by the initial management-card release for
+reconciliation; existing task definitions and approvals remain unchanged.

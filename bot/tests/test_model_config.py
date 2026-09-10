@@ -1992,6 +1992,7 @@ def test_role_names_match_declared_fields() -> None:
         "compaction",
         "persona",
         "coding",
+        "scheduled",
         "video",
     )
 
@@ -2299,3 +2300,104 @@ roles:
     )
     with pytest.raises(ValueError, match="specialized provider type"):
         load_model_config(_write_config(tmp_path / "models.yaml", chat_using_video))
+
+
+def _scheduled_model_config(**roles: Any) -> ModelConfig:
+    return ModelConfig.model_validate(
+        {
+            "providers": {
+                "main": {
+                    "type": "openai_compat",
+                    "base_url": "https://example.test/v1",
+                    "keyless": True,
+                },
+                "tasks": {
+                    "type": "openai_compat",
+                    "base_url": "https://tasks.example.test/v1",
+                    "api_key_env": "ANTHROPIC_API_KEY",
+                },
+            },
+            "models": {
+                "chat": {
+                    "provider": "main",
+                    "model": "chat",
+                    "capabilities": ["text", "tool_calling"],
+                },
+                "task": {
+                    "provider": "main",
+                    "model": "task",
+                    "capabilities": ["text", "tool_calling"],
+                },
+                "backup": {
+                    "provider": "tasks",
+                    "model": "backup",
+                    "capabilities": ["text", "tool_calling"],
+                },
+                "text-only": {"provider": "main", "model": "text-only", "capabilities": ["text"]},
+            },
+            "roles": {"chat": "chat", "compaction": "chat", **roles},
+            "selectable_chat_models": ["chat"],
+            "overrides": {"commands": {"scheduled": {"chat": "chat"}}},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "error"),
+    [
+        ({"scheduled": "missing"}, r"roles\.scheduled references unknown model"),
+        ({"scheduled": "text-only"}, r"roles\.scheduled.*tool_calling"),
+        (
+            {"scheduled": "task", "scheduled_fallbacks": ["missing"]},
+            r"scheduled_fallbacks\[0\].*unknown",
+        ),
+        (
+            {"scheduled": "task", "scheduled_fallbacks": ["text-only"]},
+            r"scheduled_fallbacks\[0\].*tool_calling",
+        ),
+        ({"scheduled": ""}, "scheduled"),
+    ],
+)
+def test_scheduled_role_rejects_invalid_model_configuration(roles, error):
+    with pytest.raises(ValidationError, match=error):
+        _scheduled_model_config(**roles)
+
+
+def test_scheduled_role_is_optional_and_declares_its_own_fallback_chain():
+    assert _scheduled_model_config().roles.scheduled is None
+    config = _scheduled_model_config(scheduled="task", scheduled_fallbacks=["backup", "task"])
+    assert config.model_names_for_role("scheduled", Scope(command="scheduled")) == [
+        "task",
+        "backup",
+    ]
+
+
+def test_scheduled_role_credentials_are_checked_at_startup():
+    settings = _settings(anthropic_api_key="")
+    assert provider_runtime._has_active_llm_credentials(settings, _scheduled_model_config())
+    config = _scheduled_model_config(scheduled="task", scheduled_fallbacks=["backup"])
+    assert {"task", "backup"} <= config.reachable_model_names(include_compaction=False)
+    assert not provider_runtime._has_active_llm_credentials(settings, config)
+    assert provider_runtime._has_active_llm_credentials(
+        _settings(anthropic_api_key="test-key"), config
+    )
+
+
+def test_scheduled_provider_ignores_chat_selection_and_scope_overrides(monkeypatch):
+    class DummyProvider:
+        capabilities: set[Any] = set()
+
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+    monkeypatch.setattr(
+        provider_runtime, "create_provider", lambda config: DummyProvider(config.model)
+    )
+    manager = provider_runtime.ProviderManager(
+        settings=_settings(), model_config=_scheduled_model_config(scheduled="task")
+    )
+    scope = Scope(guild_id="100", channel_id="200", user_id="300", command="scheduled")
+    assert manager.resolve("scheduled", scope).model == "task"
+    manager.set_active_chat_model("chat")
+    assert manager.resolve("chat", scope).model == "chat"
+    assert manager.resolve("scheduled", scope).model == "task"

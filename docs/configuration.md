@@ -469,6 +469,9 @@ out into its own column while including it in the estimated cost for the window.
 | `LLM_MAX_CONCURRENCY` | int | `8` | Max concurrent in-flight LLM provider calls across all users/channels (a shared semaphore). |
 | `TURN_MAX_CONCURRENCY` | positive int | `16` | Maximum admitted responding turns. It covers preparation, tools, delivery, and persistence; excess work is rejected immediately, never queued. |
 | `TURN_MAX_CONCURRENCY_PER_USER` | positive int | `2` | Maximum admitted turns for one user. |
+| `SCHEDULED_TASK_LLM_MAX_CONCURRENCY` | positive int | `2` | Scheduled LLM execution slots, subject to the shared provider cap. |
+| `SCHEDULED_TASK_PYTHON_MAX_CONCURRENCY` | positive int | `2` | Scheduled Python execution slots, subject to the shared sandbox cap. Also bounds gate handoffs reserved before Python begins. |
+| `SCHEDULED_TASK_DELIVERY_MAX_CONCURRENCY` | positive int | `2` | Runs published concurrently; chunks within a run stay ordered. |
 | `REACT_TEMPERATURE` | float\|blank | `1.0` | Sampling temperature for chat providers (`openai_compat`/`openrouter`). Blank -> omit the param (endpoint default). Other providers ignore it. |
 
 ### Durable coding tasks
@@ -1327,3 +1330,8 @@ If you want to know where a setting is actually read, this is the map:
 Application modules using the optional `tool_files` permission share admitted uploads
 and bounded caller-workspace reads. This uses the existing workspace byte limits;
 see [module file access](module-files.md) for the SDK and capability requirements.
+
+Server fragments can enable [scheduled tasks](scheduled-tasks.md#enable-a-server),
+set the minimum creator tier and suggested timezone, and allow cross-channel destinations.
+Task setup asks for a timezone when the user's intent is unclear; the server value
+does not silently select a timezone for a new task.

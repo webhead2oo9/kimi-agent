@@ -107,7 +107,7 @@ Plugin and module settings must not declare their own hard-coded `env_file`. Put
 Copy `.env.example` to `.env.dev`, then set a **different value for every path**
 so the dev instance can't touch production state:
 
-```bash
+```dotenv
 DISCORD_BOT_TOKEN=<a second bot application's token>
 
 # Separate state. Nothing here may overlap the production values.
@@ -119,6 +119,7 @@ TOOL_EVENT_LOG_PATH=logs/dev/events.jsonl
 BROWSER_PROFILES_DIR=data/dev/browser_profiles
 SECRETS_FILE=secrets/dev-secrets.yaml
 CODEX_TOKEN_FILE=secrets/dev-codex-auth.json   # rewritten on OAuth refresh; never share it
+XAI_OAUTH_TOKEN_FILE=secrets/dev-xai-oauth.json # also rewritten on refresh
 
 # Optional: point at a scratch copy of the operator data instead of the live
 # instance directory, so a bad prompt edit in dev cannot reach production
@@ -249,7 +250,9 @@ has actually loaded.
   still run schema, validation, command-construction, and artifact tests. To
   exercise Chromium, use an isolated Linux test instance and a separate
   `BROWSER_PROFILES_DIR`; never point development at production profiles. Run
-  `.venv/bin/python -m deploy.betterwright.smoke_test` there. See
+  `ENV_FILE=.env.dev .venv/bin/python -m deploy.betterwright.smoke_test` there,
+  with the full browser profile in `.env.dev`. The direct smoke test does not
+  load a separate `runtime.env`; the installed-service preflight helper does. See
   [browser.md](browser.md) and [visual-rendering.md](visual-rendering.md).
 - **Content moderation** needs its provider key, and **Codex** needs a
   `CODEX_TOKEN_FILE` produced by `scripts/codex_auth.py`.
@@ -316,7 +319,8 @@ uv run python scripts/verify_module_api_dist.py verify \
   "${api_wheel}" "${api_sdist}" "${reference_wheel}"
 ```
 
-The distribution verifier itself creates isolated environments through uv, so that final maintainer check is not yet a pip-only command.
+The distribution verifier creates isolated environments through uv, so that
+maintainer check requires uv even when the application was installed with pip.
 
 Architecture checks discover standalone modules, namespace packages, and the
 separate SDK and example source layouts. They prune private instance data,
@@ -352,7 +356,12 @@ A start timeout raises `Kimi module '<name>' start() exceeded 60s`, emits a `mod
 
 If a module trips either ceiling during development, the fix belongs in the module (move slow work into a scheduler job, or make `close()` cancel rather than await), not in the setting.
 
-The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4) jobs concurrently, at most one per module. If a dev instance shares a database file with another running instance, the scheduler logs `Module scheduler paused: another scheduler runner holds the lease` and runs nothing until the other process stops (or its 60-second lease expires). The isolated dev setup above avoids this by giving each instance its own database.
+The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4)
+jobs concurrently, at most one per module. If another process holds the database's
+runner lease, it initially logs that it is waiting. After 60 seconds of continued
+contention it logs an error and marks affected modules degraded. A normal shutdown,
+including systemd's SIGTERM, releases the lease; a crash can leave it until expiry.
+The isolated dev setup avoids contention by giving each instance its own database.
 
 ## Discord dashboard frontend
 

@@ -17,6 +17,8 @@ directly in Discord; the model never selects them:
 |---|---|---|
 | `/memory status`, `/memory opt-in`, `/memory opt-out` | Member | Inspect or change the current user's long-term-memory preference. |
 | `/chat`, `/chat-reset` | User Install; `/chat` is ID-allowlisted | Use the optional personal chat surface, or clear the caller's personal transcript. Registered only when `USER_APP_CHAT_ENABLED` is true. |
+| `/dashboard`, **Launch** Activity entry point | Eligible members in an enabled server | Open the optional private dashboard. Global enablement, server opt-in, admission, trust, and channel permissions apply. |
+| `/tasks` | Task owner; expanded for server staff | List and manage scheduled tasks, review run history, and retry eligible deliveries. Current task policy and permissions apply. |
 | `/privacy` | Member | Show the privacy summary and confirmed memory/full-data deletion controls. |
 | `/stop` | Member | Cancel the current response/coding work, all of the member's work, or one owned coding task. |
 | `/usage` | Member; expanded for staff | Show the current user's usage, or let staff inspect another user or server totals. |
@@ -92,7 +94,7 @@ the outbox because they are live ReAct-loop state rather than reply artifacts.
 | `discord_text_search` | Searchable | Member | Search message text across channels the caller and bot can read, minus operator exclusions. Enabled by default; Message Content intent must also be enabled. |
 | `internet_search` | Core | Member | Search the live web, or read pages the model already has URLs for. Registered when `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY` is set; a search blends the configured providers by default. |
 | `x_search` | Searchable | Member | Search current X posts with xAI-hosted filters and citations. Registered only when `X_SEARCH_ENABLED` is true and the selected OAuth/API credential path is available. |
-| `wolfram_alpha` | Searchable | Member | Compute mathematics, science, conversions, statistics, and factual data through the Wolfram|Alpha LLM API. Registered when `WOLFRAM_ALPHA_APP_ID` is set. |
+| `wolfram_alpha` | Searchable | Member | Compute mathematics, science, conversions, statistics, and factual data through the Wolfram\|Alpha LLM API. Registered when `WOLFRAM_ALPHA_APP_ID` is set. |
 | `block_user` | Core | Member | Stop the current speaker from using the bot. It cannot target another user, and staff cannot be self-blocked through this tool. |
 
 `get_channel_context` reads the live Discord window without adding any of

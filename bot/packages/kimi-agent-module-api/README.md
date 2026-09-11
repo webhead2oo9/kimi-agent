@@ -51,9 +51,9 @@ it from the installed SDK's `MODULE_API_VERSION`; unchanged module source must
 not silently claim compatibility merely because it was rebuilt with a newer
 SDK.
 
-The [module guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/modules.md)
+The [module guide](https://github.com/Kimi-Discord-Agent/kimi-agent/blob/main/docs/modules.md)
 documents installation, declarations, lifecycle, and every runtime port. The
-[reference module](https://github.com/webhead2oo9/kimi-agent/tree/main/bot/modules/example)
+[reference module](https://github.com/Kimi-Discord-Agent/kimi-agent/tree/main/bot/modules/example)
 is a complete, commented example that exercises most ports; start there.
 
 Modules using guild-scoped live command replacement through
@@ -91,16 +91,10 @@ returns and is scoped to the actual caller. `testing.FakeToolFiles` supports
 independent tests. Module `ctx.http` methods apply an 8 MiB host ceiling even when
 callers supply `max_bytes`; `download` buffers and validates the bounded response
 before yielding chunks so connections are released on early consumer exit. See the
-[file access guide](https://github.com/webhead2oo9/kimi-agent/blob/main/docs/module-files.md)
+[file access guide](https://github.com/Kimi-Discord-Agent/kimi-agent/blob/main/docs/module-files.md)
 for moderation, reply-image availability, privacy, and limits.
 
-## Testing the SDK
-
-From this package directory, run its tests without installing the Kimi application:
-
-```console
-uv run --isolated --group test python -m pytest -q
-```
+## Published task results
 
 SDK 2.4 adds `ScheduledResults`: named, guild-scoped subscriptions to task output
 following confirmed Discord publication. Declare
@@ -112,3 +106,11 @@ with the same notification ID. Use that ID for idempotent processing.
 `FakeScheduledResults` supports standalone tests. See the
 [published-result guide](https://github.com/Kimi-Discord-Agent/kimi-agent/blob/main/docs/module-scheduled-results.md)
 for access checks, limits, retention, and deletion responsibilities.
+
+## Testing the SDK
+
+From this package directory, run its tests without installing the Kimi application:
+
+```console
+uv run --isolated --locked --group test python -m pytest -q
+```

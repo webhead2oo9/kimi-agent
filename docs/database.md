@@ -2,10 +2,11 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v15 and the minimum supported baseline is v7.
+The current schema version is v16 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
 v9 paid-image reservation migration, v10–v13 scheduled-task migrations, and
-v14–v15 dashboard migrations; existing v7–v14 databases upgrade in place. Databases below v7 or above this
+v14–v15 dashboard migrations, and v16 published-task result subscriptions;
+existing v7–v15 databases upgrade in place. Databases below v7 or above this
 release's supported version are rejected. Optional application modules own their
 own schemas and versions.
 
@@ -25,6 +26,9 @@ own schemas and versions.
 - [Model, paid-tool, paid-image, and bounded-tool usage](#model-paid-tool-paid-image-and-bounded-tool-usage)
 - [Transcript retention](#transcript-retention)
 - [On-demand per-user deletion](#on-demand-per-user-deletion)
+- [Scheduled task storage](#scheduled-task-storage)
+- [Published task results for modules](#published-task-results-for-modules)
+- [Activity dashboard records](#activity-dashboard-records)
 
 ## Quick reference: what's stored
 
@@ -34,8 +38,8 @@ If you only have a minute, this is the shape of the database:
 - The transcript itself in `messages`, deduped by Discord message id.
 - Per-user stuff in `user_preferences` (memory opt-out, privacy consent, persona override) and `blocked_users` (self-blocks and staff blocks).
 - Memory and privacy: watermarks, deletion requests, video session bookkeeping, provider deletion outboxes.
-- Operations: durable coding tasks, usage ledgers, the owner's chat-model selection, provider circuit cooldowns, cached image descriptions, and the schema version.
-- Module state: the scheduler lease and jobs, module command scopes, config proposals, and module schema versions.
+- Operations: durable coding and scheduled tasks, saved task output, dashboard chats and files, usage ledgers, the owner's chat-model selection, provider circuit cooldowns, cached image descriptions, and the schema version.
+- Module state: the scheduler lease and jobs, published-task subscriptions and acknowledgements, module command scopes, config proposals, and module schema versions.
 
 The sections below cover encryption, backups, schema upgrades, retention, and `/privacy` deletion in more depth.
 
@@ -48,7 +52,7 @@ To turn it on:
 - Set `DATABASE_ENCRYPTION_KEY` to a passphrase. Leave it empty to stay on plaintext `sqlite3`.
 - The Linux-only `sqlcipher3-binary` dependency provides the engine (bundled SQLCipher, no system library). It loads lazily, only when a key is set. Dev and CI interpreters don't need it.
 - `Database.connect()` opens the file through `sqlcipher3` and runs `PRAGMA key` before any other statement. Because `sqlite3.Row` rejects a sqlcipher cursor, the encrypted path uses `sqlcipher3.Row`, which has the same access API.
-- The key belongs in the environment or an untracked dotenv file, never in the repo. **If you lose or change the key, the database is permanently unreadable. There is no recovery.** Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`.
+- The key belongs in the environment or an untracked dotenv file, never in the repo. **Losing the key makes the encrypted database and its backups unreadable.** Changing the setting does not rotate the database key; the existing file still requires its original key. Generate a key with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
 Setting the key on a plaintext database doesn't encrypt it in place, and a keyed connection can't read a plaintext file. You have to convert it offline with SQLCipher's `sqlcipher_export`. Stop the service first:
 
@@ -63,14 +67,18 @@ Then swap `data/bot.db` for `data/bot.enc.db`. Move the `-wal` and `-shm` sideca
 
 ## Backing up the database
 
-The database is one main file plus its `-wal` and `-shm` sidecars. Back them up together, or you'll get a torn transaction.
+The database uses WAL mode. Committed changes may still be in its `-wal`
+sidecar, so copying the main file alone while the bot is running is not a
+consistent backup. Sequentially copying live sidecars is not sufficient either.
 
 Two ways to do it safely:
 
-- **Stop the bot, then copy the three files.** This is the simplest option and always consistent.
+- **Stop every process using the database, then copy the main file and any remaining `-wal` and `-shm` sidecars.** A clean close can remove the sidecars; absent sidecars do not need to be recreated.
 - **For a plaintext database, use SQLite's online backup API while the bot is running.** WAL mode lets readers see a consistent snapshot. From the `sqlite3` CLI: `sqlite3 data/bot.db ".backup data/bot.backup.db"`. The ordinary `sqlite3` CLI cannot open a SQLCipher-encrypted database; use the stopped-copy method above or a keyed SQLCipher client for one of those.
 
-Whatever you do, test the backup. Open it with the bot's environment, run `/usage`, send a quick message, and confirm the rows look right. A backup you've never restored is a backup you don't have.
+Test a restored copy with the matching SQLite or SQLCipher engine and run
+`PRAGMA integrity_check`. For an application smoke test, use a separate bot token,
+test guild, and isolated state paths as described in [Development](development.md).
 
 Schedule backups with the same cadence as the rest of your state. A daily snapshot plus a few days of rotation is the typical minimum. The bot doesn't run its own backup schedule.
 
@@ -261,6 +269,20 @@ reconciliation; existing task definitions and approvals remain unchanged.
 
 Schema v13 adds `scheduled_tasks.read_failure_streak` so repeated source-read
 failures are tracked for recovery without changing task definitions.
+
+## Published task results for modules
+
+Schema v16 adds `scheduled_result_subscriptions`, keyed by module, subscription
+name, and guild, and `scheduled_result_notifications`, keyed by a stable
+notification ID. Notifications reference a published task run and store attempts,
+retry times, leases, status, and acknowledgement time. They reuse the run's saved
+publication and attachments instead of copying its private working transcript.
+
+Notifications expire 30 days after publication and cascade when their run or
+subscription is deleted. Subscriptions survive module shutdown or removal until
+explicitly unsubscribed. The host does not backfill old publications for a new
+subscription. See [Published scheduled-task results](module-scheduled-results.md)
+for access checks, retries, attachment limits, and module-owned copies.
 
 ## Activity dashboard records
 

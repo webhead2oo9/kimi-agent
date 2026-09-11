@@ -17,8 +17,8 @@
 > and the software can be configured to use many different model providers.
 
 Kimi is a bot for communities that want an AI helper without reinventing the wheel.
-You point it at whatever LLM you like (OpenAI-compatible,
-Anthropic, OpenRouter, Codex, and more providers to come) in one YAML file, give each server or channel its
+You configure model routes (OpenAI-compatible APIs,
+Anthropic, OpenRouter, Codex, or xAI) in one YAML file, give each server or channel its
 own persona and rules in plain Markdown, and it takes it from there.
 
 It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
@@ -37,16 +37,21 @@ Roughly what that looks like:
 
 ## What it can do
 
-Plain chat works out of the box. There's lots of options to look through and setup, so make sure you read through the documentation, or have your agent read through it.
+Chat needs a Discord token, an activated server, and configured model routes.
+The setup guide covers those requirements and the optional integrations below.
 
 | | |
 |---|---|
-| **Provider routing** | Chat, compaction, and an optional background coding model each route through general providers in `config/models.yaml`, with fallbacks. Lifecycle-owned specialists such as video use stricter role-specific profiles. |
+| **Provider routing** | Chat, compaction, and optional coding and scheduled-task models route through `config/models.yaml`, with fallbacks. Specialists such as video use stricter role-specific profiles. |
 | **Trust tiers** | `MEMBER < REGULAR < STAFF`, taken from Discord roles. Who can use which tool is enforced in code at dispatch time, not by asking the model nicely. |
 | **Memory** | Per-user long-term memory via [Hindsight](https://github.com/vectorize-io/hindsight): recall, reflection, opt-out, and staff-taught community knowledge. |
 | **Workspaces** | Each user gets a sandboxed folder: read, write, edit, unzip, pull text out of documents, fetch URLs. Sizes, quotas, and TTLs are capped by the app. |
 | **Coding agent** | Hand bigger repo jobs to a background worker that keeps its own progress, runs sandboxed jobs, survives restarts, and can be steered or cancelled. |
+| **Scheduled tasks** | Approve one-time or recurring tasks, with model execution or offline Python checks, saved state, previews, and controlled Discord publication. |
+| **Private dashboard** | Use an optional Discord Activity for saved private chats, branches, files, coding work, and task approvals within a server. |
 | **Video** | Ask about a YouTube link or an uploaded clip and get timestamped answers, with follow-up questions in the same conversation. |
+| **Image generation** | Generate or edit images through Codex OAuth or a platform API key, with references and reusable workspace output. |
+| **Research** | Search and read the web through TinyFish, Exa, or Brave; optionally search X or query Wolfram\|Alpha. |
 | **Browser** | Per-user persistent browser profiles for real web tasks, locked down with Bubblewrap/systemd/seccomp and optionally routed through a VPN namespace. |
 | **Charts and diagrams** | Render accessible charts or Mermaid diagrams to PNG through an ephemeral, offline browser worker. |
 | **Skills** | Staff-written Markdown playbooks, plus operator-authored script tools that run under mandatory Linux isolation with no network unless you say so. |
@@ -56,10 +61,11 @@ Plain chat works out of the box. There's lots of options to look through and set
 | **Extensions** | Add deployment-owned tools with plugins, or attach any installed lifecycle module through a stable standalone API. |
 | **Personal user app** | Optionally grant selected Discord IDs one `/chat` thread and workspace that follows them across locations. |
 
-Turns are stateless, and guild conversations are keyed to the message that
+Foreground model turns are stateless, and ordinary guild conversations are keyed to the message that
 started them and stored in SQLite, so replying to an old answer picks the thread
 back up even after a restart. The optional personal user app instead keeps one
-conversation per approved user.
+conversation per approved user; dashboard chats have their own saved roots.
+Video follow-ups retain a separate specialist session.
 
 ## Repository layout
 
@@ -118,6 +124,8 @@ against a test guild without touching production state.
 | Understand the system shape | [`docs/architecture.md`](docs/architecture.md) |
 | Look up a setting | [`docs/configuration.md`](docs/configuration.md) |
 | Configure user-installed personal chat | [`docs/user-app.md`](docs/user-app.md) |
+| Enable the private dashboard | [`docs/dashboard.md`](docs/dashboard.md) |
+| Set up scheduled tasks | [`docs/scheduled-tasks.md`](docs/scheduled-tasks.md) |
 | Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md), [standalone Discord logging module](https://github.com/webhead2oo9/kimi-agent-discord-logging) |
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |

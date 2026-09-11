@@ -91,10 +91,10 @@ in mind:
 
 - **The quota is your personal quota**, shared with your own use of the same
   account. A busy bot and a busy terminal compete for it.
-- **No spend is attributed.** These model entries carry no `pricing`, so their
-  turns contribute nothing to `/usage`. That is accurate, since there is no
-  per-token charge, but it means the ledger cannot show you what the bot is
-  consuming.
+- **Token usage and subscription quota are different.** When a model entry
+  omits `pricing`, `/usage` still reports its token counts but has no dollar
+  estimate for those calls. Check the provider's account dashboard for the
+  remaining subscription allowance; the bot does not track that quota.
 - **Eligibility is provider-specific.** Z.AI currently limits Coding Plan
   benefits to the subscriber and its officially supported tools, prohibits
   multi-user access, and does not list Kimi as a supported tool. Use its metered

@@ -12,8 +12,8 @@ The rest of this page explains the design in depth. If you only need to configur
 |---|---|
 | Turn the feature off everywhere | `THREAD_HANDOFF_ENABLED=false` in `.env`; restart. Existing managed threads go back to mention-only, nothing is deleted. |
 | Nudge the model to open a thread after a long tool-heavy turn | `THREAD_HANDOFF_SUGGEST_AFTER_TOOL_CALLS` (default 5; `0` disables). |
-| Allow or forbid new threads per server or channel | `thread_handoff: true|false` in `config/servers/<guild_id>.md` or `config/channels/<channel_id>.md`. Channel wins over server. No restart. |
-| Choose whether new threads answer every message or wait to be addressed | `thread_auto_respond: true|false` at the same two scopes. Applies to new threads only. |
+| Allow or forbid new threads per server or channel | `thread_handoff: true\|false` in `config/servers/<guild_id>.md` or `config/channels/<channel_id>.md`. Channel wins over server. No restart. |
+| Choose whether new threads answer every message or wait to be addressed | `thread_auto_respond: true\|false` at the same two scopes. Applies to new threads only. |
 | Force long replies into a thread even when the model does not ask | `THREAD_AUTO_HANDOFF_ENABLED=true` plus `auto_thread_min_lines`, `auto_thread_min_chars`, or `auto_thread_always` in the channel fragment. |
 | Let the bot move a conversation to a different channel ("take this to #bot-spam") | `thread_targets: [<channel ids>]` in the server fragment. Off unless listed. |
 

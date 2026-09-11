@@ -4,7 +4,7 @@ This page is a map of Kimi: the ways people talk to it, and which folders own wh
 
 ## What this bot is
 
-People talk to Kimi in a few different ways. Under the hood they all use the same model loop, so swapping OpenAI, Anthropic, or another provider does not change the rest of the bot. There is also an optional background coding worker. You can install extra modules if you want features that are not in core.
+People talk to Kimi through server messages, optional personal chat, or an optional private dashboard. These surfaces share the model loop. Background coding and scheduled tasks use that loop too, with their own execution and recovery rules. Installed modules can add commands, tools, event handlers, and background work.
 
 ### Community chat
 
@@ -18,6 +18,16 @@ In code, a Discord message lands in `DiscordMessageController`, which decides wh
 
 In code, the `/chat` command does its own access and consent checks and takes the conversation lock, then uses the same foreground runner. The only difference is how the reply gets back to Discord: a slash command reply instead of a channel message.
 
+### Private dashboard (optional)
+
+The Discord Activity dashboard provides saved chats, branches, files, coding
+progress, and task approvals. Each chat belongs to one member in one server and
+keeps its originating channel's access requirements. It uses that server's
+trust, prompts, tools, and workspace scope. Responses stay in the private
+Activity. `app/dashboard.py` owns the HTTP/WebSocket boundary, and
+`app/dashboard_turn.py` runs chat through the shared foreground runner. See
+[Private Discord dashboard](dashboard.md).
+
 ### Teach Kimi
 
 Staff can use the message context menu (named after `BOT_NAME`) to teach the bot from a selected message. That is still a model turn, but it only gets the `LEARN_TOOLS` set. The reply is shown once and is not saved to the conversation. `app/learn_log.py` writes an audit record. Code path: `commands/learn_cmd.py` → `app/learn_turn.py`.
@@ -25,6 +35,16 @@ Staff can use the message context menu (named after `BOT_NAME`) to teach the bot
 ### Durable coding agent (optional)
 
 Big repository jobs should not hold up a live Discord reply. `start_coding_task` hands them to a background worker with its own `roles.coding` model (never the normal chat model). Progress lives in SQLite and comes back to Discord as the work moves. This only turns on if you enable it, the coding model can call tools, and the Linux sandbox is available. See [Durable coding agent](coding-agent.md).
+
+### Scheduled tasks (optional)
+
+Servers can enable approved one-time or recurring tasks with saved instructions,
+state, and publication history. Each occurrence runs an LLM, offline Python, or
+a Python check that decides whether to call an LLM. `roles.scheduled` can select
+an independent model chain; otherwise scheduled runs use chat routing.
+`app/task_scheduler.py` manages execution and delivery, and installed modules
+can subscribe to confirmed publications through `ctx.scheduled_results`.
+See [Scheduled tasks](scheduled-tasks.md).
 
 ## Where things live (`bot/`)
 
@@ -46,8 +66,9 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `workspace/` | Per-user file folders |
 | `sandbox/` | The Linux jail for running code |
 | `commands/` | Slash commands and the Teach Kimi menu |
+| `dashboard/` | TypeScript/React frontend for the optional Discord Activity |
 | `memory/` | Hindsight memory: banks, auto-retain, opt-out |
-| `storage/` | SQLite: conversations, usage, circuits, coding tasks, video sessions |
+| `storage/` | SQLite: conversations, usage, circuits, coding and scheduled tasks, module result notifications, dashboard records, video sessions |
 | `trust/` | Who counts as member, regular, or staff |
 | `moderation/` | Screens model input and output |
 | `observability/` | JSONL logs of turns, tools, and moderation |
@@ -56,7 +77,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `utils/` | Small shared helpers |
 | `evals/` | Offline test harness for the model loop |
 | `skills/` | Built-in skill docs plus the private skill store |
-| `modules/` | Services used by installed modules, plus the in-repo example |
+| `modules/` | Services used by installed modules, plus reference and minimal examples |
 | `packages/` | The standalone module API package |
 | `tests/` | Tests, including the import-boundary checks |
 | `deploy/` | Installer bits for the browser runtime and network namespaces |
@@ -79,6 +100,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `root_locks.py` | One lock per conversation, so two replies to the same conversation run one after the other |
 | `work_cancellation.py` | Stops running foreground turns and coding tasks for `/stop`, reset, and `/privacy` |
 | `coding_tasks.py`, `coding_delivery.py` | Schedules durable coding tasks and reports their progress to Discord |
+| `task_scheduler.py`, `task_executor.py`, `task_output.py` | Runs approved scheduled occurrences and publishes their saved output |
 | `dashboard.py`, `dashboard_auth.py`, `dashboard_access.py` | The optional Discord Activity dashboard: its HTTP/WebSocket listener, Discord login and session cookies, and per-request server and channel access checks |
 | `dashboard_turn.py`, `dashboard_files.py`, `dashboard_tasks.py` | Runs dashboard chats through the shared foreground sequence, keeps private file snapshots and previews, and delivers coding results and task approvals privately |
 | `turn_entry.py` | Works out which tools a given turn may use |
@@ -89,7 +111,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 
 **Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Kimi logs it and keeps going. Installed modules (`app/modules.py`) are required by default; explicitly optional modules can be disabled after recoverable failures.
 
-**Each server keeps its own stuff.** Every stored record carries the server (guild) id. A server has to be explicitly allowed. Trust, prompts, pins, and denylists come from `config/servers/<id>.md`. Workspaces and community memory are per server. `/chat` is the exception so using it inside a server cannot pull that server's private config.
+**Explicit data scopes.** Guild conversations, scheduled tasks, and dashboard chats carry their server scope. Trust, prompts, pins, and denylists use server and channel configuration; workspaces and community memory stay scoped to the server. Personal `/chat` and enabled DMs use a separate user scope, while preferences and user memory follow the user. Model selection and provider cooldowns are deployment-wide.
 
 **Config is files.** `models.yaml` and `settings.md` are checked once at startup, so changing them means a restart. Prompt and policy files are re-read every turn, so you can edit those and see the change on the next message.
 
@@ -100,6 +122,8 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 - [`../bot/README.md`](../bot/README.md): what the bot can do
 - [Configuration](configuration.md): every setting and live fragment
 - [Discord user-app personal chat](user-app.md): optional `/chat`
+- [Private Discord dashboard](dashboard.md): saved private chats and task review
+- [Scheduled tasks](scheduled-tasks.md): approved background procedures and publication
 - [Tool catalog](tools.md): built-in tools and who can use them
 - [Code execution](code-exec.md): the Linux sandbox
 - [Visual rendering](visual-rendering.md): charts and Mermaid

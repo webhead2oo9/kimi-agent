@@ -4,6 +4,10 @@ This directory is the canonical documentation set for the repository. The
 runtime source, configuration templates, deployment files, and tests all live
 under `../bot/`, and links from these pages point there explicitly.
 
+These pages describe the Kimi code in this repository. For the planned move to
+Kohana, see the [repository notice](../README.md); the existing package names,
+commands, and instance paths below still apply to this checkout.
+
 If you're new to the project, read [Install and operate Kimi](setup.md) first, then
 [Architecture](architecture.md), then the [developer map](../CLAUDE.md).
 That's enough to get a bot running and to find your way around the source.
@@ -98,6 +102,8 @@ The rest is reference material.
   and rollback for code execution and browsing through Private Internet Access.
 - [Shared skill stores](../bot/skills/README.md): shipped built-ins, private
   provisioning and backup, and executable-skill trust.
+- [Built-in skill catalog](../bot/skills/builtin/README.md): the read-only
+  playbooks shipped with this checkout.
 - [Full prompt overrides](../bot/config/prompts/README.md): resolution and
   authoring for complete prompt layouts.
 - [Developer map](../CLAUDE.md): source boundaries and maintenance

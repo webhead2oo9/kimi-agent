@@ -38,12 +38,21 @@ Each turn gets ten provider calls by default (`INTERNET_SEARCH_MAX_BACKEND_CALLS
 
 ## Cost and privacy
 
-Every provider response is priced on its own and written to `paid_usage_ledger`. A cost the provider reports wins, including a reported zero. When it reports nothing, the configured per-call price for that provider and mode is used; when that is unset too, the call isn't billed locally. `/usage` breaks paid tool spend out into its own column and counts it in the estimated cost for the window.
+Every provider response is priced on its own. Only positive charges are written
+to `paid_usage_ledger`; a provider-reported zero creates no row. When a provider
+reports no cost, its configured per-call fallback price is used. With neither a
+reported nor configured price, the call remains unpriced locally. `/usage`
+breaks paid tool spend out into its own column and includes it in the window's
+estimated cost.
 
 A ledger row records provider, tool, dollars, turn, user, channel, and guild. Queries and results are never written to it, so the ledger can be read for spending without exposing what anyone searched for.
 
 The local numbers can undercount. If a request fails before its cost is reported, or the ledger write itself fails, only the provider's own dashboard has the full picture.
 
-TinyFish is free and reports no cost, so TinyFish calls write no ledger rows and the bot exposes no TinyFish cost settings. If TinyFish starts metering these endpoints, cost reporting and configuration must be added before `/usage` can attribute that spend.
+TinyFish documents Search and Fetch as free in its
+[API overview](https://docs.tinyfish.ai/). TinyFish calls write no ledger rows,
+and the bot exposes no TinyFish cost settings. If these endpoints become metered,
+cost reporting and configuration must be added before `/usage` can attribute
+that spend.
 
-See [Configuration](configuration.md#internet-search-gated), [Tool Catalog](tools.md), and [Database](database.md#model-paid-tool-and-bounded-tool-usage).
+See [Configuration](configuration.md#internet-search-gated), [Tool Catalog](tools.md), and [Database](database.md#model-paid-tool-paid-image-and-bounded-tool-usage).

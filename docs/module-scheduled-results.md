@@ -10,6 +10,8 @@ that assistant tasks have published to Discord. Require
 Declare each subscription name in the module specification:
 
 ```python
+from kimi_agent_module_api import ModulePermissions, ModuleSpec
+
 SPEC = ModuleSpec(
     name="reports",
     version="1.0.0",

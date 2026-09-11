@@ -64,7 +64,7 @@ Then set the installed entry-point name and start normally:
 KIMI_MODULES=reference_kudos
 ```
 
-The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Use its individual features as references when extending the minimal example.
+The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, three ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, an optional published-task subscriber, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Use its individual features as references when extending the minimal example.
 
 For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
 

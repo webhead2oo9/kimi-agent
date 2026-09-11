@@ -2,6 +2,9 @@
 
 > A self-hosted Discord assistant with a provider-neutral tool loop.
 
+This guide describes the Kimi application in this checkout. See the
+[repository notice](../README.md) for the planned move to Kohana.
+
 ![Python](https://img.shields.io/badge/python-3.14+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
@@ -32,9 +35,9 @@ guild installations, and permissions stay intact.
   IDs can carry `/chat` across locations with one private personal transcript
   and workspace. It is off by default. See
   [docs/user-app.md](../docs/user-app.md).
-- **Provider-neutral.** Route chat, compaction, and optional durable coding models from
+- **Provider-neutral.** Route chat, compaction, and optional coding and scheduled-task models from
   `config/models.yaml`: OpenAI-compatible (Chat Completions or Responses),
-  Anthropic (native or compat gateway), OpenRouter, or Codex. The agent core
+  Anthropic (native or compat gateway), OpenRouter, Codex, or native xAI. The agent core
   never touches provider-specific types. See [docs/providers.md](../docs/providers.md).
 - **Trust-tiered tools.** `MEMBER < REGULAR < STAFF`, resolved from Discord
   roles and enforced at dispatch, not by prompt text. See the
@@ -51,6 +54,21 @@ guild installations, and permissions stay intact.
   separately routed background worker with persisted progress, managed sandbox
   jobs, recovery, steering, and cancellation. See
   [docs/coding-agent.md](../docs/coding-agent.md).
+- **Scheduled tasks (optional).** Approve one-time or recurring procedures,
+  test draft output, and publish to allowed Discord destinations. Tasks can use
+  an LLM, deterministic Python, or a Python condition that calls an LLM only
+  when needed. Installed modules can subscribe to confirmed publications. See
+  [docs/scheduled-tasks.md](../docs/scheduled-tasks.md).
+- **Private dashboard (optional).** Open a Discord Activity for saved chats,
+  branches, private file previews, coding progress, and scheduled-task approval.
+  Access follows current server and channel permissions. See
+  [docs/dashboard.md](../docs/dashboard.md).
+- **Internet research (optional).** Search and read pages through TinyFish,
+  Exa, or Brave, search X through xAI, or query Wolfram|Alpha. Each integration
+  has its own credential and registration gates. See
+  [docs/internet-search.md](../docs/internet-search.md),
+  [docs/x-search.md](../docs/x-search.md), and
+  [docs/wolfram-alpha.md](../docs/wolfram-alpha.md).
 - **Discord context and search.** Fetch recent channel context on demand and,
   when configured, search selected Discord channels without persisting the
   retrieved messages.
@@ -76,10 +94,11 @@ guild installations, and permissions stay intact.
   default-denied networking; the writable store is private instance data. Staff
   can also teach from a selected human message through the **Teach Kimi**
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
-- **Discord commands.** `/memory`, `/moderation`, `/privacy`, and
+- **Discord commands.** `/memory`, `/moderation`, `/privacy`, `/stop`, `/tasks`, and
   `/usage` expose user controls and staff operations; the bot owner uses `/models`
-  to change the global chat model without restarting the bot. An opt-in User
-  Install surface adds `/chat` and `/chat-reset`.
+  to change the global chat model without restarting the bot and `/modules` to
+  inspect extensions. An opt-in User Install surface adds `/chat` and
+  `/chat-reset`; the dashboard adds `/dashboard` and an Activity launcher.
 - **Safety rails.** Optional privacy consent and LLM content moderation, user
   blocks, trust-tiered tools, and strict workspace/network boundaries.
 - **Operator plugins.** Community-specific tools and guild scoping load from
@@ -120,7 +139,7 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 
 | Area | Where | Docs |
 |------|-------|------|
-| Composition root & message flow | `app/runtime.py`, `agent/` |  |
+| Composition root & message flow | `app/runtime.py`, `agent/` | [architecture.md](../docs/architecture.md) |
 | Providers (LLM abstraction) | `providers/` | [providers.md](../docs/providers.md) |
 | Tool registry & trust tiers | `tools/registry.py`, `trust/` | [tools.md](../docs/tools.md) |
 | Operator plugins | `app/plugins.py`, deployment-owned packages | [plugins.md](../docs/plugins.md) |
@@ -132,6 +151,8 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 | Learning (teach + bot-name-derived menu) | `tools/learn.py`, `app/learn_turn.py`, `commands/learn_cmd.py` | [learning.md](../docs/learning.md) |
 | Workspaces & file tools | `workspace/manager.py`, `tools/workspace/` | [workspace.md](../docs/workspace.md) |
 | Durable coding agent | `app/coding_tasks.py`, `storage/coding_tasks.py`, `tools/coding_tasks.py` | [coding-agent.md](../docs/coding-agent.md) |
+| Scheduled tasks | `app/task_scheduler.py`, `storage/scheduled_tasks.py`, `tools/scheduled_tasks.py` | [scheduled-tasks.md](../docs/scheduled-tasks.md) |
+| Private Activity dashboard | `app/dashboard.py`, `storage/dashboard.py`, `dashboard/` | [dashboard.md](../docs/dashboard.md) |
 | Video understanding | `video_understanding/`, `tools/video.py`, `storage/video_sessions.py` | [video-understanding.md](../docs/video-understanding.md) |
 | Image generation | `image_gen/`, `tools/image_gen.py` | [image-generation.md](../docs/image-generation.md) |
 | Persistent browser and visual rendering | `web_browser/`, `tools/browser.py`, `tools/visuals.py` | [browser.md](../docs/browser.md), [visual-rendering.md](../docs/visual-rendering.md) |
@@ -152,7 +173,7 @@ path assumes Python 3.14+ with the standard `venv` module and intentionally
 keeps ignored instance files inside the checkout.
 
 ```bash
-git clone https://github.com/webhead2oo9/kimi-agent.git
+git clone https://github.com/Kimi-Discord-Agent/kimi-agent.git
 cd kimi-agent/bot
 python3 -m venv .venv
 .venv/bin/python -m pip install \
@@ -188,12 +209,15 @@ the public repository and what must remain private deployment state.
 
 ## Development
 
+Install the development dependencies using
+[first-time setup](../docs/development.md#first-time-setup), then run checks from `bot/`:
+
 ```bash
 .venv/bin/python -m pytest       # run the test suite
 .venv/bin/ruff check .           # lint
 .venv/bin/ruff format --check .  # formatting (owns the 100-col line length)
 .venv/bin/mypy .                 # type check
-.venv/bin/python -m compileall . # quick syntax check
+.venv/bin/python -m pytest tests/test_docs_links.py -q  # documentation checks
 ```
 
 Dependencies are declared in `pyproject.toml`; maintainers resolve and audit
@@ -223,7 +247,10 @@ usage/             token-usage normalization and pricing
 codex/             Codex WebSocket Responses transport
 config/            settings, persona, prompt templates
 config/fragments/  operator markdown read fresh each turn (pins, denylists, per-tool config)
-commands/          chat, memory, models, moderation, privacy, and usage commands plus the bot-name-derived teaching menu
+commands/          personal chat, stop, memory, models, modules, moderation, privacy, usage, teaching
+dashboard/         optional Discord Activity frontend (TypeScript/React)
+modules/           module host services plus reference and minimal examples
+packages/          standalone module API and SDK fakes
 trust/             trust-tier resolution
 evals/             offline eval harness (cassette-replayed runs over the real core)
 utils/             small shared helpers

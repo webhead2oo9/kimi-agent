@@ -76,7 +76,13 @@ Point the probe at a real private endpoint that must stay unreachable, for examp
 
 ## Limits, profiles, and privacy
 
-The startup limits are listed in the [configuration guide](configuration.md). Per-server and per-channel config can lower the per-call limits but never raise them. A worker closes after `BROWSER_IDLE_TTL_SECONDS` without a call. Once a worker has been alive longer than `BROWSER_WORKER_MAX_LIFETIME_SECONDS`, it is replaced with a fresh one before the next call.
+The startup limits are listed in the [configuration guide](configuration.md).
+Live per-tool settings in `<CONFIG_DIR>/tools/browser.md` can lower the code,
+call, output, and screenshot limits, up to their shipped maximums. These settings
+apply deployment-wide; server and channel denylists can block the tool in a scope.
+A worker closes after `BROWSER_IDLE_TTL_SECONDS` without a call. Once a worker
+has been alive longer than `BROWSER_WORKER_MAX_LIFETIME_SECONDS`, it is replaced
+with a fresh one before the next call.
 
 If a profile grows past `BROWSER_MAX_PROFILE_MB`, it is deleted (not trimmed). Any logged-in sessions in that profile are lost. The next call for that user starts fresh. Profiles also expire after `BROWSER_PROFILE_TTL_SECONDS` of inactivity.
 

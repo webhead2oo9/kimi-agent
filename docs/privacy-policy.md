@@ -140,6 +140,13 @@ that lets a moderator close a managed thread.
 - **Coding work.** If the coding agent is enabled, its provider receives the
   task description, a limited excerpt of the conversation, and the files or
   tool results the worker reads. This may be a different provider from chat.
+- **Scheduled tasks.** Approved tasks can read configured sources and publish
+  results at their scheduled times. Model-driven runs send task instructions,
+  saved state, and relevant observations to the configured AI provider. An
+  offline Python check calls a model only when its approved mode requires it.
+  Installed modules subscribed by the operator can receive confirmed published
+  text, embeds, and attachments; they do not receive the task's private working
+  conversation through that subscription.
 - **Long-term memory.** When enabled, excerpts of your conversations, facts
   you share, and the queries used to look them up are sent to the configured
   Hindsight memory service, unless you have opted out. That service may be run
@@ -180,9 +187,10 @@ that lets a moderator close a managed thread.
 - **Community learning.** Staff can use the process described above to store
   shared knowledge in Hindsight or in a shared skill. This is separate from
   your personal memory and is managed by staff.
-- **Operator-added tools.** The server operator may install plugins or scripted
-  tools that contact additional services when used. The operator is responsible
-  for documenting those services and limiting the data each tool sends.
+- **Operator-added features.** The server operator may install modules, plugins,
+  or scripted tools that store data or contact additional services. The operator
+  is responsible for documenting those services, retained copies, and deletion
+  procedures, and limiting the data each feature sends.
 
 Kimi does **not** sell your data, use it for advertising, or share it outside
 the configured services and tools needed to answer you.
@@ -224,6 +232,16 @@ the configured services and tools needed to answer you.
 - **Personal skills: until you delete them.** Reusable instruction skills you
   create are stored separately from the expiring workspace. Ask Kimi to delete
   a personal skill when you want it gone.
+- **Scheduled tasks: until deleted, with 30-day run history.** Approved
+  instructions and saved comparison state remain until the task or your task
+  data is deleted. Completed run records and saved output expire after 30 days,
+  except while publication is pending. Module notification records expire 30
+  days after publication, or earlier when their task or run is deleted.
+  **Delete my data** removes your local task data. Messages already published
+  to Discord remain subject to Discord and server controls. Copies retained
+  by installed modules or their downstream services require the deletion
+  process documented by the operator; core deletion does not automatically
+  remove those copies.
 - **Community knowledge and private shared skills: until staff remove them.**
   These are shared server resources. They are not part of your personal memory
   and are not removed by `/privacy`.

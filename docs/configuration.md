@@ -13,8 +13,8 @@ same change.
 
 For a new operator, the minimum viable path is:
 
-1. Copy `bot/.env.example` to `.env` and set at least the secrets and allowlists it flags (Discord token, provider keys, allowed channels/guilds).
-2. Copy `bot/config/models.example.yaml` to `config/models.yaml` and fill in the `chat` and `compaction` roles with provider profiles that match your `.env` secrets.
+1. From `bot/`, copy `.env.example` to `.env` and set the Discord token and provider credentials. Activate a server through `ALLOWED_GUILD_IDS` or a valid server fragment; `ALLOWED_CHANNEL_IDS` is an optional further restriction.
+2. Copy `config/models.example.yaml` to `config/models.yaml` and fill in the `chat` and `compaction` roles with provider profiles that match your `.env` secrets.
 3. Optionally drop a `<CONFIG_DIR>/settings.md` to keep supported scalar overrides in one place; changes take effect after restart.
 4. Restart the bot. The startup probe reports missing files, invalid values, and gated features that didn't enable.
 
@@ -67,12 +67,17 @@ Most settings in this reference are optional or gated off by default. The first 
 - [External env keys outside `Settings`](#external-env-keys-outside-settings)
 - [Primary consumers](#primary-consumers)
 - [Deployment notes](#deployment-notes)
+- [Discord Activity dashboard](#discord-activity-dashboard)
 
 ## How configuration loading works
 
 Kimi reads configuration from several layers, so you can keep secrets and machine-specific values out of the repository and still have overrides you can audit. The core `Settings` object comes from the environment (or the `.env` file you choose). An optional operator settings file layers on top of it. Per-tool config, guild and channel fragments, and the model routing file are each read at different times: some once at startup, some fresh on every message. The sections below say which is which.
 
-Each entry point (`bot.py`, the scripts) builds the `Settings` object itself and passes it to `build_app`. Merely importing `config.settings` does not read the environment or any dotenv file. Plugins and application modules may define their own separate settings models.
+Each entry point (`bot.py`, the scripts) builds its own `Settings` object;
+`bot.py` passes it to `build_app`. Importing `config.settings` selects and
+validates the `ENV_FILE` path but does not load dotenv values or instantiate
+settings. Plugins and application modules may define their own separate
+settings models.
 
 A real environment variable wins over the same key in the dotenv file. The dotenv file is the one named by `ENV_FILE` (default `.env`), and core, plugin, and module settings all read the same file, so a development process cannot accidentally mix two. Environment keys the bot does not recognise are ignored.
 
@@ -461,7 +466,7 @@ out into its own column while including it in the estimated cost for the window.
 | `ANTHROPIC_API_KEY` | secret | (none) | Anthropic API key for native `anthropic` profiles. |
 | `OPENCODE_GO_API_KEY` | secret | (none) | OpenCode Go subscription key for every `opencode.ai/zen/go/v1` profile (`openai_compat` /chat/completions for Kimi/GLM; `anthropic_compat` /messages for MiniMax). |
 | `RUNINFRA_GATEWAY_KEY` | secret | (none) | RunInfra gateway key for OpenAI-compatible routes such as DeepSeek V4 Flash at `api.runinfra.ai`. |
-| `GROK_API_KEY` | secret | (none) | xAI Grok key (`openai_compat` profile pointing at `https://api.x.ai/v1`). |
+| `GROK_API_KEY` | secret | (none) | xAI API key for native `xai` profiles, compatible Chat Completions routes, and X search when its auth mode permits API-key use. |
 | `FIREWORKS_API_KEY` | secret | (none) | Fireworks AI key (`openai_compat` profile pointing at `https://api.fireworks.ai/inference/v1`). |
 | `ZAI_API_KEY` | secret | (none) | Z.AI key for GLM Coding Plan profiles using the dedicated `https://api.z.ai/api/coding/paas/v4` Chat Completions endpoint; see [providers-zai.md](providers-zai.md). |
 | `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
@@ -722,9 +727,9 @@ configuration.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `WOLFRAM_ALPHA_APP_ID` | secret | `""` | Dedicated Wolfram|Alpha AppID. A blank value leaves the tool unregistered. |
+| `WOLFRAM_ALPHA_APP_ID` | secret | `""` | Dedicated Wolfram\|Alpha AppID. A blank value leaves the tool unregistered. |
 | `WOLFRAM_ALPHA_TIMEOUT_SECONDS` | float | `30.0` | Whole logical request deadline. Must be positive. |
-| `WOLFRAM_ALPHA_MAX_CALLS_PER_TURN` | int | `3` | Logical Wolfram|Alpha requests allowed in one user turn, from 1 to 10. |
+| `WOLFRAM_ALPHA_MAX_CALLS_PER_TURN` | int | `3` | Logical Wolfram\|Alpha requests allowed in one user turn, from 1 to 10. |
 | `WOLFRAM_ALPHA_MAX_OUTPUT_CHARS` | int | `6800` | Provider and local result-text cap, from 500 to 20,000 characters. |
 | `WOLFRAM_ALPHA_CALL_COST_USD` | float or null | null | Optional deployment-known price per logical call, including its possible bounded retry, for the local paid-tool ledger. Attempted calls record it even when the provider returns an error. |
 
@@ -1344,12 +1349,23 @@ does not silently select a timezone for a new task.
 
 ## Discord Activity dashboard
 
-The per-user private saved-chat Activity is disabled by default. Its environment-only
-settings are `DASHBOARD_ENABLED`, `DASHBOARD_ALLOWED_USER_IDS`,
-`DASHBOARD_MIN_TIER`, `DASHBOARD_HOST`, `DASHBOARD_PORT`,
-`DASHBOARD_CLIENT_SECRET`, `DASHBOARD_FRONTEND_DIR`, `DASHBOARD_SESSION_SECONDS`,
-`DASHBOARD_MAX_SESSIONS`, `DASHBOARD_TURN_TIMEOUT_SECONDS`, and
-`DASHBOARD_MAX_MESSAGE_CHARS`. Each active server must also opt in with
+The per-user private saved-chat Activity is disabled by default.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `DASHBOARD_ENABLED` | bool | `false` | Enable the dashboard listener and commands. Requires a built frontend and client secret. |
+| `DASHBOARD_ALLOWED_USER_IDS` | csv(id) | "" | Optional deployment-wide invited-user list; combines with the server's role list as described below. |
+| `DASHBOARD_MIN_TIER` | tier | `member` | Minimum server trust tier: `member`, `regular`, or `staff`. |
+| `DASHBOARD_HOST` | str | `127.0.0.1` | Listener bind address; use an HTTPS reverse proxy for Discord access. |
+| `DASHBOARD_PORT` | int | `8088` | Listener port, 1–65535. |
+| `DASHBOARD_CLIENT_SECRET` | secret | "" | The Discord application's OAuth client secret; keep it out of frontend files. |
+| `DASHBOARD_FRONTEND_DIR` | path | "" | Alternate built frontend directory; empty uses `bot/dashboard/dist`. Relative paths use the bot's working directory. |
+| `DASHBOARD_SESSION_SECONDS` | int | `3600` | Session lifetime, 300–86400 seconds. |
+| `DASHBOARD_MAX_SESSIONS` | int | `2048` | Separate caps on active sessions and pending login challenges, 1–100000 each. |
+| `DASHBOARD_TURN_TIMEOUT_SECONDS` | float | `840.0` | Whole foreground response deadline, 1–3600 seconds. |
+| `DASHBOARD_MAX_MESSAGE_CHARS` | int | `32000` | Maximum input text length, 1–100000 characters. |
+
+Each active server must also opt in with
 `dashboard.enabled: true` in live frontmatter and can optionally set
 `dashboard.allowed_role_ids`. When a global user allowlist or guild role list is
 configured, membership in either one admits the user to the remaining checks. The
@@ -1357,5 +1373,5 @@ minimum tier (`member`, `regular`, or `staff`), user blocks, channel admission, 
 live Discord permissions then apply independently; staff and the owner bypass none
 of them. All `DASHBOARD_*` settings require a restart and are not supported in
 `settings.md`; the per-server dashboard block is read on access without a restart.
-See the [dashboard operator guide](dashboard.md) for defaults, bounds, deployment,
-and troubleshooting.
+See the [dashboard operator guide](dashboard.md) for deployment, member controls,
+retention, and troubleshooting.

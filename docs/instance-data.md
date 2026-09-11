@@ -121,6 +121,7 @@ WORKSPACE_DIR=/srv/kimi/instance/workspaces
 TOOL_EVENT_LOG_PATH=/srv/kimi/instance/logs/events.jsonl
 SECRETS_FILE=/srv/kimi/instance/secrets/skills.yaml
 CODEX_TOKEN_FILE=/srv/kimi/instance/secrets/codex-auth.json
+XAI_OAUTH_TOKEN_FILE=/srv/kimi/instance/secrets/xai-oauth.json
 BROWSER_PROFILES_DIR=/srv/kimi/instance/data/browser_profiles
 BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
 
@@ -134,12 +135,13 @@ Grant the bot only the access each path requires:
 
 | Path | Bot access | Operational treatment |
 |---|---|---|
-| `CONFIG_DIR`, `.env`, `SECRETS_FILE` | read-only | Private configuration or secrets; updates come from the deployment system. |
+| `CONFIG_DIR` | read; scoped writes when using module proposals | Prompt and policy files can stay read-only. Approved module proposals replace documents under `<CONFIG_DIR>/guild-modules/`; pre-create the required guild directories and grant write access to the directories containing those module documents. Review changes in the private configuration repository. |
+| `.env`, `SECRETS_FILE` | read-only | Credentials and secret metadata; updates come from the deployment system. |
 | `SKILLS_DIR` | read/write | Staff tools can create, edit, and delete shared skills. |
 | `DATABASE_PATH`, `PERSONAL_SKILLS_DIR`, `WORKSPACE_DIR`, `BROWSER_PROFILES_DIR` | read/write | Durable user or instance state; back up with retention and privacy controls. Browser profiles can contain authenticated site state. |
 | `BROWSER_RUNTIME_DIR` | read-only | Root-owned pinned BetterWright/Node/Chromium program files; reproduce with the installer rather than backing up. |
 | `TOOL_EVENT_LOG_PATH` | write | Retain or ship according to the diagnostic-log policy. |
-| `CODEX_TOKEN_FILE` | read/write | OAuth refresh rewrites this credential atomically. |
+| `CODEX_TOKEN_FILE`, `XAI_OAUTH_TOKEN_FILE` | read/write | OAuth refresh rewrites credentials atomically; their containing directories must allow replacement. Never share rotating token files between instances. |
 | `ATTACHMENT_STORE_DIR` | read/write | Ephemeral staging; exclude from backups. |
 
 ## Provisioning a new instance

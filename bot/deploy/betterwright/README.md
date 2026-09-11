@@ -3,9 +3,10 @@
 This guide walks through installing the reviewed BetterWright runtime that the bot's persistent browser and visual-rendering tools need. The runtime lives outside the bot checkout at `/opt/kimi/betterwright`, root-owned and not writable by the bot account, so a compromised bot can't tamper with the files it executes.
 
 **Quick heads-up before you begin:**
+
 - You need a Linux host with Node `>=22.18.0`, npm, `unzip`, Bubblewrap, util-linux, and a working per-user systemd manager.
 - This was tested on the same Ubuntu versions the main setup covers.
-- The installer is privileged and only writes `/opt/kimi/betterwright`. Run it as a sudo-enabled user, never as root.
+- Run the installer with `sudo` from the deployment account. It requires root to create `/opt/kimi/betterwright` and its temporary sibling staging/backup directories. Run the bot and smoke tests unprivileged.
 - The bot account needs read and traverse on the install directory so it can execute the immutable Node and BetterChromium files; it does not need write.
 - Browser and visual-rendering calls do not install packages or load Mermaid from a CDN once the runtime is in place.
 
@@ -55,7 +56,8 @@ A successful run prints the staged packages, the version checks, and a final mes
 Some hosts install Node through a version manager (nvm, fnm, asdf) and put the binary somewhere unexpected. The installer needs to know which Node and npm to use when it runs `npm ci`.
 
 ### What to run
-Skip this step if `node` and `npm` are both on `/usr/bin` and resolve to a version `>=22.18.0`. Otherwise, point the installer at the absolute paths:
+Skip this step if `node` and `npm` are both in `/usr/bin` and Node is at least
+22.18.0. Otherwise, use this command instead of Step 2, with absolute paths:
 
 ```sh
 sudo env NODE_BIN=/absolute/path/to/node NPM_BIN=/absolute/path/to/npm \
@@ -70,7 +72,9 @@ This doesn't replace the system Node installation; it just tells the installer w
 ## Step 4. Keep the configured runtime path fixed
 
 ### Why do this?
-The installer only writes `/opt/kimi/betterwright` and accepts no path argument. Point `BROWSER_RUNTIME_DIR` at that exact reviewed location in your `.env`.
+The install destination is fixed at `/opt/kimi/betterwright`; the installer
+accepts no path argument. Point `BROWSER_RUNTIME_DIR` at that location in the
+bot's active environment file.
 
 ### What to configure
 Add the runtime path to the bot's active `ENV_FILE` (normally `kimi.env`):
@@ -122,11 +126,18 @@ Replace `<bot-user>` with the account the bot runs under. The unit file itself i
 The smoke test exercises the runtime boundary without Discord: real browser navigation, profile persistence across worker switches, cross-user isolation, chart and Mermaid rendering with host-side validation. Any of those failing would surface the first time a user actually uses the bot, so it pays to catch them here.
 
 ### What to run
-On the **server**:
+From `bot/` on the **server**, after completing the private configuration and
+runtime profile in the [setup guide](../../../docs/setup.md):
 
 ```sh
-.venv/bin/python -m deploy.betterwright.smoke_test
+./scripts/preflight
 ```
+
+With `BROWSER_ENABLED=true`, preflight loads the same `ENV_FILE`, `RUNTIME_ENV`,
+and operator overlay as the installed service before running the smoke test.
+For a development environment whose complete profile is in `.env.dev`, run
+`ENV_FILE=.env.dev .venv/bin/python -m deploy.betterwright.smoke_test` instead.
+The direct smoke-test command does not load the separate runtime environment.
 
 ### What you're checking
 The output shows public navigation, profile persistence, cross-user isolation through real worker switches, and rendering of a chart and a Mermaid diagram. The synthetic profiles and outputs are removed at the end. Any failed runtime or sandbox check makes it exit nonzero.

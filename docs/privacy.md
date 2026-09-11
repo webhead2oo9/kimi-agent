@@ -62,6 +62,9 @@ This is the primary store: SQLite in WAL mode, with the schema owned by
 | `privacy_deletion_requests` | Durable authorization for a confirmed `/privacy` deletion: user id, coalesced scope, generation, unique completion token, memory-backend requirement, required operator-plugin callback names, and timestamps. The row contains no message content. |
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
+| Scheduled-task tables | Owner-scoped definitions, approved revisions, instructions/Python source, comparison state, run history, saved publication text and attachments, and delivery records. See [scheduled-task storage](database.md#scheduled-task-storage). |
+| `scheduled_result_notifications` | Module/subscription identity, published run reference, expiry, delivery attempts, and acknowledgement state. Published text, embeds, and attachments come from the referenced run; no extra private working transcript is copied here. |
+| Dashboard tables | Owner/server-scoped saved-chat metadata, branches, request/event history, private file snapshot metadata, and task-preview links. The model transcript remains in `messages`. See [dashboard records](database.md#activity-dashboard-records). |
 
 The optional user-app surface stores one conversation private to each user under
 `userchat:<user_id>`. It deliberately has no guild scope even when invoked from
@@ -238,6 +241,8 @@ Everything else keeps its own lifecycle, by design:
 | Video specialist sessions | 24-hour maximum idle lifetime; local access is removed on expiry/root deletion and all known Gemini Interaction/File ids are queued for provider deletion. Google Files API uploads are independently retained for up to 48 hours unless deleted sooner. |
 | Attachment temp files | Deleted at the end of each turn. |
 | Coding task state and command output | Retained with the local operational database until full `/privacy` deletion; terminal delivery state supports restart retries. |
+| Scheduled tasks and saved output | Definitions and current state persist until deletion. Terminal runs and their attachments expire after 30 days unless publication is pending. Full `/privacy` deletion removes the owner's task data. |
+| Module result notifications | Expire 30 days after publication or cascade with task/run deletion. Pending callbacks do not extend output retention. Module-owned copies have their own lifecycle. |
 | Long-term memory (Hindsight) | Per-user default on when the backend is configured; `/memory opt-out` stops future user-memory use and writes. Retained until the user deletes it via `/privacy` (**Delete memory** / **Delete my data**). Not part of the 30-day transcript sweep, since memory is the long-term store. |
 | Community memory and private shared skills | Staff-managed shared knowledge retained until staff delete it. Not part of a member's `/privacy` deletion. |
 | Personal skills (`data/personal_skills/<user_id>/`) | User-authored instruction documents; retained until the user removes them. |
@@ -378,8 +383,11 @@ also use a separate third-party LLM endpoint for memory processing. The
 deployment's published policy must identify the Hindsight host and any separate
 downstream provider and describe their data handling.
 
-Operator plugins and script-backed skill tools are trusted deployment code and
-may add their own egress. Skill scripts run inside the Linux Bubblewrap boundary
+Application modules, operator plugins, and script-backed skill tools are trusted
+deployment code and may add their own egress. Modules can receive admitted files
+or published task results when their declared permissions allow it; operators
+must document any retained copies and downstream services. Skill scripts run
+inside the Linux Bubblewrap boundary
 with network denied by default and only the per-call output workspace writable.
 A tool whose declaration opts into `network: true` shares the service host's
 public, private, and loopback reachability without a destination allowlist, so
@@ -589,6 +597,8 @@ Clearing the persona removes it from SQLite. The memory-forget path
 (`/privacy`) also clears the stored persona as part of deleting user-scoped
 retained data.
 
+## Scheduled tasks and module results
+
 [Scheduled tasks](scheduled-tasks.md#stored-data) store owner-scoped definitions,
 task skills, Python source and declared inputs when used, comparison state, run
 history, and saved publication attachments. [Scheduled Python](scheduled-python.md)
@@ -597,6 +607,19 @@ are removed with that job unless the script includes them in saved state or outp
 Only LLM execution or a gate handoff sends task instructions and observations to
 the generation provider. Configured moderation still applies to proposed content.
 Full privacy deletion cancels owned tasks and removes that data.
+
+Installed modules may subscribe to confirmed task publications in configured
+guilds. After current access checks, a handler receives the published text,
+captured embeds, message references, and bounded reads of published attachments.
+It does not receive private task instructions, state, or the working transcript.
+Notifications and acknowledgements expire after 30 days, or sooner when the task
+or run is deleted. Full privacy deletion blocks new callbacks and waits for
+guarded callbacks already in progress before deleting local task data.
+
+Copies a module retains or sends elsewhere follow that module's own retention
+and deletion policy. The SDK has no generic module privacy-deletion callback,
+so core deletion cannot promise to remove those copies. See
+[Published scheduled-task results](module-scheduled-results.md).
 
 ## Private Activity chats
 

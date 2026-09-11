@@ -1,5 +1,41 @@
 # Reference module: kudos
 
+A complete, small Kimi application module. Members thank each other, each
+guild gets a leaderboard, and a digest is posted on a schedule. Every file
+covers one part of the module API, with comments on why the host works that
+way.
+
+Use it as a starting point: copy the layout, rename the package and the entry
+point, and replace the behavior.
+
+## What it demonstrates
+
+| Surface | Where | What to look at |
+|---|---|---|
+| Entry point + `ModuleSpec` | `pyproject.toml`, `spec.py` | Discovery, preflight-validated declarations |
+| Deployment settings | `settings.py` | `pydantic-settings` model, operator-exposed subset, env prefix |
+| Per-guild settings | `guild_settings.py` | Typed schema, enum + bool + id fields, cross-field validator, `invalid_policy`; the host hides tools, commands, and buttons wherever the module is inactive |
+| Migrations | `migrations.py` | Three ordered forward-only migrations on prefixed tables |
+| Storage | `ledger.py` | `storage.table()`, reads on the shared connection, `write_transaction()`; the daily limit is a check-and-insert inside one transaction |
+| LLM tools | `spec.py`, `module.py` | One core tool (`give_kudos`), one searchable (`kudos_leaderboard`), activity labels, guild-less refusal |
+| Slash commands | `module.py` | `/kudos give`, `/kudos top`, staff-only `/kudos setup`, typed options |
+| Persistent button | `module.py` | "Thank back" button that survives restarts via `custom_id` parts |
+| Scheduler | `module.py` | Durable periodic `digest` job with per-guild failure isolation |
+| Published task results | `module.py`, `migrations.py` | Optional SDK 2.4 subscription with transactional deduplication receipts |
+| Events | `module.py` | Subscribes to `discord.member_remove`; publishes `reference_kudos.given` |
+| Discord actions | `module.py` | Declared `send_message` for the digest embed |
+| Trust | `module.py` | `ctx.trust.tier()` against the guild's `giver_min_tier` |
+| Services | `module.py` | Provides `kudos.board@1` for sibling modules |
+| Proposals | `module.py` | `/kudos setup` proposes a guild document for staff approval |
+| Health | `module.py` | Metrics and `degraded` state after digest failures |
+| Testing | `tests/` | Unit tests on the API fakes only; no host import |
+
+Not used here: `ctx.http` (it needs a real declared host), `raw_bot` and
+`raw_storage` (escape hatches most modules should not need), `consumes`
+(this module has no dependency), and `activation_capabilities`.
+
+## Published-task subscriber
+
 The optional published-task subscriber demonstrates SDK 2.4. Set the module's
 `result_guild_id` setting to a guild ID (default `0` disables it) and
 restart. The host must advertise `scheduled_results.v1`. It counts confirmed
@@ -16,39 +52,6 @@ For tools that process uploaded media or saved workspace files, see the
 [SDK 2.2 file access guide](../../../docs/module-files.md) and `FakeToolFiles`.
 The kudos example itself needs no file permission.
 
-A complete, small Kimi application module. Members thank each other, each
-guild gets a leaderboard, and a digest is posted on a schedule. Every file
-covers one part of the module API, with comments on why the host works that
-way.
-
-Use it as a starting point: copy the layout, rename the package and the entry
-point, and replace the behavior.
-
-## What it demonstrates
-
-| Surface | Where | What to look at |
-|---|---|---|
-| Entry point + `ModuleSpec` | `pyproject.toml`, `spec.py` | Discovery, preflight-validated declarations |
-| Deployment settings | `settings.py` | `pydantic-settings` model, operator-exposed subset, env prefix |
-| Per-guild settings | `guild_settings.py` | Typed schema, enum + bool + id fields, cross-field validator, `invalid_policy`; the host hides tools, commands, and buttons wherever the module is inactive |
-| Migrations | `migrations.py` | Two ordered forward-only migrations on prefixed tables |
-| Storage | `ledger.py` | `storage.table()`, reads on the shared connection, `write_transaction()`; the daily limit is a check-and-insert inside one transaction |
-| LLM tools | `spec.py`, `module.py` | One core tool (`give_kudos`), one searchable (`kudos_leaderboard`), activity labels, guild-less refusal |
-| Slash commands | `module.py` | `/kudos give`, `/kudos top`, staff-only `/kudos setup`, typed options |
-| Persistent button | `module.py` | "Thank back" button that survives restarts via `custom_id` parts |
-| Scheduler | `module.py` | Durable periodic `digest` job with per-guild failure isolation |
-| Events | `module.py` | Subscribes to `discord.member_remove`; publishes `reference_kudos.given` |
-| Discord actions | `module.py` | Declared `send_message` for the digest embed |
-| Trust | `module.py` | `ctx.trust.tier()` against the guild's `giver_min_tier` |
-| Services | `module.py` | Provides `kudos.board@1` for sibling modules |
-| Proposals | `module.py` | `/kudos setup` proposes a guild document for staff approval |
-| Health | `module.py` | Metrics and `degraded` state after digest failures |
-| Testing | `tests/` | Unit tests on the API fakes only; no host import |
-
-Not used here: `ctx.http` (it needs a real declared host), `raw_bot` and
-`raw_storage` (escape hatches most modules should not need), `consumes`
-(this module has no dependency), and `activation_capabilities`.
-
 ## Layout
 
 ```text
@@ -61,14 +64,15 @@ example/
 │   ├── spec.py                             # ModuleSpec + create(): declarations and tool wiring
 │   ├── settings.py                         # KudosSettings + operator-exposed fields
 │   ├── guild_settings.py                   # per-guild schema and validator
-│   ├── migrations.py                       # 001_create_kudos, 002_index_kudos
+│   ├── migrations.py                       # kudos table/index and published-result receipts
 │   ├── ledger.py                           # all SQL, over the ModuleStorage port
 │   ├── module.py                           # KudosModule: start/close and every handler
 │   └── py.typed
 └── tests/
     ├── conftest.py                         # a started-module fixture over the SDK fakes
     ├── test_spec.py                        # declarations pass host preflight; create() wiring
-    └── test_module.py                      # tools, commands, button, digest, events, service
+    ├── test_module.py                      # tools, commands, button, digest, events, service
+    └── test_scheduled_results.py           # published-result subscription and deduplication
 ```
 
 Read the files in the order the host uses them: `spec.py` → `settings.py` →

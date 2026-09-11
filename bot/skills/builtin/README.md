@@ -20,5 +20,7 @@ The shipped catalog is small and deployment-neutral:
 - `embed` - composing one rich Discord embed;
 - `image-generation` - visual briefing, reference-driven edits, iteration, and
   honest verification for the optional image tool;
+- `scheduled-tasks` - guided setup, approval, conditional execution, publication,
+  and recovery for scheduled procedures;
 - `start-thread` - managed thread creation and lifecycle controls;
 - `workspace` - inspecting, changing, extracting, packaging, and returning files.

@@ -183,6 +183,28 @@ it("shows the connection state only while the socket is down", async () => {
   expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
 });
 
+it("closes the mobile conversation drawer on a terminal socket disconnect", async () => {
+  vi.mocked(window.matchMedia).mockImplementation(() => ({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const fixture = connection();
+  let status: (connected: boolean, terminal: boolean, notice?: string) => void = () => {};
+  vi.spyOn(fixture.value.api, "subscribe").mockImplementation(
+    (_chat, _after, _callback, report) => { status = report; report(true, false); return () => {}; },
+  );
+  render(<DashboardApp connection={fixture.value} />);
+  await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+  expect(screen.getByRole("dialog", { name: "Saved conversations" })).toBeVisible();
+
+  await act(async () => status(false, true));
+
+  expect(screen.queryByRole("dialog", { name: "Saved conversations" })).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Close and reopen this Activity");
+});
+
 it("names the configured bot when a coding task asks for input", async () => {
   const fixture = connection();
   fixture.value.session = { ...session, bot_name: "Nova" };

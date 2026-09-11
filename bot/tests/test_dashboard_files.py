@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -80,7 +81,15 @@ async def test_output_snapshot_keeps_content_and_rejects_linked_or_foreign_sourc
     outputs = await files.capture_outputs(own, (str(source),))
     turn, _ = await files.store.accept(own, request_id="output", text="file", files=[])
     async with files.output_copies(own, outputs) as (public, records):
-        await files.store.finish_turn(own.id, turn, "completed", {"files": public}, files=records)
+        await files.store.finish_turn(
+            own.id,
+            turn,
+            "completed",
+            {"files": public},
+            files=records,
+            file_max_user_bytes=files.settings.workspace_tool_max_user_bytes,
+            file_created_after=time.time() - files.settings.workspace_file_ttl,
+        )
     assert public[0]["filename"] == "answer.txt"
     record = await files.store.file(public[0]["id"], user_id=own.user_id, guild_id=own.guild_id)
     assert await files.payload(record) == b"delivered content"
@@ -294,7 +303,15 @@ async def test_output_publication_counts_staged_bytes_and_rechecks_current_quota
     async with files.output_copies(own, outputs) as (public, records):
         assert len(records) == 1
         assert public[1] == {"filename": "b.txt", "unavailable": True}
-        await files.store.finish_turn(own.id, turn, "completed", {"files": public}, files=records)
+        await files.store.finish_turn(
+            own.id,
+            turn,
+            "completed",
+            {"files": public},
+            files=records,
+            file_max_user_bytes=files.settings.workspace_tool_max_user_bytes,
+            file_created_after=time.time() - files.settings.workspace_file_ttl,
+        )
     assert len(await files.store.files(own)) == 2
 
 

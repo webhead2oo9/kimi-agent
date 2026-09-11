@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
@@ -181,6 +182,8 @@ class DashboardTurnAdapter:
                     replies=replies,
                     handoff_id=self.handoff_id,
                     files=records,
+                    file_max_user_bytes=self.files.settings.workspace_tool_max_user_bytes,
+                    file_created_after=time.time() - self.files.settings.workspace_file_ttl,
                 )
             self.delivered = True
 

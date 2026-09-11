@@ -152,7 +152,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         if (notice) setError(notice);
         if (terminal) {
           terminalConnection.current = true;
-          setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null); setDialog(null); setMenu(null);
+          setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null); setDialog(null); setMenu(null); setSidebarOpen(false);
           setError(notice || "Your session or channel access expired. Close and reopen this Activity from Discord to continue.");
         }
       });

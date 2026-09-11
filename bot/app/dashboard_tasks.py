@@ -217,7 +217,13 @@ class DashboardTasks:
                     async with self.files.output_copies(chat, outputs) as (public, records):
                         payload["files"] = public
                         await self.store.publish_coding_result(
-                            chat, task.id, payload, replies, files=records
+                            chat,
+                            task.id,
+                            payload,
+                            replies,
+                            files=records,
+                            file_max_user_bytes=self.files.settings.workspace_tool_max_user_bytes,
+                            file_created_after=time.time() - self.files.settings.workspace_file_ttl,
                         )
 
                 await await_uncancellable(publish())

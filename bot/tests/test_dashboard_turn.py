@@ -211,6 +211,69 @@ async def test_shared_turn_pipeline_moderates_images_stages_files_and_persists_p
 
 
 @pytest.mark.asyncio
+async def test_retention_rollback_rechecks_output_quota_in_publication_transaction(
+    surface, monkeypatch
+):
+    monkeypatch.setattr(surface.files.settings, "workspace_tool_max_user_bytes", 10)
+    existing = await surface.files.save(surface.chat, "existing.txt", b"stored", kind="upload")
+    deleted, staged, rollback = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def retention_rollback() -> None:
+        try:
+            async with surface.db.write_transaction() as conn:
+                # Retention deletes the conversation and cascades its file rows. A
+                # staging quota read on the shared connection can observe that
+                # uncommitted state even though the deletion ultimately rolls back.
+                await conn.execute(
+                    "DELETE FROM dashboard_conversations WHERE id=?", (surface.chat.id,)
+                )
+                deleted.set()
+                await rollback.wait()
+                raise RuntimeError("retention sweep rolled back")
+        except RuntimeError as exc:
+            assert str(exc) == "retention sweep rolled back"
+
+    retention: asyncio.Task[None] | None = None
+    original_capture = surface.files.capture_outputs
+    original_save = surface.files.save
+
+    async def capture(*args, **kwargs):
+        nonlocal retention
+        outputs = await original_capture(*args, **kwargs)
+        retention = asyncio.create_task(retention_rollback())
+        await deleted.wait()
+        return outputs
+
+    async def save(*args, **kwargs):
+        record = await original_save(*args, **kwargs)
+        if kwargs.get("staged") is not None:
+            staged.set()
+            rollback.set()
+        return record
+
+    monkeypatch.setattr(surface.files, "capture_outputs", capture)
+    monkeypatch.setattr(surface.files, "save", save)
+    await surface.turns.submit(
+        surface.chat, request_id="retention-rollback", text="make a file", file_ids=[]
+    )
+    async with asyncio.timeout(5):
+        await staged.wait()
+        await settled(surface)
+        assert retention is not None
+        await retention
+
+    records = await surface.store.files(surface.chat)
+    assert records == [existing]
+    final = (await surface.store.events(surface.chat.id))[-1]
+    assert final.payload["status"] == "completed"
+    assert final.payload["files"] == [{"filename": "answer.txt", "unavailable": True}]
+    output_root = surface.workspace.generated_context_path(
+        surface.files.context(surface.chat.id, "output")
+    )
+    assert not list(output_root.glob("*/*"))
+
+
+@pytest.mark.asyncio
 async def test_stop_drains_running_turn_and_releases_shared_admission(surface):
     surface.release.clear()
     await surface.turns.submit(surface.chat, request_id="req", text="hello", file_ids=[])

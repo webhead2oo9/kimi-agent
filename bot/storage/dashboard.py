@@ -247,6 +247,50 @@ class DashboardStore:
                 (time.time(), turn_id),
             )
 
+    @staticmethod
+    async def _insert_files_with_quota(
+        conn: Any,
+        files: Sequence[DashboardFile],
+        *,
+        max_user_bytes: int,
+        created_after: float,
+    ) -> bool:
+        """Insert one result's files only when the committed quota admits all of them."""
+        if not files:
+            return True
+        scopes = {(record.owner_user_id, record.guild_id) for record in files}
+        if len(scopes) != 1:
+            raise ValueError("A dashboard result cannot mix file owners")
+        owner_user_id, guild_id = next(iter(scopes))
+        async with conn.execute(
+            "SELECT coalesce(sum(size),0),count(*) FROM dashboard_files "
+            "WHERE owner_user_id=? AND guild_id=? AND created_at>?",
+            (owner_user_id, guild_id, created_after),
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        if (
+            row[0] + sum(record.size for record in files) > max_user_bytes
+            or row[1] + len(files) > 1000
+        ):
+            return False
+        for record in files:
+            await conn.execute(
+                "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
+                tuple(asdict(record).values()),
+            )
+        return True
+
+    @staticmethod
+    def _files_unavailable(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **payload,
+            "files": [
+                {"filename": str(item.get("filename") or "attachment"), "unavailable": True}
+                for item in payload.get("files", [])
+            ],
+        }
+
     async def finish_turn(
         self,
         chat_id: str,
@@ -257,11 +301,18 @@ class DashboardStore:
         replies: list[ChannelMessageRecord] | None = None,
         handoff_id: str | None = None,
         files: Sequence[DashboardFile] = (),
+        file_max_user_bytes: int | None = None,
+        file_created_after: float | None = None,
     ) -> None:
         if status not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("Invalid dashboard turn outcome")
+        if files and (file_max_user_bytes is None or file_created_after is None):
+            raise ValueError("Dashboard file quota is required when publishing files")
+        if files:
+            assert file_max_user_bytes is not None and file_created_after is not None
         now = time.time()
-        async with self.db.write_transaction() as conn:
+        transaction = self.db.immediate_write_transaction if files else self.db.write_transaction
+        async with transaction() as conn:
             updated = await conn.execute(
                 "UPDATE dashboard_turns SET status=?,updated_at=? "
                 "WHERE id=? AND dashboard_id=? AND status IN ('accepted','running')",
@@ -274,11 +325,15 @@ class DashboardStore:
             ) as cursor:
                 chat = await cursor.fetchone()
             assert chat is not None
-            for record in files:
-                await conn.execute(
-                    "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    tuple(asdict(record).values()),
-                )
+            if files:
+                assert file_max_user_bytes is not None and file_created_after is not None
+                if not await self._insert_files_with_quota(
+                    conn,
+                    files,
+                    max_user_bytes=file_max_user_bytes,
+                    created_after=file_created_after,
+                ):
+                    payload = self._files_unavailable(payload)
             if replies:
                 await self.conversations.save_channel_messages_in_transaction(
                     conn, chat[0], replies
@@ -330,10 +385,17 @@ class DashboardStore:
         replies: list[ChannelMessageRecord],
         *,
         files: Sequence[DashboardFile] = (),
+        file_max_user_bytes: int | None = None,
+        file_created_after: float | None = None,
     ) -> None:
         """Commit a private coding result, its model context, and delivery receipt."""
+        if files and (file_max_user_bytes is None or file_created_after is None):
+            raise ValueError("Dashboard file quota is required when publishing files")
+        if files:
+            assert file_max_user_bytes is not None and file_created_after is not None
         now = time.time()
-        async with self.db.write_transaction() as conn:
+        transaction = self.db.immediate_write_transaction if files else self.db.write_transaction
+        async with transaction() as conn:
             updated = await conn.execute(
                 "UPDATE coding_tasks SET delivery_state='delivered',updated_at=? "
                 "WHERE id=? AND conversation_id=? AND user_id=? AND delivery_surface='dashboard' "
@@ -342,11 +404,15 @@ class DashboardStore:
             )
             if not updated.rowcount:
                 return
-            for record in files:
-                await conn.execute(
-                    "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    tuple(asdict(record).values()),
-                )
+            if files:
+                assert file_max_user_bytes is not None and file_created_after is not None
+                if not await self._insert_files_with_quota(
+                    conn,
+                    files,
+                    max_user_bytes=file_max_user_bytes,
+                    created_after=file_created_after,
+                ):
+                    payload = self._files_unavailable(payload)
             await self.conversations.save_channel_messages_in_transaction(
                 conn,
                 chat.conversation_id,

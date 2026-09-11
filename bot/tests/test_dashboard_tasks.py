@@ -103,10 +103,13 @@ async def test_dashboard_preview_and_actions_use_existing_revision_authority(tmp
 
 
 @pytest.mark.asyncio
-async def test_coding_stop_allows_child_finalizer_to_publish_under_root(tmp_path):
+@pytest.mark.parametrize("busy_user", [None, "10", "99"])
+async def test_coding_stop_allows_child_finalizer_to_publish_under_root(tmp_path, busy_user):
     db = Database(tmp_path / "cancel.db")
     await db.connect()
     bridge = None
+    admission = TurnAdmissionController(max_active=1, max_active_per_user=1)
+    occupied = await admission.try_acquire(busy_user) if busy_user else None
     try:
         scheduled, _, _, _ = await preview_fixture(ScheduledTaskStore(db))
         scheduled.r.tools.registry = SimpleNamespace(dispatch_gate=lambda _tool, _ctx: None)
@@ -158,10 +161,21 @@ async def test_coding_stop_allows_child_finalizer_to_publish_under_root(tmp_path
             roots=roots,
             privacy=UserPrivacyBarrier(),
             operations=ActiveOperationRegistry(),
-            admission=TurnAdmissionController(max_active=2, max_active_per_user=1),
+            admission=admission,
         )
         bridge.context = AsyncMock(return_value=context(context_key=chat.key))
         async with asyncio.timeout(3):
+            if occupied:
+                assert occupied.lease is not None
+                # Starting more work remains bounded even though stopping it is not.
+                with pytest.raises(web.HTTPTooManyRequests):
+                    await bridge.submit_action(
+                        chat,
+                        request_id="steer",
+                        task_id=task.id,
+                        action="steer",
+                        message="Continue the report",
+                    )
             await bridge.submit_action(chat, request_id="stop", task_id=task.id, action="cancel")
             while bridge._workers:
                 await asyncio.gather(*list(bridge._workers))
@@ -169,9 +183,14 @@ async def test_coding_stop_allows_child_finalizer_to_publish_under_root(tmp_path
         assert any(event.kind == "coding_task" for event in events)
         result = next(event for event in events if event.kind == "task_action_result")
         assert result.payload["text"] == "Stop requested. Partial file changes are kept."
+        if occupied:
+            # Cancellation must not release the lease held by the other turn.
+            assert (await admission.try_acquire("another-user")).lease is None
     finally:
         try:
             if bridge:
                 await bridge.close()
         finally:
+            if occupied and occupied.lease:
+                await occupied.lease.release()
             await db.close()

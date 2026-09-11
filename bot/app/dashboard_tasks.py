@@ -318,10 +318,17 @@ class DashboardTasks:
                     raise web.HTTPForbidden(
                         reason="Your current tool policy does not allow this task action"
                     )
-            decision = await self.admission.try_acquire(chat.user_id)
-            if decision.lease is None:
-                raise web.HTTPTooManyRequests(reason="Please wait for your current work to finish")
-            async with decision.lease:
+            # Stopping existing work must remain possible when new-work capacity
+            # is full. Access and task-control policy have already been checked.
+            lease = None
+            if action != "cancel":
+                decision = await self.admission.try_acquire(chat.user_id)
+                lease = decision.lease
+                if lease is None:
+                    raise web.HTTPTooManyRequests(
+                        reason="Please wait for your current work to finish"
+                    )
+            async with lease if lease is not None else nullcontext():
                 action_id, fresh = await self.store.accept_action(chat, request_id, task_id, action)
                 ready.set_result(action_id)
                 if not fresh:

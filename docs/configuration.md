@@ -1349,10 +1349,13 @@ settings are `DASHBOARD_ENABLED`, `DASHBOARD_ALLOWED_USER_IDS`,
 `DASHBOARD_MIN_TIER`, `DASHBOARD_HOST`, `DASHBOARD_PORT`,
 `DASHBOARD_CLIENT_SECRET`, `DASHBOARD_FRONTEND_DIR`, `DASHBOARD_SESSION_SECONDS`,
 `DASHBOARD_MAX_SESSIONS`, `DASHBOARD_TURN_TIMEOUT_SECONDS`, and
-`DASHBOARD_MAX_MESSAGE_CHARS`. Each active server must also opt in with the live
-frontmatter flag `dashboard: {enabled: true}`. The optional comma-separated user
-allowlist and minimum tier (`member`, `regular`, or `staff`) both apply; staff
-and the owner do not bypass the allowlist. All `DASHBOARD_*` settings require a
-restart and are not supported in `settings.md`; the per-server flag is read on
-access without a restart. See the [dashboard operator guide](dashboard.md) for
-defaults, bounds, deployment, and troubleshooting.
+`DASHBOARD_MAX_MESSAGE_CHARS`. Each active server must also opt in with
+`dashboard.enabled: true` in live frontmatter and can optionally set
+`dashboard.allowed_role_ids`. When a global user allowlist or guild role list is
+configured, membership in either one admits the user to the remaining checks. The
+minimum tier (`member`, `regular`, or `staff`), user blocks, channel admission, and
+live Discord permissions then apply independently; staff and the owner bypass none
+of them. All `DASHBOARD_*` settings require a restart and are not supported in
+`settings.md`; the per-server dashboard block is read on access without a restart.
+See the [dashboard operator guide](dashboard.md) for defaults, bounds, deployment,
+and troubleshooting.

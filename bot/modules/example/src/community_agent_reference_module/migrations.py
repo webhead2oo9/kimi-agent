@@ -49,9 +49,18 @@ async def index_kudos(ctx: MigrationContext) -> None:
     )
 
 
+async def create_result_receipts(ctx: MigrationContext) -> None:
+    # Retain only opaque deduplication IDs and expiry, never task output or owner IDs.
+    await ctx.connection.execute(
+        f"CREATE TABLE {ctx.table('result_receipts')} "
+        "(notification_id TEXT PRIMARY KEY, expires_at REAL NOT NULL)"
+    )
+
+
 MIGRATIONS: tuple[ScopedModuleMigration, ...] = (
     ("001_create_kudos", create_kudos),
     ("002_index_kudos", index_kudos),
+    ("003_result_receipts", create_result_receipts),
 )
 
 __all__ = ["MIGRATIONS"]

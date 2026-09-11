@@ -84,8 +84,8 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
     assert {"events", "scheduler", "storage", "discord", "interactions", "services"} <= required
 
 
-def test_distribution_version_includes_triggering_message_snapshot_contract() -> None:
-    assert version("kimi-agent-module-api") == "2.3.0"
+def test_distribution_version_includes_scheduled_result_contract() -> None:
+    assert version("kimi-agent-module-api") == "2.4.0"
 
 
 def test_triggering_discord_message_snapshot_is_immutable() -> None:

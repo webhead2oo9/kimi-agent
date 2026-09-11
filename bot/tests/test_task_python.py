@@ -506,7 +506,11 @@ async def test_python_respects_dispatch_denylist_including_preview(
 
 @pytest.mark.asyncio
 async def test_preview_returns_private_files_without_state_or_history(python_harness):
+    from storage.task_results import TaskResultStore
+
     box = python_harness
+    result_store = TaskResultStore(box.service.r.store.db)
+    await result_store.subscribe("report", "digest", 100)
     box.result = {
         "outcome": "completed",
         "state": {"new": 1},
@@ -521,6 +525,7 @@ async def test_preview_returns_private_files_without_state_or_history(python_har
     assert await box.service.r.store.get(task_id) == before
     assert await box.service.r.store.history(task_id) == []
     assert await box.service.r.store.deliveries() == []
+    assert await result_store.claim() == []
     assert not box.requests[0].root.exists()
     box.destination.send.assert_not_awaited()
     shown = interaction()

@@ -1,5 +1,17 @@
 # Reference module: kudos
 
+The optional published-task subscriber demonstrates SDK 2.4. Set the module's
+`result_guild_id` setting to a guild ID (default `0` disables it) and
+restart. The host must advertise `scheduled_results.v1`. It counts confirmed
+task publications in that guild through `ctx.scheduled_results` and reports
+`published_task_results` in module health. A local transaction stores one opaque
+receipt per notification ID, so retries do not inflate the count. It stores no
+content or owner IDs and removes expired receipts when the next result arrives.
+Closing or disabling the subscriber leaves its host subscription pending for
+recovery; explicit `unsubscribe` removes it. See the
+[published-result guide](../../../docs/module-scheduled-results.md) for access,
+retention, and the responsibilities of modules that keep their own copies.
+
 For tools that process uploaded media or saved workspace files, see the
 [SDK 2.2 file access guide](../../../docs/module-files.md) and `FakeToolFiles`.
 The kudos example itself needs no file permission.

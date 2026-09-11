@@ -145,6 +145,8 @@ class ModulePermissions:
     raw_storage: bool = False
     # Read admitted attachments and caller-owned workspace files in tool handlers.
     tool_files: bool = False
+    # Names of durable, explicitly guild-scoped published-task subscriptions.
+    scheduled_results: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +441,11 @@ def validate_permissions(module_name: str, permissions: ModulePermissions) -> No
             )
     for rule in permissions.http_hosts:
         validate_host_rule(rule)
+    names = permissions.scheduled_results
+    if len(set(names)) != len(names) or any(
+        not re.fullmatch(r"[a-z0-9_]{1,64}", name) for name in names
+    ):
+        raise ModuleContractError("scheduled-result subscription names must be unique and valid")
 
 
 def validate_services(

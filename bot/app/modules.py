@@ -64,6 +64,7 @@ from modules.guild_settings import GuildSettingsService
 from modules.health import HealthRegistry
 from modules.http import ModuleHttpRuntime, ResolvedHostRule, resolve_host_rules
 from modules.scheduler import DurableScheduler
+from modules.scheduled_results import ScheduledResultRuntime
 from modules.services import ModuleServiceView, ServiceRegistryImpl, undeclared_provisions
 from modules.storage import ModuleStorageImpl
 from modules.tasks import run_bounded
@@ -297,6 +298,7 @@ def module_capabilities(core_settings: Settings) -> ModuleCapabilities:
     available.add("discord.modals.v1")
     available.add("discord.components_v2.v1")
     available.add("tools.files.v1")
+    available.add("scheduled_results.v1")
     if core_settings.members_intent:
         available.add("discord.members.v1")
     if core_settings.message_content_intent:
@@ -520,6 +522,7 @@ class ModuleManager:
     services: ServiceRegistryImpl = field(default_factory=ServiceRegistryImpl)
     events: EventBusImpl | None = None
     scheduler: DurableScheduler | None = None
+    scheduled_results: ScheduledResultRuntime | None = None
     guild_settings: GuildSettingsService | None = None
     http: ModuleHttpRuntime | None = None
     _tool_registry: _LoadTimeToolRegistry | None = None
@@ -825,6 +828,11 @@ class ModuleManager:
                 else None
             ),
             "scheduler": self.scheduler.view_for(spec.name) if self.scheduler is not None else None,
+            "scheduled_results": (
+                self.scheduled_results.view_for(spec.name, spec.permissions, is_module_guild_active)
+                if self.scheduled_results is not None
+                else None
+            ),
             "storage": ModuleStorageImpl(base.database, spec.name),
             "health": self.health.reporter_for(spec.name),
             "discord": (
@@ -909,6 +917,8 @@ class ModuleManager:
             await self._close_module(name)
 
     async def _close_module(self, name: str, *, strict: bool = False) -> None:
+        if self.scheduled_results is not None:
+            self.scheduled_results.unregister_module(name)
         clean = False
         try:
             outcome = await run_bounded(

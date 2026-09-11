@@ -346,7 +346,9 @@ async def test_dashboard_branch_migration_preserves_existing_chats(tmp_path):
     selected = await saved_turn(store, parent)
     async with db.write_transaction() as conn:
         await conn.execute("DROP TABLE dashboard_branches")
-        await conn.execute("DELETE FROM schema_version WHERE version=15")
+        await conn.execute("DELETE FROM schema_version WHERE version>=15")
+        await conn.execute("DROP TABLE scheduled_result_notifications")
+        await conn.execute("DROP TABLE scheduled_result_subscriptions")
     await db.close()
     await db.connect()
     try:

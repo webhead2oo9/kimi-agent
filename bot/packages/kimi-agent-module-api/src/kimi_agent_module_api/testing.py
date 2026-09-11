@@ -24,6 +24,15 @@ from pydantic_settings import BaseSettings
 
 from kimi_agent_module_api.trust import TrustTier
 from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
+from kimi_agent_module_api.scheduled_results import (
+    MAX_RESULT_FILE_BYTES,
+    MAX_RESULT_TOTAL_FILE_BYTES,
+    ScheduledResult,
+    ScheduledResultAccessError,
+    ScheduledResultHandler,
+    validate_result_read_limit,
+    validate_result_subscription,
+)
 
 from kimi_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
@@ -83,6 +92,93 @@ from kimi_agent_module_api import (
 
 _MAX_FLOAT_LOG = math.log(sys.float_info.max)
 _T = TypeVar("_T")
+
+
+class FakeScheduledResultFiles:
+    """An invocation-scoped reader; the same size/lifetime limits as the host."""
+
+    def __init__(
+        self, files: Mapping[str, bytes], *, available: Callable[[], bool] = lambda: True
+    ) -> None:
+        self.files = files
+        self.available = available
+        self.open = True
+        self.remaining = MAX_RESULT_TOTAL_FILE_BYTES
+
+    async def read(self, attachment_id: str, *, max_bytes: int = MAX_RESULT_FILE_BYTES) -> bytes:
+        validate_result_read_limit(max_bytes)
+        data = self.files.get(attachment_id)
+        if (
+            not self.open
+            or not self.available()
+            or self.remaining <= 0
+            or data is None
+            or len(data) > min(max_bytes, self.remaining)
+        ):
+            raise ScheduledResultAccessError("Result file unavailable or read limit exceeded")
+        self.remaining -= len(data)
+        return data
+
+
+class FakeScheduledResults:
+    """Drive retries explicitly with ``deliver``; successful IDs are acknowledged.
+
+    A failed invocation propagates its exception and can be delivered again.
+    Supply the original result object to model a restart or duplicate attempt.
+    This fake has no background runner, Discord access, or persistence.
+    """
+
+    def __init__(
+        self,
+        declared: tuple[str, ...] = (),
+        *,
+        is_guild_active: Callable[[int], bool] = lambda _guild_id: True,
+    ) -> None:
+        self.declared, self.is_guild_active = declared, is_guild_active
+        self.handlers: dict[tuple[str, int], ScheduledResultHandler] = {}
+        self.acknowledged: set[str] = set()
+        self.attempts: list[str] = []
+
+    def _validate(self, name: str, guild_id: int) -> None:
+        validate_result_subscription(name, guild_id)
+        if name not in self.declared:
+            raise ScheduledResultAccessError("Undeclared scheduled-result subscription")
+
+    async def subscribe(self, name: str, *, guild_id: int, handler: ScheduledResultHandler) -> None:
+        self._validate(name, guild_id)
+        self.handlers[name, guild_id] = handler
+
+    async def unsubscribe(self, name: str, *, guild_id: int) -> None:
+        self._validate(name, guild_id)
+        self.handlers.pop((name, guild_id), None)
+
+    async def deliver(
+        self,
+        result: ScheduledResult,
+        *,
+        files: Mapping[str, bytes] | None = None,
+        preview: bool = False,
+    ) -> None:
+        if preview or result.notification_id in self.acknowledged:
+            return
+        handler = self.handlers.get((result.subscription, result.guild_id))
+        if handler is None or not self.is_guild_active(result.guild_id):
+            raise ScheduledResultAccessError("Subscriber unavailable in this guild")
+        visible = {a.id for m in result.messages for a in m.attachments}
+        reader = FakeScheduledResultFiles(
+            {k: v for k, v in (files or {}).items() if k in visible},
+            available=lambda: (
+                self.is_guild_active(result.guild_id)
+                and result.subscription in self.declared
+                and self.handlers.get((result.subscription, result.guild_id)) is handler
+            ),
+        )
+        self.attempts.append(result.notification_id)
+        try:
+            await handler(result, reader)
+            self.acknowledged.add(result.notification_id)
+        finally:
+            reader.open = False
 
 
 @dataclass(slots=True)
@@ -1390,6 +1486,8 @@ __all__ = [
     "FakeInteractions",
     "FakeProposals",
     "FakeResponse",
+    "FakeScheduledResultFiles",
+    "FakeScheduledResults",
     "FakeScheduler",
     "FakeServiceRegistry",
     "FakeToolFiles",

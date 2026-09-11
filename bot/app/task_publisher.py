@@ -288,7 +288,10 @@ class TaskPublisher:
                     for file in files:
                         file.close()
                 await self.r.store.delivery_status(
-                    delivery["id"], "sent", message_id=str(message.id)
+                    delivery["id"],
+                    "sent",
+                    message_id=str(message.id),
+                    published_embed=dict(embed.to_dict()) if embed is not None else None,
                 )
                 if not delivery["is_log"]:
                     try:

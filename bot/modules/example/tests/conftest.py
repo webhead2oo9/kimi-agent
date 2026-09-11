@@ -30,6 +30,7 @@ from kimi_agent_module_api.testing import (
     FakeHttp,
     FakeInteractions,
     FakeProposals,
+    FakeScheduledResults,
     FakeScheduler,
     FakeServiceRegistry,
     FakeTrust,
@@ -158,6 +159,7 @@ async def started(storage: MemoryStorage, tmp_path: Path) -> AsyncIterator[Harne
         trust=trust,
         guild_settings=guild_settings,
         proposals=proposals,
+        scheduled_results=FakeScheduledResults(SPEC.permissions.scheduled_results),
     )
     await module.start(ctx)
     try:

@@ -45,6 +45,19 @@ class KudosLedger:
         # Resolve the quoted physical name once; it never changes at runtime.
         self._kudos = storage.table("kudos")
 
+    async def record_result(self, notification_id: str, expires_at: float, now: float) -> int:
+        """Idempotent local processing in the same transaction as its receipt."""
+        table = self._storage.table("result_receipts")
+        async with self._storage.write_transaction() as conn:
+            await conn.execute(f"DELETE FROM {table} WHERE expires_at<=?", (now,))
+            await conn.execute(
+                f"INSERT OR IGNORE INTO {table}(notification_id,expires_at) VALUES(?,?)",
+                (notification_id, expires_at),
+            )
+            async with conn.execute(f"SELECT COUNT(*) FROM {table}") as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row is not None else 0
+
     async def give(
         self,
         guild_id: int,

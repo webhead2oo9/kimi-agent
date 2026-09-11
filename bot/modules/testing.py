@@ -37,6 +37,7 @@ from kimi_agent_module_api.testing import (
     FakeInteractions,
     FakeProposals,
     FakeScheduler,
+    FakeScheduledResults,
     FakeTrust,
 )
 from storage.db import Database
@@ -97,6 +98,7 @@ class ModulePorts:
     guild_settings: FakeGuildSettings
     http: FakeHttp
     proposals: FakeProposals
+    scheduled_results: FakeScheduledResults
 
 
 @dataclass(slots=True)
@@ -217,6 +219,9 @@ async def build_test_runtime(
             guild_settings=FakeGuildSettings(guild_config),
             http=FakeHttp(http_routes),
             proposals=FakeProposals(spec.name, target_guilds=target_guilds),
+            scheduled_results=FakeScheduledResults(
+                spec.permissions.scheduled_results, is_guild_active=is_guild_active
+            ),
         )
         ports[spec.name] = created
         return created
@@ -244,6 +249,7 @@ async def build_test_runtime(
             "guild_settings": p.guild_settings,
             "http": p.http,
             "proposals": p.proposals,
+            "scheduled_results": p.scheduled_results,
         }
 
     runtime = TestRuntime(
@@ -281,6 +287,13 @@ def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
         **ports,
         "events": ports.get("events") or FakeEvents(spec.name),
         "scheduler": ports.get("scheduler") or FakeScheduler(),
+        "scheduled_results": ports.get("scheduled_results")
+        or FakeScheduledResults(
+            spec.permissions.scheduled_results,
+            is_guild_active=is_guild_active
+            if callable(is_guild_active)
+            else lambda _guild_id: True,
+        ),
         "discord": FakeDiscordActions(spec.name, spec.permissions.discord_actions),
         "interactions": FakeInteractions(
             spec.name,

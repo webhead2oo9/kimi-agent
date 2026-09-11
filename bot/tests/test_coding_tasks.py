@@ -548,7 +548,7 @@ async def test_coding_tables_use_current_schema(tmp_path) -> None:
     db = Database(tmp_path / "bot.db")
     await db.connect()
     try:
-        assert SCHEMA_VERSION == 15
+        assert SCHEMA_VERSION == 16
         async with db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'coding_%'"
         ) as cursor:

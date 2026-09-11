@@ -34,6 +34,13 @@ class DashboardContext:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardGuildPolicy:
+    enabled: bool = False
+    role_allowlist_configured: bool = False
+    allowed_role_ids: frozenset[str] = frozenset()
+
+
 class DashboardAccess:
     def __init__(
         self,
@@ -50,14 +57,34 @@ class DashboardAccess:
         self.active_guilds, self.user_blocked = active_guilds, user_blocked
         self.channel_access_allowed, self.preferences = channel_access_allowed, preferences
 
-    def _guild_enabled(self, guild_id: str) -> bool:
+    def _guild_policy(self, guild_id: str) -> DashboardGuildPolicy:
         path = Path(self.settings.config_dir) / "servers" / f"{guild_id}.md"
         try:
             meta, _ = split_frontmatter_strict(path.read_text(encoding="utf-8"))
             policy = meta.get("dashboard", {})
-            return isinstance(policy, dict) and policy.get("enabled") is True
-        except OSError, ValueError:
-            return False
+            if not isinstance(policy, dict) or policy.get("enabled") is not True:
+                return DashboardGuildPolicy()
+            if "allowed_role_ids" not in policy:
+                return DashboardGuildPolicy(enabled=True)
+            raw_roles = policy["allowed_role_ids"]
+            if not isinstance(raw_roles, list) or len(raw_roles) > 100:
+                raise ValueError("dashboard.allowed_role_ids must be a list of at most 100 IDs")
+            role_ids = frozenset(
+                str(role).strip()
+                for role in raw_roles
+                if not isinstance(role, bool)
+                and str(role).strip().isascii()
+                and str(role).strip().isdecimal()
+            )
+            if len(role_ids) != len(raw_roles):
+                raise ValueError("dashboard.allowed_role_ids must contain unique numeric IDs")
+            return DashboardGuildPolicy(
+                enabled=True,
+                role_allowlist_configured=True,
+                allowed_role_ids=role_ids,
+            )
+        except OSError, UnicodeError, ValueError:
+            return DashboardGuildPolicy()
 
     async def resolve(
         self,
@@ -67,15 +94,27 @@ class DashboardAccess:
         channel_id: str,
         continuing: bool = False,
     ) -> DashboardContext:
+        identifiers_valid = all(
+            value.isascii() and value.isdecimal() for value in (user_id, guild_id, channel_id)
+        )
+        guild_policy = (
+            await asyncio.to_thread(self._guild_policy, guild_id)
+            if identifiers_valid
+            else DashboardGuildPolicy()
+        )
         if (
             not self.settings.dashboard_enabled
-            or not all(value.isdigit() for value in (user_id, guild_id, channel_id))
+            or not identifiers_valid
             or int(guild_id) not in self.active_guilds()
-            or not await asyncio.to_thread(self._guild_enabled, guild_id)
+            or not guild_policy.enabled
         ):
             raise web.HTTPForbidden(reason="The dashboard is disabled in this server")
         allowed_users = self.settings.dashboard_allowed_user_id_set
-        if allowed_users and user_id not in allowed_users:
+        if (
+            allowed_users
+            and not guild_policy.role_allowlist_configured
+            and user_id not in allowed_users
+        ):
             raise web.HTTPForbidden(reason="Dashboard access is currently limited to invited users")
         if await self.user_blocked(user_id):
             raise web.HTTPForbidden(reason="You cannot use the dashboard right now")
@@ -84,6 +123,14 @@ class DashboardAccess:
             raise web.HTTPForbidden(reason="This server is unavailable")
         try:
             member = await guild.fetch_member(int(user_id))
+            if guild_policy.role_allowlist_configured and user_id not in allowed_users:
+                member_role_ids = {
+                    str(role.id) for role in member.roles if getattr(role, "id", None) is not None
+                }
+                if not member_role_ids & guild_policy.allowed_role_ids:
+                    raise web.HTTPForbidden(
+                        reason="Dashboard access is currently limited to invited users or roles"
+                    )
             # Fetch the channel as well as the member: stale overwrites must not
             # expose saved private content after access is removed.
             channel = await guild.fetch_channel(int(channel_id))

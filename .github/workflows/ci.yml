@@ -17,7 +17,7 @@ permissions:
 jobs:
   dashboard:
     name: Activity frontend
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, homelab]
     timeout-minutes: 10
     defaults:
       run:
@@ -38,7 +38,7 @@ jobs:
 
   pip-compat:
     name: pip install smoke test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, homelab]
     timeout-minutes: 10
     defaults:
       run:
@@ -72,7 +72,7 @@ jobs:
 
   check:
     name: lint + types + tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, homelab]
     # Leave enough headroom for transient registry latency before the test suite.
     timeout-minutes: 20
     defaults:

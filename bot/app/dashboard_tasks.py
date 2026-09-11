@@ -155,13 +155,18 @@ class DashboardTasks:
     async def publish_coding(self, task: CodingTask, context: ConversationContext | None) -> None:
         if task.delivery_surface != "dashboard":
             raise ValueError("Expected a private dashboard task")
-        async with self.roots.hold(task.root_key):
+        terminal = task.status not in ACTIVE_TASK_STATUSES
+        # Progress can be published while the coding worker owns the workspace.
+        # A foreground turn holds the chat root while waiting for that workspace,
+        # so only terminal delivery (after the writer exits) may acquire the root.
+        # event() already discards late progress for a deleted conversation.
+        root_guard = self.roots.hold(task.root_key) if terminal else nullcontext()
+        async with root_guard:
             chat = await self.store.for_root(task.root_key)
             if chat is None or chat.user_id != task.user_id or chat.guild_id != task.guild_id:
                 return
             if task.delivery_state == "delivered":
                 return
-            terminal = task.status not in ACTIVE_TASK_STATUSES
             event_key = f"coding:{task.id}:final"
             if terminal and await self.store.event_by_key(chat.id, event_key):
                 await self.coding.store.mark_delivered(task.id, None)

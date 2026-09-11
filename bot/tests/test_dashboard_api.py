@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from aiohttp import WSMsgType, web
+from aiohttp import WSServerHandshakeError, WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.dashboard import Dashboard
@@ -252,6 +253,85 @@ async def test_socket_replays_durable_events_and_revocation_ends_session(api):
         await service.auth.delete_user("1")
         await ws.receive(timeout=3)
         assert ws.close_code == 1008
+
+
+@pytest.mark.asyncio
+async def test_socket_limit_counts_concurrent_handshakes(api):
+    client, service = api
+    chat = await create(service)
+    original = service._chat
+    started, release = asyncio.Event(), asyncio.Event()
+    lookups = 0
+
+    async def slow_chat(*args):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 3:
+            started.set()
+        await release.wait()
+        return await original(*args)
+
+    service._chat = slow_chat
+    sockets = []
+
+    async def connect():
+        socket = await client.ws_connect(f"/api/ws?chat={chat.id}")
+        sockets.append(socket)
+
+    try:
+        async with asyncio.timeout(3), asyncio.TaskGroup() as group:
+            for _ in range(3):
+                group.create_task(connect())
+            await started.wait()
+            try:
+                with pytest.raises(WSServerHandshakeError) as denied:
+                    await client.ws_connect(f"/api/ws?chat={chat.id}")
+                assert denied.value.status == 429
+            finally:
+                release.set()
+        assert lookups == 3
+    finally:
+        release.set()
+        for socket in sockets:
+            await socket.close()
+
+
+@pytest.mark.asyncio
+async def test_denied_socket_handshake_releases_its_slot(api):
+    client, service = api
+    with pytest.raises(WSServerHandshakeError) as denied:
+        await client.ws_connect("/api/ws?chat=missing")
+    assert denied.value.status == 404
+    assert not service._sockets
+
+
+@pytest.mark.asyncio
+async def test_privacy_deletion_revokes_a_pending_socket_handshake(api):
+    client, service = api
+    chat = await create(service)
+    original = service._chat
+    started, release = asyncio.Event(), asyncio.Event()
+    service.turns.delete_user = AsyncMock()
+
+    async def slow_chat(*args):
+        started.set()
+        await release.wait()
+        return await original(*args)
+
+    service._chat = slow_chat
+
+    async def connect():
+        async with client.ws_connect(f"/api/ws?chat={chat.id}") as socket:
+            await socket.receive(timeout=3)
+            assert socket.close_code == 1008
+
+    async with asyncio.timeout(3), asyncio.TaskGroup() as group:
+        group.create_task(connect())
+        await started.wait()
+        try:
+            await service.delete_user("1", "all")
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 import secrets
@@ -144,8 +145,15 @@ class DashboardAuth:
         avatar = await self.fetch_avatar(avatar_url(user_id, identity))
         if generation != self._generation:
             raise web.HTTPUnauthorized(reason="Sign-in expired. Reopen the dashboard")
-        if len(self._sessions) >= self._maximum:
+        # Reopening the Activity reauthenticates and overwrites this cookie.
+        # Reclaim that browser's old slot only after verifying the same owner;
+        # otherwise repeated launches exhaust capacity until the sessions expire.
+        previous = self._sessions.get(request.cookies.get(SESSION_COOKIE, ""))
+        replacing = previous is not None and previous.user_id == user_id
+        if len(self._sessions) - int(replacing) >= self._maximum:
             raise web.HTTPTooManyRequests(reason="Dashboard is busy. Try again shortly")
+        if replacing and previous is not None:
+            self.logout(previous)
         session = DashboardSession(
             secrets.token_urlsafe(32),
             secrets.token_urlsafe(32),
@@ -165,7 +173,10 @@ class DashboardAuth:
             async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200 or response.content_type != "image/png":
                     return None
-                data = await response.content.read(AVATAR_MAX_BYTES + 1)
+                try:
+                    data = await response.content.readexactly(AVATAR_MAX_BYTES + 1)
+                except asyncio.IncompleteReadError as exc:
+                    data = exc.partial
         except aiohttp.ClientError, TimeoutError:
             return None
         return png_data_url(data)

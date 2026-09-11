@@ -14,6 +14,7 @@ from app.dashboard_auth import (
     CHALLENGE_COOKIE,
     SESSION_COOKIE,
     DashboardAuth,
+    DashboardSession,
     avatar_url,
     secure_cookie,
 )
@@ -159,6 +160,37 @@ def test_cookie_flags_origin_and_challenge_limits():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("previous_user", ["1", "9"])
+async def test_reopening_replaces_only_the_authenticated_users_session_at_capacity(previous_user):
+    import time
+
+    service = auth()
+    service._maximum = 1
+    previous = DashboardSession(
+        "old-token", "old-csrf", previous_user, "2", "3", "old-instance", time.monotonic() + 300
+    )
+    service._sessions[previous.token] = previous
+    service._json = AsyncMock(side_effect=[{"access_token": "oauth"}, {"id": "1"}, instance()])
+    service.fetch_avatar = AsyncMock(return_value=None)
+    state, cookie = challenge(service)
+    login = service.login(
+        request(cookie=f"{cookie}; {SESSION_COOKIE}={previous.token}"),
+        code="code",
+        state=state,
+        instance_id="instance-1",
+    )
+    if previous_user != "1":
+        with pytest.raises(web.HTTPTooManyRequests):
+            await login
+        assert service.valid(previous)
+    else:
+        session, _ = await login
+        assert service.valid(session)
+        assert not service.valid(previous)
+        assert len(service._sessions) == 1
+
+
+@pytest.mark.asyncio
 async def test_login_inlines_the_avatar_discord_displays_for_the_user():
     service = auth()
     service._json = AsyncMock(
@@ -189,12 +221,15 @@ def test_avatar_url_follows_discord_display_rules(identity, expected):
 
 
 def cdn(status=200, content_type="image/png", body=PNG, error=None):
+    read = AsyncMock(return_value=body[: AVATAR_MAX_BYTES + 1])
+    if len(body) <= AVATAR_MAX_BYTES:
+        read.side_effect = asyncio.IncompleteReadError(body, AVATAR_MAX_BYTES + 1)
     response = MagicMock()
     response.__aenter__ = AsyncMock(
         return_value=SimpleNamespace(
             status=status,
             content_type=content_type,
-            content=SimpleNamespace(read=AsyncMock(return_value=body[: AVATAR_MAX_BYTES + 1])),
+            content=SimpleNamespace(readexactly=read),
         )
     )
     response.__aexit__ = AsyncMock(return_value=False)
@@ -218,3 +253,24 @@ async def test_fetch_avatar_only_inlines_a_verified_png(http, expected):
     service = auth()
     service._http = http
     assert await service.fetch_avatar("https://cdn.discordapp.com/avatars/1/x.png") == expected
+
+
+@pytest.mark.asyncio
+async def test_avatar_download_waits_for_all_network_chunks():
+    import base64
+
+    service = auth()
+    # StreamReader.read(n) may return fewer than n bytes before EOF.
+    reader = aiohttp.StreamReader(MagicMock(), limit=AVATAR_MAX_BYTES)
+    reader.feed_data(PNG[:8])
+    response = MagicMock()
+    response.__aenter__ = AsyncMock(
+        return_value=SimpleNamespace(status=200, content_type="image/png", content=reader)
+    )
+    response.__aexit__ = AsyncMock(return_value=False)
+    service._http = SimpleNamespace(get=MagicMock(return_value=response))
+    downloading = asyncio.create_task(service.fetch_avatar("https://cdn.discordapp.com/avatar.png"))
+    await asyncio.sleep(0)
+    reader.feed_data(PNG[8:])
+    reader.feed_eof()
+    assert await downloading == "data:image/png;base64," + base64.b64encode(PNG).decode()

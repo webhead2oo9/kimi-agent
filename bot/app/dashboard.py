@@ -654,11 +654,13 @@ class Dashboard:
         session = request[_SESSION]
         if sum(value.user_id == session.user_id for value in self._sockets.values()) >= 3:
             raise web.HTTPTooManyRequests(reason="Close another dashboard tab before reconnecting")
-        chat = await self._chat(request, request.query.get("chat", ""))
         after = cursor(request.query.get("after")) or 0
         socket = web.WebSocketResponse(heartbeat=20, max_msg_size=1024)
+        # Reserve the slot before any lookup awaits, so simultaneous handshakes
+        # cannot all pass the same per-user connection count.
         self._sockets[socket] = session
         try:
+            chat = await self._chat(request, request.query.get("chat", ""))
             await socket.prepare(request)
             check_at = 0.0
             verified = False
@@ -715,6 +717,8 @@ class Dashboard:
                 except TimeoutError:
                     pass
         except web.HTTPException as exc:
+            if not socket.prepared:
+                raise
             if exc.status == 429 or exc.status >= 500:
                 await socket.close(code=1013, message=b"Verification unavailable. Reconnecting")
             else:
@@ -722,10 +726,12 @@ class Dashboard:
         except PrivacyDeletionPendingError:
             await socket.close(code=1008, message=b"Access expired. Reopen the dashboard")
         except ConnectionError, TimeoutError:
-            pass
+            if not socket.prepared:
+                raise
         finally:
             self._sockets.pop(socket, None)
-            await socket.close()
+            if socket.prepared:
+                await socket.close()
         return socket
 
     async def delete_user(
@@ -735,7 +741,7 @@ class Dashboard:
         if self.auth:
             await self.auth.delete_user(user_id)
         for socket, session in list(self._sockets.items()):
-            if session.user_id == user_id:
+            if session.user_id == user_id and socket.prepared:
                 await socket.close(code=1008, message=b"Your data was deleted")
         return PrivacyDeletionCallbackResult(
             True, ("Revoked dashboard sessions and pending chat requests.",)
@@ -743,7 +749,8 @@ class Dashboard:
 
     async def close(self) -> None:
         for socket in list(self._sockets):
-            await socket.close(code=1001, message=b"The dashboard is restarting")
+            if socket.prepared:
+                await socket.close(code=1001, message=b"The dashboard is restarting")
         if self._runner:
             await self._runner.cleanup()
             self._runner = None

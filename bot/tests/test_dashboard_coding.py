@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,7 +13,7 @@ from storage.db import Database
 from tests.test_coding_delivery import make_delivery
 from tests.helpers import make_settings
 from tools.workspace.common import UserLocks
-from workspace import WorkspaceManager
+from workspace import WorkspaceKey, WorkspaceManager
 
 
 @pytest.mark.asyncio
@@ -82,6 +83,72 @@ async def test_coding_delivery_is_durable_private_and_deduplicated_without_socke
                 (None, f"coding:{task.id}:final")
             ]
         delivery._publish_locked.assert_not_called()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_coding_progress_cannot_deadlock_a_followup_waiting_for_the_workspace(tmp_path):
+    db = Database(tmp_path / "progress.db")
+    await db.connect()
+    try:
+        store = DashboardStore(db)
+        chat = await store.create(
+            user_id="1", guild_id="2", channel_id="3", parent_channel_id="3", channel_name="general"
+        )
+        coding = CodingTaskStore(db)
+        task = await coding.create_task(
+            conversation_id=chat.conversation_id,
+            root_key=chat.key,
+            workspace_key="1__2",
+            user_id="1",
+            user_name="Charlie",
+            guild_id="2",
+            channel_id="3",
+            thread_id=None,
+            trigger_discord_message_id="",
+            objective="Make a report",
+            acceptance_criteria=[],
+            context_text="",
+            max_seconds=300,
+            delivery_surface="dashboard",
+        )
+        delivery = make_delivery(store=coding, conversation_store=store.conversations)
+        locks, roots = UserLocks(), RootLockPool()
+        bridge = DashboardTasks(
+            store=store,
+            files=None,
+            access=None,
+            coding=SimpleNamespace(store=coding),
+            delivery=delivery,
+            scheduled=None,
+            roots=roots,
+            privacy=None,
+            operations=None,
+            admission=None,
+        )
+        delivery.dashboard_publish = bridge.publish_coding
+        writer_started, followup_started = asyncio.Event(), asyncio.Event()
+        key = WorkspaceKey(task.workspace_key)
+
+        async def coding_work():
+            async with locks.writer(key):
+                writer_started.set()
+                await followup_started.wait()
+                await delivery.publish(task, None)
+
+        async def followup():
+            await writer_started.wait()
+            async with roots.hold(chat.key):
+                followup_started.set()
+                async with locks.activity(key):
+                    pass
+
+        async with asyncio.timeout(2), asyncio.TaskGroup() as group:
+            group.create_task(coding_work())
+            group.create_task(followup())
+        events = await store.events(chat.id)
+        assert len(events) == 1 and events[0].kind == "coding_task"
     finally:
         await db.close()
 

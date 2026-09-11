@@ -1,15 +1,11 @@
-<h1 align="center">⚠️ HEAVILY IN DEVELOPMENT ⚠️</h1>
-
-<p align="center">
-  <strong>This project is experimental and changing rapidly.</strong><br>
-  Expect breaking changes, bugs, and incomplete features. Back up your data before updating.
-</p>
-
----
-
 # Kimi
 
 > A Discord assistant built for you and your communities.
+
+> Kimi is getting a new name and a new home as Kohana. We’re wrapping up the
+> final update here, then moving future development to `Kohana-AI/kohana-agent`.
+> This repository will be archived after the move. Thanks for following along
+> so far, and we’d love to see you over there.
 
 ![Python](https://img.shields.io/badge/python-3.14+-blue.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)

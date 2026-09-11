@@ -46,6 +46,15 @@ from kimi_agent_module_api.tools import (
     TriggeringDiscordMessageSnapshot,
 )
 from kimi_agent_module_api.trust import TrustTier
+from kimi_agent_module_api.scheduled_results import (
+    ScheduledResult,
+    ScheduledResultAccessError,
+    ScheduledResultAttachment,
+    ScheduledResultFiles,
+    ScheduledResultHandler,
+    ScheduledResultMessage,
+    ScheduledResults,
+)
 
 MODULE_API_VERSION = 2
 MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
@@ -147,6 +156,7 @@ class ModuleRuntimeContext:
     proposals: ProposalService | None = None
     raw_bot: Any = None
     raw_storage: Any = None
+    scheduled_results: ScheduledResults | None = None
 
 
 __all__ = [
@@ -183,6 +193,13 @@ __all__ = [
     "ProposalService",
     "ProposalState",
     "RoleSnapshot",
+    "ScheduledResult",
+    "ScheduledResultAccessError",
+    "ScheduledResultAttachment",
+    "ScheduledResultFiles",
+    "ScheduledResultHandler",
+    "ScheduledResultMessage",
+    "ScheduledResults",
     "ScopedModuleMigration",
     "ServiceDeclaration",
     "ServiceRequirement",

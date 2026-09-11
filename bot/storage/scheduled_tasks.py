@@ -8,6 +8,7 @@ import uuid
 from typing import Any, cast
 
 from storage.db import Database
+from storage.task_results import TaskResultStore, enqueue_results
 from storage.task_types import (
     DeliveryRecord,
     DeliverySummary,
@@ -115,7 +116,11 @@ class ScheduledTaskStore:
             (task_id,),
         ) as cursor:
             deliveries = [cast(DeliverySummary, dict(row)) for row in await cursor.fetchall()]
-        return {"runs": await self.history(task_id), "deliveries": deliveries}
+        return {
+            "runs": await self.history(task_id),
+            "deliveries": deliveries,
+            "notifications": await TaskResultStore(self.db).history(task_id),
+        }
 
     async def save_files(
         self, run_id: str, files: list[tuple[str, str | None, bytes]]
@@ -653,6 +658,7 @@ class ScheduledTaskStore:
         *,
         message_id: str = "",
         error: str = "",
+        published_embed: dict[str, Any] | None = None,
     ) -> None:
         async with self.db.immediate_write_transaction() as conn:
             await conn.execute(
@@ -668,6 +674,12 @@ class ScheduledTaskStore:
                 ),
             )
             if status == "sent":
+                if published_embed is not None:
+                    await conn.execute(
+                        "UPDATE scheduled_task_deliveries SET payload_json="
+                        "json_set(payload_json,'$.published_embed',json(?)) WHERE id=?",
+                        (json.dumps(published_embed), delivery_id),
+                    )
                 async with conn.execute(
                     "SELECT run_id FROM scheduled_task_deliveries WHERE id=?",
                     (delivery_id,),
@@ -683,6 +695,7 @@ class ScheduledTaskStore:
                     )
                     if cursor.rowcount:
                         await self._commit_state(conn, run_id)
+                        await enqueue_results(conn, run_id, time.time())
 
     async def publication_context(
         self, guild_id: str, conversation_key: str

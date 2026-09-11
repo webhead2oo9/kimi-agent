@@ -13,6 +13,8 @@ implementation, or module loader. It exports:
   (storage, scheduler, events, Discord actions, interactions, HTTP, services,
   trust, proposals, health) plus the validators the host runs at preflight.
 - `kimi_agent_module_api.events`: the normalized `discord.*` event payloads.
+- `kimi_agent_module_api.scheduled_results`: durable subscriptions to published
+  task output, typed results, and bounded attachment readers (SDK 2.4).
 - `kimi_agent_module_api.files`: `ToolFiles`, `ToolAttachment`, `ToolFile`, and
   `FileAccessError` for invocation-scoped attachment and workspace reads.
 - `kimi_agent_module_api.testing`: a fake for every port, `load_context()` for
@@ -99,3 +101,14 @@ From this package directory, run its tests without installing the Kimi applicati
 ```console
 uv run --isolated --group test python -m pytest -q
 ```
+
+SDK 2.4 adds `ScheduledResults`: named, guild-scoped subscriptions to task output
+following confirmed Discord publication. Declare
+`ModulePermissions(scheduled_results=("my_subscription",))`, require the host
+capability `scheduled_results.v1`, and register through `ctx.scheduled_results`
+during startup. Handlers receive a typed `ScheduledResult` and an invocation-scoped
+`ScheduledResultFiles` reader. Returning acknowledges the result; exceptions retry
+with the same notification ID. Use that ID for idempotent processing.
+`FakeScheduledResults` supports standalone tests. See the
+[published-result guide](https://github.com/Kimi-Discord-Agent/kimi-agent/blob/main/docs/module-scheduled-results.md)
+for access checks, limits, retention, and deletion responsibilities.

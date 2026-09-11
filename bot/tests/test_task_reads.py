@@ -246,6 +246,8 @@ async def test_v12_upgrade_adds_empty_streak_without_changing_approved_task(tmp_
         connection.execute("ALTER TABLE messages DROP COLUMN source_id")
         connection.execute("ALTER TABLE coding_tasks DROP COLUMN delivery_surface")
         connection.execute("DELETE FROM schema_version WHERE version>=13")
+        connection.execute("DROP TABLE scheduled_result_notifications")
+        connection.execute("DROP TABLE scheduled_result_subscriptions")
     await db.connect()
     try:
         assert await store.get(task["id"]) == task

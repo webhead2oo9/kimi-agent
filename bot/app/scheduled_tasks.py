@@ -21,6 +21,7 @@ from app.thread_handoff_boundary import ThreadHandoffBoundary
 from tools.registry import MessageContext, TaskPreviewRequest
 from tools.scheduled_tasks import init_task_tools
 from tools._common import tool_error
+from storage.task_results import ResultNotification, TaskResultStore
 
 
 class ScheduledTaskService:
@@ -52,6 +53,15 @@ class ScheduledTaskService:
 
     async def _cancel(self, task_id: str) -> None:
         await self.scheduler.cancel(task_id)
+
+    async def check_result_access(self, row: ResultNotification) -> None:
+        """Current owner, guild, policy, and visibility of every published destination."""
+        ctx = await self.r.access.context(row["guild_id"], row["owner_id"], row["channel_id"])
+        ctx = await self.authority.fresh(ctx)
+        await self.r.access.owner_allowed(ctx)
+        messages = await TaskResultStore(self.r.store.db).messages(row["run_id"])
+        for channel_id in {str(message["channel_id"]) for message in messages}:
+            await self.r.access.channel(ctx, channel_id, posting=False)
 
     async def manage(self, args: dict[str, Any], ctx: MessageContext) -> str:
         try:

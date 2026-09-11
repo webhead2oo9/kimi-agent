@@ -87,6 +87,7 @@ class DeliverySummary(TypedDict):
 class TaskHistory(TypedDict):
     runs: list[RunRecord]
     deliveries: list[DeliverySummary]
+    notifications: list[dict[str, Any]]
 
 
 class SavedTaskFile(TypedDict):

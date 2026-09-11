@@ -30,6 +30,8 @@ from kimi_agent_module_api import (
     ModuleToolContext,
     ProposalActor,
     ProposalError,
+    ScheduledResult,
+    ScheduledResultFiles,
     ScopedModuleMigration,
     TrustTier,
     render_guild_settings,
@@ -134,6 +136,16 @@ class KudosModule:
         self._ctx = ctx
         self._ledger = KudosLedger(ctx.storage)
 
+        if self._settings.result_guild_id:
+            ctx.capabilities.require("scheduled_results.v1")
+            if ctx.scheduled_results is None:
+                raise RuntimeError("Host did not supply scheduled results")
+            await ctx.scheduled_results.subscribe(
+                "published_tasks",
+                guild_id=self._settings.result_guild_id,
+                handler=self._on_published_task,
+            )
+
         # Durable background work. The handler is bound by name each start
         # because the job row outlives the process; ``run_every`` with the same
         # key replaces the persisted schedule, so a changed interval takes
@@ -225,6 +237,17 @@ class KudosModule:
         # The host reports ``healthy`` after a clean ``start()`` anyway; reporting
         # explicitly is how a module attaches its own metrics from the outset.
         self._report_health()
+
+    async def _on_published_task(
+        self, result: ScheduledResult, _files: ScheduledResultFiles
+    ) -> None:
+        assert self._ledger is not None and self._ctx is not None
+        count = await self._ledger.record_result(
+            result.notification_id, result.expires_at, self._clock()
+        )
+        self._ctx.health.report(
+            "healthy", metrics={"published_task_results": float(count)}, key="published_tasks"
+        )
 
     async def close(self) -> None:
         """Release everything ``start()`` acquired, newest first."""

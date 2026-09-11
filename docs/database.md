@@ -77,7 +77,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` and the core schema helpers build the complete schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8–v15 changes after the v7 baseline.
+- `_SCHEMA_SQL` and the core schema helpers build the complete schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8–v16 changes after the v7 baseline.
 - Every core schema addition must support both fresh initialization and an ordered migration; shared helpers can serve both paths.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -89,12 +89,14 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 records the v7 baseline as `core_v7_baseline`, followed by v8
 `privacy_plugin_callbacks`, v9 `image_usage_reservations`, v10 `scheduled_tasks`,
 v11 `task_previews`, v12 `task_thread_closure`, v13 `task_read_recovery`,
-v14 `assistant_dashboard`, and v15 `dashboard_branches`. Existing v7–v14
+v14 `assistant_dashboard`, v15 `dashboard_branches`, and v16 `scheduled_results`.
+The v16 migration adds durable module subscriptions and result acknowledgements;
+it does not replay historical task results. Existing v7–v15
 databases retain their data and complete version ledger, including rows from
 earlier upgrades.
 
 The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old
-transcript-format conversion have been removed. A database at v7 through v14
+transcript-format conversion have been removed. A database at v7 through v15
 automatically applies the remaining migrations; no manual operator action is
 needed. When restoring an older backup, use a release compatible with that
 backup; this release cannot upgrade a pre-v7 database. Do not change the schema

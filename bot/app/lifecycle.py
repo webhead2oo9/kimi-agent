@@ -66,6 +66,8 @@ from modules.events import EventBusImpl
 from modules.guild_settings import GuildSettingsService
 from modules.http import ModuleHttpRuntime
 from modules.scheduler import DurableScheduler
+from modules.scheduled_results import ScheduledResultRuntime
+from storage.task_results import TaskResultStore
 from app.scheduled_tasks import ScheduledTaskService
 from observability.events import emit_module_health, start_event_writer, stop_event_writer
 from storage.auto_retain import AutoRetainStore
@@ -388,6 +390,8 @@ class ApplicationLifecycle:
                 await resources.module_manager.scheduler.close()
             except Exception:
                 log.exception("Error closing the module scheduler")
+        if resources.module_manager.scheduled_results is not None:
+            await resources.module_manager.scheduled_results.close()
         await resources.module_manager.close()
         if resources.module_manager.http is not None:
             await resources.module_manager.http.close()
@@ -730,6 +734,13 @@ class ApplicationLifecycle:
             ),
         )
         module_manager.http = ModuleHttpRuntime(user_agent=f"{settings.bot_name}-modules")
+        if resources.scheduled_tasks is not None:
+            module_manager.scheduled_results = ScheduledResultRuntime(
+                TaskResultStore(resources.database),
+                check_access=resources.scheduled_tasks.check_result_access,
+                privacy=resources.privacy_barrier,
+                health=module_manager.health,
+            )
         module_manager.guild_settings = GuildSettingsService(
             config_dir=lambda: Path(settings.config_dir),
             schemas=module_manager.guild_settings_schemas,
@@ -824,6 +835,8 @@ class ApplicationLifecycle:
         )
         # Persisted module jobs re-bind to handlers registered during start().
         module_manager.scheduler.start()
+        if module_manager.scheduled_results is not None:
+            module_manager.scheduled_results.start()
         # Start the durable scheduler only after pending privacy deletions have
         # replayed and their barriers are installed. This prevents recovered
         # work from racing a deletion request during READY initialization.

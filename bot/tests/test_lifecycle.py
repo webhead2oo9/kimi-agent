@@ -118,6 +118,7 @@ async def test_close_resources_preserves_dependency_order(
 
     class _ModuleManager(_Closer):
         scheduler = None
+        scheduled_results = _Closer("module-results")
         http = None
         events = None
 
@@ -160,6 +161,7 @@ async def test_close_resources_preserves_dependency_order(
         "event-writer",
         "coding",
         "browser",
+        "module-results",
         "modules",
         "memory",
         "providers",

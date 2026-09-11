@@ -414,6 +414,11 @@ class TaskControls:
                 + clip(run["detail"], 250)
                 + ("\n" + " · ".join(links) if links else "")
             )
+            notifications = [n for n in result.get("notifications", ()) if n["run_id"] == run["id"]]
+            if notifications:
+                entries[-1] += "\nModules: " + ", ".join(
+                    f"{n['module']}/{n['name']}: {n['status']}" for n in notifications[:4]
+                )
         embed = discord.Embed(
             title="Task history", description="\n\n".join(entries)[:4000] or "No runs yet."
         )

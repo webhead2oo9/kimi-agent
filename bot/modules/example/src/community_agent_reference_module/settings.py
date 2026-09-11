@@ -34,6 +34,8 @@ class KudosSettings(BaseSettings):
     board_size: int = 10
     # How often the scheduled digest job runs. Weekly by default.
     digest_interval_seconds: int = 7 * 24 * 60 * 60
+    # Opt-in example subscriber; 0 disables it. Restart after changing this scope.
+    result_guild_id: int = 0
 
 
 SETTINGS = ModuleSettingsDefinition(
@@ -61,6 +63,12 @@ SETTINGS = ModuleSettingsDefinition(
             label="Digest interval (seconds)",
             help="How often the kudos digest is posted to each guild's digest channel.",
             minimum=60,
+        ),
+        ModuleSetting(
+            field="result_guild_id",
+            label="Published-task example guild",
+            help="Guild whose published task results to count (0 disables; requires restart).",
+            minimum=0,
         ),
     ),
 )

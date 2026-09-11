@@ -229,7 +229,7 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.3.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.4.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
 If the `kimi-agent-module-api` project has not yet been reserved on PyPI, use PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi` before the next tag. A name lookup isn't a reservation, so confirm availability again immediately before a release.
 
@@ -277,6 +277,11 @@ populated only for a module whose permissions declare them, and the owner
 manifest lists those escape hatches. Modules are trusted, in-process code:
 the ports are a contract and an audit surface, not a sandbox.
 
+- `ctx.scheduled_results`: named, guild-scoped subscriptions to confirmed task
+  output, with durable acknowledgements and independent retries. SDK 2.4,
+  `permissions.scheduled_results`, and `scheduled_results.v1` are required.
+  See [published task results](module-scheduled-results.md) for the contract,
+  access checks, retention, and test fakes.
 - `ctx.storage`: the shared database seen through the module's table prefix.
   `ctx.storage.table("cases")` returns the quoted physical name
   `"<module>_cases"`. A module that defines `scoped_migrations` gets a

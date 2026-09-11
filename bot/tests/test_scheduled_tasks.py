@@ -879,6 +879,8 @@ async def test_v12_migration_requeues_open_approved_threads_without_changing_tas
         conn.execute("ALTER TABLE messages DROP COLUMN source_id")
         conn.execute("ALTER TABLE coding_tasks DROP COLUMN delivery_surface")
         conn.execute("DELETE FROM schema_version WHERE version>=12")
+        conn.execute("DROP TABLE scheduled_result_notifications")
+        conn.execute("DROP TABLE scheduled_result_subscriptions")
     await db.connect()
     try:
         assert await store.get(task["id"]) == task

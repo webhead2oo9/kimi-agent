@@ -323,6 +323,14 @@ Message edits and thread closure retry after transient failures,
 including after a restart; approval itself is never repeated. Older previews remain
 usable and are updated on interaction.
 
+## Module subscriptions
+
+Installed modules can subscribe to confirmed publications through the SDK's
+[published-result service](module-scheduled-results.md). Subscriptions are
+guild-scoped; module processing retries independently after required Discord
+posts are confirmed. Preview runs never notify subscribers. `/tasks history`
+includes module notification states alongside delivery records.
+
 ## Replies to scheduled output
 
 Replies continue from the published message. While its task and run records remain,

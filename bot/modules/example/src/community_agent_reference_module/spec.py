@@ -106,7 +106,7 @@ def create(ctx: ModuleLoadContext) -> AppModule:
 
 SPEC = ModuleSpec(
     name=MODULE_NAME,
-    version="1.0.0",
+    version="1.1.0",
     create=create,
     # Pin the contract this source implements. Do not replace this literal with
     # MODULE_API_VERSION: rebuilding unchanged source against a future SDK must
@@ -120,6 +120,7 @@ SPEC = ModuleSpec(
         # Core topics we subscribe to. Our own ``reference_kudos.*`` namespace
         # is implicit and must not be listed.
         event_topics=(TOPIC_MEMBER_REMOVE,),
+        scheduled_results=("published_tasks",),
     ),
     # Sibling modules can depend on us and call ``ctx.services.get("kudos.board", 1)``.
     provides=(ServiceDeclaration(SERVICE_NAME, SERVICE_VERSION),),

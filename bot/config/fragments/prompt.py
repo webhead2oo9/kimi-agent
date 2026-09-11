@@ -113,6 +113,19 @@ def prompt_template_candidates(
                 path=command_dir / f"{command_template}.md",
             )
         )
+        if command_template == "dashboard":
+            # Older external CONFIG_DIR trees may not have the Activity prompt
+            # yet. Never silently describe this private web chat as guild chat.
+            candidates.append(
+                PromptTemplateCandidate(
+                    kind="command_default",
+                    identifier=command_template,
+                    path=Path(__file__).resolve().parents[1]
+                    / "prompts"
+                    / "commands"
+                    / "dashboard.md",
+                )
+            )
     if channel_id and _ID_RE.fullmatch(channel_id):
         candidates.append(
             PromptTemplateCandidate(

@@ -79,6 +79,8 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `root_locks.py` | One lock per conversation, so two replies to the same conversation run one after the other |
 | `work_cancellation.py` | Stops running foreground turns and coding tasks for `/stop`, reset, and `/privacy` |
 | `coding_tasks.py`, `coding_delivery.py` | Schedules durable coding tasks and reports their progress to Discord |
+| `dashboard.py`, `dashboard_auth.py`, `dashboard_access.py` | The optional Discord Activity dashboard: its HTTP/WebSocket listener, Discord login and session cookies, and per-request server and channel access checks |
+| `dashboard_turn.py`, `dashboard_files.py`, `dashboard_tasks.py` | Runs dashboard chats through the shared foreground sequence, keeps private file snapshots and previews, and delivers coding results and task approvals privately |
 | `turn_entry.py` | Works out which tools a given turn may use |
 | `tools.py` | Registers the built-in tools and their clients |
 | `modules.py`, `plugins.py` | Loads installed modules and operator plugins |

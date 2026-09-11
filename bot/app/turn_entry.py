@@ -23,6 +23,7 @@ from config.fragments.channel_pins import (
     load_channel_pinned_tools,
     load_channel_thread_handoff,
 )
+from config.fragments.dashboard import DashboardToolPolicy, load_dashboard_tool_policy
 from agent.core import UserActivityGuard, run_conversation
 from agent.discord_references import ResolvedDiscordReferenceHint
 from config.fragments.guild_config import (
@@ -322,6 +323,15 @@ async def build_turn_dependencies(
     )
     provider = chat_provider_for_turn(images=has_images)
     tool_config_channel_id = _tool_config_channel_id(source)
+    dashboard_policy = (
+        await asyncio.to_thread(
+            load_dashboard_tool_policy,
+            source.guild_id or "",
+            config_dir=Path(services.settings.config_dir),
+        )
+        if command_template == "dashboard"
+        else DashboardToolPolicy()
+    )
 
     def skills_index_builder() -> str:
         return services.skills_index(None if source.personal_chat else source.guild_id)
@@ -337,9 +347,11 @@ async def build_turn_dependencies(
     def channel_pinned_tools() -> frozenset[str]:
         if source.personal_chat:
             return frozenset()
-        pins = hooks.load_channel_pinned_tools(
-            tool_config_channel_id
-        ) | hooks.load_guild_pinned_tools(source.guild_id or "")
+        pins = (
+            hooks.load_channel_pinned_tools(tool_config_channel_id)
+            | hooks.load_guild_pinned_tools(source.guild_id or "")
+            | dashboard_policy.pinned_tools
+        )
         if not pins:
             return frozenset()
         return hooks.filter_pins_to_searchable(
@@ -372,6 +384,7 @@ async def build_turn_dependencies(
                 load_channel=hooks.load_channel_blocked_tools,
             )
             | extra_blocked_tools
+            | dashboard_policy.blocked_tools
             | _platform_scope_blocked_tools(source.guild_id)
         )
         # The tri-state fragment switch and an explicit move_to_thread deny both

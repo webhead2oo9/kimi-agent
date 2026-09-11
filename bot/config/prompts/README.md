@@ -108,3 +108,12 @@ trust and log wiring; see each directory's `example.md` and
 Frontmatter is config, not prompt text: it is stripped before the body fills its
 slot. The thread-scoped `config/threads/` and `config/channel_threads/`
 fragments are body-only.
+
+Dashboard conversations use `commands/dashboard.md`, with the same local and
+per-guild command overrides listed above. Its frontmatter accepts `pinned_tools`
+and `blocked_tools`, read only for dashboard turns. The default template describes
+the private web conversation and its capabilities, includes server instructions,
+and omits channel conversational instructions. An external config tree that lacks
+this command template uses the shipped dashboard template before considering
+channel/server layouts. See [the dashboard guide](../../../docs/dashboard.md)
+for policy precedence and examples.

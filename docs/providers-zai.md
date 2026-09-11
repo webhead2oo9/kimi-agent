@@ -50,7 +50,7 @@ IDs, context windows, and capabilities change independently of the API
 transport. Verify each model before declaring `tool_calling` or `image_input`.
 
 Add a model entry's local name to `selectable_chat_models` if it should appear
-in the owner-only `/models` menu.
+in the bot owner's `/models` menu.
 
 The `zai` failure adapter reads structured API error codes and translates them
 into the same model/account circuits used by every general provider. A valid HTTP

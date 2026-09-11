@@ -60,7 +60,15 @@ prompt and loses its narrower learning workflow and quoted-message handling.
 When user-app chat is enabled, copy and customize
 `config/prompts/commands/chat.md` as well. Small in-checkout deployments may use
 the gitignored `chat.local.md` override instead; private `CONFIG_DIR`
-deployments normally keep their customized `chat.md` in the private tree.
+deployments normally keep their customized `chat.md` in the private tree. The
+optional dashboard uses `config/prompts/commands/dashboard.md` the same way, with
+gitignored `dashboard.local.md` and `dashboard/<guild_id>.md` overrides; a private
+tree without it falls back to the shipped template. Keep the dashboard's
+`DASHBOARD_CLIENT_SECRET` environment value and any tunnel connector token file
+private and uncommitted, outside the frontend. The gitignored
+`bot/dashboard/dist` directory is a generated deployment artifact served publicly;
+rebuild it from source and never include secrets in it. See
+[the dashboard guide](dashboard.md).
 
 Server, channel, and thread fragments, full prompt overrides, module/plugin/tool files, and skills only need to exist when the deployment uses them. Copy the public `bot/config/prompt.md`, `persona.md`, the tracked command templates, and `models.example.yaml` as starting points; from then on the private copies are the deployment's source of truth. Note that `models.yaml` is validated at startup, but `prompt.md` is first opened when a model turn builds its prompt. A clean process start therefore proves nothing about the prompt; send the bot a real message as part of provisioning.
 

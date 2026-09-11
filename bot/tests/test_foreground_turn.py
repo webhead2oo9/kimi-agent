@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 import logging
+from dataclasses import replace
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -274,6 +275,69 @@ def _successful_handle_turn(
         return result or TurnResult(response_text="answer")
 
     return run
+
+
+@pytest.mark.asyncio
+async def test_dashboard_messages_have_surface_ids_without_discord_mappings(
+    foreground_database: Database, tmp_path: Path
+) -> None:
+    events: list[str] = []
+    store = RecordingConversationStore(foreground_database, events)
+    locks = UserLocks()
+    adapter = FakeAdapter(
+        events,
+        receipt=TurnDeliveryReceipt(
+            replies=(DeliveredReply(None, "answer", source_id="dashboard:response"),),
+            requires_persistence=True,
+        ),
+    )
+    runner = _runner(
+        store,
+        FakeDependencyFactory(events, tmp_path, locks),
+        locks,
+        _successful_handle_turn(events),
+    )
+    invocation = replace(
+        _invocation(),
+        prepared_user_discord_message_id=None,
+        prepared_user_source_id="dashboard:request",
+    )
+    await runner.run(invocation, adapter=adapter)
+    async with foreground_database.conn.execute(
+        "SELECT discord_message_id,source_id FROM messages ORDER BY id"
+    ) as cur:
+        assert [tuple(row) for row in await cur.fetchall()] == [
+            (None, "dashboard:request"),
+            (None, "dashboard:response"),
+        ]
+    async with foreground_database.conn.execute("SELECT COUNT(*) FROM message_contexts") as cur:
+        row = await cur.fetchone()
+        assert row is not None and row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_dashboard_does_not_report_delivery_when_transcript_write_fails(
+    foreground_database: Database, tmp_path: Path
+) -> None:
+    events: list[str] = []
+    store = AssistantPersistenceFailingStore(foreground_database, events)
+    locks = UserLocks()
+    adapter = FakeAdapter(
+        events,
+        receipt=TurnDeliveryReceipt(
+            replies=(DeliveredReply(None, "answer", source_id="dashboard:response"),),
+            requires_persistence=True,
+        ),
+    )
+    runner = _runner(
+        store,
+        FakeDependencyFactory(events, tmp_path, locks),
+        locks,
+        _successful_handle_turn(events),
+    )
+    with pytest.raises(RuntimeError, match="assistant persistence failed"):
+        await runner.run(_invocation(), adapter=adapter)
+    assert adapter.outcomes[-1].kind.value == "failed"
 
 
 @pytest.mark.asyncio

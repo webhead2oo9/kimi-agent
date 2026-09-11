@@ -137,7 +137,9 @@ class DiscordGateway:
         trigger_discord_message_id: str,
         message: Any,
     ) -> TurnSourceBinding | None:
-        if not context_key or not trigger_discord_message_id:
+        if not context_key or (
+            not trigger_discord_message_id and not context_key.startswith("dashboard:")
+        ):
             return None
         key = (context_key, trigger_discord_message_id)
         self._next_turn_source_binding_id += 1

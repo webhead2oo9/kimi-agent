@@ -133,6 +133,14 @@ class CodingTaskService:
             return
         pending_handoffs = await self._store.list_handoff_pending()
         for task in pending_handoffs:
+            if (
+                task.delivery_surface == "dashboard"
+                and not await self._store.dashboard_handoff_acknowledged(task.id)
+            ):
+                await self.cancel_task(
+                    task.id, reason="Dashboard acknowledgement was interrupted before restart"
+                )
+                continue
             await self._finalize_handoff(task)
         self._scheduler = asyncio.create_task(self._scheduler_loop(), name="coding_task_scheduler")
         self._wake.set()
@@ -245,6 +253,9 @@ class CodingTaskService:
                         channel_id=ctx.channel_id,
                         thread_id=ctx.thread_id,
                         handoff_pending=True,
+                        delivery_surface="dashboard"
+                        if ctx.context_key.startswith("dashboard:")
+                        else "discord",
                         trigger_discord_message_id=ctx.trigger_discord_message_id,
                         objective=objective,
                         acceptance_criteria=acceptance_criteria,
@@ -1344,6 +1355,7 @@ class CodingTaskService:
             candidates = await self._store.list_active(
                 user_id=ctx.user_id, channel_id=ctx.channel_id
             )
+            candidates = [task for task in candidates if task.delivery_surface != "dashboard"]
         authorized = [
             task
             for task in candidates
@@ -1416,6 +1428,8 @@ class CodingTaskService:
         # authority over a guild task.
         if task.guild_id != guild_id:
             return False
+        if task.delivery_surface == "dashboard":
+            return task.user_id == user_id
         return task.user_id == user_id or trust_tier >= TrustTier.STAFF
 
     async def _notify_id(self, task_id: str, context: ConversationContext | None = None) -> None:

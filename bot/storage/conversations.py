@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+import aiosqlite
+
 from providers.image_caption import is_image_caption
 from providers.types import ContentPart, ContentPartType, ConversationMessage
 from storage.db import Database
@@ -17,6 +19,7 @@ MAX_PERSISTED_CONVERSATION_IMAGES = 10
 
 ConversationAccessScope = Literal["channel_shared", "owner_only"]
 CHANNEL_SHARED: ConversationAccessScope = "channel_shared"
+# Private to the user recorded in the conversation's owner_user_id.
 OWNER_ONLY: ConversationAccessScope = "owner_only"
 
 
@@ -35,20 +38,22 @@ class StoredMessage:
 
 @dataclass(frozen=True)
 class ChannelMessageRecord:
-    """A real Discord channel message persisted to the transcript, deduped by id.
+    """A user-facing message persisted to the transcript, deduped by its source.
 
     Persistence DTO, defined here (not in agent/) so the store types against it
     without importing agent. Carries its own author and Discord source timestamp
     so source-anchored memory writes can enforce per-user boundaries.
     """
 
-    discord_message_id: str
+    discord_message_id: str | None
     role: str  # "user" | "assistant"
     author_id: str | None  # None for the bot's own messages
     author_name: str | None
     content: str  # clean text; chunk-marker stripped; NO "Name:" prefix
     source_created_at: float | None = None
     content_parts: list[ContentPart] | None = None
+    # Other surfaces have their own identifiers, never counterfeit Discord IDs.
+    source_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,8 +211,8 @@ class ConversationStore:
         This is reply *routing*, not the respond/ignore decision (the bot must
         already be mentioned; see ``discord_io.should_respond``). It continues
         the existing root only when the pinged reply targets one of the bot's
-        own messages. Owner-only conversations additionally require an exact,
-        non-empty owner/requester match. A missing owner therefore fails closed.
+        own messages. Private conversations additionally require the requester
+        to match the conversation's owner_user_id. A missing owner fails closed.
         A human trigger is persisted as a ``role='user'``
         transcript row, so those are excluded; the bot's replies
         (``role='assistant'``) and its narration/activity messages (mapped
@@ -365,12 +370,26 @@ class ConversationStore:
         *,
         context_channel_id: str | None = None,
     ) -> int | None:
-        """Persist real channel messages, deduped by (conversation_id, discord id).
+        """Persist transcript messages, deduped by their Discord or surface id.
 
         Each row carries its own author so per-user memory writes and source
         lookup attribute content to the right user. Returns MAX(message id) for
         the conversation.
         """
+        async with self._db.write_transaction() as conn:
+            return await self.save_channel_messages_in_transaction(
+                conn, conversation_id, records, context_channel_id=context_channel_id
+            )
+
+    @staticmethod
+    async def save_channel_messages_in_transaction(
+        conn: aiosqlite.Connection,
+        conversation_id: int,
+        records: list[ChannelMessageRecord],
+        *,
+        context_channel_id: str | None = None,
+    ) -> int | None:
+        """Persist within the caller's transaction, without committing it."""
         if not records:
             return None
         now = time.time()
@@ -383,6 +402,7 @@ class ConversationStore:
                 record.content,
                 json.dumps(_message_data_for_record(record)),
                 record.discord_message_id,
+                record.source_id,
                 record.source_created_at,
                 now,
             )
@@ -391,40 +411,39 @@ class ConversationStore:
         # Multi-statement unit: a transcript row committed without its
         # message_contexts mapping permanently breaks reply-continuation routing
         # for that message, so the whole unit is scoped atomically.
-        async with self._db.write_transaction() as conn:
+        await conn.executemany(
+            "INSERT OR IGNORE INTO messages "
+            "(conversation_id, role, user_id, user_name, content, message_data, "
+            "discord_message_id, source_id, source_created_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        if context_channel_id is not None:
             await conn.executemany(
-                "INSERT OR IGNORE INTO messages "
-                "(conversation_id, role, user_id, user_name, content, message_data, "
-                "discord_message_id, source_created_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
+                "INSERT OR IGNORE INTO message_contexts "
+                "(discord_message_id, conversation_id, channel_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        record.discord_message_id,
+                        conversation_id,
+                        context_channel_id,
+                        now,
+                    )
+                    for record in records
+                    if record.discord_message_id is not None
+                ],
             )
-            if context_channel_id is not None:
-                await conn.executemany(
-                    "INSERT OR IGNORE INTO message_contexts "
-                    "(discord_message_id, conversation_id, channel_id, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [
-                        (
-                            record.discord_message_id,
-                            conversation_id,
-                            context_channel_id,
-                            now,
-                        )
-                        for record in records
-                    ],
-                )
-            await conn.execute(
-                "UPDATE conversations SET last_active_at = ? WHERE id = ?",
-                (now, conversation_id),
+        await conn.execute(
+            "UPDATE conversations SET last_active_at = ? WHERE id = ?",
+            (now, conversation_id),
+        )
+        if any(_record_has_image_parts(record) for record in records):
+            await _enforce_image_part_limit(
+                conn,
+                conversation_id,
+                max_images=MAX_PERSISTED_CONVERSATION_IMAGES,
             )
-            if any(_record_has_image_parts(record) for record in records):
-                await _enforce_image_part_limit(
-                    conn,
-                    conversation_id,
-                    max_images=MAX_PERSISTED_CONVERSATION_IMAGES,
-                )
-        conn = self._db.conn
         async with conn.execute(
             "SELECT MAX(id) FROM messages WHERE conversation_id = ?",
             (conversation_id,),
@@ -530,7 +549,7 @@ class ConversationStore:
             )
 
     async def delete_owner_conversation(self, key: str, owner_user_id: str) -> bool:
-        """Delete one exact owner-only root, including its transcript.
+        """Delete one private root belonging to the specified user, including its transcript.
 
         The owner predicate makes this safe for caller-scoped reset surfaces.
         Related mappings, activated tools, retained-watermark rows, and coding
@@ -610,7 +629,7 @@ class ConversationStore:
         """Return every root whose transcript a user deletion can mutate.
 
         Callers use these stable logical keys to drain in-flight turns before
-        :meth:`delete_user_data`. Owner-only roots are included even when they no
+        :meth:`delete_user_data`. The user's private roots are included even when they no
         longer have a user-authored message, while the ``EXISTS`` arm covers the
         user's messages inside roots owned by someone else.
         """
@@ -773,6 +792,19 @@ class ConversationStore:
         if row is None:
             return None
         messages = _stored_messages_from_rows([row])
+        return messages[0] if messages else None
+
+    async def get_message_by_source_id(
+        self, conversation_id: int, source_id: str
+    ) -> StoredMessage | None:
+        async with self._db.conn.execute(
+            "SELECT id, role, user_id, user_name, content, message_data, "
+            "created_at, source_created_at, discord_message_id FROM messages "
+            "WHERE conversation_id=? AND source_id=?",
+            (conversation_id, source_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        messages = _stored_messages_from_rows([row]) if row else []
         return messages[0] if messages else None
 
     async def load_message_window(

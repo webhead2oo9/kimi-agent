@@ -35,7 +35,7 @@ from storage.coding_tasks import CodingTask, CodingTaskStatus, CodingTaskStore
 from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.usage import UsageStore
 from tools.coding_tasks import CODING_CONTROL_TOOLS, init_coding_control_tools
-from tools.registry import ToolRegistry
+from tools.registry import MessageContext, ToolRegistry
 from tools.workspace.common import UserLocks
 from trust.tiers import TrustTier
 from utils.privacy_barrier import UserPrivacyBarrier
@@ -134,6 +134,9 @@ class CodingDelivery:
         self._moderation_service = moderation_service
         self._config = config
         self._strip_message_invocation = strip_message_invocation
+        self.dashboard_publish: (
+            Callable[[CodingTask, ConversationContext | None], Awaitable[None]] | None
+        ) = None
 
     async def publish(self, task: CodingTask, context: ConversationContext | None) -> None:
         """Project durable task state onto one edited status and one final reply."""
@@ -144,6 +147,11 @@ class CodingDelivery:
         async with self._root_locks.hold(f"coding-delivery:{task.id}"):
             refreshed = await self._store.get_task(task.id)
             if refreshed is None:
+                return
+            if refreshed.delivery_surface == "dashboard":
+                if self.dashboard_publish is None:
+                    raise RuntimeError("Private dashboard delivery is unavailable")
+                await self.dashboard_publish(refreshed, context)
                 return
             await self._publish_locked(refreshed, context)
 
@@ -950,6 +958,11 @@ class CodingTaskController:
 
     async def cancel_task(self, task_id: str, *, reason: str = "") -> bool:
         return await self._running_service().cancel_task(task_id, reason=reason)
+
+    async def steer_task(
+        self, ctx: MessageContext, task_id: str, message: str
+    ) -> dict[str, object] | None:
+        return await self._running_service().steer_from_tool(ctx, task_id=task_id, message=message)
 
     async def cancel_for_scope(
         self,

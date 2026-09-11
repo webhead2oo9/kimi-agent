@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class ForegroundTurnInvocation:
     source: TurnPreparationInput
-    prepared_user_discord_message_id: str
+    prepared_user_discord_message_id: str | None
     prepared_user_source_created_at: float | None
     prepared_user_context_channel_id: str
     collect_reply_context: CollectReplyContext
@@ -59,13 +59,16 @@ class ForegroundTurnInvocation:
     timeout_seconds: float | None = None
     thread_handoff_suggest_after_tool_calls: int = 0
     extra_blocked_tools: frozenset[str] = frozenset()
+    prepared_user_source_id: str | None = None
+    recent_image_lookback: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class DeliveredReply:
-    discord_message_id: str
+    discord_message_id: str | None
     content: str
     source_created_at: float | None = None
+    source_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,11 @@ class TurnDeliveryReceipt:
     # transcript already comes from `replies`, so this is not a persistence
     # hook.
     delivered_result: TurnResult | None = None
+    # A web surface publishes only after transcript persistence succeeds; unlike
+    # Discord delivery, a failed write can still safely fail the whole result.
+    requires_persistence: bool = False
+    # A durable surface commits these safe replies together with its public result.
+    persist_replies: Callable[[list[ChannelMessageRecord]], Awaitable[None]] | None = None
 
 
 class TurnSurfaceOutcomeKind(StrEnum):
@@ -241,6 +249,7 @@ class ForegroundTurnRunner:
                 [
                     ChannelMessageRecord(
                         discord_message_id=invocation.prepared_user_discord_message_id,
+                        source_id=invocation.prepared_user_source_id,
                         role="user",
                         author_id=invocation.source.user_id,
                         author_name=sanitize_author_name(invocation.source.user_name),
@@ -267,7 +276,11 @@ class ForegroundTurnRunner:
                     dependencies=guarded_dependencies,
                     preparation_config=build_turn_preparation_config(
                         self._settings,
-                        recent_image_lookback=self._settings.recent_image_lookback,
+                        recent_image_lookback=(
+                            self._settings.recent_image_lookback
+                            if invocation.recent_image_lookback is None
+                            else invocation.recent_image_lookback
+                        ),
                         new_user_onboarding_turns=invocation.new_user_onboarding_turns,
                     ),
                     execution_config=TurnExecutionConfig(
@@ -305,6 +318,8 @@ class ForegroundTurnRunner:
             try:
                 await self._persist_assistant_replies(conversation_id, result, receipt)
             except Exception:
+                if receipt.requires_persistence:
+                    raise
                 # Delivery is already externally visible. Preserve that result
                 # rather than letting an outer surface replace it with an error.
                 log.exception(
@@ -417,16 +432,15 @@ class ForegroundTurnRunner:
         result: TurnResult,
         receipt: TurnDeliveryReceipt,
     ) -> None:
-        if not receipt.replies:
-            return
         try:
-            if result.blocked_by_moderation or result.termination_reason == "attachment_error":
-                return
-            await self._conversation_store.save_channel_messages(
-                conversation_id,
+            safe = (
+                not result.blocked_by_moderation and result.termination_reason != "attachment_error"
+            )
+            records = (
                 [
                     ChannelMessageRecord(
                         discord_message_id=reply.discord_message_id,
+                        source_id=reply.source_id,
                         role="assistant",
                         author_id=None,
                         author_name=None,
@@ -434,12 +448,20 @@ class ForegroundTurnRunner:
                         source_created_at=reply.source_created_at,
                     )
                     for reply in receipt.replies
-                ],
-                context_channel_id=receipt.context_channel_id,
+                ]
+                if safe
+                else []
             )
+            if receipt.persist_replies is not None:
+                await receipt.persist_replies(records)
+            elif records:
+                await self._conversation_store.save_channel_messages(
+                    conversation_id, records, context_channel_id=receipt.context_channel_id
+                )
         finally:
             # The live bridge window ends here whether the durable write
             # landed or not, so a stale route can never override durable
             # truth (including post-privacy-deletion) afterward.
             for reply in receipt.replies:
-                unregister_live_reply(reply.discord_message_id)
+                if reply.discord_message_id is not None:
+                    unregister_live_reply(reply.discord_message_id)

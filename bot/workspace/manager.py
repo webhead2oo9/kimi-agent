@@ -595,6 +595,10 @@ class WorkspaceManager:
                 continue
         return total
 
+    def generated_context_path(self, context_key: str) -> Path:
+        """Unresolved context path for callers that must refuse symlinks before mutation."""
+        return (self._base_dir / "generated" / safe_generated_segment(context_key)).absolute()
+
     def allowed_output_roots(
         self,
         workspace_key: WorkspaceKey | None = None,

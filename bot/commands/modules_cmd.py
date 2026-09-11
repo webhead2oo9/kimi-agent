@@ -1,4 +1,4 @@
-"""Owner-only ``/modules`` commands: status and manifest."""
+"""Bot owner's ``/modules`` commands: status and manifest."""
 
 from __future__ import annotations
 

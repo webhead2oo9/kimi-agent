@@ -296,6 +296,7 @@ class ConversationRunRequest:
     thread_id: str | None = None
     parent_channel_id: str = ""
     trigger_discord_message_id: str = ""
+    trigger_source_id: str = ""
     trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     bot_name: str = ""
     command_template: str | None = None
@@ -817,6 +818,7 @@ class _ConversationRunner:
             channel_name=request.channel_name,
             platform_member=request.platform_member,
             trigger_discord_message_id=request.trigger_discord_message_id,
+            trigger_source_id=request.trigger_source_id,
             trigger_discord_message_snapshot=request.trigger_discord_message_snapshot,
             trust_tier=request.trust_tier,
             context_key=request.context.key,

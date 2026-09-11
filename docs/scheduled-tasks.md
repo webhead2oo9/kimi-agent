@@ -98,7 +98,10 @@ Kimi writes the dedicated skill while preparing a draft, plus a Python script wh
 that execution mode is selected. The preview includes the execution mode,
 interpreted schedule, complete settings, `SKILL.md`, and `task.py` when applicable.
 Click **Approve** to activate that exact revision, or **Reject** to reject it. Changed or already-used previews cannot be
-confirmed. A draft without valid skill instructions cannot activate.
+confirmed. A draft without valid skill instructions cannot activate. The optional
+[dashboard](dashboard.md) offers the same Test preview, Approve, and Reject
+controls for drafts shown in a private chat; they apply the same decision path and
+authority checks as the Discord buttons.
 
 Owners can inspect, edit, pause, resume, delete, and run their tasks immediately.
 Staff can manage tasks in their server, but execution always uses the owner's

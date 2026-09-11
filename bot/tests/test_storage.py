@@ -26,6 +26,12 @@ from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
 
 
+def test_database_upgrade_documentation_covers_the_migration_registry():
+    text = " ".join((Path(__file__).resolve().parents[2] / "docs/database.md").read_text().split())
+    for version, (name, _) in storage.db._MIGRATIONS.items():
+        assert f"v{version} `{name}`" in text
+
+
 @pytest.mark.asyncio
 async def test_database_filesystem_setup_runs_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -106,7 +112,7 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
         ) as cur:
             version_row = await cur.fetchone()
         assert version_row is not None
-        assert version_row["name"] == "task_read_recovery"
+        assert version_row["name"] == "dashboard_branches"
         assert version_row["applied_at"]
         async with db.conn.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
@@ -119,6 +125,8 @@ async def test_fresh_database_uses_the_current_schema_version(tmp_path) -> None:
                 (11, "task_previews"),
                 (12, "task_thread_closure"),
                 (13, "task_read_recovery"),
+                (14, "assistant_dashboard"),
+                (15, "dashboard_branches"),
             ]
         assert await UserMemoryBankStateStore(db).may_exist("never-seen") is False
         async with db.conn.execute(
@@ -148,6 +156,32 @@ async def test_guild_command_scope_store_tracks_and_forgets_guilds(tmp_path) -> 
 
         await store.forget(10)
         assert await store.guild_ids() == (20,)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["schema", "ledger", "cancel"])
+async def test_fresh_initialization_can_restart_after_failure(tmp_path, monkeypatch, failure):
+    from unittest.mock import AsyncMock
+
+    import storage.db as database
+
+    db = Database(tmp_path / "restart.db")
+    target = "_record_schema_version" if failure == "ledger" else "_add_dashboard"
+    original = getattr(database, target)
+    error = (
+        asyncio.CancelledError() if failure == "cancel" else RuntimeError("initialization failed")
+    )
+    monkeypatch.setattr(database, target, AsyncMock(side_effect=error))
+    try:
+        with pytest.raises(type(error)):
+            await db.connect()
+        await db.close()
+        monkeypatch.setattr(database, target, original)
+        await db.connect()
+        async with db.conn.execute("SELECT max(version) FROM schema_version") as cursor:
+            assert (await cursor.fetchone())[0] == database.SCHEMA_VERSION
     finally:
         await db.close()
 
@@ -276,7 +310,9 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         (11, "task_previews"),
         (12, "task_thread_closure"),
         (13, "task_read_recovery"),
-        (14, "add_note"),
+        (14, "assistant_dashboard"),
+        (15, "dashboard_branches"),
+        (16, "add_note"),
     ]
     assert all(row["applied_at"] for row in versions)
     assert preserved is not None
@@ -288,7 +324,7 @@ async def test_registered_migration_runs_once_and_preserves_data(tmp_path, monke
         async with reopened.conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 8
+        assert row[0] == 10
     finally:
         await reopened.close()
 
@@ -323,7 +359,9 @@ async def test_fresh_database_records_the_same_history_as_an_upgraded_one(
         (11, "task_previews"),
         (12, "task_thread_closure"),
         (13, "task_read_recovery"),
-        (14, "add_note"),
+        (14, "assistant_dashboard"),
+        (15, "dashboard_branches"),
+        (16, "add_note"),
     ]
 
 
@@ -357,6 +395,10 @@ async def test_v7_database_adds_durable_privacy_plugin_callback_names(tmp_path) 
         conn.commit()
     finally:
         conn.close()
+
+    with sqlite3.connect(path) as baseline:
+        baseline.executescript(storage.db._SCHEMA_SQL)
+        baseline.execute("DROP TABLE image_usage_reservations")
 
     db = Database(path)
     await db.connect()

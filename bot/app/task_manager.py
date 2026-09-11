@@ -43,6 +43,12 @@ class TaskManager:
                 if row["task_id"]
                 else ""
             )
+            if key.startswith("dashboard:"):
+                instructions += (
+                    "\nThis conversation is in the private dashboard. Its work panel shows the "
+                    "full approval card and Test preview/Approve/Reject controls. Keep setup "
+                    "and approval here; no Discord message or thread is created for this preview."
+                )
         if key.startswith("scheduled-publication:"):
             origin = await self.r.store.publication_context(guild_id, key)
             if origin is not None:
@@ -166,9 +172,11 @@ class TaskManager:
                 "task_id": task_id,
                 "revision": task["revision"],
                 "status": "awaiting_confirmation",
-                "preview_delivery": "queued_separate_message",
+                "preview_delivery": "dashboard_work_panel"
+                if ctx.context_key.startswith("dashboard:")
+                else "queued_separate_message",
                 "schedule_preview": interpret_schedule(definition.schedule, time.time()),
-                "instructions": "The application will provide the user the full task information, skill/settings attachments, and Test preview/Approve/Reject buttons in a separate message when this turn is delivered. Do not repeat any of that information or ask for textual confirmation. Reply only briefly that the task is pending approval. Do not claim it is active or that the preview has already been sent.",
+                "instructions": "The application will provide the full task information, instructions/settings, and Test preview/Approve/Reject controls when this turn is delivered. The dashboard uses its work panel; Discord chat uses a separate message. Do not repeat that information or ask for textual confirmation. Reply briefly that the task is pending approval. Do not claim it is active or that the preview has already been sent.",
             }
         if task is None:
             raise ValueError("task_id is required")

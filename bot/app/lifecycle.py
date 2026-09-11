@@ -20,6 +20,7 @@ from app.cancellation import ActiveOperationRegistry
 from app.coding_delivery import CodingTaskController
 from app.command_sync import DiscordCommandSync, GuildCommandSyncPort
 from app.consent import PrivacyConsentGate
+from app.dashboard import Dashboard
 from app.foreground_turn import ForegroundTurnRunner
 from app.guild_activation import GuildActivationService
 from app.memory import MemoryManager
@@ -164,6 +165,7 @@ class LifecycleResources:
     work_cancellation: WorkCancellationCoordinator
     callbacks: LifecycleCallbacks
     scheduled_tasks: ScheduledTaskService | None = None
+    dashboard: Dashboard | None = None
 
 
 def settings_secret_values(settings: Settings) -> tuple[str, ...]:
@@ -328,6 +330,8 @@ class ApplicationLifecycle:
             self._module_event_publisher.uninstall()
             self._module_event_publisher = None
         await resources.turn_admission.close()
+        if resources.dashboard is not None:
+            await resources.dashboard.close()
         await resources.guild_activation.close()
         await _cancel_background_task(
             self._auto_retain_task,
@@ -826,6 +830,8 @@ class ApplicationLifecycle:
         await resources.coding_tasks.start()
         if resources.scheduled_tasks is not None:
             await resources.scheduled_tasks.start()
+        if resources.dashboard is not None:
+            await resources.dashboard.start()
 
     async def resume_pending_privacy_deletions(
         self,

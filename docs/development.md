@@ -353,3 +353,45 @@ A start timeout raises `Kimi module '<name>' start() exceeded 60s`, emits a `mod
 If a module trips either ceiling during development, the fix belongs in the module (move slow work into a scheduler job, or make `close()` cancel rather than await), not in the setting.
 
 The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4) jobs concurrently, at most one per module. If a dev instance shares a database file with another running instance, the scheduler logs `Module scheduler paused: another scheduler runner holds the lease` and runs nothing until the other process stops (or its 60-second lease expires). The isolated dev setup above avoids this by giving each instance its own database.
+
+## Discord dashboard frontend
+
+The optional Activity frontend lives in `bot/dashboard`. CI uses Node 22.18.0.
+From that directory, run:
+
+```bash
+npm ci
+npm audit
+npm run build
+npm test
+npx playwright install --with-deps chromium
+npm run test:browser
+```
+
+The build includes TypeScript checking. Frontend tests cover request retries and
+rendering; Playwright exercises saved chats, branches, task review, previews, and
+navigation at desktop and phone sizes. Playwright bundles its API fixture into
+`.browser-test-site/` and serves it with the production CSP, including checks of
+skeleton widths without inline styles. The fixture is excluded from `dist/`.
+Normal `npm run dev` requires a real Discord launch; Vite proxies `/api` and WebSockets to `127.0.0.1:8088`, where an
+enabled development bot must be listening. If testing frontend changes through
+Vite, point the private HTTPS tunnel or proxy at Vite's listener rather than the
+bot's built frontend.
+
+From `bot/`, run the focused backend checks with:
+
+```bash
+.venv/bin/python -m pytest tests/test_dashboard_*.py -q
+```
+
+These cover authentication, ownership and channel access, replay and revocation,
+file isolation, turn orchestration, cancellation, coding delivery, and scheduled
+approvals. They do not validate Discord's real SDK, proxy cookies, or mobile
+downloads. Follow the [operator guide's live checks](dashboard.md#verification-and-current-limits)
+with an isolated application before rollout.
+
+`KimiCommandTree.sync` in `app/runtime.py` includes the Discord-handled type-4
+**Launch** entry point in the same global command replacement as `/dashboard`.
+The installed discord.py version needs this compatibility code; guild-only sync
+does not update it. When upgrading discord.py, check `test_dashboard_commands.py`
+and Discord's [application-command reference](https://docs.discord.com/developers/interactions/application-commands).

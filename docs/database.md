@@ -2,10 +2,10 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v12 and the minimum supported baseline is v7.
+The current schema version is v15 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
-v9 paid-image reservation migration, and v10–v12 scheduled-task migrations;
-existing v7–v11 databases upgrade in place. Databases below v7 or above this
+v9 paid-image reservation migration, v10–v13 scheduled-task migrations, and
+v14–v15 dashboard migrations; existing v7–v14 databases upgrade in place. Databases below v7 or above this
 release's supported version are rejected. Optional application modules own their
 own schemas and versions.
 
@@ -77,7 +77,7 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 ## Schema ownership
 
 - `storage/db.py` owns the current schema baseline and `SCHEMA_VERSION`.
-- `_SCHEMA_SQL` and the core schema helpers build the complete schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8–v12 changes after the v7 baseline.
+- `_SCHEMA_SQL` and the core schema helpers build the complete schema for an empty database. The ordered `_MIGRATIONS` registry applies the permanent v8–v15 changes after the v7 baseline.
 - Every core schema addition must support both fresh initialization and an ordered migration; shared helpers can serve both paths.
 - The `schema_version` table tracks which schema changes have been applied and when.
 - `module_schema_versions` tracks the latest applied version for every module that has run migrations. Module migrations run transactionally before module startup, and module tables aren't part of the core baseline.
@@ -88,16 +88,21 @@ Schedule backups with the same cadence as the rest of your state. A daily snapsh
 `Database.connect()` creates the current schema for an empty database and
 records the v7 baseline as `core_v7_baseline`, followed by v8
 `privacy_plugin_callbacks`, v9 `image_usage_reservations`, v10 `scheduled_tasks`,
-v11 `task_previews`, and v12 `task_thread_closure`. Existing v7–v11
+v11 `task_previews`, v12 `task_thread_closure`, v13 `task_read_recovery`,
+v14 `assistant_dashboard`, and v15 `dashboard_branches`. Existing v7–v14
 databases retain their data and complete version ledger, including rows from
 earlier upgrades.
 
 The v1-to-v2 upgrade is assumed complete. Its v6-to-v7 migration and old
-transcript-format conversion have been removed. A database at v7 through v11
+transcript-format conversion have been removed. A database at v7 through v14
 automatically applies the remaining migrations; no manual operator action is
 needed. When restoring an older backup, use a release compatible with that
 backup; this release cannot upgrade a pre-v7 database. Do not change the schema
 stamp to bypass the check.
+
+Fresh initialization creates the complete schema and version ledger in one
+transaction. If initialization fails or is cancelled, reopening the empty database
+can retry it without leaving an unstamped partial schema.
 
 Each supported version has a permanent name in `schema_version`. An unregistered version raises at startup whether you're creating fresh or upgrading. A migration and its version record share one transaction, so a failure leaves the schema, transcript rows, video sessions, cleanup outboxes, and version stamp unchanged.
 
@@ -113,7 +118,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 
 ### Conversations and transcript
 
-- **`conversations`** holds one row per rooted conversation, keyed by its logical `key`. Guild conversations record the Discord message that started them in `root_discord_message_id`. Personal user-app chat uses `userchat:<user_id>` as a stable key and stores the first interaction or DM id in that field. `owner_user_id` records who rooted the conversation, which `/privacy` deletion relies on. `access_scope` is `channel_shared` or `owner_only`: a shared root lets another channel member continue a bot reply, while an owner-only root requires an exact requester match and fails closed on missing or mismatched ownership.
+- **`conversations`** holds one row per rooted conversation, keyed by its logical `key`. Guild conversations record the Discord message that started them in `root_discord_message_id`. Personal user-app chat uses `userchat:<user_id>` as a stable key and stores the first interaction or DM id in that field. `owner_user_id` records who rooted the conversation, which `/privacy` deletion relies on. `access_scope` is `channel_shared` or `owner_only`: a shared root lets another channel member continue a bot reply, while a private `owner_only` root requires the requester to match that conversation's `owner_user_id` and fails closed on missing or mismatched ownership.
 
   `conversations.eval_cursor` exists but nothing in the runtime reads it. It's reserved for the offline eval harness.
 
@@ -213,7 +218,7 @@ The `/privacy` command lets a user delete their data before it expires. This sec
 
 **Delete my data** removes entire conversations the user started. In conversations shared with other members, it removes only that user's messages and routing records, leaving other participants' messages and the bot's replies in place. It also clears cached image descriptions derived from the deleted messages and removes the user's initiator marker from any surviving managed threads.
 
-Starting a conversation makes the user its owner for deletion purposes. It doesn't make an ordinary channel conversation private. Private `owner_only` conversations require an exact owner match whenever they're reopened, and missing or mismatched ownership is rejected.
+Starting a conversation makes the user its owner for deletion purposes. It doesn't make an ordinary channel conversation private. Private `owner_only` conversations require the requester to match the user who owns that conversation whenever they're reopened, and missing or mismatched ownership is rejected.
 
 Full deletion also removes every video session initiated by that user, including sessions in a shared root that survives. The bot attempts provider deletion for the complete Gemini Interaction chain plus any backing Files API upload. A provider failure leaves the content-free outboxes pending for retry, but doesn't keep the privacy request or the user activity barrier open after local deletion succeeds.
 
@@ -251,3 +256,25 @@ retries. It preserves v10 tasks and records their active revisions as approved.
 Schema v12 records approval-thread sign-off messages and completed closures. It
 queues approved threads left open by the initial management-card release for
 reconciliation; existing task definitions and approvals remain unchanged.
+
+Schema v13 adds `scheduled_tasks.read_failure_streak` so repeated source-read
+failures are tracked for recovery without changing task definitions.
+
+## Activity dashboard records
+
+Schema v14 adds `messages.source_id` for non-Discord transcript sources and
+`coding_tasks.delivery_surface` for durable private delivery. `dashboard_conversations`
+gives each saved chat an opaque id, title, and originating channel, and references
+one ordinary per-user private conversation that still holds the model-visible
+transcript. `dashboard_turns` and `dashboard_actions` record idempotent foreground
+and task requests; `dashboard_events` is their replay journal. `dashboard_files`
+records protected file snapshots, and `dashboard_task_previews` links exact
+scheduled revisions to the chat that displayed them.
+
+Schema v15 adds `dashboard_branches`, which records a branched chat's parent chat
+and the parent event it was copied through; deleting the parent keeps the branch
+and clears the link.
+
+Dashboard records cascade with the parent conversation. Startup marks unfinished
+foreground turns and task actions interrupted instead of replaying them. See
+[dashboard behavior](dashboard.md).

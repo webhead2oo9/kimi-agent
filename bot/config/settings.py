@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     # transcript depends on.
     user_app_dm_enabled: bool = False
 
+    # Optional private guild chat delivered through a Discord Activity. The
+    # listener belongs behind an HTTPS reverse proxy and never opens by default.
+    dashboard_enabled: bool = False
+    dashboard_allowed_user_ids: str = ""
+    dashboard_min_tier: str = "member"
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = Field(default=8088, ge=1, le=65535)
+    dashboard_client_secret: SecretStr = SecretStr("")
+    dashboard_session_seconds: int = Field(default=3600, ge=300, le=86400)
+    dashboard_max_sessions: int = Field(default=2048, ge=1, le=100000)
+    dashboard_turn_timeout_seconds: float = Field(default=840.0, ge=1.0, le=3600.0)
+    dashboard_max_message_chars: int = Field(default=32000, ge=1, le=100000)
+    dashboard_frontend_dir: str = ""
+
     # Privileged gateway intents. As of Discord's 2026 policy, apps over 10,000
     # users must apply for these in the Developer Portal and reauthorize yearly
     # (https://support-dev.discord.com/hc/en-us/articles/6207308062871).
@@ -226,9 +240,10 @@ class Settings(BaseSettings):
         }
     )
 
-    # The bot owner's Discord user id. Gates tools registered with owner_only at
-    # dispatch (none ship today; the registry mechanism stays for future
-    # owner-only surfaces); empty fails closed. Distinct from staff.
+    # The bot owner's Discord user id. Authorizes /models, /modules, and tools
+    # registered with owner_only=True (no built-in tools use that flag).
+    # Also grants Staff access on the optional personal-chat surface.
+    # Staff tier alone does not satisfy bot-owner checks; empty fails closed.
     owner_user_id: str = ""
     # --- Sandboxed code execution (MEMBER tier by default; docs/code-exec.md) ---
     # Disabled in tracked defaults. Enabling still requires the complete Linux
@@ -823,12 +838,13 @@ class Settings(BaseSettings):
             raise ValueError("X_SEARCH_AUTH_MODE must be one of: auto, oauth, api_key")
         return normalized
 
-    @field_validator("code_exec_min_tier")
+    @field_validator("code_exec_min_tier", "dashboard_min_tier")
     @classmethod
-    def _validate_code_exec_min_tier(cls, value: str) -> str:
+    def _validate_min_tier(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip().lower()
         if normalized not in {"member", "regular", "staff"}:
-            raise ValueError("CODE_EXEC_MIN_TIER must be one of: member, regular, staff")
+            label = (info.field_name or "min_tier").upper()
+            raise ValueError(f"{label} must be one of: member, regular, staff")
         return normalized
 
     @field_validator("code_exec_network_mode")
@@ -1030,6 +1046,16 @@ class Settings(BaseSettings):
                 raise ValueError(f"{label} entry {token!r} is not a numeric Discord user ID")
         return value
 
+    @field_validator("dashboard_allowed_user_ids")
+    @classmethod
+    def _validate_dashboard_allowed_user_ids(cls, value: str) -> str:
+        tokens = [token.strip() for token in value.split(",") if token.strip()]
+        if value.strip() and not tokens:
+            raise ValueError("DASHBOARD_ALLOWED_USER_IDS must contain numeric Discord user IDs")
+        if any(not token.isascii() or not token.isdigit() for token in tokens):
+            raise ValueError("DASHBOARD_ALLOWED_USER_IDS must contain numeric Discord user IDs")
+        return ",".join(tokens)
+
     @field_validator("owner_user_id")
     @classmethod
     def _validate_owner_user_id(cls, value: str) -> str:
@@ -1120,6 +1146,10 @@ class Settings(BaseSettings):
                 "MODERATION_OUTPUT_EXEMPT_TIER must be blank or one of: member, regular, staff"
             )
         return normalized
+
+    @property
+    def dashboard_allowed_user_id_set(self) -> frozenset[str]:
+        return frozenset(self.dashboard_allowed_user_ids.split(",")) - {""}
 
     @property
     def allowed_channels(self) -> set[int]:

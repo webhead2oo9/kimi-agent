@@ -242,7 +242,10 @@ async def test_v12_upgrade_adds_empty_streak_without_changing_approved_task(tmp_
     await db.close()
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("ALTER TABLE scheduled_tasks DROP COLUMN read_failure_streak")
-        connection.execute("DELETE FROM schema_version WHERE version=13")
+        connection.execute("DROP INDEX idx_messages_conv_source")
+        connection.execute("ALTER TABLE messages DROP COLUMN source_id")
+        connection.execute("ALTER TABLE coding_tasks DROP COLUMN delivery_surface")
+        connection.execute("DELETE FROM schema_version WHERE version>=13")
     await db.connect()
     try:
         assert await store.get(task["id"]) == task

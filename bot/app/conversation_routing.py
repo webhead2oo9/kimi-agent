@@ -67,8 +67,8 @@ async def resolve_conversation_for_message(
                 owner_user_id=resolved.owner_user_id,
                 access_scope=resolved.access_scope,
             )
-        # An owner-only reply cannot expose its persisted rope to a different
-        # user. The referenced Discord message itself may still be this bot's
+        # A private conversation's persisted transcript is available only to
+        # its owner. The referenced Discord message itself may still be this bot's
         # public answer, though, so mark the fresh root to quote only that
         # visible message as ephemeral reply context.
         mapped = await conversation_store.get_conversation_by_discord_message(

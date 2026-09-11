@@ -240,9 +240,10 @@ class Settings(BaseSettings):
         }
     )
 
-    # The bot owner's Discord user id. Gates tools registered with owner_only at
-    # dispatch (none ship today; the registry mechanism stays for future
-    # owner-only surfaces); empty fails closed. Distinct from staff.
+    # The bot owner's Discord user id. Authorizes /models, /modules, and tools
+    # registered with owner_only=True (no built-in tools use that flag).
+    # Also grants Staff access on the optional personal-chat surface.
+    # Staff tier alone does not satisfy bot-owner checks; empty fails closed.
     owner_user_id: str = ""
     # --- Sandboxed code execution (MEMBER tier by default; docs/code-exec.md) ---
     # Disabled in tracked defaults. Enabling still requires the complete Linux

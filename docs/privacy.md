@@ -63,7 +63,7 @@ This is the primary store: SQLite in WAL mode, with the schema owned by
 | `user_memory_bank_states` | A conservative per-user flag recording that a remote Hindsight bank may exist. It holds only the Discord user id, the flag, and an update timestamp. |
 | `coding_tasks`, `coding_task_events`, `coding_command_jobs` | Durable background objectives, acceptance criteria, selected conversation context and starting-file metadata, plan/checkpoint, steering, bounded command output, status, and Discord delivery ids. Rows are scoped to the requesting user and their workspace and leave with the rooted conversation. |
 
-The optional user-app surface stores one owner-only conversation per user under
+The optional user-app surface stores one conversation private to each user under
 `userchat:<user_id>`. It deliberately has no guild scope even when invoked from
 a guild. Its long-term auto-retained facts are tagged global for that user, and
 its workspace is `<user_id>__userapp`. `/chat-reset` deletes only this transcript
@@ -427,10 +427,11 @@ Discord commands expose only their bounded operational views. `/usage` shows a
 member their own token and cost windows, including conservative paid-image
 reservations (viewing another user or the server totals is staff-only), the
 staff-only `/moderation` manages blocks and reasons,
-and `/models` is bot-owner-only. None of these commands expose
+and the bot owner can use `/models` for global model controls and `/modules`
+for module diagnostics. None of these commands expose
 conversation transcripts or private memory. Staff with access to configured
 learning channels can also read the event cards posted there. The privilege
-gate is the trust check at the command boundary, not prompt text.
+gate is the appropriate trust-tier or bot-owner check at the command boundary.
 
 ## Diagnostic logging
 

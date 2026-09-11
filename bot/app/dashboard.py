@@ -1,4 +1,4 @@
-"""Same-process HTTP boundary for the owner-only Discord Activity dashboard."""
+"""HTTP boundary for members' private Discord Activity chats in the bot process."""
 
 from __future__ import annotations
 

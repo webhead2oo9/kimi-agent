@@ -240,7 +240,7 @@ Always go through `ctx.registry.register(...)`. Don't reach into agent internals
 
 - `min_tier` for anything privileged.
 - `guild_ids` for tools that only make sense in one community.
-- `owner_only` for owner-exclusive operations, and only those.
+- `owner_only` for operations restricted to the bot owner configured by `OWNER_USER_ID`.
 - `searchable=True` for opt-in discovery tools, which reach the model through `browse_tools` instead of sitting in every turn's tool list.
 - `config_spec` for typed per-tool knobs that should be read fresh each turn rather than once at plugin startup.
 - `untrusted=True` for results containing Discord, network, file, memory, or other externally authored content; return normal JSON and let the registry own the trust envelope.

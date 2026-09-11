@@ -17,6 +17,7 @@ MAX_PERSISTED_CONVERSATION_IMAGES = 10
 
 ConversationAccessScope = Literal["channel_shared", "owner_only"]
 CHANNEL_SHARED: ConversationAccessScope = "channel_shared"
+# Private to the user recorded in the conversation's owner_user_id.
 OWNER_ONLY: ConversationAccessScope = "owner_only"
 
 
@@ -208,8 +209,8 @@ class ConversationStore:
         This is reply *routing*, not the respond/ignore decision (the bot must
         already be mentioned; see ``discord_io.should_respond``). It continues
         the existing root only when the pinged reply targets one of the bot's
-        own messages. Owner-only conversations additionally require an exact,
-        non-empty owner/requester match. A missing owner therefore fails closed.
+        own messages. Private conversations additionally require the requester
+        to match the conversation's owner_user_id. A missing owner fails closed.
         A human trigger is persisted as a ``role='user'``
         transcript row, so those are excluded; the bot's replies
         (``role='assistant'``) and its narration/activity messages (mapped
@@ -534,7 +535,7 @@ class ConversationStore:
             )
 
     async def delete_owner_conversation(self, key: str, owner_user_id: str) -> bool:
-        """Delete one exact owner-only root, including its transcript.
+        """Delete one private root belonging to the specified user, including its transcript.
 
         The owner predicate makes this safe for caller-scoped reset surfaces.
         Related mappings, activated tools, retained-watermark rows, and coding
@@ -614,7 +615,7 @@ class ConversationStore:
         """Return every root whose transcript a user deletion can mutate.
 
         Callers use these stable logical keys to drain in-flight turns before
-        :meth:`delete_user_data`. Owner-only roots are included even when they no
+        :meth:`delete_user_data`. The user's private roots are included even when they no
         longer have a user-authored message, while the ``EXISTS`` arm covers the
         user's messages inside roots owned by someone else.
         """

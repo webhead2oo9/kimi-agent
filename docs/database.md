@@ -113,7 +113,7 @@ Every table below is in the current schema. The columns in parentheses are the o
 
 ### Conversations and transcript
 
-- **`conversations`** holds one row per rooted conversation, keyed by its logical `key`. Guild conversations record the Discord message that started them in `root_discord_message_id`. Personal user-app chat uses `userchat:<user_id>` as a stable key and stores the first interaction or DM id in that field. `owner_user_id` records who rooted the conversation, which `/privacy` deletion relies on. `access_scope` is `channel_shared` or `owner_only`: a shared root lets another channel member continue a bot reply, while an owner-only root requires an exact requester match and fails closed on missing or mismatched ownership.
+- **`conversations`** holds one row per rooted conversation, keyed by its logical `key`. Guild conversations record the Discord message that started them in `root_discord_message_id`. Personal user-app chat uses `userchat:<user_id>` as a stable key and stores the first interaction or DM id in that field. `owner_user_id` records who rooted the conversation, which `/privacy` deletion relies on. `access_scope` is `channel_shared` or `owner_only`: a shared root lets another channel member continue a bot reply, while a private `owner_only` root requires the requester to match that conversation's `owner_user_id` and fails closed on missing or mismatched ownership.
 
   `conversations.eval_cursor` exists but nothing in the runtime reads it. It's reserved for the offline eval harness.
 
@@ -213,7 +213,7 @@ The `/privacy` command lets a user delete their data before it expires. This sec
 
 **Delete my data** removes entire conversations the user started. In conversations shared with other members, it removes only that user's messages and routing records, leaving other participants' messages and the bot's replies in place. It also clears cached image descriptions derived from the deleted messages and removes the user's initiator marker from any surviving managed threads.
 
-Starting a conversation makes the user its owner for deletion purposes. It doesn't make an ordinary channel conversation private. Private `owner_only` conversations require an exact owner match whenever they're reopened, and missing or mismatched ownership is rejected.
+Starting a conversation makes the user its owner for deletion purposes. It doesn't make an ordinary channel conversation private. Private `owner_only` conversations require the requester to match the user who owns that conversation whenever they're reopened, and missing or mismatched ownership is rejected.
 
 Full deletion also removes every video session initiated by that user, including sessions in a shared root that survives. The bot attempts provider deletion for the complete Gemini Interaction chain plus any backing Files API upload. A provider failure leaves the content-free outboxes pending for retry, but doesn't keep the privacy request or the user activity barrier open after local deletion succeeds.
 

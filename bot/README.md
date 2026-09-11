@@ -77,8 +77,8 @@ guild installations, and permissions stay intact.
   can also teach from a selected human message through the **Teach Kimi**
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
 - **Discord commands.** `/memory`, `/moderation`, `/privacy`, and
-  `/usage` expose user controls and staff operations; owner-only `/models`
-  changes the global chat model without restarting the bot. An opt-in User
+  `/usage` expose user controls and staff operations; the bot owner uses `/models`
+  to change the global chat model without restarting the bot. An opt-in User
   Install surface adds `/chat` and `/chat-reset`.
 - **Safety rails.** Optional privacy consent and LLM content moderation, user
   blocks, trust-tiered tools, and strict workspace/network boundaries.

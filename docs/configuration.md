@@ -163,7 +163,7 @@ requires a restart.
   [coding models](coding-agent.md#model-and-fallbacks) and the
   [scheduled runner](scheduled-tasks.md#runner-model).
   `selectable_chat_models` supplies the candidates
-  for the owner-only `/models` menu, and profiles with `models_endpoint` filter
+  for the bot owner's `/models` menu, and profiles with `models_endpoint` filter
   those candidates against the live `/v1/models` response at startup. Selection
   is live and global, but catalog edits still need a restart.
 - **General-provider resilience.** General provider profiles may set
@@ -292,7 +292,7 @@ The bot token, role-based and user-based trust lists, channel and guild allowlis
 | `STAFF_ROLE_IDS` | csv(int) | "" | Discord role IDs mapped to the `STAFF` trust tier. |
 | `REGULAR_ROLE_IDS` | csv(int) | "" | Discord role IDs mapped to the `REGULAR` tier. |
 | `STAFF_USER_IDS` | csv | "" | Discord user IDs always treated as `STAFF`, regardless of roles. |
-| `OWNER_USER_ID` | str | "" | The bot owner's Discord user id. Gates `owner_only` tools at dispatch; empty fails closed. Distinct from staff. |
+| `OWNER_USER_ID` | str | "" | The bot owner's Discord user ID. Authorizes `/models`, `/modules`, and tools registered with `owner_only=True`; these checks fail closed when empty. Also grants Staff access in personal chat. Staff tier alone does not satisfy bot-owner checks. |
 | `ALLOWED_CHANNEL_IDS` | csv(int) | "" | If set, the bot only responds in these channel IDs. Empty = all allowed. Validated at startup (must be numeric). |
 | `ALLOWED_GUILD_IDS` | csv(int) | "" | Optional boot-time approvals. A readable, non-symlinked, strictly validated `config/servers/<guild_id>.md` containing `bot_active: true` is the other activation source. A validated `bot_active: false` is a negative override: it preserves the setup while deactivating even an environment-approved guild. Missing, unreadable, symlinked, invalid, or keyless setup cannot activate by file. Inactive guilds stay connected, but responding turns fail closed. Validated at startup (must be numeric). |
 | `BOT_NAME` | str | `Kimi` | Runtime/persona name, substituted into `config/persona.md` via `<bot_name>` and used for startup logs, text invocation, the `Teach <name>` context menu, and provider identity unless a model profile overrides `app_name`. It does not rename the visible Discord account; update the existing application/bot identity in the Developer Portal for a complete rename. Runtime instructions live in `config/prompt.md`. |

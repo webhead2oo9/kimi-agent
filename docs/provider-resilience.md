@@ -90,7 +90,7 @@ retrying elsewhere would not help.
 
 ## Operator controls
 
-The owner-only `/models` view lists open cooldowns and when each will next be
+The bot owner's `/models` view lists open cooldowns and when each will next be
 probed. **Reset all provider cooldowns** clears the stored and in-memory
 circuits without changing model selection or fallback order. The system prompt
 still names the configured primary model; the response metadata and usage

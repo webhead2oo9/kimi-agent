@@ -1,4 +1,4 @@
-"""Owner-only Activity conversations and their resumable presentation journal."""
+"""Activity conversations private to each member and their resumable presentation journal."""
 
 DASHBOARD_SCHEMA = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_conv_source

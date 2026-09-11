@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "dependencies": {
-    "betterwright": "2.3.0",
+    "betterwright": "2.4.0",
     "mermaid": "11.17.2"
   }
 }

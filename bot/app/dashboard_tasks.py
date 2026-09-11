@@ -24,6 +24,7 @@ from app.dashboard_files import DashboardFiles
 from app.root_locks import RootLockPool
 from app.scheduled_tasks import ScheduledTaskService
 from app.task_preview import render_preview, render_task_details
+from config.fragments.dashboard import load_dashboard_tool_policy
 from config.fragments.tool_policy import load_blocked_tools
 from moderation.types import Direction
 from storage.coding_tasks import ACTIVE_TASK_STATUSES, CodingTask
@@ -86,7 +87,8 @@ class DashboardTasks:
             workspace_key_override=workspace_owner_key(chat.user_id, chat.guild_id),
             blocked_tools=await asyncio.to_thread(
                 load_blocked_tools, chat.guild_id, chat.parent_channel_id
-            ),
+            )
+            | (await asyncio.to_thread(load_dashboard_tool_policy, chat.guild_id)).blocked_tools,
         )
 
     async def preview(
@@ -200,18 +202,18 @@ class DashboardTasks:
                             source_context=f"coding-delivery-{task.id}",
                             workspace_guard_held=True,
                         )
-                if not moderated.blocked:
-                    await self.store.conversations.save_channel_messages(
-                        chat.conversation_id,
-                        [
-                            ChannelMessageRecord(
-                                None, "assistant", None, None, moderated.text, source_id=event_key
-                            ),
-                        ],
-                        context_channel_id=chat.channel_id,
-                    )
-                await self.store.event(chat.id, "coding_task", payload, key=event_key)
-                await self.coding.store.mark_delivered(task.id, None)
+                replies = (
+                    []
+                    if moderated.blocked
+                    else [
+                        ChannelMessageRecord(
+                            None, "assistant", None, None, moderated.text, source_id=event_key
+                        ),
+                    ]
+                )
+                await await_uncancellable(
+                    self.store.publish_coding_result(chat, task.id, payload, replies)
+                )
             else:
                 digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[
                     :20

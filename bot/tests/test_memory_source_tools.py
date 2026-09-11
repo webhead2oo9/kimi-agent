@@ -125,6 +125,53 @@ async def _store_with_messages(tmp_path) -> tuple[Database, ConversationStore, i
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("anchor", ["own", "foreign", "assistant", "missing", "opted-out"])
+async def test_dashboard_memory_uses_authenticated_source_anchor(tmp_path, monkeypatch, anchor):
+    db, store, conversation_id = await _store_with_messages(tmp_path)
+    memory = RecordingMemory()
+    monkeypatch.setattr(user_memory, "_memory", memory)
+    monkeypatch.setattr(user_memory, "_conversation_store", store)
+    monkeypatch.setattr(
+        user_memory,
+        "_preference_store",
+        DisabledPreferenceStore() if anchor == "opted-out" else EnabledPreferenceStore(),
+    )
+    try:
+        source = "dashboard:turn:user"
+        await store.save_channel_messages(
+            conversation_id,
+            [
+                ChannelMessageRecord(
+                    None,
+                    "assistant" if anchor == "assistant" else "user",
+                    "456" if anchor == "foreign" else "123",
+                    "webhead",
+                    "I use a Quest 3",
+                    source_created_at=5.0,
+                    source_id=source,
+                )
+            ],
+        )
+        ctx = _ctx(conversation_id, trigger_id="")
+        ctx.trigger_source_id = "missing" if anchor == "missing" else source
+        result = json.loads(await user_memory._remember_user_memory({"context": "headset"}, ctx))
+        if anchor == "own":
+            assert result == {"stored": True}
+            retained = memory.retain_calls[0]
+            assert retained["metadata"]["anchor_source_id"] == source
+            assert retained["metadata"]["source_kind"] == "dashboard_user_memory"
+            assert "anchor_discord_message_id" not in retained["metadata"]
+            assert source in retained["document_id"]
+            assert retained["timestamp"] == "1970-01-01T00:00:05Z"
+            assert "Dana" not in retained["content"]
+        else:
+            assert not memory.retain_calls
+            assert result.get("stored") is not True
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_remember_user_memory_retains_raw_window_with_source_metadata(
     tmp_path, monkeypatch
 ) -> None:

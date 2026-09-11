@@ -352,6 +352,7 @@ class TurnPreparationInput:
     parent_channel_id: str = ""
     guild_name: str = ""
     trigger_discord_message_id: str = ""
+    trigger_source_id: str = ""
     trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     referenced_message_id: str | None = None
     conversation_owner_user_id: str | None = None
@@ -410,6 +411,7 @@ class TurnRequest:
     parent_channel_id: str = ""
     guild_name: str = ""
     trigger_discord_message_id: str = ""
+    trigger_source_id: str = ""
     trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     recalled_memories: str = ""
     skills_index: str = ""
@@ -860,6 +862,7 @@ async def prepare_turn(
             parent_channel_id=source.parent_channel_id,
             guild_name=source.guild_name,
             trigger_discord_message_id=source.trigger_discord_message_id,
+            trigger_source_id=source.trigger_source_id,
             trigger_discord_message_snapshot=source.trigger_discord_message_snapshot,
             is_new_user=is_new_user,
             skills_index=skills_index,
@@ -1189,6 +1192,7 @@ async def execute_turn(
                     thread_id=turn.thread_id,
                     parent_channel_id=turn.parent_channel_id,
                     trigger_discord_message_id=turn.trigger_discord_message_id,
+                    trigger_source_id=turn.trigger_source_id,
                     trigger_discord_message_snapshot=turn.trigger_discord_message_snapshot,
                     bot_name=config.bot_name,
                     command_template=config.command_template,

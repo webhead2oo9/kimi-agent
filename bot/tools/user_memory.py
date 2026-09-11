@@ -123,7 +123,7 @@ def init_user_memory_write_tools(
             name="remember_user_memory",
             description=(
                 "Store a durable long-term fact about the current user only, "
-                "using the current Discord message as the source. This is a "
+                "using the current user message as the source. This is a "
                 "write tool, not a retrieval tool; use recall_user to retrieve "
                 "existing memories. Call it proactively whenever the current "
                 "user reveals a durable first-party fact about themselves (VR "
@@ -246,8 +246,9 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
     steer = str(args.get("context", "")).strip()
     if not steer:
         return tool_error("Context is required.")
-    if ctx.conversation_id is None or not ctx.trigger_discord_message_id:
-        return tool_error("Current Discord message source is unavailable.")
+    source_id = ctx.trigger_source_id or ctx.trigger_discord_message_id
+    if ctx.conversation_id is None or not source_id:
+        return tool_error("Current message source is unavailable.")
     if not ctx.consume_budget(BudgetName.MEMORY_WRITES):
         return json.dumps(
             {
@@ -258,9 +259,12 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
                 ),
             }
         )
-    anchor = await store.get_message_by_discord_id(
-        ctx.conversation_id,
-        ctx.trigger_discord_message_id,
+    anchor = (
+        await store.get_message_by_source_id(ctx.conversation_id, ctx.trigger_source_id)
+        if ctx.trigger_source_id
+        else await store.get_message_by_discord_id(
+            ctx.conversation_id, ctx.trigger_discord_message_id
+        )
     )
     if anchor is None:
         return tool_error("Source anchor not found.")
@@ -277,11 +281,11 @@ async def _remember_user_memory(args: dict, ctx: MessageContext) -> str:
     )
     visible_messages = _visible_messages(source_window, ctx)
     content = "\n".join(_format_source_line(message, ctx) for message in visible_messages)
-    document_id = _document_id(ctx.user_id, ctx.trigger_discord_message_id, steer)
+    document_id = _document_id(ctx.user_id, source_id, steer)
     metadata = _source_metadata(ctx, anchor, document_id=document_id)
     timestamp = iso_timestamp(anchor.source_created_at)
     retain_context = (
-        f"Discord current-user memory for {ctx.user_name} (user {ctx.user_id}). "
+        f"Current-user memory for {ctx.user_name} (user {ctx.user_id}). "
         "Extract only durable facts about this user from their messages. "
         "Assistant lines are conversational context, not source claims about the user. "
         "Write every retained fact in English, even when the messages contain "
@@ -355,12 +359,16 @@ def _source_metadata(
     document_id: str,
 ) -> dict[str, str]:
     return {
-        "source_kind": _SOURCE_KIND,
+        "source_kind": "dashboard_user_memory" if ctx.trigger_source_id else _SOURCE_KIND,
         "source_version": _SOURCE_VERSION,
         "subject_user_id": ctx.user_id,
         "conversation_id": str(ctx.conversation_id),
         "anchor_message_id": str(anchor.id),
-        "anchor_discord_message_id": ctx.trigger_discord_message_id,
+        **(
+            {"anchor_source_id": ctx.trigger_source_id}
+            if ctx.trigger_source_id
+            else {"anchor_discord_message_id": ctx.trigger_discord_message_id}
+        ),
         "channel_id": ctx.channel_id,
         "channel_name": ctx.channel_name,
         "anchor_source_created_at": str(anchor.source_created_at),

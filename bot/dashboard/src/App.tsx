@@ -6,6 +6,8 @@ import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { Avatar, initialOf } from "./Avatar";
 import { LaunchScreen } from "./LaunchScreen";
+import { ResponsiveDrawer } from "./ResponsiveDrawer";
+import { useTaskActions } from "./useTaskActions";
 import { WorkPanel } from "./WorkPanel";
 import { conversationTimeline, isResponding, latestWork, mergeEvents, type Chat, type ChatEvent, type FileRecord, type Session } from "./types";
 
@@ -26,6 +28,10 @@ export function FileButton({ file, onSelect }: { file: FileRecord; onSelect: (fi
 
 export function DashboardApp({ connection }: { connection: Connection }) {
   const { api, openLink, displayName, botAvatar } = connection;
+  const taskActions = useTaskActions(api);
+  const reconcileActions = taskActions.reconcile;
+  const [consentDeclined, setConsentDeclined] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
   const [session, setSession] = useState<Session>(connection.session);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -59,6 +65,8 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const pending = useRef<{ chat: string; body: string; requestId: string } | null>(null);
+  const sidebarTrigger = useRef<HTMLButtonElement>(null);
+  const workTrigger = useRef<HTMLButtonElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const history = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
@@ -119,21 +127,24 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     setHistoryLoading(true);
     const refreshFiles = () => void api.request<{ files: FileRecord[] }>(`/chats/${activeId}/files`).then(result => { if (live) setFiles(result.files); }).catch(report);
     const stopLoading = retryRead(() => api.request<{ events: ChatEvent[] }>(`/chats/${activeId}/events`), result => {
+      reconcileActions(activeId, result.events);
       setEvents(result.events); setMoreHistory(result.events.length === 200);
       setLoadedChatId(activeId); setHistoryLoading(false);
       setOptimisticBusy(previous => previous === activeId ? null : previous);
       const after = result.events.at(-1)?.id || 0;
       unsubscribe = api.subscribe(activeId, after, incoming => {
         if (!live) return;
+        reconcileActions(activeId, incoming);
         setEvents(previous => mergeEvents(previous, incoming));
         if (incoming.some(event => event.kind === "turn_finished")) {
           setOptimisticBusy(null); void refreshChats().catch(report); refreshFiles();
         }
         if (incoming.some(event => ["coding_task", "task_action_result", "branch_result"].includes(event.kind))) refreshFiles();
         if (incoming.some(event => ["branch_created", "branch_result"].includes(event.kind))) void refreshChats().catch(report);
-      }, (connected, accessExpired) => {
+      }, (connected, accessExpired, notice) => {
         if (!live) return;
         setConnected(connected);
+        if (notice) setError(notice);
         if (accessExpired) {
           setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null);
           setError("Your session or channel access expired. Reopen the dashboard to continue.");
@@ -142,7 +153,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
       refreshFiles();
     }, error => { report(error); setHistoryLoading(false); }, () => setConnected(false));
     return () => { live = false; stopLoading(); unsubscribe?.(); };
-  }, [activeId, api, expired, rememberKey, refreshChats, report]);
+  }, [activeId, api, expired, rememberKey, refreshChats, report, reconcileActions]);
 
   useEffect(() => {
     if (followEnd.current && history.current) history.current.scrollTop = history.current.scrollHeight;
@@ -264,7 +275,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   };
   const taskAction = async (taskId: string, action: string, revision?: number, message?: string) => {
     if (!activeId) return;
-    await api.request(`/chats/${activeId}/task-actions`, "POST", { task_id: taskId, action, revision: revision || 0, message: message || "", request_id: crypto.randomUUID() });
+    await taskActions.perform(activeId, taskId, action, revision, message);
   };
   const older = async () => {
     if (!activeId || !events.length) return;
@@ -285,7 +296,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
 
   if (loading) return <LaunchScreen state={openingRetry ? "retrying" : "connecting"} name={session.bot_name} avatar={botAvatar} />;
   return <div className={`app-shell ${workOpen ? "with-work" : ""}`}>
-    {sidebarOpen && <button className="drawer-scrim" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />}
+    <ResponsiveDrawer query="(max-width: 700px)" open={sidebarOpen} onClose={() => setSidebarOpen(false)} label="Saved conversations" returnFocusRef={sidebarTrigger}>
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-label="Saved conversations">
       <div className="brand"><Avatar src={botAvatar} fallback={botInitial} /><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
       <button className="new-chat" onClick={() => void newChat()} disabled={expired}><Plus size={16} /> New chat</button>
@@ -301,17 +312,18 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         {moreChats && <button className="text-button" onClick={() => void api.request<{ chats: Chat[] }>(`/chats?before=${chatCursor?.updated_at}&before_id=${chatCursor?.id}`).then(result => { setChats(previous => [...previous, ...result.chats.filter(chat => !previous.some(item => item.id === chat.id))]); setMoreChats(result.chats.length === 100); setChatCursor(result.chats.at(-1) || null); }).catch(report)}>Older conversations</button>}
       </nav>
     </aside>
+    </ResponsiveDrawer>
 
     <main className="chat-main">
       <header className="chat-header">
-        <button className="icon-button mobile-only" aria-label="Open conversations" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
+        <button ref={sidebarTrigger} className="icon-button mobile-only" aria-label="Open conversations" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
         <div className="chat-heading"><strong>{active?.title || session.bot_name}</strong>{active && <span><Hash size={12} />{active.channel_name}{connected === false && <><i /><span className="status-pill reconnecting" role="status">Reconnecting…</span></>}</span>}</div>
-        <button className={`work-toggle ${workOpen ? "active" : ""}`} aria-label="Work" onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
+        <button ref={workTrigger} className={`work-toggle ${workOpen ? "active" : ""}`} aria-label="Work" onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
       </header>
       {active?.parent_title && <div className="branch-banner"><GitBranch size={16} /><div>{active.parent_id ? <button className="text-button" title="Go to the starting message in the parent conversation" onClick={() => void openChat(active.parent_id!, active.parent_event_id)}><CornerUpLeft size={14} />Parent: {active.parent_title}</button> : <span>Parent conversation deleted</span>}<p>Context copied through the selected message. Workspace files are shared.</p></div></div>}
       {notice && !expired && <div className="notice success-notice" role="status"><Check size={15} /><span>{notice}</span><button type="button" className="icon-button" aria-label="Dismiss confirmation" onClick={() => setNotice("")}><X size={16} /></button></div>}
       {error && <div className="notice error" role="alert"><span>{error}</span>{expired ? <button onClick={() => location.reload()}>Reconnect</button> : <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
-      {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2><p>{session.consent_text}</p><button className="primary" onClick={() => void api.request("/consent", "POST", { accept: true }).then(() => setSession({ ...session, consent_required: false })).catch(report)}>Accept and continue</button></div>}
+      {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2>{consentDeclined ? <><p>You declined the privacy notice. Chatting stays disabled.</p><button onClick={() => setConsentDeclined(false)}>Review privacy notice</button></> : <><Markdown text={session.consent_text} openLink={openLink} /><div className="consent-actions">{[true, false].map(accept => <button key={String(accept)} disabled={consentBusy} className={accept ? "primary" : ""} onClick={() => { setConsentBusy(true); void api.request("/consent", "POST", { accept }).then(() => { if (accept) setSession({ ...session, consent_required: false }); else setConsentDeclined(true); }).catch(report).finally(() => setConsentBusy(false)); }}>{accept ? "Accept and continue" : "Decline"}</button>)}</div></>}</div>}
       <div className="message-scroll" ref={history} onScroll={() => { const node = history.current; if (node) followEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
         {!activeId && !expired && <div className="empty-state"><Avatar className="large" src={botAvatar} fallback={botInitial} /><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
         {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><Avatar className="large" src={botAvatar} fallback={botInitial} /><h2>What are we working on?</h2></div>}
@@ -360,7 +372,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
       </div>}
     </main>
 
-    {workOpen && !expired && <WorkPanel key={activeId} chat={active} events={events} files={files} selectedFile={selectedFile} onSelectFile={setSelectedFile} onClose={() => setWorkOpen(false)} connection={connection} onAction={taskAction} onError={report} />}
+    {workOpen && !expired && <ResponsiveDrawer query="(max-width: 1000px)" open={workOpen} onClose={() => setWorkOpen(false)} label="Work panel" returnFocusRef={workTrigger}><WorkPanel key={activeId} chat={active} events={events} files={files} selectedFile={selectedFile} onSelectFile={setSelectedFile} onClose={() => setWorkOpen(false)} connection={connection} onAction={taskAction} pendingActions={taskActions.pending.filter(action => action.chatId === activeId)} onWorkEvents={reconcileActions} onError={report} /></ResponsiveDrawer>}
     {dialog && <ChatDialog dialog={dialog} onClose={() => setDialog(null)} onSubmit={async title => {
       if (dialog.kind === "rename") await api.request(`/chats/${dialog.chat.id}`, "PATCH", { title });
       else { await api.request(`/chats/${dialog.chat.id}`, "DELETE"); setChats(previous => previous.filter(chat => chat.id !== dialog.chat.id)); setDrafts(previous => { const copy = { ...previous }; delete copy[dialog.chat.id]; return copy; }); }

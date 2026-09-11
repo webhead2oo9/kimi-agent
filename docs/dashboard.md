@@ -240,7 +240,8 @@ pins; blocks add to existing restrictions. A pin cannot override a block, trust
 requirement, or unavailable tool. The prompt and policy are read on each turn,
 so edits need no restart. Invalid policy reloads retain that file's last valid
 policy, or fail the turn if none has loaded; check the bot log if a policy edit
-appears ineffective. These overrides apply only to dashboard turns.
+appears ineffective. These overrides apply to dashboard turns and the work panel’s
+direct coding steer/cancel controls.
 Model routing can target `overrides.commands.dashboard` in `models.yaml`.
 
 ## Authentication and private delivery
@@ -266,14 +267,31 @@ During an open chat, the connection rechecks Activity membership and channel
 access about every 15 seconds. Temporary verification failures reconnect with
 increasing delays and resume saved updates. Expired sessions and denied access
 require reopening; reopening does not restore a removed permission. Initial
-sign-in failures show an error and a retry control.
+sign-in failures show an error and a retry control. A fourth open chat connection
+shows “Close another dashboard tab before reconnecting”; close another tab and
+reopen the Activity to connect.
+
+The application limits unauthenticated bootstrap and authentication requests
+jointly to 60 per minute per transport peer and 240 per minute overall, before
+allocating challenges or contacting Discord. It never trusts forwarded IP
+headers for this limit. A local tunnel shares a peer bucket across its users;
+public-edge limits remain useful defense in depth. Throttled HTTP responses
+include `Retry-After: 60`. Deleting one member's data revokes only their sessions
+and earlier login attempts; other members' sign-ins remain valid.
 
 Closing the Activity or losing its connection does not cancel accepted responses
 or task actions. Use **Stop response** or the coding card's **Stop task** to stop
 work; neither undoes completed file changes. After a bot restart, reopen the
 Activity and inspect the chat before sending anything again. Foreground responses
 and task actions still recorded as unfinished are marked interrupted and are
-not automatically rerun.
+not automatically rerun. Task controls stay pending through HTTP acceptance
+until the matching saved action result arrives. **Retry action** resends the same
+request identifier when a network failure leaves acceptance uncertain.
+
+Assistant transcript rows and completed dashboard results commit together.
+Coding handoff release shares the acknowledgement transaction, and the coding
+worker polls for released tasks even if a notification is lost. Background coding
+results also commit their transcript, visible event, and delivery receipt together.
 
 Coding tasks follow their separate [restart recovery](coding-agent.md) rules.
 An acknowledged coding handoff can recover with delivery still directed to its
@@ -282,6 +300,12 @@ posting in a Discord channel. A handoff whose acknowledgement was not saved is
 abandoned during recovery.
 
 ## Files and retention
+
+Chat deletion first renames private snapshots into a quarantine. A failed database
+deletion restores them; startup restores quarantines for surviving chats and
+finishes removal for deleted chats. Branch file copying runs outside the database
+write transaction, then revalidates its saved source before publishing context
+and file metadata together.
 
 Uploads are staged privately before the message is sent. They pass through the
 existing attachment handling and input moderation before tools can use them.

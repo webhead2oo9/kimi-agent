@@ -868,22 +868,26 @@ class Database:
             )
 
         if current == 0:
-            await conn.executescript(_SCHEMA_SQL)
-            await _add_scheduled_tasks(conn)
-            await _add_task_previews(conn)
-            await _add_task_thread_closure(conn)
-            await _add_task_read_recovery(conn)
-            await _add_dashboard(conn)
-            await _add_dashboard_branches(conn)
-            await _record_schema_version(
-                conn,
-                _BASELINE_SCHEMA_VERSION,
-                _BASELINE_SCHEMA_NAME,
-            )
-            for version in range(_BASELINE_SCHEMA_VERSION + 1, SCHEMA_VERSION + 1):
-                name, _ = _require_migration(version)
-                await _record_schema_version(conn, version, name)
-            await conn.commit()
+            try:
+                await conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA_SQL)
+                await _add_scheduled_tasks(conn)
+                await _add_task_previews(conn)
+                await _add_task_thread_closure(conn)
+                await _add_task_read_recovery(conn)
+                await _add_dashboard(conn)
+                await _add_dashboard_branches(conn)
+                await _record_schema_version(
+                    conn,
+                    _BASELINE_SCHEMA_VERSION,
+                    _BASELINE_SCHEMA_NAME,
+                )
+                for version in range(_BASELINE_SCHEMA_VERSION + 1, SCHEMA_VERSION + 1):
+                    name, _ = _require_migration(version)
+                    await _record_schema_version(conn, version, name)
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
         elif current < _BASELINE_SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema v{current} is no longer supported; "
@@ -973,6 +977,12 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database not connected; call connect() first")
         return self._conn
+
+    @asynccontextmanager
+    async def read_snapshot(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Read committed state on the shared connection; never nest in a writer."""
+        async with self._write_lock:
+            yield self.conn
 
     @asynccontextmanager
     async def write_transaction(self) -> AsyncIterator[aiosqlite.Connection]:

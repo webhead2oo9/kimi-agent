@@ -241,3 +241,34 @@ async def test_branch_copies_expired_and_foreign_files_as_expired_cards(files):
         {"filename": "private.txt", "expired": True},
         {"filename": "old.txt", "expired": True},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True])
+async def test_restart_reconciles_quarantined_chat_files(files, committed):
+    own = await chat(files)
+    record = await files.save(own, "secret.txt", b"private", kind="upload")
+    root = files.workspace.allowed_output_roots(context_key=files.context(own.id, "upload"))[0]
+    quarantine = root.with_name(root.name + ".deleting")
+    root.rename(quarantine)
+    if committed:
+        await files.store.delete(own)
+    await files.recover_deletions()
+    assert not quarantine.exists()
+    if committed:
+        assert not root.exists()
+    else:
+        assert await files.payload(record) == b"private"
+
+
+@pytest.mark.asyncio
+async def test_chat_deletion_refuses_a_symlink_to_another_chats_snapshots(files):
+    own, other = await chat(files), await chat(files, "9")
+    record = await files.save(other, "private.txt", b"other member", kind="upload")
+    root = files.workspace.allowed_output_roots(context_key=files.context(own.id, "upload"))[0]
+    target = files.workspace.allowed_output_roots(context_key=files.context(other.id, "upload"))[0]
+    root.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="snapshot"):
+        await files.delete_conversation(own)
+    assert await files.payload(record) == b"other member"
+    assert await files.store.get(own.id, user_id="1", guild_id="2") is not None

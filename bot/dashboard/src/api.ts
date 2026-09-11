@@ -51,7 +51,7 @@ export class DashboardApi {
     return payload as T;
   }
 
-  subscribe(chatId: string, after: number, receive: (events: ChatEvent[]) => void, status: (connected: boolean, expired?: boolean) => void): () => void {
+  subscribe(chatId: string, after: number, receive: (events: ChatEvent[]) => void, status: (connected: boolean, expired?: boolean, notice?: string) => void): () => void {
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
@@ -82,7 +82,11 @@ export class DashboardApi {
       current.onmessage = (message) => {
         if (stopped || socket !== current) return;
         try {
-          const data: { events: ChatEvent[] } = JSON.parse(message.data);
+          const data: { events: ChatEvent[]; code?: string; error?: string } = JSON.parse(message.data);
+          if (data.code === "socket_limit") {
+            status(false, false, data.error || "Close another dashboard tab before reconnecting");
+            stopped = true; current.close(); return;
+          }
           if (!Array.isArray(data.events)) return;
           receive(data.events);
           for (const event of data.events) last = Math.max(last, event.id);
@@ -91,6 +95,7 @@ export class DashboardApi {
       };
       current.onclose = event => {
         if (stopped || socket !== current) return;
+        if (event.code === 4008) { status(false, false, "Close another dashboard tab before reconnecting"); return; }
         if (event.code === 1008) { status(false, true); return; }
         // Check the selected chat too: a denied WebSocket handshake cannot
         // expose its HTTP status to JavaScript, and /session checks launch access.

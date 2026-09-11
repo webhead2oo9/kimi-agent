@@ -237,6 +237,7 @@ class MessageContext:
     # optional guild member cache; non-Discord/direct callers leave it unset.
     platform_member: Any | None = None
     trigger_discord_message_id: str = ""
+    trigger_source_id: str = ""
     trigger_discord_message_snapshot: TurnDiscordMessageSnapshot | None = None
     context_key: str = ""
     tool_event_turn_id: str = ""

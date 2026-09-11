@@ -17,7 +17,10 @@ from workspace import WorkspaceKey, WorkspaceManager
 
 
 @pytest.mark.asyncio
-async def test_coding_delivery_is_durable_private_and_deduplicated_without_socket(tmp_path):
+@pytest.mark.parametrize("fail_publication", [False, True])
+async def test_coding_delivery_is_durable_private_and_deduplicated_without_socket(
+    tmp_path, fail_publication
+):
     db = Database(tmp_path / "coding.db")
     await db.connect()
     try:
@@ -68,6 +71,22 @@ async def test_coding_delivery_is_durable_private_and_deduplicated_without_socke
         delivery.dashboard_publish = bridge.publish_coding
         await delivery.publish(task, None)
         await coding.finish(task.id, CodingTaskStatus.COMPLETED, result_text="Report is complete.")
+        if fail_publication:
+            async with db.write_transaction() as conn:
+                await conn.execute(
+                    "CREATE TRIGGER fail_coding BEFORE INSERT ON dashboard_events "
+                    "WHEN NEW.kind='coding_task' AND json_extract(NEW.payload_json,'$.status')='completed' "
+                    "BEGIN SELECT RAISE(ABORT, 'publication failed'); END"
+                )
+            with pytest.raises(Exception, match="publication failed"):
+                await delivery.publish(task, None)
+            assert (
+                await store.conversations.load_recent_conversation_messages(chat.conversation_id)
+                == []
+            )
+            assert (await coding.get_task(task.id)).delivery_state != "delivered"
+            async with db.write_transaction() as conn:
+                await conn.execute("DROP TRIGGER fail_coding")
         # No WebSocket or HTTP connection exists during delivery.
         await delivery.publish(task, None)
         await delivery.publish(task, None)

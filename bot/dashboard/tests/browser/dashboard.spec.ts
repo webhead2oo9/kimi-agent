@@ -1,5 +1,39 @@
 import { test, expect } from "@playwright/test";
 
+test("secondary text meets normal-text contrast on each dashboard surface", async ({ page }) => {
+  await page.goto("/tests/fixture.html");
+  const ratios = await page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement);
+    const light = (token: string) => {
+      const color = style.getPropertyValue(token).trim().slice(1);
+      const rgb = [0, 2, 4].map(index => parseInt(color.slice(index, index + 2), 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+      return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+    };
+    return ["--faint", "--muted"].flatMap(text => ["--canvas", "--sidebar", "--panel", "--surface", "--hover", "--composer"].map(background => ({ text, background, ratio: (light(text) + .05) / (light(background) + .05) })));
+  });
+  for (const pair of ratios) expect(pair.ratio, `${pair.text} on ${pair.background}`).toBeGreaterThanOrEqual(4.5);
+});
+
+test("mobile drawers contain keyboard focus and restore it on Escape", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "Mobile drawer behavior");
+  await page.goto("/tests/fixture.html");
+  for (const [button, name] of [["Open conversations", "Saved conversations"], ["Work", "Work panel"]]) {
+    const trigger = page.getByRole("button", { name: button, exact: true });
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name, exact: true });
+    await expect(dialog).toBeVisible();
+    for (const direction of ["Tab", "Shift+Tab"]) {
+      for (let index = 0; index < 18; index++) {
+        await page.keyboard.press(direction);
+        expect(await dialog.evaluate(node => node.contains(document.activeElement))).toBe(true);
+      }
+    }
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  }
+});
+
 test("saved chat, preview, task review and responsive navigation", async ({ page }, testInfo) => {
   await page.goto("/tests/fixture.html");
   await expect(page.getByRole("textbox", { name: "Message Kimi" })).toBeVisible();
@@ -30,7 +64,7 @@ test("saved chat, preview, task review and responsive navigation", async ({ page
   if (testInfo.project.name === "mobile") await page.getByRole("button", { name: "Open conversations" }).click();
   await page.getByRole("button", { name: "Options for A weekly community digest" }).click();
   await page.getByRole("button", { name: "Rename", exact: true }).click();
-  await page.getByRole("dialog").getByRole("textbox").fill("Friday digest");
+  await page.getByRole("dialog", { name: "Rename conversation", exact: true }).getByRole("textbox").fill("Friday digest");
   await page.getByRole("button", { name: "Save name", exact: true }).click();
   await expect(page.getByRole("button", { name: "Friday digest", exact: true })).toBeVisible();
 });

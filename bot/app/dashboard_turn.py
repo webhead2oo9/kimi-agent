@@ -26,12 +26,12 @@ from app.foreground_turn import (
     ForegroundTurnRunner,
     TurnDeliveryReceipt,
     TurnSurfaceOutcome,
-    TurnSurfaceOutcomeKind,
 )
 from app.root_locks import RootLockPool
 from app.turn_entry import TurnEntryHooks
 from config.settings import Settings
 from discord_adapter.gateway import DiscordGateway
+from storage.conversations import ChannelMessageRecord
 from storage.dashboard import DashboardBusyError, DashboardConversation, DashboardStore
 from tools.embeds import embed_transcript_summary
 from tools.registry import TaskPreviewRequest
@@ -162,17 +162,28 @@ class DashboardTurnAdapter:
             replies=(DeliveredReply(None, text, source_id=f"dashboard:{self.turn_id}:assistant"),),
             context_channel_id=self.chat.channel_id,
             requires_persistence=True,
+            persist_replies=self.persist_replies,
         )
 
-    async def finish(self, outcome: TurnSurfaceOutcome) -> None:
-        if outcome.kind == TurnSurfaceOutcomeKind.DELIVERED:
-            # The runner has committed model history. Commit the public result
-            # before releasing durable coding work, so reconnect sees its ack.
-            await self.store.finish_turn(self.chat.id, self.turn_id, "completed", self.payload)
+    async def persist_replies(self, replies: list[ChannelMessageRecord]) -> None:
+        # The transcript, visible acknowledgement and coding claimability share
+        # one commit. The coding claim loop also polls, so no wakeup is required
+        # to recover a lost notification after this transaction.
+        async def commit() -> None:
+            await self.store.finish_turn(
+                self.chat.id,
+                self.turn_id,
+                "completed",
+                self.payload,
+                replies=replies,
+                handoff_id=self.handoff_id,
+            )
             self.delivered = True
-            if self.handoff_id:
-                await self.coding.release_handoff(self.handoff_id)
-        elif self.handoff_id and not self.delivered and self.coding.running:
+
+        await await_uncancellable(commit())
+
+    async def finish(self, outcome: TurnSurfaceOutcome) -> None:
+        if self.handoff_id and not self.delivered and self.coding.running:
             await self.coding.cancel_task(
                 self.handoff_id, reason="Dashboard acknowledgement was interrupted"
             )
@@ -335,6 +346,7 @@ class DashboardTurns:
                             attachments,
                         )
                         turn = TurnPreparationInput(
+                            trigger_source_id=f"dashboard:{turn_id}:user",
                             raw_content=text,
                             source_message=source,
                             bot_user=self.access.bot.user,
@@ -451,8 +463,7 @@ class DashboardTurns:
                         reason="Coding work is still stopping. Try again shortly"
                     )
             async with self.roots.hold(chat.key):
-                await self.files.delete_chat(chat)
-                await self.store.delete(chat)
+                await self.files.delete_conversation(chat)
         finally:
             self._deleting.discard(chat.id)
 

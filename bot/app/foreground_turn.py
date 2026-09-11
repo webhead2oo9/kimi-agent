@@ -85,6 +85,8 @@ class TurnDeliveryReceipt:
     # A web surface publishes only after transcript persistence succeeds; unlike
     # Discord delivery, a failed write can still safely fail the whole result.
     requires_persistence: bool = False
+    # A durable surface commits these safe replies together with its public result.
+    persist_replies: Callable[[list[ChannelMessageRecord]], Awaitable[None]] | None = None
 
 
 class TurnSurfaceOutcomeKind(StrEnum):
@@ -430,13 +432,11 @@ class ForegroundTurnRunner:
         result: TurnResult,
         receipt: TurnDeliveryReceipt,
     ) -> None:
-        if not receipt.replies:
-            return
         try:
-            if result.blocked_by_moderation or result.termination_reason == "attachment_error":
-                return
-            await self._conversation_store.save_channel_messages(
-                conversation_id,
+            safe = (
+                not result.blocked_by_moderation and result.termination_reason != "attachment_error"
+            )
+            records = (
                 [
                     ChannelMessageRecord(
                         discord_message_id=reply.discord_message_id,
@@ -448,9 +448,16 @@ class ForegroundTurnRunner:
                         source_created_at=reply.source_created_at,
                     )
                     for reply in receipt.replies
-                ],
-                context_channel_id=receipt.context_channel_id,
+                ]
+                if safe
+                else []
             )
+            if receipt.persist_replies is not None:
+                await receipt.persist_replies(records)
+            elif records:
+                await self._conversation_store.save_channel_messages(
+                    conversation_id, records, context_channel_id=receipt.context_channel_id
+                )
         finally:
             # The live bridge window ends here whether the durable write
             # landed or not, so a stale route can never override durable

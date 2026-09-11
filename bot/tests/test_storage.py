@@ -26,6 +26,12 @@ from providers.image_caption import format_image_caption
 from providers.types import ContentPart, ConversationMessage
 
 
+def test_database_upgrade_documentation_covers_the_migration_registry():
+    text = " ".join((Path(__file__).resolve().parents[2] / "docs/database.md").read_text().split())
+    for version, (name, _) in storage.db._MIGRATIONS.items():
+        assert f"v{version} `{name}`" in text
+
+
 @pytest.mark.asyncio
 async def test_database_filesystem_setup_runs_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -150,6 +156,32 @@ async def test_guild_command_scope_store_tracks_and_forgets_guilds(tmp_path) -> 
 
         await store.forget(10)
         assert await store.guild_ids() == (20,)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["schema", "ledger", "cancel"])
+async def test_fresh_initialization_can_restart_after_failure(tmp_path, monkeypatch, failure):
+    from unittest.mock import AsyncMock
+
+    import storage.db as database
+
+    db = Database(tmp_path / "restart.db")
+    target = "_record_schema_version" if failure == "ledger" else "_add_dashboard"
+    original = getattr(database, target)
+    error = (
+        asyncio.CancelledError() if failure == "cancel" else RuntimeError("initialization failed")
+    )
+    monkeypatch.setattr(database, target, AsyncMock(side_effect=error))
+    try:
+        with pytest.raises(type(error)):
+            await db.connect()
+        await db.close()
+        monkeypatch.setattr(database, target, original)
+        await db.connect()
+        async with db.conn.execute("SELECT max(version) FROM schema_version") as cursor:
+            assert (await cursor.fetchone())[0] == database.SCHEMA_VERSION
     finally:
         await db.close()
 

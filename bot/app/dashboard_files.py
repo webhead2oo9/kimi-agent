@@ -6,6 +6,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -32,7 +33,7 @@ from tools.workspace.documents import (
 )
 from utils.asyncio import await_uncancellable
 from utils.image_types import decoded_image_media_type
-from workspace import WorkspaceKey, WorkspaceManager, workspace_owner_key
+from workspace import WorkspaceKey, WorkspaceManager, path_contains_symlink, workspace_owner_key
 
 PREVIEW_CHARS = 100_000
 _RASTER_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -208,7 +209,7 @@ class DashboardFiles:
         Wrap the whole context and transaction in await_uncancellable so writes
         and rollback cleanup finish together even if the HTTP client disconnects.
         """
-        created: list[tuple[Path, str]] = []
+        created: list[tuple[Path, str, int]] = []
         key = WorkspaceKey(f"dashboard-files:{workspace_owner_key(owner.user_id, owner.guild_id)}")
 
         async def copy(file_id: str, destination: str) -> DashboardFile | None:
@@ -226,9 +227,15 @@ class DashboardFiles:
             ) as cursor:
                 row = await cursor.fetchone()
             assert row is not None
+            async with self.store.db.conn.execute(
+                "SELECT path FROM dashboard_files WHERE owner_user_id=? AND guild_id=?",
+                (owner.user_id, owner.guild_id),
+            ) as cursor:
+                persisted = {row[0] for row in await cursor.fetchall()}
+            staged = [size for _, path, size in created if path not in persisted]
             if (
-                row[0] + len(payload) > self.settings.workspace_tool_max_user_bytes
-                or row[1] >= 1000
+                row[0] + sum(staged) + len(payload) > self.settings.workspace_tool_max_user_bytes
+                or row[1] + len(staged) >= 1000
             ):
                 raise web.HTTPConflict(
                     reason="Dashboard file quota reached; let older files expire"
@@ -241,7 +248,7 @@ class DashboardFiles:
                 )
                 path = directory / name
                 relative = self.workspace.relative_generated_file_path(path)
-                created.append((directory, relative))
+                created.append((directory, relative, len(payload)))
                 with path.open("xb") as output:
                     output.write(payload)
                 path.chmod(0o600)
@@ -264,10 +271,11 @@ class DashboardFiles:
         async with self.locks.activity(key):
             try:
                 yield copy
-            except BaseException:
-                # Retain committed copies if a later read failed. Only remove
-                # this attempt's paths that have no durable metadata reference.
-                for directory, relative in created:
+            finally:
+                # Retain committed copies if a later read failed. Discard copies
+                # from a concurrent duplicate request only when this attempt's
+                # paths have no durable metadata reference.
+                for directory, relative, _ in created:
                     async with self.store.db.conn.execute(
                         "SELECT 1 FROM dashboard_files WHERE path=? LIMIT 1",
                         (relative,),
@@ -275,7 +283,82 @@ class DashboardFiles:
                         referenced = await cursor.fetchone()
                     if referenced is None:
                         await asyncio.to_thread(shutil.rmtree, directory)
+
+    async def delete_conversation(self, chat: DashboardConversation) -> None:
+        """Quarantine snapshots, commit deletion, then remove the quarantines.
+
+        A deterministic sibling survives process death. Startup restores it for
+        a surviving chat or finishes removal after a committed deletion.
+        """
+        key = WorkspaceKey(f"dashboard-files:{workspace_owner_key(chat.user_id, chat.guild_id)}")
+        moved: list[tuple[Path, Path]] = []
+
+        def quarantine() -> None:
+            for kind in ("upload", "output"):
+                root = self.workspace.generated_context_path(self.context(chat.id, kind))
+                target = root.with_name(root.name + ".deleting")
+                if (
+                    root.is_symlink()
+                    or path_contains_symlink(Path(root.anchor), root)
+                    or target.exists()
+                    or target.is_symlink()
+                ):
+                    raise ValueError("Invalid dashboard snapshot directory")
+                if root.exists():
+                    root.rename(target)
+                    moved.append((root, target))
+
+        def restore() -> None:
+            for root, target in reversed(moved):
+                target.rename(root)
+
+        async def delete() -> None:
+            try:
+                await asyncio.to_thread(quarantine)
+                await self.store.delete(chat)
+            except BaseException:
+                await asyncio.to_thread(restore)
                 raise
+            for _, target in moved:
+                await asyncio.to_thread(shutil.rmtree, target)
+
+        async with self.locks.activity(key):
+            await await_uncancellable(delete())
+
+    async def recover_deletions(self) -> None:
+        """Reconcile interrupted deletes before opening the dashboard listener."""
+        async with self.store.db.read_snapshot() as conn:
+            async with conn.execute("SELECT id FROM dashboard_conversations") as cursor:
+                ids = [str(row[0]) for row in await cursor.fetchall()]
+        generated = self.workspace.generated_context_path("dashboard").parent
+        surviving = {
+            self.workspace.generated_context_path(self.context(chat_id, kind)).name
+            for chat_id in ids
+            for kind in ("upload", "output")
+        }
+
+        def recover() -> None:
+            if generated.is_symlink() or path_contains_symlink(Path(generated.anchor), generated):
+                raise ValueError("Invalid dashboard snapshot directory")
+            if not generated.exists():
+                return
+            for target in generated.glob("dashboard-*.deleting"):
+                if not re.fullmatch(
+                    r"dashboard-(uploads|delivery)_[0-9a-f]{32}\.deleting", target.name
+                ):
+                    continue
+                if target.is_symlink() or not target.is_dir():
+                    raise ValueError("Invalid dashboard deletion quarantine")
+                root = target.with_name(target.name.removesuffix(".deleting"))
+                if root.name in surviving:
+                    if root.exists() or root.is_symlink():
+                        raise ValueError("Dashboard deletion recovery found conflicting files")
+                    target.rename(root)
+                else:
+                    shutil.rmtree(target)
+
+        async with self.locks.maintenance():
+            await await_uncancellable(asyncio.to_thread(recover))
 
     async def delete_chat(self, chat: DashboardConversation) -> None:
         """Remove private snapshots before their quota records are deleted."""
@@ -283,10 +366,8 @@ class DashboardFiles:
 
         def remove() -> None:
             for kind in ("upload", "output"):
-                root = self.workspace.allowed_output_roots(context_key=self.context(chat.id, kind))[
-                    0
-                ]
-                if root.is_symlink():
+                root = self.workspace.generated_context_path(self.context(chat.id, kind))
+                if root.is_symlink() or path_contains_symlink(Path(root.anchor), root):
                     raise ValueError("Invalid dashboard snapshot directory")
                 if root.exists():
                     shutil.rmtree(root)

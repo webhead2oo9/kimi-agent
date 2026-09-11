@@ -63,6 +63,7 @@ export interface ChatEvent {
     task_preview?: TaskPreview;
     coding_task_id?: string;
     action_id?: string;
+    request_id?: string;
     action?: string;
     task_id?: string;
     revision?: number;

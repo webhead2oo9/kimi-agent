@@ -160,6 +160,55 @@ def test_cookie_flags_origin_and_challenge_limits():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["challenge", "identity", "instance"])
+async def test_deleting_one_user_preserves_unrelated_logins(phase):
+    service = auth()
+    started, release = asyncio.Event(), asyncio.Event()
+    state, cookie = challenge(service)
+
+    async def lookup(_method, url, **_kwargs):
+        if (phase == "identity" and url.endswith("/users/@me")) or (
+            phase == "instance" and "activity-instances" in url
+        ):
+            started.set()
+            await release.wait()
+        if url.endswith("/oauth2/token"):
+            return {"access_token": "oauth"}
+        if url.endswith("/users/@me"):
+            return {"id": "1"}
+        return instance()
+
+    service._json = lookup
+    service.fetch_avatar = AsyncMock(return_value=None)
+    if phase == "challenge":
+        await service.delete_user("9")
+    login = asyncio.create_task(
+        service.login(request(cookie=cookie), code="code", state=state, instance_id="instance-1")
+    )
+    try:
+        if phase != "challenge":
+            await started.wait()
+            await service.delete_user("9")
+    finally:
+        release.set()
+    session, _ = await login
+    assert service.valid(session)
+
+
+@pytest.mark.asyncio
+async def test_deletion_before_oauth_identity_revokes_only_the_deleted_users_old_challenges():
+    service = auth()
+    state, cookie = challenge(service)
+    await service.delete_user("1")
+    service._json = AsyncMock(side_effect=[{"access_token": "oauth"}, {"id": "1"}, instance()])
+    service.fetch_avatar = AsyncMock(return_value=None)
+    with pytest.raises(web.HTTPUnauthorized):
+        await service.login(
+            request(cookie=cookie), code="code", state=state, instance_id="instance-1"
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("previous_user", ["1", "9"])
 async def test_reopening_replaces_only_the_authenticated_users_session_at_capacity(previous_user):
     import time

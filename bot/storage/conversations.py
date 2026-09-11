@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+import aiosqlite
+
 from providers.image_caption import is_image_caption
 from providers.types import ContentPart, ContentPartType, ConversationMessage
 from storage.db import Database
@@ -374,6 +376,20 @@ class ConversationStore:
         lookup attribute content to the right user. Returns MAX(message id) for
         the conversation.
         """
+        async with self._db.write_transaction() as conn:
+            return await self.save_channel_messages_in_transaction(
+                conn, conversation_id, records, context_channel_id=context_channel_id
+            )
+
+    @staticmethod
+    async def save_channel_messages_in_transaction(
+        conn: aiosqlite.Connection,
+        conversation_id: int,
+        records: list[ChannelMessageRecord],
+        *,
+        context_channel_id: str | None = None,
+    ) -> int | None:
+        """Persist within the caller's transaction, without committing it."""
         if not records:
             return None
         now = time.time()
@@ -395,41 +411,39 @@ class ConversationStore:
         # Multi-statement unit: a transcript row committed without its
         # message_contexts mapping permanently breaks reply-continuation routing
         # for that message, so the whole unit is scoped atomically.
-        async with self._db.write_transaction() as conn:
+        await conn.executemany(
+            "INSERT OR IGNORE INTO messages "
+            "(conversation_id, role, user_id, user_name, content, message_data, "
+            "discord_message_id, source_id, source_created_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        if context_channel_id is not None:
             await conn.executemany(
-                "INSERT OR IGNORE INTO messages "
-                "(conversation_id, role, user_id, user_name, content, message_data, "
-                "discord_message_id, source_id, source_created_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
+                "INSERT OR IGNORE INTO message_contexts "
+                "(discord_message_id, conversation_id, channel_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        record.discord_message_id,
+                        conversation_id,
+                        context_channel_id,
+                        now,
+                    )
+                    for record in records
+                    if record.discord_message_id is not None
+                ],
             )
-            if context_channel_id is not None:
-                await conn.executemany(
-                    "INSERT OR IGNORE INTO message_contexts "
-                    "(discord_message_id, conversation_id, channel_id, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [
-                        (
-                            record.discord_message_id,
-                            conversation_id,
-                            context_channel_id,
-                            now,
-                        )
-                        for record in records
-                        if record.discord_message_id is not None
-                    ],
-                )
-            await conn.execute(
-                "UPDATE conversations SET last_active_at = ? WHERE id = ?",
-                (now, conversation_id),
+        await conn.execute(
+            "UPDATE conversations SET last_active_at = ? WHERE id = ?",
+            (now, conversation_id),
+        )
+        if any(_record_has_image_parts(record) for record in records):
+            await _enforce_image_part_limit(
+                conn,
+                conversation_id,
+                max_images=MAX_PERSISTED_CONVERSATION_IMAGES,
             )
-            if any(_record_has_image_parts(record) for record in records):
-                await _enforce_image_part_limit(
-                    conn,
-                    conversation_id,
-                    max_images=MAX_PERSISTED_CONVERSATION_IMAGES,
-                )
-        conn = self._db.conn
         async with conn.execute(
             "SELECT MAX(id) FROM messages WHERE conversation_id = ?",
             (conversation_id,),
@@ -778,6 +792,19 @@ class ConversationStore:
         if row is None:
             return None
         messages = _stored_messages_from_rows([row])
+        return messages[0] if messages else None
+
+    async def get_message_by_source_id(
+        self, conversation_id: int, source_id: str
+    ) -> StoredMessage | None:
+        async with self._db.conn.execute(
+            "SELECT id, role, user_id, user_name, content, message_data, "
+            "created_at, source_created_at, discord_message_id FROM messages "
+            "WHERE conversation_id=? AND source_id=?",
+            (conversation_id, source_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        messages = _stored_messages_from_rows([row]) if row else []
         return messages[0] if messages else None
 
     async def load_message_window(

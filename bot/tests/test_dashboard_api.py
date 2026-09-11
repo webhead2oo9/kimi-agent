@@ -86,6 +86,42 @@ async def create(service, user="1", guild="2", channel="3"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/bootstrap", "/api/auth"])
+async def test_unauthenticated_requests_are_throttled_before_work_despite_spoofed_headers(
+    api, monkeypatch, path
+):
+    client, service = api
+    service.auth._maximum = 3000
+    service.auth.login = AsyncMock(side_effect=web.HTTPUnauthorized(reason="bad login"))
+    now = time.monotonic()
+    monkeypatch.setattr("app.dashboard.time.monotonic", lambda: now)
+    responses = []
+    for index in range(61):
+        headers = {
+            "Cookie": "",
+            "X-Forwarded-For": f"10.0.0.{index}",
+            "CF-Connecting-IP": f"10.1.0.{index}",
+        }
+        response = await (
+            client.get(path, headers=headers)
+            if path.endswith("bootstrap")
+            else client.post(path, headers=headers, json={})
+        )
+        responses.append(response.status)
+    assert 429 in responses
+    assert responses[-1] == 429
+    assert len(service.auth._challenges) < 61
+    assert service.auth.login.await_count < 61
+    now += 61
+    response = await (
+        client.get(path, headers={"Cookie": ""})
+        if path.endswith("bootstrap")
+        else client.post(path, headers={"Cookie": ""}, json={})
+    )
+    assert response.status != 429
+
+
+@pytest.mark.asyncio
 async def test_http_owner_server_and_saved_channel_boundaries(api):
     client, service = api
     own = await create(service)
@@ -131,6 +167,17 @@ async def test_http_requires_session_csrf_origin_and_object_body(api):
     chat = await create(api[1])
     assert (await client.post(f"/api/chats/{chat.id}/messages", json=[])).status == 400
     assert (await client.get("/api/ws")).status == 400
+
+
+@pytest.mark.asyncio
+async def test_consent_decline_leaves_chatting_gated(api):
+    client, service = api
+    service.access.preferences = SimpleNamespace(set_consent=AsyncMock())
+    response = await client.post("/api/consent", json={"accept": False})
+    assert response.status == 200
+    service.access.preferences.set_consent.assert_awaited_once_with("1", False)
+    for invalid in ({}, {"accept": "false"}, {"accept": 0}):
+        assert (await client.post("/api/consent", json=invalid)).status == 400
 
 
 @pytest.mark.asyncio
@@ -284,9 +331,10 @@ async def test_socket_limit_counts_concurrent_handshakes(api):
                 group.create_task(connect())
             await started.wait()
             try:
-                with pytest.raises(WSServerHandshakeError) as denied:
-                    await client.ws_connect(f"/api/ws?chat={chat.id}")
-                assert denied.value.status == 429
+                async with client.ws_connect(f"/api/ws?chat={chat.id}") as denied:
+                    assert (await denied.receive_json(timeout=3))["code"] == "socket_limit"
+                    closed = await denied.receive(timeout=3)
+                    assert closed.type == WSMsgType.CLOSE and closed.data == 4008
             finally:
                 release.set()
         assert lookups == 3
@@ -303,6 +351,26 @@ async def test_denied_socket_handshake_releases_its_slot(api):
         await client.ws_connect("/api/ws?chat=missing")
     assert denied.value.status == 404
     assert not service._sockets
+
+
+@pytest.mark.asyncio
+async def test_fourth_socket_receives_an_actionable_tab_limit(api):
+    client, service = api
+    chat = await create(service)
+    sockets = [await client.ws_connect(f"/api/ws?chat={chat.id}") for _ in range(3)]
+    try:
+        async with client.ws_connect(f"/api/ws?chat={chat.id}") as fourth:
+            message = await fourth.receive_json(timeout=3)
+            assert message == {
+                "code": "socket_limit",
+                "error": "Close another dashboard tab before reconnecting",
+            }
+            closed = await fourth.receive(timeout=3)
+            assert closed.type == WSMsgType.CLOSE and closed.data == 4008
+        assert len(service._sockets) == 3
+    finally:
+        for socket in sockets:
+            await socket.close()
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,49 @@ async def chat(store, user_id="1", guild_id="2"):
 
 
 @pytest.mark.asyncio
+async def test_failed_chat_creation_does_not_leave_an_orphan_root(store):
+    async with store.db.write_transaction() as conn:
+        await conn.execute(
+            "CREATE TRIGGER fail_chat BEFORE INSERT ON dashboard_conversations "
+            "BEGIN SELECT RAISE(ABORT, 'chat failed'); END"
+        )
+    with pytest.raises(Exception, match="chat failed"):
+        await chat(store)
+    async with store.db.conn.execute("SELECT count(*) FROM conversations") as cursor:
+        assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["fork", "return"])
+async def test_branch_file_copy_does_not_block_unrelated_writers(store, operation):
+    parent = await chat(store)
+    selected = await saved_turn(store, parent)
+    branch = await DashboardBranches(store).fork(parent, event_id=selected.id, request_id="initial")
+    selected = await saved_turn(store, branch, files=[{"id": "file", "filename": "a.txt"}])
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def copy(*_args):
+        entered.set()
+        await release.wait()
+        return
+
+    branches = DashboardBranches(store, copy_file=copy)
+    copying = asyncio.create_task(
+        branches.fork(branch, event_id=selected.id, request_id="copy")
+        if operation == "fork"
+        else branches.return_result(branch, parent, event_id=selected.id)
+    )
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+        async with asyncio.timeout(1):
+            await store.event(parent.id, "progress", {"text": "unrelated writer"})
+    finally:
+        release.set()
+        await copying
+
+
+@pytest.mark.asyncio
 async def test_chats_are_owner_and_guild_scoped(store):
     first = await chat(store)
     await chat(store, user_id="9")

@@ -46,10 +46,10 @@ class DashboardBranches:
 
     async def _copy_files(
         self,
-        conn: aiosqlite.Connection,
         destination: str,
         files: list[dict[str, Any]],
         copied: dict[str, dict[str, Any]],
+        records: list[DashboardFile],
     ) -> list[dict[str, Any]]:
         result = []
         for file in files:
@@ -64,10 +64,7 @@ class DashboardBranches:
                 if record is None:
                     copied[file_id] = {"filename": file["filename"], "expired": True}
                 else:
-                    await conn.execute(
-                        "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        tuple(asdict(record).values()),
-                    )
+                    records.append(record)
                     copied[file_id] = record.public()
             result.append(copied[file_id])
         return result
@@ -94,69 +91,125 @@ class DashboardBranches:
             raise DashboardBusyError("This message is not available as saved conversation context")
         return message, payload
 
+    async def _fork_context(
+        self, conn: aiosqlite.Connection, parent: DashboardConversation, event_id: int
+    ) -> tuple[list[dict[str, Any]], dict[str | None, dict[str, Any]]]:
+        selected, _ = await self._message(conn, parent, event_id)
+        async with conn.execute(
+            "SELECT id,role,user_id,user_name,content,message_data,source_id,source_created_at,created_at FROM messages "
+            "WHERE conversation_id=? AND id<=? AND role IN ('user','assistant') "
+            "ORDER BY id LIMIT ?",
+            (parent.conversation_id, selected["id"], MAX_BRANCH_MESSAGES + 1),
+        ) as cursor:
+            messages = [dict(row) for row in await cursor.fetchall()]
+        if len(messages) > MAX_BRANCH_MESSAGES:
+            raise DashboardBusyError(
+                "This history is too large to branch; choose an earlier message"
+            )
+        async with conn.execute(
+            "SELECT e.kind,e.payload_json FROM dashboard_events e JOIN messages m ON "
+            "m.conversation_id=? AND m.source_id=CASE "
+            "WHEN e.kind='user_message' THEN 'dashboard:'||json_extract(e.payload_json,'$.turn_id')||':user' "
+            "WHEN e.kind='turn_finished' THEN 'dashboard:'||json_extract(e.payload_json,'$.turn_id')||':assistant' "
+            "WHEN e.kind='coding_task' AND json_extract(e.payload_json,'$.status') IN "
+            "('completed','failed','cancelled','timed_out') THEN 'coding:'||json_extract(e.payload_json,'$.id')||':final' "
+            "WHEN e.kind IN ('history_message','branch_result') THEN json_extract(e.payload_json,'$.context_source_id') "
+            "END WHERE e.dashboard_id=? AND e.id<=? AND m.id<=? ORDER BY e.id",
+            (parent.conversation_id, parent.id, event_id, selected["id"]),
+        ) as cursor:
+            originals = list(await cursor.fetchall())
+        presentations: dict[str | None, dict[str, Any]] = {}
+        for original in originals:
+            payload = json.loads(original["payload_json"])
+            if original["kind"] == "branch_result":
+                payload["render_markdown"] = True
+            presentations[_source_id(original["kind"], payload)] = payload
+        return messages, presentations
+
+    async def _duplicate_branch(
+        self,
+        conn: aiosqlite.Connection,
+        parent: DashboardConversation,
+        event_id: int,
+        request_id: str,
+    ) -> str | None:
+        async with conn.execute(
+            "SELECT dashboard_id,parent_event_id FROM dashboard_branches WHERE parent_id=? AND request_id=?",
+            (parent.id, request_id),
+        ) as cursor:
+            duplicate = await cursor.fetchone()
+        if duplicate and duplicate["parent_event_id"] != event_id:
+            raise DashboardBusyError("This branch request was already used for another message")
+        return str(duplicate["dashboard_id"]) if duplicate else None
+
     async def fork(
         self, parent: DashboardConversation, *, event_id: int, request_id: str
     ) -> DashboardConversation:
-        # One transaction covers provenance, model context, and visible history.
-        # No task state, approvals, tool activation, or new model turn is copied.
-        async with self.store.db.immediate_write_transaction() as conn:
+        # Snapshot committed inputs briefly, copy files without a database lock,
+        # then revalidate the inputs in the transaction that publishes the branch.
+        async with self.store.db.read_snapshot() as conn:
             current = await self.store.get(
                 parent.id, user_id=parent.user_id, guild_id=parent.guild_id
             )
             if current is None:
                 raise LookupError("Conversation no longer exists")
             parent = current
-            async with conn.execute(
-                "SELECT dashboard_id,parent_event_id FROM dashboard_branches WHERE parent_id=? AND request_id=?",
-                (parent.id, request_id),
-            ) as cursor:
-                duplicate = await cursor.fetchone()
+            duplicate = await self._duplicate_branch(conn, parent, event_id, request_id)
             if duplicate:
-                if duplicate["parent_event_id"] != event_id:
-                    raise DashboardBusyError(
-                        "This branch request was already used for another message"
+                branch = await self.store.get(
+                    duplicate, user_id=parent.user_id, guild_id=parent.guild_id
+                )
+                assert branch is not None
+                return branch
+            snapshot = await self._fork_context(conn, parent, event_id)
+        messages, presentations = snapshot
+        branch_id, now = uuid4().hex, time.time()
+        title = f"Branch · {parent.title}"[:120]
+        copied: dict[str, dict[str, Any]] = {}
+        records: list[DashboardFile] = []
+        history = []
+        for message in messages:
+            original = presentations.get(message["source_id"], {})
+            payload: dict[str, Any] = {
+                "role": message["role"],
+                "text": original.get("text", message["content"]),
+                "context_source_id": message["source_id"],
+                "files": await self._copy_files(
+                    branch_id, original.get("files", []), copied, records
+                ),
+                **{
+                    key: original[key]
+                    for key in (
+                        "render_markdown",
+                        "source_chat_id",
+                        "source_event_id",
+                        "source_title",
                     )
-                branch_id = duplicate["dashboard_id"]
+                    if key in original
+                },
+            }
+            history.append((branch_id, json.dumps(payload), message["created_at"]))
+        async with self.store.db.immediate_write_transaction() as conn:
+            current = await self.store.get(
+                parent.id, user_id=parent.user_id, guild_id=parent.guild_id
+            )
+            if current is None:
+                raise LookupError("Conversation no longer exists")
+            duplicate = await self._duplicate_branch(conn, parent, event_id, request_id)
+            if duplicate:
+                branch_id = duplicate
             else:
-                selected, _ = await self._message(conn, parent, event_id)
-                async with conn.execute(
-                    "SELECT id,role,content,source_id,created_at FROM messages "
-                    "WHERE conversation_id=? AND id<=? AND role IN ('user','assistant') "
-                    "ORDER BY id LIMIT ?",
-                    (parent.conversation_id, selected["id"], MAX_BRANCH_MESSAGES + 1),
-                ) as cursor:
-                    messages = list(await cursor.fetchall())
-                if len(messages) > MAX_BRANCH_MESSAGES:
-                    raise DashboardBusyError(
-                        "This history is too large to branch; choose an earlier message"
-                    )
-                async with conn.execute(
-                    "SELECT e.kind,e.payload_json FROM dashboard_events e JOIN messages m ON "
-                    "m.conversation_id=? AND m.source_id=CASE "
-                    "WHEN e.kind='user_message' THEN 'dashboard:'||json_extract(e.payload_json,'$.turn_id')||':user' "
-                    "WHEN e.kind='turn_finished' THEN 'dashboard:'||json_extract(e.payload_json,'$.turn_id')||':assistant' "
-                    "WHEN e.kind='coding_task' AND json_extract(e.payload_json,'$.status') IN "
-                    "('completed','failed','cancelled','timed_out') THEN 'coding:'||json_extract(e.payload_json,'$.id')||':final' "
-                    "WHEN e.kind IN ('history_message','branch_result') THEN json_extract(e.payload_json,'$.context_source_id') "
-                    "END WHERE e.dashboard_id=? AND e.id<=? AND m.id<=? ORDER BY e.id",
-                    (parent.conversation_id, parent.id, event_id, selected["id"]),
-                ) as cursor:
-                    originals = list(await cursor.fetchall())
-                presentations = {}
-                for original in originals:
-                    payload = json.loads(original["payload_json"])
-                    if original["kind"] == "branch_result":
-                        payload["render_markdown"] = True
-                    presentations[_source_id(original["kind"], payload)] = payload
-                branch_id, now = uuid4().hex, time.time()
-                root = f"dashboard:{parent.guild_id}:{parent.user_id}:{branch_id}"
-                title = f"Branch · {parent.title}"[:120]
+                if (
+                    current != parent
+                    or await self._fork_context(conn, parent, event_id) != snapshot
+                ):
+                    raise DashboardBusyError("Conversation changed while copying files. Try again")
                 inserted = await conn.execute(
                     "INSERT INTO conversations(key,channel_name,guild_id,channel_id,thread_id,"
                     "owner_user_id,access_scope,created_at,last_active_at) "
                     "VALUES(?,?,?,?,?,?,'owner_only',?,?)",
                     (
-                        root,
+                        f"dashboard:{parent.guild_id}:{parent.user_id}:{branch_id}",
                         parent.channel_name,
                         parent.guild_id,
                         parent.channel_id,
@@ -179,36 +232,33 @@ class DashboardBranches:
                     "INSERT INTO dashboard_branches VALUES(?,?,?,?,?)",
                     (branch_id, parent.id, event_id, parent.title, request_id),
                 )
-                await conn.execute(
+                await conn.executemany(
                     "INSERT INTO messages(conversation_id,role,user_id,user_name,content,message_data,"
-                    "source_id,source_created_at,created_at) "
-                    "SELECT ?,role,user_id,user_name,content,message_data,source_id,source_created_at,created_at "
-                    "FROM messages WHERE conversation_id=? AND id<=? AND role IN ('user','assistant') ORDER BY id",
-                    (conversation_id, parent.conversation_id, selected["id"]),
+                    "source_id,source_created_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            conversation_id,
+                            *(
+                                message[key]
+                                for key in (
+                                    "role",
+                                    "user_id",
+                                    "user_name",
+                                    "content",
+                                    "message_data",
+                                    "source_id",
+                                    "source_created_at",
+                                    "created_at",
+                                )
+                            ),
+                        )
+                        for message in messages
+                    ],
                 )
-                copied: dict[str, dict[str, Any]] = {}
-                history = []
-                for message in messages:
-                    original = presentations.get(message["source_id"], {})
-                    payload = {
-                        "role": message["role"],
-                        "text": original.get("text", message["content"]),
-                        "context_source_id": message["source_id"],
-                        "files": await self._copy_files(
-                            conn, branch_id, original.get("files", []), copied
-                        ),
-                        **{
-                            key: original[key]
-                            for key in (
-                                "render_markdown",
-                                "source_chat_id",
-                                "source_event_id",
-                                "source_title",
-                            )
-                            if key in original
-                        },
-                    }
-                    history.append((branch_id, json.dumps(payload), message["created_at"]))
+                await conn.executemany(
+                    "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    [tuple(asdict(record).values()) for record in records],
+                )
                 await conn.executemany(
                     "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,created_at) "
                     "VALUES(?,'history_message',?,?)",
@@ -227,35 +277,53 @@ class DashboardBranches:
         assert branch is not None
         return branch
 
+    async def _return_context(
+        self,
+        conn: aiosqlite.Connection,
+        branch: DashboardConversation,
+        parent: DashboardConversation,
+        event_id: int,
+    ) -> tuple[DashboardConversation, dict[str, Any], dict[str, Any]] | None:
+        current = await self.store.get(branch.id, user_id=branch.user_id, guild_id=branch.guild_id)
+        target = await self.store.get(parent.id, user_id=branch.user_id, guild_id=branch.guild_id)
+        if current is None or target is None or current.parent_id != target.id:
+            raise LookupError("Parent conversation no longer exists")
+        if await self.store.event_by_key(parent.id, f"branch-return:{branch.id}:{event_id}"):
+            return None
+        async with conn.execute(
+            "SELECT 1 FROM dashboard_turns WHERE dashboard_id=? AND status IN ('accepted','running')",
+            (parent.id,),
+        ) as cursor:
+            if await cursor.fetchone():
+                raise DashboardBusyError("Wait for the parent conversation's response to finish")
+        selected, payload = await self._message(conn, current, event_id)
+        if selected["role"] != "assistant":
+            raise DashboardBusyError("Choose an assistant response to bring back")
+        return current, dict(selected), payload
+
     async def return_result(
         self, branch: DashboardConversation, parent: DashboardConversation, *, event_id: int
     ) -> None:
+        async with self.store.db.read_snapshot() as conn:
+            snapshot = await self._return_context(conn, branch, parent, event_id)
+        if snapshot is None:
+            return
+        current, selected, payload = snapshot
+        records: list[DashboardFile] = []
+        files = await self._copy_files(parent.id, payload.get("files", []), {}, records)
         async with self.store.db.immediate_write_transaction() as conn:
-            current = await self.store.get(
-                branch.id, user_id=branch.user_id, guild_id=branch.guild_id
-            )
-            target = await self.store.get(
-                parent.id, user_id=branch.user_id, guild_id=branch.guild_id
-            )
-            if current is None or target is None or current.parent_id != target.id:
-                raise LookupError("Parent conversation no longer exists")
-            source_id = f"branch-return:{branch.id}:{event_id}"
-            if await self.store.event_by_key(parent.id, source_id):
+            latest = await self._return_context(conn, branch, parent, event_id)
+            if latest is None:
                 return
-            async with conn.execute(
-                "SELECT 1 FROM dashboard_turns WHERE dashboard_id=? AND status IN ('accepted','running')",
-                (parent.id,),
-            ) as cursor:
-                if await cursor.fetchone():
-                    raise DashboardBusyError(
-                        "Wait for the parent conversation's response to finish"
-                    )
-            selected, payload = await self._message(conn, current, event_id)
-            if selected["role"] != "assistant":
-                raise DashboardBusyError("Choose an assistant response to bring back")
-            now = time.time()
+            if latest != snapshot:
+                raise DashboardBusyError("Conversation changed while copying files. Try again")
+            source_id, now = f"branch-return:{branch.id}:{event_id}", time.time()
             text = selected["content"] or ""
             context = f"Result brought back from branch ‘{current.title}’ by the user:\n\n{text}"
+            await conn.executemany(
+                "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [tuple(asdict(record).values()) for record in records],
+            )
             await conn.execute(
                 "INSERT INTO messages(conversation_id,role,user_id,content,message_data,source_id,created_at) "
                 "VALUES(?,'user',?,?,?,?,?)",
@@ -280,9 +348,7 @@ class DashboardBranches:
                             "source_event_id": event_id,
                             "source_title": current.title,
                             "context_source_id": source_id,
-                            "files": await self._copy_files(
-                                conn, parent.id, payload.get("files", []), {}
-                            ),
+                            "files": files,
                         }
                     ),
                     source_id,

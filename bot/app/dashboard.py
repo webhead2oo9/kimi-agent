@@ -98,6 +98,8 @@ class Dashboard:
         self._sockets: dict[web.WebSocketResponse, DashboardSession] = {}
         self._requests = asyncio.Semaphore(8)
         self._rates: dict[str, deque[float]] = {}
+        self._unauth_rates: dict[str, deque[float]] = {}
+        self._unauth_global: deque[float] = deque()
         self._bot_avatar: tuple[str | None, float] = (None, 0.0)
         self._bot_avatar_lock = asyncio.Lock()
         if settings.dashboard_enabled:
@@ -130,6 +132,7 @@ class Dashboard:
         self.bot.tree.add_command(dashboard)
 
     async def start(self) -> None:
+        await self.files.recover_deletions()
         await self.store.interrupt_unfinished()
         if not self.settings.dashboard_enabled or self._runner is not None:
             return
@@ -251,12 +254,15 @@ class Dashboard:
                         )
                         response = await handler(request)
                 else:
+                    self._rate_limit_unauthenticated(request)
                     async with self._requests, asyncio.timeout(30):
                         response = await handler(request)
             else:
                 response = await handler(request)
         except web.HTTPException as exc:
             response = web.json_response({"error": exc.reason}, status=exc.status)
+            if exc.status == 429:
+                response.headers["Retry-After"] = "60"
         except PrivacyDeletionPendingError:
             response = web.json_response(
                 {"error": "Your data deletion is still in progress"}, status=409
@@ -298,6 +304,28 @@ class Dashboard:
                 reason="Too many dashboard requests. Try again in a minute"
             )
         recent.append(now)
+
+    def _rate_limit_unauthenticated(self, request: web.Request) -> None:
+        # Use the transport peer only. Forwarded / X-Forwarded-For / Cloudflare
+        # headers supplied by a client must never mint additional rate buckets.
+        peer = request.transport.get_extra_info("peername") if request.transport else None
+        source = str(peer[0]) if isinstance(peer, tuple) and peer else "unknown"
+        now = time.monotonic()
+        self._unauth_rates = {
+            key: values
+            for key, values in self._unauth_rates.items()
+            if values and values[-1] > now - 60
+        }
+        while self._unauth_global and self._unauth_global[0] <= now - 60:
+            self._unauth_global.popleft()
+        recent = self._unauth_rates.get(source, deque())
+        while recent and recent[0] <= now - 60:
+            recent.popleft()
+        if len(recent) >= 60 or len(self._unauth_global) >= 240:
+            raise web.HTTPTooManyRequests(reason="Too many sign-in requests. Try again in a minute")
+        recent.append(now)
+        self._unauth_rates[source] = recent
+        self._unauth_global.append(now)
 
     async def bootstrap(self, request: web.Request) -> web.Response:
         assert self.auth is not None
@@ -396,9 +424,9 @@ class Dashboard:
 
     async def consent(self, request: web.Request) -> web.Response:
         body = await object_body(request)
-        if body.get("accept") is not True:
-            raise web.HTTPBadRequest(reason="Accept the notice to start chatting")
-        await self.access.preferences.set_consent(request[_SESSION].user_id, True)
+        if type(body.get("accept")) is not bool:
+            raise web.HTTPBadRequest(reason="Choose Accept or Decline")
+        await self.access.preferences.set_consent(request[_SESSION].user_id, body["accept"])
         return web.json_response({"ok": True})
 
     async def _chat(
@@ -653,7 +681,18 @@ class Dashboard:
         self.auth.check_origin(request)
         session = request[_SESSION]
         if sum(value.user_id == session.user_id for value in self._sockets.values()) >= 3:
-            raise web.HTTPTooManyRequests(reason="Close another dashboard tab before reconnecting")
+            # Browsers hide the HTTP status/body of a rejected upgrade. Deliver
+            # only this fixed notice on a short-lived socket, never private events.
+            limited = web.WebSocketResponse(timeout=2)
+            await limited.prepare(request)
+            await limited.send_json(
+                {
+                    "code": "socket_limit",
+                    "error": "Close another dashboard tab before reconnecting",
+                }
+            )
+            await limited.close(code=4008, message=b"Close another dashboard tab")
+            return limited
         after = cursor(request.query.get("after")) or 0
         socket = web.WebSocketResponse(heartbeat=20, max_msg_size=1024)
         # Reserve the slot before any lookup awaits, so simultaneous handshakes

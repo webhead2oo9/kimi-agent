@@ -88,8 +88,9 @@ class DashboardAuth:
         self._bot_token, self._client_secret = bot_token, client_secret
         self._seconds, self._maximum, self._http = session_seconds, max_sessions, http
         self._sessions: dict[str, DashboardSession] = {}
-        self._challenges: dict[str, tuple[str, float]] = {}
+        self._challenges: dict[str, tuple[str, float, int]] = {}
         self._generation = 0
+        self._revoked: dict[str, tuple[int, float]] = {}
 
     def check_origin(self, request: web.Request) -> None:
         if request.headers.get("Origin") != self.origin:
@@ -100,7 +101,7 @@ class DashboardAuth:
         if len(self._challenges) >= self._maximum:
             raise web.HTTPTooManyRequests(reason="Please try signing in again shortly")
         cookie, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        self._challenges[cookie] = (state, time.monotonic() + 300)
+        self._challenges[cookie] = (state, time.monotonic() + 300, self._generation)
         secure_cookie(response, CHALLENGE_COOKIE, cookie, 300)
         return state
 
@@ -119,7 +120,6 @@ class DashboardAuth:
             raise web.HTTPUnauthorized(reason="Sign-in expired. Reopen the dashboard")
         if not _INSTANCE_ID.fullmatch(instance_id) or not code or len(code) > 2048:
             raise web.HTTPBadRequest(reason="Invalid Activity sign-in")
-        generation = self._generation
         token = await self._json(
             "POST",
             f"{_API}/oauth2/token",
@@ -143,7 +143,7 @@ class DashboardAuth:
             raise web.HTTPUnauthorized(reason="Discord identity is unavailable")
         guild_id, channel_id = await self.verify_instance(instance_id, user_id)
         avatar = await self.fetch_avatar(avatar_url(user_id, identity))
-        if generation != self._generation:
+        if challenge[1] <= time.monotonic() or challenge[2] < self._revoked.get(user_id, (0, 0))[0]:
             raise web.HTTPUnauthorized(reason="Sign-in expired. Reopen the dashboard")
         # Reopening the Activity reauthenticates and overwrites this cookie.
         # Reclaim that browser's old slot only after verifying the same owner;
@@ -221,11 +221,14 @@ class DashboardAuth:
 
     async def delete_user(self, user_id: str) -> None:
         self._generation += 1
-        self._challenges.clear()
+        # Challenges have no identity until OAuth returns. Fence only challenges
+        # issued before this user's deletion, including logins still resolving it.
+        self._revoked[user_id] = (self._generation, time.monotonic() + 300)
         self._sessions = {k: v for k, v in self._sessions.items() if v.user_id != user_id}
 
     def _prune(self) -> None:
         now = time.monotonic()
+        self._revoked = {k: v for k, v in self._revoked.items() if v[1] > now}
         self._sessions = {k: v for k, v in self._sessions.items() if v.expires > now}
         self._challenges = {k: v for k, v in self._challenges.items() if v[1] > now}
 

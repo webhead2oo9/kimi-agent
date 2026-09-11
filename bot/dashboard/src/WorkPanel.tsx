@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronRight, Code2, Eye, FileText, Folder, FolderOpen, LoaderCircle, Play, RefreshCw, Send, Square, X } from "lucide-react";
+import type { PendingTaskAction } from "./useTaskActions";
 import type { Connection } from "./api";
 import { Markdown } from "./Markdown";
 import { FileButton, readableSize } from "./App";
@@ -20,10 +21,12 @@ interface Props {
   connection: Connection;
   onAction: (taskId: string, action: string, revision?: number, message?: string) => Promise<void>;
   onError: (error: unknown) => void;
+  pendingActions: PendingTaskAction[];
+  onWorkEvents: (chatId: string, events: ChatEvent[]) => void;
 }
 
 export function WorkPanel(props: Props) {
-  const { chat, events, files, selectedFile, onSelectFile, onClose, connection, onAction, onError } = props;
+  const { chat, events, files, selectedFile, onSelectFile, onClose, connection, onAction, onError, pendingActions, onWorkEvents } = props;
   const [directory, setDirectory] = useState("");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[] | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -38,10 +41,10 @@ export function WorkPanel(props: Props) {
     if (!chat) return;
     let live = true;
     void connection.api.request<{ tasks: { id: string; revision: number; status: string }[]; events?: ChatEvent[] }>(`/chats/${chat.id}/tasks`).then(result => {
-      if (live) { setStates(Object.fromEntries(result.tasks.map(task => [`${task.id}:${task.revision}`, task.status]))); setSavedWork(result.events || []); }
+      if (live) { setStates(Object.fromEntries(result.tasks.map(task => [`${task.id}:${task.revision}`, task.status]))); setSavedWork(result.events || []); onWorkEvents(chat.id, result.events || []); }
     }).catch(onError);
     return () => { live = false; };
-  }, [chat?.id, connection.api, recentActionId, recentPreviewId, onError]);
+  }, [chat?.id, connection.api, recentActionId, recentPreviewId, onError, onWorkEvents]);
   const browseGeneration = useRef(0);
   useEffect(() => () => { browseGeneration.current++; }, []);
   const browse = async (path: string) => {
@@ -59,9 +62,10 @@ export function WorkPanel(props: Props) {
     <header className="work-header"><h2>{selectedFile ? "File preview" : "Work"}</h2><button className="icon-button" aria-label="Close work panel" onClick={onClose}><X size={18} /></button></header>
     {selectedFile ? <FilePreview file={selectedFile} connection={connection} onBack={() => onSelectFile(null)} /> : <div className="work-scroll">
       {!chat && <div className="work-empty"><FolderOpen size={28} /><p>Files and task progress appear here.</p></div>}
+      {pendingActions.map(action => <div className="action-running" role="status" key={action.body.request_id}><LoaderCircle size={15} className="spin" />{action.uncertain ? <>The action may have been accepted.<button disabled={action.sending} onClick={() => void onAction(action.body.task_id, action.body.action, action.body.revision, action.body.message).catch(onError)}>Retry action</button></> : "Updating task…"}</div>)}
       {work.actions.map(event => <div className="action-running" role="status" key={event.id}><LoaderCircle size={15} className="spin" />{event.payload.action === "test" ? "Testing task preview…" : "Updating task…"}</div>)}
-      {work.previews.map(preview => <ScheduledCard key={`${preview.id}:${preview.revision}`} preview={preview} pending={work.actions.some(event => event.payload.task_id === preview.id)} status={states[`${preview.id}:${preview.revision}`] || preview.status} openLink={connection.openLink} onAction={onAction} />)}
-      {work.coding.map(event => <CodingCard key={event.payload.id} event={event} botName={connection.session.bot_name} openLink={connection.openLink} onAction={onAction} />)}
+      {work.previews.map(preview => <ScheduledCard key={`${preview.id}:${preview.revision}`} preview={preview} pending={pendingActions.some(action => action.body.task_id === preview.id) || work.actions.some(event => event.payload.task_id === preview.id)} status={states[`${preview.id}:${preview.revision}`] || preview.status} openLink={connection.openLink} onAction={onAction} />)}
+      {work.coding.map(event => <CodingCard key={event.payload.id} event={event} pending={pendingActions.some(action => action.body.task_id === event.payload.id) || work.actions.some(action => action.payload.task_id === event.payload.id)} botName={connection.session.bot_name} openLink={connection.openLink} onAction={onAction} />)}
       {chat && <section className="work-section"><h3>Files in this chat<span>{files.length}</span></h3>{files.length ? <div className="panel-files">{files.map(file => <FileButton key={file.id} file={file} onSelect={onSelectFile} />)}</div> : <p className="muted small-text">No files yet.</p>}</section>}
       {chat && <section className="work-section workspace-section"><button className="section-toggle" aria-expanded={workspaceOpen} onClick={() => workspaceOpen ? setWorkspaceOpen(false) : void browse(directory)}><FolderOpen size={16} /><span>Server workspace</span><ChevronRight size={15} className={workspaceOpen ? "down" : ""} /></button>{workspaceOpen && <div className="workspace-browser"><div className="workspace-path"><button className="icon-button" disabled={!directory || loading} aria-label="Parent folder" onClick={() => void browse(directory.split("/").slice(0, -1).join("/"))}><ArrowLeft size={15} /></button><span>{directory || "Your files"}</span><button className="icon-button" aria-label="Refresh workspace" disabled={loading} onClick={() => void browse(directory)}><RefreshCw size={14} /></button></div>{loading && <p role="status">Opening files…</p>}{!loading && workspaceFiles?.length === 0 && <p className="muted small-text">This folder is empty.</p>}{!loading && workspaceFiles?.map(file => <button key={file.path} className="workspace-file" onClick={() => {
         if (file.directory) void browse(file.path);
@@ -101,7 +105,7 @@ function ScheduledCard({ preview, status, pending, openLink, onAction }: { pendi
   return <section className="task-card"><div className="card-label"><span>Scheduled task</span><span className={`status-pill ${status === "approved" ? "success" : status === "pending" ? "warning" : ""}`}><i />{status === "pending" ? "Ready for review" : statusLabel(status)}</span></div><div className="task-title"><h3>{preview.name}</h3><span>Revision {preview.revision}</span></div><Markdown text={preview.text} openLink={openLink} /><details><summary>Full task details</summary><Markdown text={preview.details} openLink={openLink} /></details><details><summary>Instructions · SKILL.md</summary><pre>{preview.skill}</pre></details>{preview.python !== null && <details><summary>Python source · task.py</summary><pre>{preview.python}</pre></details>}{error && <p role="alert" className="danger-text">{error}</p>}{status === "pending" && <div className="approval-actions"><button className="approve" disabled={busy || pending} onClick={() => void action("approve")}><Check size={14} />Approve</button><button disabled={busy || pending} onClick={() => void action("test")}><Play size={14} />Test preview</button><button className="reject" disabled={busy || pending} onClick={() => void action("reject")}>Reject</button></div>}</section>;
 }
 
-function CodingCard({ event, botName, openLink, onAction }: { event: ChatEvent; botName: string; openLink: Connection["openLink"]; onAction: Props["onAction"] }) {
+function CodingCard({ event, pending, botName, openLink, onAction }: { pending: boolean; event: ChatEvent; botName: string; openLink: Connection["openLink"]; onAction: Props["onAction"] }) {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -113,5 +117,5 @@ function CodingCard({ event, botName, openLink, onAction }: { event: ChatEvent; 
     catch (error) { setError(error instanceof Error ? error.message : "This action is unavailable."); }
     finally { setBusy(false); }
   };
-  return <section className="task-card coding-card"><div className="card-label"><Code2 size={15} /><span>Coding task</span><span className="status-pill accent"><i />{statusLabel(payload.status || "")}</span></div><Markdown text={payload.text || "Working…"} openLink={openLink} />{active && <form className="steering-form" onSubmit={event => { event.preventDefault(); void act("steer"); }}><label>{payload.status === "waiting_for_input" ? "Your answer" : "Add a direction"}<textarea value={answer} onChange={event => setAnswer(event.target.value)} placeholder={payload.status === "waiting_for_input" ? `Tell ${botName} how to continue…` : "Something to keep in mind…"} maxLength={8000} rows={2} /></label><div><button className="text-button" type="button" disabled={busy} onClick={() => void act("cancel")}><Square size={12} />Stop task</button><button type="submit" className="primary" disabled={busy || !answer.trim()}><Send size={13} />Send</button></div></form>}{error && <p role="alert" className="danger-text">{error}</p>}</section>;
+  return <section className="task-card coding-card"><div className="card-label"><Code2 size={15} /><span>Coding task</span><span className="status-pill accent"><i />{statusLabel(payload.status || "")}</span></div><Markdown text={payload.text || "Working…"} openLink={openLink} />{active && <form className="steering-form" onSubmit={event => { event.preventDefault(); void act("steer"); }}><label>{payload.status === "waiting_for_input" ? "Your answer" : "Add a direction"}<textarea value={answer} onChange={event => setAnswer(event.target.value)} placeholder={payload.status === "waiting_for_input" ? `Tell ${botName} how to continue…` : "Something to keep in mind…"} maxLength={8000} rows={2} /></label><div><button className="text-button" type="button" disabled={busy || pending} onClick={() => void act("cancel")}><Square size={12} />Stop task</button><button type="submit" className="primary" disabled={busy || pending || !answer.trim()}><Send size={13} />Send</button></div></form>}{error && <p role="alert" className="danger-text">{error}</p>}</section>;
 }

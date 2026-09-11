@@ -21,6 +21,86 @@ from utils.privacy_barrier import UserPrivacyBarrier
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,tool", [("steer", "coding_task_message"), ("cancel", "coding_task_cancel")]
+)
+async def test_direct_coding_actions_respect_dashboard_prompt_policy(
+    tmp_path, monkeypatch, action, tool
+):
+    from config import paths
+    from tests.test_dashboard_config import template
+    from tools.registry import ToolRegistry
+    from trust.tiers import TrustTier
+
+    monkeypatch.setattr(paths, "_default_config_dir", tmp_path)
+    template(tmp_path, "dashboard.local.md", f"---\nblocked_tools: [{tool}]\n---\nDashboard")
+    db = Database(tmp_path / "policy.db")
+    await db.connect()
+    store, coding = DashboardStore(db), CodingTaskStore(db)
+    registry = ToolRegistry()
+    registry.register(
+        name=tool,
+        description="Control coding",
+        parameters={"type": "object"},
+        handler=AsyncMock(),
+        min_tier=TrustTier.MEMBER,
+    )
+    bridge = DashboardTasks(
+        store=store,
+        files=None,
+        access=SimpleNamespace(
+            resolve=AsyncMock(
+                return_value=SimpleNamespace(
+                    member=SimpleNamespace(display_name="Charlie"), tier=TrustTier.MEMBER
+                )
+            ),
+            consent_required=AsyncMock(return_value=False),
+        ),
+        coding=SimpleNamespace(store=coding, cancel_task=AsyncMock(), steer_task=AsyncMock()),
+        delivery=None,
+        scheduled=SimpleNamespace(r=SimpleNamespace(tools=SimpleNamespace(registry=registry))),
+        roots=RootLockPool(),
+        privacy=UserPrivacyBarrier(),
+        operations=ActiveOperationRegistry(),
+        admission=TurnAdmissionController(max_active=2, max_active_per_user=1),
+    )
+    try:
+        chat = await store.create(
+            user_id="10",
+            guild_id="100",
+            channel_id="200",
+            parent_channel_id="200",
+            channel_name="general",
+        )
+        task = await coding.create_task(
+            conversation_id=chat.conversation_id,
+            root_key=chat.key,
+            workspace_key="10__100",
+            user_id="10",
+            user_name="Charlie",
+            guild_id="100",
+            channel_id="200",
+            thread_id=None,
+            trigger_discord_message_id="",
+            objective="Report",
+            acceptance_criteria=[],
+            context_text="",
+            max_seconds=300,
+            delivery_surface="dashboard",
+        )
+        with pytest.raises(web.HTTPForbidden, match="tool policy"):
+            await bridge.submit_action(
+                chat, request_id="blocked", task_id=task.id, action=action, message="Continue"
+            )
+        bridge.coding.cancel_task.assert_not_awaited()
+        bridge.coding.steer_task.assert_not_awaited()
+        assert await store.events(chat.id) == []
+    finally:
+        await bridge.close()
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_dashboard_preview_and_actions_use_existing_revision_authority(tmp_path):
     db = Database(tmp_path / "actions.db")
     await db.connect()

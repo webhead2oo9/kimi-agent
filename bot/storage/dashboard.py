@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 from uuid import uuid4
 
-from storage.conversations import OWNER_ONLY, ConversationStore
+from storage.conversations import ChannelMessageRecord, ConversationStore
 from storage.db import Database
 
 
@@ -96,16 +96,23 @@ class DashboardStore:
     ) -> DashboardConversation:
         chat_id, now = uuid4().hex, time.time()
         root = f"dashboard:{guild_id}:{user_id}:{chat_id}"
-        conversation_id = await self.conversations.get_or_create(
-            root,
-            channel_name,
-            guild_id=guild_id,
-            channel_id=channel_id,
-            thread_id=channel_id if parent_channel_id != channel_id else None,
-            owner_user_id=user_id,
-            access_scope=OWNER_ONLY,
-        )
         async with self.db.write_transaction() as conn:
+            inserted = await conn.execute(
+                "INSERT INTO conversations(key,channel_name,guild_id,channel_id,thread_id,"
+                "owner_user_id,access_scope,created_at,last_active_at) "
+                "VALUES(?,?,?,?,?,?,'owner_only',?,?)",
+                (
+                    root,
+                    channel_name,
+                    guild_id,
+                    channel_id,
+                    channel_id if parent_channel_id != channel_id else None,
+                    user_id,
+                    now,
+                    now,
+                ),
+            )
+            conversation_id = inserted.lastrowid
             await conn.execute(
                 "INSERT INTO dashboard_conversations "
                 "(id,conversation_id,parent_channel_id,created_at,updated_at) VALUES(?,?,?,?,?)",
@@ -237,7 +244,14 @@ class DashboardStore:
             )
 
     async def finish_turn(
-        self, chat_id: str, turn_id: str, status: str, payload: dict[str, Any]
+        self,
+        chat_id: str,
+        turn_id: str,
+        status: str,
+        payload: dict[str, Any],
+        *,
+        replies: list[ChannelMessageRecord] | None = None,
+        handoff_id: str | None = None,
     ) -> None:
         if status not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("Invalid dashboard turn outcome")
@@ -250,6 +264,29 @@ class DashboardStore:
             )
             if not updated.rowcount:
                 return
+            async with conn.execute(
+                "SELECT conversation_id FROM dashboard_conversations WHERE id=?", (chat_id,)
+            ) as cursor:
+                chat = await cursor.fetchone()
+            assert chat is not None
+            if replies:
+                await self.conversations.save_channel_messages_in_transaction(
+                    conn, chat[0], replies
+                )
+            if handoff_id:
+                released = await conn.execute(
+                    "UPDATE coding_tasks SET handoff_pending=0,updated_at=?,heartbeat_at=? "
+                    "WHERE id=? AND conversation_id=? AND delivery_surface='dashboard' "
+                    "AND status='queued' AND cancel_requested=0 AND handoff_pending=1",
+                    (now, now, handoff_id, chat[0]),
+                )
+                if released.rowcount != 1:
+                    raise DashboardBusyError("Coding handoff is no longer available")
+                await conn.execute(
+                    "INSERT INTO coding_task_events(task_id,kind,payload_json,created_at) "
+                    "VALUES(?,'handoff_released','{}',?)",
+                    (handoff_id, now),
+                )
             await conn.execute(
                 "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,dedup_key,created_at) "
                 "VALUES(?,'turn_finished',?,?,?)",
@@ -275,6 +312,34 @@ class DashboardStore:
                 (kind, json.dumps(payload), key, time.time(), chat_id),
             )
 
+    async def publish_coding_result(
+        self,
+        chat: DashboardConversation,
+        task_id: str,
+        payload: dict[str, Any],
+        replies: list[ChannelMessageRecord],
+    ) -> None:
+        """Commit a private coding result, its model context, and delivery receipt."""
+        now = time.time()
+        async with self.db.write_transaction() as conn:
+            updated = await conn.execute(
+                "UPDATE coding_tasks SET delivery_state='delivered',updated_at=? "
+                "WHERE id=? AND conversation_id=? AND user_id=? AND delivery_surface='dashboard'",
+                (now, task_id, chat.conversation_id, chat.user_id),
+            )
+            if not updated.rowcount:
+                return
+            await self.conversations.save_channel_messages_in_transaction(
+                conn,
+                chat.conversation_id,
+                replies,
+            )
+            await conn.execute(
+                "INSERT OR IGNORE INTO dashboard_events(dashboard_id,kind,payload_json,dedup_key,created_at) "
+                "VALUES(?,'coding_task',?,?,?)",
+                (chat.id, json.dumps(payload), f"coding:{task_id}:final", now),
+            )
+
     async def events(
         self,
         chat_id: str,
@@ -292,14 +357,17 @@ class DashboardStore:
             where += " AND e.id<?"
             values.append(before)
         order = "ASC" if after is not None else "DESC"
-        async with self.db.conn.execute(
-            "SELECT e.id,e.kind,e.payload_json,e.created_at,EXISTS("
-            "SELECT 1 FROM dashboard_events r WHERE r.dashboard_id=("
-            "SELECT parent_id FROM dashboard_branches WHERE dashboard_id=e.dashboard_id) "
-            "AND r.dedup_key='branch-return:'||e.dashboard_id||':'||e.id) AS returned "
-            f"FROM dashboard_events e WHERE {where} ORDER BY e.id {order} LIMIT ?",
-            (*values, min(500, max(1, limit))),
-        ) as cur:
+        async with (
+            self.db.read_snapshot() as conn,
+            conn.execute(
+                "SELECT e.id,e.kind,e.payload_json,e.created_at,EXISTS("
+                "SELECT 1 FROM dashboard_events r WHERE r.dashboard_id=("
+                "SELECT parent_id FROM dashboard_branches WHERE dashboard_id=e.dashboard_id) "
+                "AND r.dedup_key='branch-return:'||e.dashboard_id||':'||e.id) AS returned "
+                f"FROM dashboard_events e WHERE {where} ORDER BY e.id {order} LIMIT ?",
+                (*values, min(500, max(1, limit))),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
         result = [
             DashboardEvent(
@@ -345,8 +413,10 @@ class DashboardStore:
 
     async def work_events(self, chat_id: str) -> list[DashboardEvent]:
         """Restore task cards independently of the visible transcript page."""
-        async with self.db.conn.execute(
-            """SELECT id,kind,payload_json,created_at FROM dashboard_events
+        async with (
+            self.db.read_snapshot() as conn,
+            conn.execute(
+                """SELECT id,kind,payload_json,created_at FROM dashboard_events
             WHERE dashboard_id=? AND id IN (
                 SELECT max(id) FROM dashboard_events WHERE dashboard_id=? AND (
                     kind='coding_task' OR json_extract(payload_json,'$.task_preview.id') IS NOT NULL
@@ -358,8 +428,9 @@ class DashboardStore:
                     ON json_extract(e.payload_json,'$.action_id')=a.id
                 WHERE e.dashboard_id=? AND e.kind='task_action' AND a.status='running'
             ) ORDER BY id DESC LIMIT 200""",
-            (chat_id, chat_id, chat_id),
-        ) as cursor:
+                (chat_id, chat_id, chat_id),
+            ) as cursor,
+        ):
             rows = list(await cursor.fetchall())
         return [
             DashboardEvent(row[0], row[1], json.loads(row[2]), row[3]) for row in reversed(rows)
@@ -406,7 +477,14 @@ class DashboardStore:
                 "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,dedup_key,created_at) VALUES(?,'task_action',?,?,?)",
                 (
                     chat.id,
-                    json.dumps({"action_id": action_id, "task_id": task_id, "action": action}),
+                    json.dumps(
+                        {
+                            "action_id": action_id,
+                            "request_id": request_id,
+                            "task_id": task_id,
+                            "action": action,
+                        }
+                    ),
                     f"action:{action_id}",
                     now,
                 ),
@@ -423,11 +501,18 @@ class DashboardStore:
             )
             if not cursor.rowcount:
                 return
+            async with conn.execute(
+                "SELECT request_id FROM dashboard_actions WHERE id=?", (action_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            assert row is not None
             await conn.execute(
                 "INSERT INTO dashboard_events(dashboard_id,kind,payload_json,dedup_key,created_at) VALUES(?,'task_action_result',?,?,?)",
                 (
                     chat_id,
-                    json.dumps({**payload, "action_id": action_id, "status": status}),
+                    json.dumps(
+                        {**payload, "action_id": action_id, "request_id": row[0], "status": status}
+                    ),
                     f"action-result:{action_id}",
                     time.time(),
                 ),

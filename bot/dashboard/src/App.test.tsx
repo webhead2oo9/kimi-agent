@@ -22,6 +22,55 @@ function connection() {
   return { value: { api, session, displayName: "Charlie", botAvatar: null, openLink: vi.fn() } as Connection, request, receive: (events: ChatEvent[]) => receive(events) };
 }
 
+const proposal = { id: "schedule", revision: 1, name: "Weekly digest", status: "pending", text: "Review this", details: "Details", skill: "Instructions", python: null };
+
+it.each(["scheduled", "coding"])("keeps %s actions pending until the matching durable result", async kind => {
+  const fixture = connection();
+  const base = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation(async (path, ...args) => path.endsWith("/task-actions") ? { action_id: "mine" } : base(path, ...args));
+  render(<DashboardApp connection={fixture.value} />);
+  await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: /^Work/ }));
+  await act(async () => fixture.receive([kind === "coding" ? event(1, "coding_task", { id: "coding", status: "running", text: "Building" }) : event(1, "turn_finished", { task_preview: proposal })]));
+  const button = await screen.findByRole("button", { name: kind === "coding" ? "Stop task" : "Test preview" });
+  fireEvent.click(button);
+  await waitFor(() => expect(fixture.request.mock.calls.filter(call => call[0].endsWith("/task-actions"))).toHaveLength(1));
+  expect(button).toBeDisabled();
+  await act(async () => fixture.receive([event(2, "task_action_result", { action_id: "other", task_id: kind === "coding" ? "coding" : "schedule" })]));
+  expect(button).toBeDisabled();
+  await act(async () => fixture.receive([event(3, "task_action_result", { action_id: "mine", status: "completed" })]));
+  expect(button).toBeEnabled();
+});
+
+it("retries an uncertain task action with the same identifier and blocks conflicting actions", async () => {
+  const fixture = connection();
+  const base = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation(async (path, ...args) => {
+    if (path.endsWith("/task-actions")) throw new TypeError("Network interrupted");
+    return base(path, ...args);
+  });
+  render(<DashboardApp connection={fixture.value} />);
+  await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: /^Work/ }));
+  await act(async () => fixture.receive([event(1, "turn_finished", { task_preview: proposal })]));
+  fireEvent.click(await screen.findByRole("button", { name: "Test preview" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Retry action" }));
+  await waitFor(() => expect(fixture.request.mock.calls.filter(call => call[0].endsWith("/task-actions"))).toHaveLength(2));
+  const calls = fixture.request.mock.calls.filter(call => call[0].endsWith("/task-actions"));
+  expect(calls[0][2]).toEqual(calls[1][2]);
+  expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+});
+
+it("renders consent Markdown and provides the promised Decline control", async () => {
+  const fixture = connection();
+  fixture.value.session = { ...session, consent_required: true, consent_text: "**Your privacy**. Choose Accept or Decline." };
+  render(<DashboardApp connection={fixture.value} />);
+  expect(await screen.findByText("Your privacy", { selector: "strong" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+  await waitFor(() => expect(fixture.request).toHaveBeenCalledWith("/consent", "POST", { accept: false }));
+  expect(screen.getByRole("textbox", { name: "Message Kimi" })).toBeDisabled();
+});
+
 describe("saved chat", () => {
   it("finishing before HTTP acceptance does not leave the composer busy", async () => {
     const fixture = connection();

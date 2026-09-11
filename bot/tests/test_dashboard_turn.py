@@ -66,6 +66,7 @@ async def surface(tmp_path, monkeypatch, request):
         consent_required=AsyncMock(return_value=False),
     )
     executed = []
+    outbox_extra = {}
     moderation = RecordingModerationService()
     release = asyncio.Event()
     started = asyncio.Event()
@@ -78,7 +79,7 @@ async def surface(tmp_path, monkeypatch, request):
         output = workspace.user_files_dir(workspace_owner_key("1", "2")) / "answer.txt"
         output.write_text("result")
         request.context.pending_outbox = TurnOutbox(
-            output_files=(str(output),), allowed_file_roots=(str(output.parent),)
+            output_files=(str(output),), allowed_file_roots=(str(output.parent),), **outbox_extra
         )
         return ConversationRunResult(
             text="Here is your file.", outbox=request.context.pending_outbox
@@ -149,6 +150,7 @@ async def surface(tmp_path, monkeypatch, request):
         started=started,
         workspace=workspace,
         db=db,
+        outbox_extra=outbox_extra,
     )
     await turns.close()
     await db.close()
@@ -278,3 +280,139 @@ async def test_delete_drains_coding_finalizer_before_locking_chat_and_fences_new
         await deletion
     assert await surface.store.get(surface.chat.id, user_id="1", guild_id="2") is None
     assert not surface.turns._deleting
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["event", "cancel"])
+async def test_failed_publication_cannot_leave_a_hidden_assistant_answer(
+    surface, monkeypatch, failure
+):
+    if failure == "event":
+        async with surface.db.write_transaction() as conn:
+            await conn.execute(
+                "CREATE TRIGGER fail_result BEFORE INSERT ON dashboard_events "
+                "WHEN NEW.kind='turn_finished' AND json_extract(NEW.payload_json,'$.status')='completed' "
+                "BEGIN SELECT RAISE(ABORT, 'publication failed'); END"
+            )
+    else:
+        original = surface.store.finish_turn
+
+        async def cancel(*args, **kwargs):
+            if args[2] == "completed":
+                raise asyncio.CancelledError
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(surface.store, "finish_turn", cancel)
+    await surface.turns.submit(surface.chat, request_id="failure", text="hello", file_ids=[])
+    await settled(surface)
+    assert (await surface.store.events(surface.chat.id))[-1].payload["status"] in {
+        "failed",
+        "cancelled",
+    }
+    history = await surface.store.conversations.load_recent_conversation_messages(
+        surface.chat.conversation_id
+    )
+    assert [message.role for message in history] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_handoff_is_claimable_when_acknowledgement_commits(surface, monkeypatch):
+    from storage.coding_tasks import CodingTaskStore
+    from tools.registry import TurnHandoff
+
+    coding = CodingTaskStore(surface.db)
+    task = await coding.create_task(
+        conversation_id=surface.chat.conversation_id,
+        root_key=surface.chat.key,
+        workspace_key="1__2",
+        user_id="1",
+        user_name="Charlie",
+        guild_id="2",
+        channel_id="3",
+        thread_id=None,
+        trigger_discord_message_id="",
+        objective="Make report",
+        acceptance_criteria=[],
+        context_text="",
+        max_seconds=300,
+        delivery_surface="dashboard",
+        handoff_pending=True,
+    )
+    surface.outbox_extra["terminal_handoff"] = TurnHandoff(
+        response_text="Starting", reason="coding_task", task_id=task.id
+    )
+    surface.turns.coding = SimpleNamespace(
+        running=True,
+        store=coding,
+        prepare_handoff=AsyncMock(return_value=True),
+        release_handoff=AsyncMock(side_effect=RuntimeError("release unavailable")),
+        cancel_task=AsyncMock(),
+    )
+    original = surface.store.finish_turn
+    observed = []
+
+    async def finish(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[2] == "completed":
+            observed.append((await coding.get_task(task.id)).handoff_pending)
+        return result
+
+    monkeypatch.setattr(surface.store, "finish_turn", finish)
+    await surface.turns.submit(surface.chat, request_id="handoff", text="make report", file_ids=[])
+    await settled(surface)
+    assert observed == [False]
+    assert (await surface.store.events(surface.chat.id))[-1].payload["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_failed_chat_delete_preserves_snapshots_and_metadata(surface):
+    record = await surface.files.save(surface.chat, "private.txt", b"keep me", kind="upload")
+    async with surface.db.write_transaction() as conn:
+        await conn.execute(
+            "CREATE TRIGGER fail_delete BEFORE DELETE ON conversations "
+            "BEGIN SELECT RAISE(ABORT, 'deletion failed'); END"
+        )
+    with pytest.raises(Exception, match="deletion failed"):
+        await surface.turns.delete(surface.chat)
+    assert await surface.store.file(record.id, user_id="1", guild_id="2") == record
+    assert await surface.files.payload(record) == b"keep me"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_turn_carries_source_anchor_to_tools(surface):
+    turn = await surface.turns.submit(
+        surface.chat, request_id="anchor", text="Remember this", file_ids=[]
+    )
+    await settled(surface)
+    assert surface.executed[0].trigger_source_id == f"dashboard:{turn}:user"
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_result_cannot_escape_through_event_replay(surface, monkeypatch):
+    committing, release = asyncio.Event(), asyncio.Event()
+    original = surface.db.conn.commit
+
+    async def commit():
+        async with surface.db.conn.execute(
+            "SELECT 1 FROM dashboard_events WHERE kind='turn_finished'"
+        ) as cursor:
+            if await cursor.fetchone():
+                committing.set()
+                await release.wait()
+                raise RuntimeError("commit failed")
+        await original()
+
+    monkeypatch.setattr(surface.db.conn, "commit", commit)
+    await surface.turns.submit(surface.chat, request_id="uncommitted", text="hello", file_ids=[])
+    async with asyncio.timeout(2):
+        await committing.wait()
+    replay = asyncio.create_task(surface.store.events(surface.chat.id))
+    try:
+        await asyncio.sleep(0.05)
+        assert not replay.done()
+    finally:
+        monkeypatch.setattr(surface.db.conn, "commit", original)
+        release.set()
+        events = await replay
+        await settled(surface)
+    assert not any(event.payload.get("status") == "completed" for event in events)

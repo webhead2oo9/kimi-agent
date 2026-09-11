@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import signal
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -106,6 +108,36 @@ log = logging.getLogger(__name__)
 
 GUILD_ACTIVATION_REFRESH_SECONDS = 5.0
 READY_EVENT_DRAIN_SECONDS = 5.0
+
+
+async def _run_bot_with_sigterm(bot: commands.Bot, token: str) -> None:
+    """Run Discord while translating systemd's SIGTERM into an orderly close."""
+
+    loop = asyncio.get_running_loop()
+    close_task: asyncio.Task[None] | None = None
+
+    def request_close() -> None:
+        nonlocal close_task
+        if close_task is not None:
+            return
+        log.info("SIGTERM received; starting graceful shutdown")
+        close_task = loop.create_task(bot.close(), name="sigterm-shutdown")
+
+    signal_handler_installed = False
+    try:
+        loop.add_signal_handler(signal.SIGTERM, request_close)
+        signal_handler_installed = True
+    except NotImplementedError, RuntimeError:
+        log.warning("SIGTERM handler unavailable; relying on the host process manager")
+
+    try:
+        async with bot:
+            await bot.start(token, reconnect=True)
+    finally:
+        if signal_handler_installed:
+            loop.remove_signal_handler(signal.SIGTERM)
+        if close_task is not None:
+            await asyncio.shield(close_task)
 
 
 class _DeferredShutdownSignal(ShutdownSignal):
@@ -469,10 +501,13 @@ class KimiApplication:
             model_config=self.provider_manager.model_config,
         )
         log.info("Starting %s...", self.settings.bot_name)
-        self.bot.run(
-            self.settings.discord_bot_token.get_secret_value(),
-            log_handler=None,
-        )
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(
+                _run_bot_with_sigterm(
+                    self.bot,
+                    self.settings.discord_bot_token.get_secret_value(),
+                )
+            )
         if self.lifecycle.startup_error is not None:
             raise RuntimeError("Kimi Agent startup failed") from self.lifecycle.startup_error
         return 0

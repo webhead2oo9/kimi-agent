@@ -184,6 +184,8 @@ class DurableScheduler:
         # This process's runner identity; the singleton lease row carries it.
         self._runner_token = uuid.uuid4().hex
         self._foreign_paused = False
+        self._foreign_pause_started_at: float | None = None
+        self._foreign_pause_reported = False
         self._wake = asyncio.Event()
         self._closed = False
         # (module, handler) -> the detail reported when its job was found orphaned.
@@ -200,7 +202,7 @@ class DurableScheduler:
         was_paused = self._paused_reported.pop(marker, None) is not None
         if was_paused:
             self._clear_paused_health_if_recovered(module_name)
-        if self._foreign_paused and self._on_health is not None:
+        if self._foreign_pause_reported and self._on_health is not None:
             # Joined during a pause: say so, or its jobs silently never run.
             self._on_health(module_name, "degraded", FOREIGN_RUNNER_DETAIL)
         self._wake.set()
@@ -385,7 +387,7 @@ class DurableScheduler:
         """Renew the runner lease, then start as many due jobs as capacity allows."""
         now = self._clock()
         if not await self._acquire_runner_lease(now):
-            self._enter_foreign_pause()
+            self._enter_foreign_pause(now)
             return False
         self._exit_foreign_pause()
         started = 0
@@ -445,10 +447,21 @@ class DurableScheduler:
     def _module_names(self) -> set[str]:
         return {module for module, _handler in self._handlers}
 
-    def _enter_foreign_pause(self) -> None:
-        if self._foreign_paused:
+    def _enter_foreign_pause(self, now: float) -> None:
+        if not self._foreign_paused:
+            self._foreign_paused = True
+            self._foreign_pause_started_at = now
+            log.info(
+                "Module scheduler waiting for a prior runner lease to expire (up to %gs)",
+                self._lease_seconds,
+            )
             return
-        self._foreign_paused = True
+        if self._foreign_pause_reported:
+            return
+        started_at = self._foreign_pause_started_at
+        if started_at is None or now < started_at + self._lease_seconds:
+            return
+        self._foreign_pause_reported = True
         log.error(
             "Module scheduler paused: %s. Another Kimi process is running jobs against "
             "this database; stop it, or wait for its lease (%gs) to expire.",
@@ -463,8 +476,11 @@ class DurableScheduler:
         if not self._foreign_paused:
             return
         self._foreign_paused = False
+        pause_was_reported = self._foreign_pause_reported
+        self._foreign_pause_started_at = None
+        self._foreign_pause_reported = False
         log.info("Module scheduler resumed: runner lease acquired")
-        if self._on_health is None:
+        if self._on_health is None or not pause_was_reported:
             return
         for module in sorted(self._module_names()):
             details = sorted(

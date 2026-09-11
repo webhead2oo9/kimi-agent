@@ -3,6 +3,7 @@ from __future__ import annotations
 from workspace import WorkspaceKey
 
 import asyncio
+import signal
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -49,6 +50,56 @@ def _settings(**kwargs: object) -> Settings:
         **kwargs,
     }
     return Settings.model_validate(values)
+
+
+@pytest.mark.asyncio
+async def test_sigterm_closes_bot_through_async_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = asyncio.get_running_loop()
+    installed: dict[int, object] = {}
+    removed: list[int] = []
+
+    def add_signal_handler(sig: int, callback: object) -> None:
+        installed[sig] = callback
+
+    def remove_signal_handler(sig: int) -> bool:
+        removed.append(sig)
+        return True
+
+    monkeypatch.setattr(
+        type(loop), "add_signal_handler", lambda _self, sig, cb: add_signal_handler(sig, cb)
+    )
+    monkeypatch.setattr(
+        type(loop), "remove_signal_handler", lambda _self, sig: remove_signal_handler(sig)
+    )
+
+    class Bot:
+        def __init__(self) -> None:
+            self.closed = asyncio.Event()
+            self.close_count = 0
+
+        async def __aenter__(self) -> Bot:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            await self.close()
+
+        async def start(self, token: str, *, reconnect: bool = True) -> None:
+            assert token == "discord-token"
+            assert reconnect is True
+            callback = installed[signal.SIGTERM]
+            assert callable(callback)
+            callback()
+            await asyncio.wait_for(self.closed.wait(), timeout=1)
+
+        async def close(self) -> None:
+            self.close_count += 1
+            self.closed.set()
+
+    bot = Bot()
+    await app_runtime._run_bot_with_sigterm(cast(Any, bot), "discord-token")
+
+    assert bot.close_count >= 1
+    assert removed == [signal.SIGTERM]
 
 
 def _single_model_config(

@@ -459,7 +459,9 @@ async def test_runner_runs_modules_concurrently_but_one_job_per_module(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path) -> None:
+async def test_runner_waits_without_degrading_during_foreign_lease_grace(
+    tmp_path: Path,
+) -> None:
     db = await _db(tmp_path)
     clock = _Clock()
     health: list[tuple[str, str, str]] = []
@@ -489,7 +491,7 @@ async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path
         await asyncio.sleep(0.1)
         assert scheduler_paused_for_foreign_runner(scheduler)
         assert ran == []
-        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
+        assert health == []
 
         # The other process crashed: its lease expires and this runner takes over.
         clock.now += 31
@@ -499,12 +501,46 @@ async def test_runner_pauses_while_another_runner_holds_the_lease(tmp_path: Path
                 break
         assert ran == ["mine"]
         assert not scheduler_paused_for_foreign_runner(scheduler)
-        assert health[-1] == ("mod", "healthy", "")
+        assert health == []
     finally:
         await scheduler.close()
         cursor = await db.conn.execute(f"SELECT token FROM {RUNNER_TABLE}")
         row = await cursor.fetchone()
         assert row is not None and row[0] is None, "close releases the runner lease"
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_degrades_once_when_foreign_lease_outlives_grace(tmp_path: Path) -> None:
+    db = await _db(tmp_path)
+    clock = _Clock()
+    health: list[tuple[str, str, str]] = []
+    scheduler = DurableScheduler(
+        db,
+        clock=clock,
+        lease_seconds=30.0,
+        on_health=lambda m, s, d: health.append((m, s, d)),
+    )
+    scheduler.register("mod", "h", lambda _run: asyncio.sleep(0))
+    async with db.write_transaction() as conn:
+        await conn.execute(
+            f"UPDATE {RUNNER_TABLE} SET token = 'other-process', leased_until = ?",
+            (clock.now + 120,),
+        )
+    try:
+        assert await scheduler._tick() is False
+        assert health == []
+
+        clock.now += 31
+        assert await scheduler._tick() is False
+        assert await scheduler._tick() is False
+        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
+
+        clock.now += 120
+        assert await scheduler._tick() is False
+        assert health[-1] == ("mod", "healthy", "")
+    finally:
+        await scheduler.close()
         await db.close()
 
 
@@ -551,13 +587,13 @@ async def test_scheduler_tick_needs_the_runner_lease(tmp_path: Path) -> None:
         )
     try:
         assert await run_due_jobs(scheduler) == 0
-        assert health == [("mod", "degraded", FOREIGN_RUNNER_DETAIL)]
-        # A module registering during the pause is told, too.
+        assert health == []
+        # A module registering during the bounded startup grace is not degraded.
         scheduler.view_for("late").register("h", handler)
-        assert health[-1] == ("late", "degraded", FOREIGN_RUNNER_DETAIL)
+        assert health == []
         clock.now += 31
         assert await run_due_jobs(scheduler) == 1
-        assert ("mod", "healthy", "") in health and ("late", "healthy", "") in health
+        assert health == []
     finally:
         await scheduler.close()
         await db.close()

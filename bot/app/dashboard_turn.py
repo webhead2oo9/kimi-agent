@@ -18,7 +18,7 @@ from app.admission import TURN_ADMISSION_BUSY_MESSAGE, TurnAdmissionController
 from app.cancellation import ActiveOperationRegistry
 from app.coding_delivery import CodingTaskController
 from app.dashboard_access import DashboardAccess
-from app.dashboard_files import DashboardAttachment, DashboardFiles
+from app.dashboard_files import CapturedOutput, DashboardAttachment, DashboardFiles
 from app.foreground_turn import (
     CommittedMessageCallback,
     DeliveredReply,
@@ -116,6 +116,7 @@ class DashboardTurnAdapter:
     chat: DashboardConversation
     turn_id: str
     payload: dict[str, Any] = field(default_factory=dict)
+    outputs: list[CapturedOutput] = field(default_factory=list)
     handoff_id: str | None = None
     delivered: bool = False
     activity_must_finish_before_delivery: bool = False
@@ -145,7 +146,7 @@ class DashboardTurnAdapter:
             text = "\n\n".join(filter(None, (text, embed_transcript_summary(result.outbox.embed))))
         self.payload = {"text": text, "files": []}
         if safe:
-            self.payload["files"] = await self.files.snapshot(
+            self.outputs = await self.files.capture_outputs(
                 self.chat, result.outbox.output_files, workspace_guard_held=True
             )
             if result.outbox.task_preview:
@@ -170,19 +171,26 @@ class DashboardTurnAdapter:
         # one commit. The coding claim loop also polls, so no wakeup is required
         # to recover a lost notification after this transaction.
         async def commit() -> None:
-            await self.store.finish_turn(
-                self.chat.id,
-                self.turn_id,
-                "completed",
-                self.payload,
-                replies=replies,
-                handoff_id=self.handoff_id,
-            )
+            async with self.files.output_copies(self.chat, self.outputs) as (public, records):
+                self.payload["files"] = public
+                await self.store.finish_turn(
+                    self.chat.id,
+                    self.turn_id,
+                    "completed",
+                    self.payload,
+                    replies=replies,
+                    handoff_id=self.handoff_id,
+                    files=records,
+                )
             self.delivered = True
 
-        await await_uncancellable(commit())
+        try:
+            await await_uncancellable(commit())
+        finally:
+            self.outputs.clear()
 
     async def finish(self, outcome: TurnSurfaceOutcome) -> None:
+        self.outputs.clear()
         if self.handoff_id and not self.delivered and self.coding.running:
             await self.coding.cancel_task(
                 self.handoff_id, reason="Dashboard acknowledgement was interrupted"

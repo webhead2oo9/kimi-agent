@@ -68,6 +68,9 @@ async def test_coding_delivery_is_durable_private_and_deduplicated_without_socke
             operations=None,
             admission=None,
         )
+        output = bridge.files.workspace.user_files_dir(WorkspaceKey("1__2")) / "report.txt"
+        output.write_text("private report")
+        await coding.set_checkpoint(task.id, {"delivery": {"output_files": [str(output)]}})
         delivery.dashboard_publish = bridge.publish_coding
         await delivery.publish(task, None)
         await coding.finish(task.id, CodingTaskStatus.COMPLETED, result_text="Report is complete.")
@@ -85,8 +88,15 @@ async def test_coding_delivery_is_durable_private_and_deduplicated_without_socke
                 == []
             )
             assert (await coding.get_task(task.id)).delivery_state != "delivered"
+            assert await store.files(chat) == []
+            root = bridge.files.workspace.generated_context_path(
+                bridge.files.context(chat.id, "output")
+            )
+            assert not list(root.glob("*/*"))
             async with db.write_transaction() as conn:
                 await conn.execute("DROP TRIGGER fail_coding")
+            await db.close()
+            await db.connect()
         # No WebSocket or HTTP connection exists during delivery.
         await delivery.publish(task, None)
         await delivery.publish(task, None)
@@ -96,6 +106,10 @@ async def test_coding_delivery_is_durable_private_and_deduplicated_without_socke
         events = await store.events(chat.id)
         assert [event.payload["status"] for event in events] == ["queued", "completed"]
         assert events[-1].payload["text"] == "Report is complete."
+        records = await store.files(chat)
+        assert len(records) == 1
+        assert events[-1].payload["files"] == [records[0].public()]
+        assert await bridge.files.payload(records[0]) == b"private report"
         assert "checkpoint" not in str(events[-1].payload)
         async with db.conn.execute("SELECT discord_message_id, source_id FROM messages") as cursor:
             assert [tuple(row) for row in await cursor.fetchall()] == [

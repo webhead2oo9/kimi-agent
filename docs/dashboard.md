@@ -267,9 +267,11 @@ During an open chat, the connection rechecks Activity membership and channel
 access about every 15 seconds. Temporary verification failures reconnect with
 increasing delays and resume saved updates. Expired sessions and denied access
 require reopening; reopening does not restore a removed permission. Initial
-sign-in failures show an error and a retry control. A fourth open chat connection
-shows “Close another dashboard tab before reconnecting”; close another tab and
-reopen the Activity to connect.
+sign-in failures show an error with reopening instructions. A fourth open chat connection
+disables mutations and asks you to close another tab, then close and reopen this
+Activity. Session expiry and launch failures also require closing and reopening
+from Discord. Reloading the iframe cannot reliably repeat Discord’s single-use
+ready handshake. Unsent drafts stay visible until the Activity is closed.
 
 The application limits unauthenticated bootstrap and authentication requests
 jointly to 60 per minute per transport peer and 240 per minute overall, before
@@ -306,6 +308,14 @@ deletion restores them; startup restores quarantines for surviving chats and
 finishes removal for deleted chats. Branch file copying runs outside the database
 write transaction, then revalidates its saved source before publishing context
 and file metadata together.
+
+Foreground and coding output bytes are captured under the source workspace lease.
+Private copies are then staged under the file quota and maintenance lease, with
+metadata committed in the same transaction as the result and transcript. Failed
+publication removes staged copies and leaves no quota records; coding delivery
+can retry after restart without duplicating published snapshots. A process exit
+before commit can leave inaccessible generated files until normal file expiry,
+but no durable dashboard quota rows.
 
 Uploads are staged privately before the message is sent. They pass through the
 existing attachment handling and input moderation before tools can use them.

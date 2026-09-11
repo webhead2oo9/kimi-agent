@@ -31,6 +31,7 @@ api.request = async <T,>(path: string, method = "GET", body?: unknown): Promise<
   let result: unknown = {};
   if (path === "/chats" && method === "POST") { const chat = { ...chats[0], id: crypto.randomUUID(), title: "New chat", parent_id: null, parent_title: null }; chats.unshift(chat); histories.set(chat.id, []); result = chat; }
   else if (path === "/chats") result = { chats: [...chats] };
+  else if (path.includes("/events") && new URLSearchParams(location.search).has("loading")) return new Promise(() => {});
   else if (path.includes("/events")) { const before = Number(new URL(path, location.origin).searchParams.get("before")) || Infinity; result = { events: (histories.get(chatId) || []).filter(event => event.id < before).slice(-200) }; }
   else if (path.endsWith("/branches") && current) {
     const branch = { ...current, id: crypto.randomUUID(), title: `Branch · ${current.title}`, parent_id: current.id, parent_title: current.title, parent_event_id: data?.event_id };

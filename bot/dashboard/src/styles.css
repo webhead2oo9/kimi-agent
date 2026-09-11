@@ -139,6 +139,13 @@ svg { flex-shrink: 0; }
 .skeleton-avatar { margin-top: 2px; background: var(--hover); }
 .skeleton-row > div { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; padding-top: 6px; }
 .skeleton-row i { display: block; height: 12px; border-radius: 6px; background: var(--surface); }
+.skeleton-row i.skeleton-width-58 { width: 58%; }
+.skeleton-row i.skeleton-width-92 { width: 92%; }
+.skeleton-row i.skeleton-width-84 { width: 84%; }
+.skeleton-row i.skeleton-width-40 { width: 40%; }
+.skeleton-row i.skeleton-width-34 { width: 34%; }
+.skeleton-row i.skeleton-width-76 { width: 76%; }
+.skeleton-row i.skeleton-width-88 { width: 88%; }
 .skeleton-row i:first-child { width: 64px; height: 10px; background: var(--hover); }
 
 /* Markdown */

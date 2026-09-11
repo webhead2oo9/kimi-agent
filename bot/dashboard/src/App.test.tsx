@@ -468,3 +468,56 @@ describe("identity and loading", () => {
     expect(screen.getByText("Response interrupted")).toBeVisible();
   });
 });
+
+
+it.each([undefined, "Too many dashboard tabs. Close another tab, then close and reopen this Activity to continue."])("disables mutations on a terminal connection with reopen instructions: %s", async notice => {
+  const fixture = connection();
+  let status: Parameters<DashboardApi["subscribe"]>[3] = () => {};
+  vi.mocked(fixture.value.api.subscribe).mockImplementation((_chat, _after, _receive, callback) => { status = callback; callback(true); return () => {}; });
+  render(<DashboardApp connection={fixture.value} />);
+  const composer = await screen.findByRole("textbox", { name: "Message Kimi" });
+  fireEvent.change(composer, { target: { value: "Keep my draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Options for A test conversation" }));
+  fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+  await act(async () => status(false, true, notice));
+  expect(screen.getByRole("alert")).toHaveTextContent(/close and reopen this Activity/i);
+  expect(composer).toBeDisabled();
+  expect(composer).toHaveValue("Keep my draft");
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Attach files" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "New chat" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Options for A test conversation" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Save name" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Dismiss error" })).not.toBeInTheDocument();
+});
+
+it("renders history placeholders without CSP-blocked inline styles", async () => {
+  const fixture = connection();
+  const base = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation((path, ...args) => path.endsWith("/events") ? new Promise(() => {}) : base(path, ...args));
+  const { container } = render(<DashboardApp connection={fixture.value} />);
+  await screen.findByText("Opening conversation");
+  expect(container.querySelectorAll(".skeleton [style]")).toHaveLength(0);
+});
+
+
+it("keeps terminal recovery instructions when an older request fails late", async () => {
+  const fixture = connection();
+  let status: Parameters<DashboardApi["subscribe"]>[3] = () => {};
+  let fail: (error: Error) => void = () => {};
+  vi.mocked(fixture.value.api.subscribe).mockImplementation((_chat, _after, _receive, callback) => { status = callback; callback(true); return () => {}; });
+  const base = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation((path, ...args) => path.endsWith("/messages") ? new Promise((_resolve, reject) => { fail = reject; }) : base(path, ...args));
+  render(<DashboardApp connection={fixture.value} />);
+  fireEvent.change(await screen.findByRole("textbox", { name: "Message Kimi" }), { target: { value: "hello" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await act(async () => status(false, true, "Too many dashboard tabs. Close another tab, then close and reopen this Activity to continue."));
+  expect(screen.getByRole("button", { name: "Stop response" })).toBeDisabled();
+  await act(async () => fail(new Error("Network interrupted")));
+  expect(screen.getByRole("alert")).toHaveTextContent("Close another tab");
+  expect(screen.getByRole("alert")).toHaveTextContent("close and reopen this Activity");
+  fireEvent.click(screen.getByRole("button", { name: "A test conversation" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Close another tab");
+});

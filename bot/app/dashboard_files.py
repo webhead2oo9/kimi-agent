@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -82,6 +82,12 @@ class DashboardAttachment:
         return self.payload
 
 
+@dataclass(frozen=True, slots=True)
+class CapturedOutput:
+    filename: str
+    payload: bytes | None
+
+
 class DashboardFiles:
     def __init__(
         self,
@@ -114,6 +120,7 @@ class DashboardFiles:
         *,
         kind: str,
         workspace_guard_held: bool = False,
+        staged: list[DashboardFile] | None = None,
     ) -> DashboardFile:
         limit = (
             self.upload_limit if kind == "upload" else self.settings.workspace_tool_max_file_bytes
@@ -130,7 +137,7 @@ class DashboardFiles:
             if workspace_guard_held
             else self.locks.activity(file_key)
         )
-        async with guard:
+        async with nullcontext() if staged is not None else guard:
             async with self.store.db.conn.execute(
                 "SELECT coalesce(sum(size),0),count(*) FROM dashboard_files "
                 "WHERE owner_user_id=? AND guild_id=? AND created_at>?",
@@ -139,8 +146,9 @@ class DashboardFiles:
                 row = await cursor.fetchone()
             assert row is not None
             if (
-                row[0] + len(payload) > self.settings.workspace_tool_max_user_bytes
-                or row[1] >= 1000
+                row[0] + sum(record.size for record in staged or []) + len(payload)
+                > self.settings.workspace_tool_max_user_bytes
+                or row[1] + len(staged or []) >= 1000
             ):
                 raise web.HTTPConflict(
                     reason="Dashboard file quota reached; let older files expire"
@@ -170,6 +178,22 @@ class DashboardFiles:
             async def persist() -> DashboardFile:
                 nonlocal saved
                 relative, media = await asyncio.to_thread(write)
+                if staged is not None:
+                    record = DashboardFile(
+                        uuid4().hex,
+                        chat.id,
+                        chat.user_id,
+                        chat.guild_id,
+                        relative,
+                        name,
+                        media,
+                        len(payload),
+                        kind,
+                        time.time(),
+                    )
+                    staged.append(record)
+                    saved = True
+                    return record
                 record = await self.store.add_file(
                     chat,
                     path=relative,
@@ -398,49 +422,101 @@ class DashboardFiles:
             public.append(record.public())
         return attachments, public
 
-    async def snapshot(
+    async def capture_outputs(
         self,
         chat: DashboardConversation,
         paths: tuple[str, ...],
         *,
         source_context: str | None = None,
         workspace_guard_held: bool = False,
-    ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
+    ) -> list[CapturedOutput]:
+        """Capture bounded bytes while the source workspace is protected.
+
+        No quota metadata or private copies exist until result publication.
+        The foreground runner releases its source lease before persisting replies.
+        """
+        results: list[CapturedOutput] = []
         key = workspace_owner_key(chat.user_id, chat.guild_id)
         if not paths:
             return results
         if not workspace_guard_held:
             async with self.locks.activity(key):
-                return await self.snapshot(
+                return await self.capture_outputs(
                     chat, paths, source_context=source_context, workspace_guard_held=True
                 )
+        remaining = self.settings.workspace_tool_max_user_bytes
         for raw in paths[:10]:
 
-            def read(raw: str = raw) -> tuple[str, bytes]:
-                # The shared turn runner stages files relative to WORKSPACE_DIR
-                # when that setting is relative. Make the path absolute without
-                # resolving symlinks; read_regular must still reject those.
+            def read(raw: str = raw, remaining: int = remaining) -> tuple[str, bytes]:
+                # Absolute without resolving: read_regular must reject symlinks.
                 path = Path(raw).absolute()
                 roots = self.workspace.allowed_output_roots(
                     key, context_key=source_context or chat.key
                 )
                 if not any(path.is_relative_to(root) for root in roots):
                     raise ValueError("Output is outside this conversation's files")
-                return path.name, read_regular(path, self.settings.workspace_tool_max_file_bytes)
+                return path.name, read_regular(
+                    path, min(remaining, self.settings.workspace_tool_max_file_bytes)
+                )
 
             try:
                 name, payload = await await_uncancellable(asyncio.to_thread(read))
-                record = await self.save(
-                    chat, name, payload, kind="output", workspace_guard_held=True
-                )
-                results.append(record.public())
+                remaining -= len(payload)
+                results.append(CapturedOutput(safe_filename(name)[:180], payload))
             except (OSError, ValueError, web.HTTPException) as exc:
                 log.warning("Dashboard attachment snapshot failed (%s)", type(exc).__name__)
-                results.append(
-                    {"filename": safe_filename(Path(raw).name)[:180], "unavailable": True}
-                )
+                results.append(CapturedOutput(safe_filename(Path(raw).name)[:180], None))
         return results
+
+    @asynccontextmanager
+    async def output_copies(
+        self, chat: DashboardConversation, outputs: list[CapturedOutput]
+    ) -> AsyncIterator[tuple[list[dict[str, Any]], list[DashboardFile]]]:
+        """Stage files under the quota/maintenance lease until the result commits.
+
+        The caller inserts these records in its result transaction. Shield this
+        entire scope so cancellation cannot race writes, commit, or cleanup.
+        Unreferenced files after process death expire with generated workspace
+        files; they never consume durable dashboard quota or become downloadable.
+        """
+        records: list[DashboardFile] = []
+        public: list[dict[str, Any]] = []
+        key = WorkspaceKey(f"dashboard-files:{workspace_owner_key(chat.user_id, chat.guild_id)}")
+        async with self.locks.activity(key):
+            try:
+                for output in outputs:
+                    if output.payload is not None:
+                        try:
+                            record = await self.save(
+                                chat, output.filename, output.payload, kind="output", staged=records
+                            )
+                            public.append(record.public())
+                            continue
+                        except (OSError, ValueError, web.HTTPException) as exc:
+                            log.warning(
+                                "Dashboard attachment snapshot failed (%s)", type(exc).__name__
+                            )
+                    public.append({"filename": output.filename, "unavailable": True})
+                yield public, records
+            finally:
+                for record in records:
+                    async with self.store.db.read_snapshot() as conn:
+                        async with conn.execute(
+                            "SELECT 1 FROM dashboard_files WHERE id=? AND path=?",
+                            (record.id, record.path),
+                        ) as cursor:
+                            referenced = await cursor.fetchone()
+                    if referenced is None:
+
+                        def remove(record: DashboardFile = record) -> None:
+                            resolved = self.workspace.resolve_context_generated_file(
+                                record.path,
+                                context_key=self.context(chat.id, "output"),
+                                must_exist=True,
+                            )
+                            shutil.rmtree(resolved.path.parent)
+
+                        await asyncio.to_thread(remove)
 
     async def workspace_files(
         self, chat: DashboardConversation, directory: str = ""

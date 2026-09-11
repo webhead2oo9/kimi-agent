@@ -402,3 +402,47 @@ async def test_branch_metadata_ignores_coding_progress_and_keeps_timed_out_resul
     assert len(history) == 3
     assert history[0].payload["files"][0]["filename"] == "early.txt"
     assert history[-1].payload["files"][0]["filename"] == "partial.txt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_duplicate_acknowledgement_waits_for_acceptance_commit(store, monkeypatch, rollback):
+    current = await chat(store)
+    committing, release, reading = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = store.db.conn.commit
+
+    async def commit():
+        committing.set()
+        await release.wait()
+        if rollback:
+            raise RuntimeError("acceptance commit failed")
+        await original()
+
+    monkeypatch.setattr(store.db.conn, "commit", commit)
+    acceptance = asyncio.create_task(
+        store.accept(current, request_id="same", text="hello", files=[])
+    )
+
+    async def duplicate():
+        reading.set()
+        return await store.accepted(current.id, "same")
+
+    async with asyncio.timeout(2):
+        await committing.wait()
+        acknowledgement = asyncio.create_task(duplicate())
+        await reading.wait()
+        # Drain the SQLite queue after the duplicate has attempted its SELECT.
+        async with store.db.conn.execute("SELECT 1") as cursor:
+            await cursor.fetchone()
+        try:
+            assert not acknowledgement.done()
+        finally:
+            release.set()
+            result, acknowledged = await asyncio.gather(
+                acceptance, acknowledgement, return_exceptions=True
+            )
+    if rollback:
+        assert isinstance(result, RuntimeError)
+        assert acknowledged is None
+    else:
+        assert acknowledged == result[0]

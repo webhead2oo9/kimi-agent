@@ -6,7 +6,8 @@ import "./styles.css";
 
 const root = createRoot(document.getElementById("root")!);
 let launch: Launch | undefined;
-const show = (state: LaunchState, message?: string) => root.render(<LaunchScreen state={state} name={launch?.bot_name} avatar={launch?.bot_avatar} message={message} onRetry={() => location.reload()} />);
+// Discord sends READY once per iframe; recovery requires reopening the Activity.
+const show = (state: LaunchState, message?: string) => root.render(<LaunchScreen state={state} name={launch?.bot_name} avatar={launch?.bot_avatar} message={message} />);
 show("connecting");
 void connectActivity(current => { launch = current; show("connecting"); })
   .then(connection => root.render(<DashboardApp connection={connection} />))

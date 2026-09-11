@@ -42,6 +42,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [expired, setExpired] = useState(false);
+  const terminalConnection = useRef(false);
   const [loading, setLoading] = useState(true);
   const [openingRetry, setOpeningRetry] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -81,10 +82,14 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const botInitial = initialOf(session.bot_name);
 
   const report = useCallback((error: unknown) => {
+    if (terminalConnection.current) return;
     if (error instanceof ApiError && error.status === 401) {
-      setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null);
+      terminalConnection.current = true;
+      setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null); setDialog(null); setMenu(null);
     }
-    setError(error instanceof Error ? error.message : "Something went wrong. Please try again.");
+    setError(error instanceof ApiError && error.status === 401
+      ? "Your session expired. Close and reopen this Activity from Discord to continue."
+      : error instanceof Error ? error.message : "Something went wrong. Please try again.");
   }, []);
 
   const refreshChats = useCallback(async () => {
@@ -141,13 +146,14 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         }
         if (incoming.some(event => ["coding_task", "task_action_result", "branch_result"].includes(event.kind))) refreshFiles();
         if (incoming.some(event => ["branch_created", "branch_result"].includes(event.kind))) void refreshChats().catch(report);
-      }, (connected, accessExpired, notice) => {
+      }, (connected, terminal, notice) => {
         if (!live) return;
         setConnected(connected);
         if (notice) setError(notice);
-        if (accessExpired) {
-          setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null);
-          setError("Your session or channel access expired. Reopen the dashboard to continue.");
+        if (terminal) {
+          terminalConnection.current = true;
+          setExpired(true); setEvents([]); setFiles([]); setSelectedFile(null); setDialog(null); setMenu(null);
+          setError(notice || "Your session or channel access expired. Close and reopen this Activity from Discord to continue.");
         }
       });
       refreshFiles();
@@ -189,9 +195,10 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     node?.scrollIntoView?.({ block: "center" }); node?.focus({ preventScroll: true });
   }, [focusedMessage, activeId]);
 
-  const choose = (id: string) => { setActiveId(id); setSidebarOpen(false); setError(""); setNotice(""); setMenu(null); setJumpTarget(null); setFocusedMessage(null); setJumpLoading(false); };
+  const choose = (id: string) => { if (terminalConnection.current) return; setActiveId(id); setSidebarOpen(false); setError(""); setNotice(""); setMenu(null); setJumpTarget(null); setFocusedMessage(null); setJumpLoading(false); };
   const updateDraft = (chatId: string, update: Partial<Draft>) => setDrafts(current => ({ ...current, [chatId]: { ...(current[chatId] || emptyDraft), ...update } }));
   const newChat = async (text = "") => {
+    if (terminalConnection.current) return null;
     try {
       const chat = await api.request<Chat>("/chats", "POST", {});
       setChats(previous => [chat, ...previous]); choose(chat.id);
@@ -236,7 +243,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     finally { setBranching(false); }
   };
   const send = async () => {
-    if (!activeId || sending || uploading || busy || !draft.text.trim() && !draft.files.length) return;
+    if (!activeId || terminalConnection.current || session.consent_required || sending || uploading || busy || !draft.text.trim() && !draft.files.length) return;
     const chatId = activeId;
     const payload = { text: draft.text, file_ids: draft.files.map(file => file.id!) };
     const body = JSON.stringify(payload);
@@ -259,7 +266,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     finally { setSending(false); composer.current?.focus(); }
   };
   const attach = async (uploads: FileList | null) => {
-    if (!activeId || !uploads?.length) return;
+    if (!activeId || terminalConnection.current || session.consent_required || !uploads?.length) return;
     const chatId = activeId;
     if (uploads.length + draft.files.length > 10 || [...uploads].reduce((sum, file) => sum + file.size, draft.files.reduce((sum, file) => sum + (file.size || 0), 0)) > session.max_upload_bytes) {
       setError(`Attach up to 10 files, totaling ${readableSize(session.max_upload_bytes)}.`); return;
@@ -267,6 +274,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     setUploading(true);
     try {
       for (const file of uploads) {
+        if (terminalConnection.current) break;
         const saved = await api.upload<FileRecord>(chatId, file);
         setDrafts(previous => { const old = previous[chatId] || emptyDraft; return { ...previous, [chatId]: { ...old, files: [...old.files, saved] } }; });
       }
@@ -274,7 +282,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     finally { setUploading(false); if (uploadInput.current) uploadInput.current.value = ""; }
   };
   const taskAction = async (taskId: string, action: string, revision?: number, message?: string) => {
-    if (!activeId) return;
+    if (!activeId || expired) return;
     await taskActions.perform(activeId, taskId, action, revision, message);
   };
   const older = async () => {
@@ -306,7 +314,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
         {!visibleChats.length && <p className="muted small-text">{search ? "No matching conversations." : "A fresh start is one message away."}</p>}
         {visibleChats.map(chat => <div className={`chat-row ${chat.id === activeId ? "selected" : ""}`} key={chat.id}>
           <button className="chat-choice" aria-label={chat.title} onClick={() => choose(chat.id)} aria-current={chat.id === activeId ? "page" : undefined}>{chat.parent_title && <GitBranch size={14} aria-hidden="true" />}<span>{chat.title}</span></button>
-          <button className="icon-button chat-menu" aria-label={`Options for ${chat.title}`} aria-expanded={menu === chat.id} onClick={() => setMenu(menu === chat.id ? null : chat.id)}><MoreHorizontal size={16} /></button>
+          <button className="icon-button chat-menu" aria-label={`Options for ${chat.title}`} disabled={expired} aria-expanded={menu === chat.id} onClick={() => setMenu(menu === chat.id ? null : chat.id)}><MoreHorizontal size={16} /></button>
           {menu === chat.id && <div className="context-menu"><button onClick={() => { setDialog({ kind: "rename", chat }); setMenu(null); }}>Rename</button><button className="danger-text" onClick={() => { setDialog({ kind: "delete", chat }); setMenu(null); }}><Trash2 size={14} /> Delete</button></div>}
         </div>)}
         {moreChats && <button className="text-button" onClick={() => void api.request<{ chats: Chat[] }>(`/chats?before=${chatCursor?.updated_at}&before_id=${chatCursor?.id}`).then(result => { setChats(previous => [...previous, ...result.chats.filter(chat => !previous.some(item => item.id === chat.id))]); setMoreChats(result.chats.length === 100); setChatCursor(result.chats.at(-1) || null); }).catch(report)}>Older conversations</button>}
@@ -317,12 +325,12 @@ export function DashboardApp({ connection }: { connection: Connection }) {
     <main className="chat-main">
       <header className="chat-header">
         <button ref={sidebarTrigger} className="icon-button mobile-only" aria-label="Open conversations" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-        <div className="chat-heading"><strong>{active?.title || session.bot_name}</strong>{active && <span><Hash size={12} />{active.channel_name}{connected === false && <><i /><span className="status-pill reconnecting" role="status">Reconnecting…</span></>}</span>}</div>
+        <div className="chat-heading"><strong>{active?.title || session.bot_name}</strong>{active && <span><Hash size={12} />{active.channel_name}{connected === false && !expired && <><i /><span className="status-pill reconnecting" role="status">Reconnecting…</span></>}</span>}</div>
         <button ref={workTrigger} className={`work-toggle ${workOpen ? "active" : ""}`} aria-label="Work" onClick={() => setWorkOpen(!workOpen)} aria-expanded={workOpen}><Files size={17} /><span>Work</span>{(files.length > 0 || work.coding.length > 0) && <b>{files.length + work.coding.length}</b>}</button>
       </header>
       {active?.parent_title && <div className="branch-banner"><GitBranch size={16} /><div>{active.parent_id ? <button className="text-button" title="Go to the starting message in the parent conversation" onClick={() => void openChat(active.parent_id!, active.parent_event_id)}><CornerUpLeft size={14} />Parent: {active.parent_title}</button> : <span>Parent conversation deleted</span>}<p>Context copied through the selected message. Workspace files are shared.</p></div></div>}
       {notice && !expired && <div className="notice success-notice" role="status"><Check size={15} /><span>{notice}</span><button type="button" className="icon-button" aria-label="Dismiss confirmation" onClick={() => setNotice("")}><X size={16} /></button></div>}
-      {error && <div className="notice error" role="alert"><span>{error}</span>{expired ? <button onClick={() => location.reload()}>Reconnect</button> : <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
+      {error && <div className="notice error" role="alert"><span>{error}</span>{!expired && <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
       {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2>{consentDeclined ? <><p>You declined the privacy notice. Chatting stays disabled.</p><button onClick={() => setConsentDeclined(false)}>Review privacy notice</button></> : <><Markdown text={session.consent_text} openLink={openLink} /><div className="consent-actions">{[true, false].map(accept => <button key={String(accept)} disabled={consentBusy} className={accept ? "primary" : ""} onClick={() => { setConsentBusy(true); void api.request("/consent", "POST", { accept }).then(() => { if (accept) setSession({ ...session, consent_required: false }); else setConsentDeclined(true); }).catch(report).finally(() => setConsentBusy(false)); }}>{accept ? "Accept and continue" : "Decline"}</button>)}</div></>}</div>}
       <div className="message-scroll" ref={history} onScroll={() => { const node = history.current; if (node) followEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
         {!activeId && !expired && <div className="empty-state"><Avatar className="large" src={botAvatar} fallback={botInitial} /><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
@@ -366,14 +374,15 @@ export function DashboardApp({ connection }: { connection: Connection }) {
           {!!draft.files.length && <div className="draft-files">{draft.files.map(file => <span key={file.id}><Paperclip size={13} />{file.filename}<button type="button" aria-label={`Remove ${file.filename}`} onClick={() => updateDraft(activeId, { files: draft.files.filter(item => item.id !== file.id) })}><X size={13} /></button></span>)}</div>}
           <textarea ref={composer} aria-label={`Message ${session.bot_name}`} placeholder={`Message ${session.bot_name}…`} value={draft.text} maxLength={session.max_message_chars} disabled={session.consent_required || expired} rows={2} onChange={event => updateDraft(activeId, { text: event.target.value })} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !window.matchMedia("(pointer: coarse)").matches) { event.preventDefault(); void send(); } }} />
           <div className="composer-tools"><input ref={uploadInput} type="file" multiple className="visually-hidden" tabIndex={-1} onChange={event => void attach(event.target.files)} /><button className="icon-button" type="button" aria-label="Attach files" disabled={uploading || expired || session.consent_required} onClick={() => uploadInput.current?.click()}><Paperclip size={18} /></button>{uploading && <span className="small-text muted" role="status">Uploading…</span>}
-            {busy ? <button type="button" className="send-button stop-button" aria-label="Stop response" onClick={() => void api.request(`/chats/${activeId}/stop`, "POST", {}).then(() => setOptimisticBusy(null)).catch(report)}><Square size={16} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Send message" disabled={sending || uploading || expired || session.consent_required || !draft.text.trim() && !draft.files.length}><ArrowUp size={18} /></button>}
+            {busy ? <button type="button" className="send-button stop-button" aria-label="Stop response" disabled={expired} onClick={() => void api.request(`/chats/${activeId}/stop`, "POST", {}).then(() => setOptimisticBusy(null)).catch(report)}><Square size={16} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Send message" disabled={sending || uploading || expired || session.consent_required || !draft.text.trim() && !draft.files.length}><ArrowUp size={18} /></button>}
           </div>
         </form>
       </div>}
     </main>
 
     {workOpen && !expired && <ResponsiveDrawer query="(max-width: 1000px)" open={workOpen} onClose={() => setWorkOpen(false)} label="Work panel" returnFocusRef={workTrigger}><WorkPanel key={activeId} chat={active} events={events} files={files} selectedFile={selectedFile} onSelectFile={setSelectedFile} onClose={() => setWorkOpen(false)} connection={connection} onAction={taskAction} pendingActions={taskActions.pending.filter(action => action.chatId === activeId)} onWorkEvents={reconcileActions} onError={report} /></ResponsiveDrawer>}
-    {dialog && <ChatDialog dialog={dialog} onClose={() => setDialog(null)} onSubmit={async title => {
+    {dialog && !expired && <ChatDialog dialog={dialog} onClose={() => setDialog(null)} onSubmit={async title => {
+      if (expired) return;
       if (dialog.kind === "rename") await api.request(`/chats/${dialog.chat.id}`, "PATCH", { title });
       else { await api.request(`/chats/${dialog.chat.id}`, "DELETE"); setChats(previous => previous.filter(chat => chat.id !== dialog.chat.id)); setDrafts(previous => { const copy = { ...previous }; delete copy[dialog.chat.id]; return copy; }); }
       const result = await refreshChats();
@@ -387,8 +396,8 @@ export function DashboardApp({ connection }: { connection: Connection }) {
 function HistorySkeleton() {
   return <div className="skeleton" role="status" aria-busy="true">
     <span className="visually-hidden">Opening conversation</span>
-    {[["58%"], ["92%", "84%", "40%"], ["34%"], ["76%", "88%"]].map((widths, row) => <div className="skeleton-row" key={row}>
-      <span className="avatar skeleton-avatar" /><div><i /> {widths.map((width, line) => <i key={line} style={{ width }} />)}</div>
+    {[[58], [92, 84, 40], [34], [76, 88]].map((widths, row) => <div className="skeleton-row" key={row}>
+      <span className="avatar skeleton-avatar" /><div><i /> {widths.map((width, line) => <i key={line} className={`skeleton-width-${width}`} />)}</div>
     </div>)}
   </div>;
 }

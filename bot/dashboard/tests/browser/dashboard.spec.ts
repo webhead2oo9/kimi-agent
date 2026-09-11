@@ -113,3 +113,20 @@ test("copy responses and code, with manual fallback when clipboard is blocked", 
   await expect(dialog).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+
+test("history skeleton renders varied widths under the production CSP", async ({ page }) => {
+  const violations: string[] = [];
+  await page.exposeFunction("recordViolation", (directive: string) => violations.push(directive));
+  await page.addInitScript(() => document.addEventListener("securitypolicyviolation", event => {
+    void (window as unknown as { recordViolation: (directive: string) => Promise<void> }).recordViolation(event.violatedDirective);
+  }));
+  const response = await page.goto("/tests/fixture.html?loading");
+  expect(response?.headers()["content-security-policy"]).toContain("style-src 'self'");
+  await expect(page.getByText("Opening conversation", { exact: true })).toBeVisible();
+  await expect(page.locator(".skeleton [style]")).toHaveCount(0);
+  const widths = await page.locator(".skeleton-row i:not(:first-child)").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width / node.parentElement!.getBoundingClientRect().width));
+  expect(widths).toHaveLength(7);
+  for (const [index, expected] of [.58, .92, .84, .40, .34, .76, .88].entries()) expect(widths[index]).toBeCloseTo(expected, 2);
+  expect(violations).toEqual([]);
+});

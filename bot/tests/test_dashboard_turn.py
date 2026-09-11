@@ -313,6 +313,11 @@ async def test_failed_publication_cannot_leave_a_hidden_assistant_answer(
         surface.chat.conversation_id
     )
     assert [message.role for message in history] == ["user"]
+    assert await surface.store.files(surface.chat) == []
+    root = surface.workspace.generated_context_path(
+        surface.files.context(surface.chat.id, "output")
+    )
+    assert not list(root.glob("*/*"))
 
 
 @pytest.mark.asyncio
@@ -416,3 +421,99 @@ async def test_uncommitted_result_cannot_escape_through_event_replay(surface, mo
         events = await replay
         await settled(surface)
     assert not any(event.payload.get("status") == "completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_captured_output_survives_source_changes_before_publication(surface, monkeypatch):
+    original = surface.files.output_copies
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def changed(chat, outputs):
+        source = surface.workspace.user_files_dir(workspace_owner_key("1", "2")) / "answer.txt"
+        source.write_text("changed after delivery")
+        async with original(chat, outputs) as staged:
+            yield staged
+
+    monkeypatch.setattr(surface.files, "output_copies", changed)
+    await surface.turns.submit(surface.chat, request_id="immutable", text="hello", file_ids=[])
+    await settled(surface)
+    records = await surface.store.files(surface.chat)
+    assert len(records) == 1
+    assert await surface.files.payload(records[0]) == b"result"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader", ["file", "files"])
+async def test_uncommitted_output_cannot_escape_through_file_endpoints(
+    surface, monkeypatch, reader
+):
+    committing, release, reading = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = surface.db.conn.commit
+    file_id = ""
+
+    async def commit():
+        nonlocal file_id
+        async with surface.db.conn.execute("SELECT id FROM dashboard_files") as cursor:
+            record = await cursor.fetchone()
+        if record:
+            file_id = record[0]
+            committing.set()
+            await release.wait()
+            raise RuntimeError("result commit failed")
+        await original()
+
+    monkeypatch.setattr(surface.db.conn, "commit", commit)
+    await surface.turns.submit(
+        surface.chat, request_id="uncommitted-file", text="hello", file_ids=[]
+    )
+
+    async def read():
+        reading.set()
+        if reader == "file":
+            return await surface.store.file(file_id, user_id="1", guild_id="2")
+        return await surface.store.files(surface.chat)
+
+    async with asyncio.timeout(2):
+        await committing.wait()
+        query = asyncio.create_task(read())
+        await reading.wait()
+        async with surface.db.conn.execute("SELECT 1") as cursor:
+            await cursor.fetchone()
+        try:
+            assert not query.done()
+        finally:
+            release.set()
+            result = await query
+            await settled(surface)
+    assert result == (None if reader == "file" else [])
+    assert await surface.store.files(surface.chat) == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_commit_keeps_published_output(surface, monkeypatch):
+    committed, release = asyncio.Event(), asyncio.Event()
+    original = surface.store.finish_turn
+
+    async def finish(*args, **kwargs):
+        await original(*args, **kwargs)
+        if args[2] == "completed":
+            committed.set()
+            await release.wait()
+
+    monkeypatch.setattr(surface.store, "finish_turn", finish)
+    await surface.turns.submit(
+        surface.chat, request_id="commit-then-cancel", text="hello", file_ids=[]
+    )
+    async with asyncio.timeout(2):
+        await committed.wait()
+        for task in surface.turns._tasks:
+            task.cancel()
+        release.set()
+        await settled(surface)
+    events = await surface.store.events(surface.chat.id)
+    assert events[-1].payload["status"] == "completed"
+    records = await surface.store.files(surface.chat)
+    assert len(records) == 1
+    assert events[-1].payload["files"] == [records[0].public()]
+    assert await surface.files.payload(records[0]) == b"result"

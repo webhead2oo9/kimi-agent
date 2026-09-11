@@ -62,7 +62,7 @@ async def test_workspace_snapshots_are_immutable_and_chat_deletion_keeps_shared_
     saved = await files.snapshot_workspace(own, "notes.txt")
     path.write_text("changed")
     assert await files.payload(saved) == b"first"
-    assert (await files.snapshot(own, ("/etc/passwd",)))[0]["unavailable"]
+    assert (await files.capture_outputs(own, ("/etc/passwd",)))[0].payload is None
     with pytest.raises(ValueError):
         await files.snapshot_workspace(own, "../outside")
     await files.delete_chat(own)
@@ -77,17 +77,20 @@ async def test_output_snapshot_keeps_content_and_rejects_linked_or_foreign_sourc
     directory = files.workspace.generated_job_dir(own.key, "delivery-test")
     source = directory / "answer.txt"
     source.write_text("delivered content")
-    saved = (await files.snapshot(own, (str(source),)))[0]
-    assert saved["filename"] == "answer.txt"
-    record = await files.store.file(saved["id"], user_id=own.user_id, guild_id=own.guild_id)
+    outputs = await files.capture_outputs(own, (str(source),))
+    turn, _ = await files.store.accept(own, request_id="output", text="file", files=[])
+    async with files.output_copies(own, outputs) as (public, records):
+        await files.store.finish_turn(own.id, turn, "completed", {"files": public}, files=records)
+    assert public[0]["filename"] == "answer.txt"
+    record = await files.store.file(public[0]["id"], user_id=own.user_id, guild_id=own.guild_id)
     assert await files.payload(record) == b"delivered content"
     assert (await files.preview(record))["text"] == "delivered content"
-    assert (await files.snapshot(other, (str(source),)))[0]["unavailable"]
+    assert (await files.capture_outputs(other, (str(source),)))[0].payload is None
     linked = directory / "link.txt"
     linked.symlink_to(source.absolute())
-    assert (await files.snapshot(own, (str(linked),)))[0]["unavailable"]
+    assert (await files.capture_outputs(own, (str(linked),)))[0].payload is None
     os.link(source, directory / "hardlink.txt")
-    assert (await files.snapshot(own, (str(source),)))[0]["unavailable"]
+    assert (await files.capture_outputs(own, (str(source),)))[0].payload is None
 
 
 def test_read_regular_rejects_symlinks_hardlinks_directories_and_oversize(tmp_path):
@@ -166,8 +169,9 @@ async def test_snapshot_finishes_when_maintenance_queues_behind_existing_workspa
             # Queue the maintenance writer before taking the nested snapshot mutex.
             await asyncio.sleep(0)
             assert files.locks._maintenance_waiters == 1
-            saved = await files.snapshot(own, (str(source),), workspace_guard_held=True)
-            assert saved[0]["filename"] == "result.txt"
+            saved = await files.capture_outputs(own, (str(source),), workspace_guard_held=True)
+            assert saved[0].filename == "result.txt"
+            assert saved[0].payload == b"safe output"
             assert not entered.is_set()
         await maintenance
     assert entered.is_set()
@@ -272,3 +276,36 @@ async def test_chat_deletion_refuses_a_symlink_to_another_chats_snapshots(files)
         await files.delete_conversation(own)
     assert await files.payload(record) == b"other member"
     assert await files.store.get(own.id, user_id="1", guild_id="2") is not None
+
+
+@pytest.mark.asyncio
+async def test_output_publication_counts_staged_bytes_and_rechecks_current_quota(
+    files, monkeypatch
+):
+    own = await chat(files)
+    directory = files.workspace.user_files_dir(workspace_owner_key("1", "2"))
+    paths = [directory / name for name in ("a.txt", "b.txt")]
+    for path in paths:
+        path.write_bytes(b"result")
+    outputs = await files.capture_outputs(own, tuple(str(path) for path in paths))
+    monkeypatch.setattr(files.settings, "workspace_tool_max_user_bytes", 14)
+    await files.save(own, "existing.txt", b"old", kind="upload")
+    turn, _ = await files.store.accept(own, request_id="quota", text="files", files=[])
+    async with files.output_copies(own, outputs) as (public, records):
+        assert len(records) == 1
+        assert public[1] == {"filename": "b.txt", "unavailable": True}
+        await files.store.finish_turn(own.id, turn, "completed", {"files": public}, files=records)
+    assert len(await files.store.files(own)) == 2
+
+
+@pytest.mark.asyncio
+async def test_output_capture_bounds_total_memory_and_file_count(files, monkeypatch):
+    own = await chat(files)
+    source = files.workspace.user_files_dir(workspace_owner_key("1", "2")) / "result.txt"
+    source.write_bytes(b"result")
+    monkeypatch.setattr(files.settings, "workspace_tool_max_user_bytes", 12)
+    outputs = await files.capture_outputs(own, (str(source),) * 11)
+    assert len(outputs) == 10
+    assert sum(len(output.payload or b"") for output in outputs) == 12
+    assert sum(output.payload is not None for output in outputs) == 2
+    assert await files.store.files(own) == []

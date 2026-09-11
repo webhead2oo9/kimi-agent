@@ -51,7 +51,7 @@ export class DashboardApi {
     return payload as T;
   }
 
-  subscribe(chatId: string, after: number, receive: (events: ChatEvent[]) => void, status: (connected: boolean, expired?: boolean, notice?: string) => void): () => void {
+  subscribe(chatId: string, after: number, receive: (events: ChatEvent[]) => void, status: (connected: boolean, terminal?: boolean, notice?: string) => void): () => void {
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
@@ -69,6 +69,12 @@ export class DashboardApi {
       }, delay);
       delay = Math.min(delay * 2, 15000);
     };
+    const socketLimit = () => {
+      stopped = true;
+      clearTimeout(retry);
+      status(false, true, "Too many dashboard tabs. Close another tab, then close and reopen this Activity to continue.");
+      socket?.close();
+    };
     const connect = () => {
       if (stopped) return;
       const url = new URL("/api/ws", window.location.href);
@@ -84,8 +90,7 @@ export class DashboardApi {
         try {
           const data: { events: ChatEvent[]; code?: string; error?: string } = JSON.parse(message.data);
           if (data.code === "socket_limit") {
-            status(false, false, data.error || "Close another dashboard tab before reconnecting");
-            stopped = true; current.close(); return;
+            socketLimit(); return;
           }
           if (!Array.isArray(data.events)) return;
           receive(data.events);
@@ -95,7 +100,7 @@ export class DashboardApi {
       };
       current.onclose = event => {
         if (stopped || socket !== current) return;
-        if (event.code === 4008) { status(false, false, "Close another dashboard tab before reconnecting"); return; }
+        if (event.code === 4008) { socketLimit(); return; }
         if (event.code === 1008) { status(false, true); return; }
         // Check the selected chat too: a denied WebSocket handshake cannot
         // expose its HTTP status to JavaScript, and /session checks launch access.

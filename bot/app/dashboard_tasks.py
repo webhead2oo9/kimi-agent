@@ -194,9 +194,10 @@ class DashboardTasks:
             if terminal:
                 delivery = task.checkpoint.get("delivery", {})
                 paths = delivery.get("output_files", []) if isinstance(delivery, dict) else []
+                outputs = []
                 if not moderated.blocked and isinstance(paths, list):
                     async with self.files.locks.activity(WorkspaceKey(task.workspace_key)):
-                        payload["files"] = await self.files.snapshot(
+                        outputs = await self.files.capture_outputs(
                             chat,
                             tuple(str(p) for p in paths),
                             source_context=f"coding-delivery-{task.id}",
@@ -211,9 +212,15 @@ class DashboardTasks:
                         ),
                     ]
                 )
-                await await_uncancellable(
-                    self.store.publish_coding_result(chat, task.id, payload, replies)
-                )
+
+                async def publish() -> None:
+                    async with self.files.output_copies(chat, outputs) as (public, records):
+                        payload["files"] = public
+                        await self.store.publish_coding_result(
+                            chat, task.id, payload, replies, files=records
+                        )
+
+                await await_uncancellable(publish())
             else:
                 digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[
                     :20

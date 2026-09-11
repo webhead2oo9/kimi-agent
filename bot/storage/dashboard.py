@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict, dataclass
+from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -179,10 +180,13 @@ class DashboardStore:
             )
 
     async def accepted(self, chat_id: str, request_id: str) -> str | None:
-        async with self.db.conn.execute(
-            "SELECT id FROM dashboard_turns WHERE dashboard_id=? AND request_id=?",
-            (chat_id, request_id),
-        ) as cur:
+        async with (
+            self.db.read_snapshot() as conn,
+            conn.execute(
+                "SELECT id FROM dashboard_turns WHERE dashboard_id=? AND request_id=?",
+                (chat_id, request_id),
+            ) as cur,
+        ):
             row = await cur.fetchone()
         return str(row[0]) if row else None
 
@@ -252,6 +256,7 @@ class DashboardStore:
         *,
         replies: list[ChannelMessageRecord] | None = None,
         handoff_id: str | None = None,
+        files: Sequence[DashboardFile] = (),
     ) -> None:
         if status not in {"completed", "failed", "cancelled", "interrupted"}:
             raise ValueError("Invalid dashboard turn outcome")
@@ -269,6 +274,11 @@ class DashboardStore:
             ) as cursor:
                 chat = await cursor.fetchone()
             assert chat is not None
+            for record in files:
+                await conn.execute(
+                    "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    tuple(asdict(record).values()),
+                )
             if replies:
                 await self.conversations.save_channel_messages_in_transaction(
                     conn, chat[0], replies
@@ -318,17 +328,25 @@ class DashboardStore:
         task_id: str,
         payload: dict[str, Any],
         replies: list[ChannelMessageRecord],
+        *,
+        files: Sequence[DashboardFile] = (),
     ) -> None:
         """Commit a private coding result, its model context, and delivery receipt."""
         now = time.time()
         async with self.db.write_transaction() as conn:
             updated = await conn.execute(
                 "UPDATE coding_tasks SET delivery_state='delivered',updated_at=? "
-                "WHERE id=? AND conversation_id=? AND user_id=? AND delivery_surface='dashboard'",
+                "WHERE id=? AND conversation_id=? AND user_id=? AND delivery_surface='dashboard' "
+                "AND delivery_state!='delivered'",
                 (now, task_id, chat.conversation_id, chat.user_id),
             )
             if not updated.rowcount:
                 return
+            for record in files:
+                await conn.execute(
+                    "INSERT INTO dashboard_files VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    tuple(asdict(record).values()),
+                )
             await self.conversations.save_channel_messages_in_transaction(
                 conn,
                 chat.conversation_id,
@@ -556,16 +574,22 @@ class DashboardStore:
         return record
 
     async def file(self, file_id: str, *, user_id: str, guild_id: str) -> DashboardFile | None:
-        async with self.db.conn.execute(
-            "SELECT * FROM dashboard_files WHERE id=? AND owner_user_id=? AND guild_id=?",
-            (file_id, user_id, guild_id),
-        ) as cur:
+        async with (
+            self.db.read_snapshot() as conn,
+            conn.execute(
+                "SELECT * FROM dashboard_files WHERE id=? AND owner_user_id=? AND guild_id=?",
+                (file_id, user_id, guild_id),
+            ) as cur,
+        ):
             row = await cur.fetchone()
         return DashboardFile(**dict(row)) if row else None
 
     async def files(self, chat: DashboardConversation) -> list[DashboardFile]:
-        async with self.db.conn.execute(
-            "SELECT * FROM dashboard_files WHERE dashboard_id=? ORDER BY created_at DESC LIMIT 200",
-            (chat.id,),
-        ) as cur:
+        async with (
+            self.db.read_snapshot() as conn,
+            conn.execute(
+                "SELECT * FROM dashboard_files WHERE dashboard_id=? ORDER BY created_at DESC LIMIT 200",
+                (chat.id,),
+            ) as cur,
+        ):
             return [DashboardFile(**dict(row)) for row in await cur.fetchall()]

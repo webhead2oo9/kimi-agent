@@ -370,9 +370,10 @@ npm run test:browser
 
 The build includes TypeScript checking. Frontend tests cover request retries and
 rendering; Playwright exercises saved chats, branches, task review, previews, and
-navigation at desktop and phone sizes. The browser fixture simulates the API and
-is excluded from the production build. Normal `npm run dev` requires a real
-Discord launch; Vite proxies `/api` and WebSockets to `127.0.0.1:8088`, where an
+navigation at desktop and phone sizes. Playwright bundles its API fixture into
+`.browser-test-site/` and serves it with the production CSP, including checks of
+skeleton widths without inline styles. The fixture is excluded from `dist/`.
+Normal `npm run dev` requires a real Discord launch; Vite proxies `/api` and WebSockets to `127.0.0.1:8088`, where an
 enabled development bot must be listening. If testing frontend changes through
 Vite, point the private HTTPS tunnel or proxy at Vite's listener rather than the
 bot's built frontend.

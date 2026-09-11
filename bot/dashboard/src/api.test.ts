@@ -104,15 +104,15 @@ it("ignores late data and pending retries after changing conversations", async (
   expect(status).not.toHaveBeenCalled();
 });
 
-it("reports the fourth-tab limit without expiring the session or retrying forever", async () => {
+it.each(["message", "close"])("makes the fourth-tab limit terminal and actionable via %s", async signal => {
   const api = new DashboardApi();
   vi.spyOn(api, "request").mockResolvedValue({});
   const status = vi.fn();
   const stop = api.subscribe("a", 0, vi.fn(), status);
-  Socket.all[0].onmessage?.({ data: JSON.stringify({ error: "Close another dashboard tab before reconnecting", code: "socket_limit" }) });
+  if (signal === "message") Socket.all[0].onmessage?.({ data: JSON.stringify({ error: "Close another dashboard tab before reconnecting", code: "socket_limit" }) });
   Socket.all[0].onclose?.({ code: 4008 });
   await vi.advanceTimersByTimeAsync(30000);
-  expect(status).toHaveBeenLastCalledWith(false, false, "Close another dashboard tab before reconnecting");
+  expect(status).toHaveBeenLastCalledWith(false, true, "Too many dashboard tabs. Close another tab, then close and reopen this Activity to continue.");
   expect(Socket.all).toHaveLength(1);
   stop();
 });

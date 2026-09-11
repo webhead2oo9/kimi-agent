@@ -32,7 +32,7 @@ async def test_global_sync_keeps_primary_entrypoint_in_same_replacement():
     assert [item["name"] for item in payload] == ["hello", "Launch"]
     assert payload[-1] == {
         "name": "Launch",
-        "description": "Open your private Kimi dashboard",
+        "description": "Open your private Kimi dashboard",  # default BOT_NAME
         "type": 4,
         "handler": 2,
         "integration_types": [0],

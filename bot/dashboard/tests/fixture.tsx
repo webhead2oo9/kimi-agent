@@ -7,6 +7,8 @@ import "../src/tokens.css";
 import "../src/styles.css";
 
 const now = Date.now() / 1000;
+// A 1x1 PNG stands in for the avatars the server inlines from Discord.
+const avatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const chats: Chat[] = [
   { id: "brief", guild_id: "2", channel_id: "3", parent_channel_id: "3", channel_name: "the-workshop", title: "A weekly community digest", created_at: now, updated_at: now },
   { id: "project", guild_id: "2", channel_id: "3", parent_channel_id: "3", channel_name: "the-workshop", title: "Ideas for the next game night", created_at: now, updated_at: now - 100 },
@@ -62,4 +64,4 @@ api.request = async <T,>(path: string, method = "GET", body?: unknown): Promise<
   return result as T;
 };
 api.subscribe = (chat, _after, callback, status) => { subscriptions.set(chat, callback); status(true); return () => { subscriptions.delete(chat); }; };
-createRoot(document.getElementById("root")!).render(<DashboardApp connection={{ api, displayName: "Charlie", openLink: async () => {}, session: { user_id: "1", guild_id: "2", channel_id: "3", csrf: "fixture", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "", max_upload_bytes: 25000000, max_message_chars: 32000 } }} />);
+createRoot(document.getElementById("root")!).render(<DashboardApp connection={{ api, displayName: "Charlie", botAvatar: avatar, openLink: async () => {}, session: { user_id: "1", guild_id: "2", channel_id: "3", csrf: "fixture", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "", max_upload_bytes: 25000000, max_message_chars: 32000, user_avatar: avatar } }} />);

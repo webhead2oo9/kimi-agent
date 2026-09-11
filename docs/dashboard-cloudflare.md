@@ -1,7 +1,7 @@
-# Develop the Discord dashboard through Cloudflare Tunnel
+# Run the Discord dashboard through Cloudflare Tunnel
 
-This guide adds an HTTPS endpoint to a Linux development bot using a
-dashboard-managed Cloudflare Tunnel and a domain in your Cloudflare account.
+This guide adds an HTTPS endpoint to a Linux development bot using a Cloudflare
+Tunnel created in the Cloudflare console and a domain in your Cloudflare account.
 The tunnel runs on the same host as Kimi and forwards to `127.0.0.1:8088`.
 Cloudflare handles public HTTPS; the bot's HTTP port stays on loopback.
 
@@ -9,8 +9,8 @@ Follow [development setup](development.md) first if a development bot does not
 already exist. Use a separate Discord application and separate instance data
 from production. If the host already runs your development bot, add the
 dashboard to that service instead of launching another process with its token.
-The [dashboard reference](dashboard.md) covers authentication, per-server
-access, and the full live test procedure.
+The [dashboard operator guide](dashboard.md) covers access policy, daily use,
+retention, and the full live test procedure.
 
 Commands below run as the unprivileged bot account unless marked with `sudo`.
 Replace example paths, service names, server IDs, and hostnames with your own.
@@ -32,7 +32,8 @@ free -h
 df -h /
 ```
 
-Python must be 3.14 or newer and the dashboard requires Node 22.18 or newer.
+Python must be 3.14 or newer. Use Node 22.18.0, as in CI, or a compatible newer
+version for the frontend build.
 Check that port 8088 is unused. Inspect the selected dotenv and runtime files
 locally without printing credentials into shared logs. `ENV_FILE` selects the
 dotenv file, defaulting to `.env` relative to the bot's working directory.
@@ -92,12 +93,14 @@ Enter the client secret through an editor on the host. It belongs to the same
 Discord application as `DISCORD_BOT_TOKEN`. Keep the file readable only by the
 bot account. While waiting for the secret, leave its value empty and use
 `DASHBOARD_ENABLED=false`. Do not restart with the feature enabled and a
-placeholder: startup requires both a client secret and a frontend build.
+placeholder: startup checks that a secret is present, but only a successful
+Discord sign-in proves that it is correct. A missing frontend build also prevents
+startup when the feature is enabled.
 
 For a limited test, fill `DASHBOARD_ALLOWED_USER_IDS` with the selected testers'
 comma-separated Discord user IDs in this private file before enabling the
-dashboard. Leave `DASHBOARD_MIN_TIER=member` to admit those testers regardless
-of their server trust tier. To later admit regulars and staff, clear the ID list
+dashboard. Leave `DASHBOARD_MIN_TIER=member` to allow any of the supported trust
+tiers for those testers. To later admit regulars and staff, clear the ID list
 and set `DASHBOARD_MIN_TIER=regular`. An empty list with `member` admits all
 otherwise eligible members. Both settings require a restart; neither overrides
 server activation, channel access, or user blocks. See
@@ -161,6 +164,10 @@ sudo apt-get install --yes cloudflared
 cloudflared --version
 ```
 
+The provided service uses `--token-file`, which requires cloudflared 2025.4.0
+or later; see Cloudflare's
+[run parameters](https://developers.cloudflare.com/tunnel/advanced/run-parameters/#token-file).
+
 Prepare an empty private token file only if it does not already exist:
 
 ```bash
@@ -183,13 +190,17 @@ Follow Cloudflare's
 3. If the setup wizard waits for a connector, start the service from step 6,
    then return to the wizard. On the tunnel's **Routes** tab, select
    **Add route > Published application**. Use a hostname such as
-   `kimi-dev.example.com`, no path restriction, service type **HTTP**, and
-   service URL **127.0.0.1:8088**.
+   `kimi-dev.example.com`, no path restriction, and service URL
+   **http://127.0.0.1:8088**. If the UI separates the protocol from the address,
+   choose **HTTP** and enter **127.0.0.1:8088**.
 
 Discord must be able to reach this hostname. An additional Cloudflare Access
 interactive login would sit in front of the Activity's existing Discord login
 and prevent the normal launch flow. Keep the route accessible to Discord's
-proxy. Do not add a cache-everything rule to `/api/*`; allow WebSocket upgrades.
+proxy. Preserve the application's `Cache-Control: no-store`, cookies, and
+`Origin` header, and allow WebSocket upgrades. Interactive Access logins and
+browser challenges on this route can prevent launch. Use the dashboard's own
+allowlist and trust-tier settings to restrict testers.
 
 The private tunnel token is separate from the Discord bot token and OAuth
 client secret. Keep all three out of frontend files and public documentation.
@@ -271,7 +282,7 @@ Check each layer separately:
 | Local and public `/api/bootstrap` | HTTP 200 after bot initialization |
 | `/api/session` without a login cookie | HTTP 401 after bot initialization |
 | Root page and built assets through `https://<application_id>.discordsays.com` | HTTP 200, confirming the Discord root mapping |
-| Global Discord command sync | Includes `/dashboard` and the type-4 `Launch` entry point |
+| Global Discord command sync | Includes `/dashboard` and the application's **Launch** entry point |
 
 The bootstrap API returns a login challenge and sets a cookie. Check its HTTP
 status without copying response bodies or cookie headers into public logs. The
@@ -298,8 +309,9 @@ publishing the instance identity or its data.
 
 | Symptom | Check |
 | --- | --- |
-| Bot fails when dashboard is enabled | Real OAuth client secret, built `dist`, and port availability |
+| Bot fails when dashboard is enabled | Nonempty OAuth client secret, built `dist`, and port availability; a wrong nonempty secret instead fails at sign-in |
 | Tunnel service is skipped | Token file exists and is nonempty |
+| Tunnel service reports an unknown `--token-file` flag | Upgrade cloudflared to 2025.4.0 or later |
 | Cloudflare returns 502 | Bot is listening at the route's HTTP host and port |
 | HTML loads but the API returns 503 | Bot initialization and Discord connection have finished |
 | Public requests return 403 before the dashboard loads | Cloudflare Security Events and any Access or challenge rules affecting the route |
@@ -308,7 +320,7 @@ publishing the instance identity or its data.
 | Dashboard is disabled in the server | Active server plus both global and per-server dashboard switches |
 | Activity opens with an access-denied message | User is on any configured `DASHBOARD_ALLOWED_USER_IDS` list and meets `DASHBOARD_MIN_TIER` |
 
-To remove public access, stop the tunnel:
+To remove public access through this tunnel, stop its service:
 
 ```bash
 systemctl --user disable --now kimi-dashboard-tunnel.service
@@ -318,3 +330,7 @@ To disable the dashboard itself, set `DASHBOARD_ENABLED=false` in
 `~/.config/kimi-agent/dashboard.env` and restart the bot. Retain the existing
 instance data and saved conversations. Remove the Cloudflare route separately
 if retiring the hostname.
+
+Stopping the tunnel does not cancel accepted work, and disabling the dashboard
+does not cancel approved schedules. Stop work and manage schedules separately
+when needed; see [updates and disabling access](dashboard.md#updates-and-disabling-access).

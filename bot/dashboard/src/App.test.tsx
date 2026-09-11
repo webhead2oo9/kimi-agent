@@ -5,7 +5,7 @@ import { ApiError, DashboardApi, type Connection } from "./api";
 import { conversationTimeline, mergeEvents, isResponding, latestWork, type ChatEvent } from "./types";
 import { Markdown } from "./Markdown";
 
-const session = { user_id: "1", guild_id: "2", channel_id: "3", csrf: "c", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "Please accept", max_upload_bytes: 10000, max_message_chars: 32000 };
+const session = { user_id: "1", guild_id: "2", channel_id: "3", csrf: "c", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "Please accept", max_upload_bytes: 10000, max_message_chars: 32000, user_avatar: null };
 const chat = { id: "a", guild_id: "2", channel_id: "3", parent_channel_id: "3", channel_name: "general", title: "A test conversation", created_at: 1, updated_at: 1 };
 const event = (id: number, kind: string, payload: ChatEvent["payload"]): ChatEvent => ({ id, kind, payload, created_at: 1 });
 
@@ -19,7 +19,7 @@ function connection() {
     return { files: [] };
   });
   vi.spyOn(api, "subscribe").mockImplementation((_chat, _after, callback, status) => { receive = callback; status(true); return () => {}; });
-  return { value: { api, session, displayName: "Charlie", openLink: vi.fn() } as Connection, request, receive: (events: ChatEvent[]) => receive(events) };
+  return { value: { api, session, displayName: "Charlie", botAvatar: null, openLink: vi.fn() } as Connection, request, receive: (events: ChatEvent[]) => receive(events) };
 }
 
 describe("saved chat", () => {
@@ -126,6 +126,7 @@ it("shows the connection state only while the socket is down", async () => {
   vi.spyOn(fixture.value.api, "subscribe").mockImplementation((_chat, _after, _callback, report) => { status = report; report(true); return () => {}; });
   render(<DashboardApp connection={fixture.value} />);
   await screen.findByRole("textbox", { name: "Message Kimi" });
+  await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
   expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   await act(async () => status(false, false));
   expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
@@ -354,4 +355,67 @@ it("shows persisted return feedback and explains deletion of copied conversation
   fireEvent.click(screen.getByRole("button", { name: "Options for A test conversation" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
   expect(screen.getByRole("dialog")).toHaveTextContent("Branches and responses already brought into other conversations remain.");
+});
+
+describe("identity and loading", () => {
+  const bot = "data:image/png;base64,Qk9U";
+  const me = "data:image/png;base64,VVNS";
+  const exchange = [event(1, "user_message", { text: "hi", turn_id: "t" }), event(2, "turn_finished", { text: "hello", status: "completed", turn_id: "t" })];
+
+  it("holds the launch screen until conversations load, then shows the shell once", async () => {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    let release: (value: unknown) => void = () => {};
+    fixture.request.mockImplementation(async (path, ...args) => path === "/chats" ? new Promise(resolve => { release = resolve; }) : base(path, ...args));
+    const { container } = render(<DashboardApp connection={{ ...fixture.value, botAvatar: bot }} />);
+    expect(container.querySelector(".launch-screen img")).toHaveAttribute("src", bot);
+    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    await act(async () => release({ chats: [chat] }));
+    expect(await screen.findByRole("textbox", { name: "Message Kimi" })).toBeVisible();
+    expect(container.querySelector(".launch-screen")).not.toBeInTheDocument();
+  });
+
+  it("shows placeholder rows while a conversation opens", async () => {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    let release: (value: unknown) => void = () => {};
+    fixture.request.mockImplementation(async (path, ...args) => path.endsWith("/events") ? new Promise(resolve => { release = resolve; }) : base(path, ...args));
+    render(<DashboardApp connection={fixture.value} />);
+    await screen.findByRole("textbox", { name: "Message Kimi" });
+    expect(await screen.findByRole("status", { busy: true })).toHaveTextContent("Opening conversation");
+    await act(async () => release({ events: exchange }));
+    expect(await screen.findByText("hello")).toBeVisible();
+    expect(screen.queryByText("Opening conversation")).not.toBeInTheDocument();
+  });
+
+  it("renders Discord avatars inline and falls back to initials", async () => {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    fixture.request.mockImplementation(async (path, ...args) => path.endsWith("/events") ? { events: exchange } : base(path, ...args));
+    const live = render(<DashboardApp connection={{ ...fixture.value, botAvatar: bot, session: { ...session, user_avatar: me } }} />);
+    await screen.findByText("hello");
+    expect([...live.container.querySelectorAll(".message-avatar img")].map(img => img.getAttribute("src"))).toEqual([me, bot]);
+    expect(live.container.querySelector(".brand img")).toHaveAttribute("src", bot);
+    live.unmount();
+    const fallback = render(<DashboardApp connection={fixture.value} />);
+    await screen.findByText("hello");
+    expect([...fallback.container.querySelectorAll(".message-avatar")].map(node => node.textContent)).toEqual(["C", "K"]);
+    expect(fallback.container.querySelector(".message-avatar img")).toBeNull();
+  });
+
+  it("labels failed, stopped, and interrupted responses distinctly", async () => {
+    const fixture = connection();
+    const base = fixture.request.getMockImplementation()!;
+    fixture.request.mockImplementation(async (path, ...args) => path.endsWith("/events") ? { events: [
+      event(1, "turn_finished", { text: "a", status: "failed", turn_id: "x" }),
+      event(2, "turn_finished", { text: "b", status: "cancelled", turn_id: "y" }),
+      event(3, "turn_finished", { text: "c", status: "interrupted", turn_id: "z" }),
+    ] } : base(path, ...args));
+    render(<DashboardApp connection={fixture.value} />);
+    expect(await screen.findByText("Response failed")).toHaveClass("danger");
+    expect(screen.getByText("Response stopped")).not.toHaveClass("danger");
+    expect(screen.getByText("Response interrupted")).toBeVisible();
+  });
 });

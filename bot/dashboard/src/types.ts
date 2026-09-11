@@ -10,6 +10,7 @@ export interface Session {
   consent_text: string;
   max_upload_bytes: number;
   max_message_chars: number;
+  user_avatar: string | null;
 }
 
 export interface Chat {

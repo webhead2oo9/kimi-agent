@@ -46,7 +46,7 @@ export class DashboardApi {
 
   private async decode<T>(response: Response): Promise<T> {
     const payload = await response.json().catch(() => null);
-    if (!response.ok) throw new ApiError(payload?.error || "Kimi is unavailable. Try again shortly.", response.status);
+    if (!response.ok) throw new ApiError(payload?.error || "The dashboard is unavailable. Try again shortly.", response.status);
     if (!payload) throw new ApiError("The server returned an unreadable response.", 502);
     return payload as T;
   }
@@ -108,19 +108,29 @@ export class DashboardApi {
   }
 }
 
+export interface Launch {
+  bot_name: string;
+  bot_avatar: string | null;
+}
+
 export interface Connection {
   api: DashboardApi;
   session: Session;
   displayName: string;
+  botAvatar: string | null;
   openLink: (url: string) => Promise<void>;
 }
 
-export async function connectActivity(): Promise<Connection> {
+// onLaunch fires as soon as the bot's identity is known, before Discord sign-in,
+// so the launch screen can show it while the handshake runs.
+export async function connectActivity(onLaunch?: (launch: Launch) => void): Promise<Connection> {
   if (!new URLSearchParams(location.search).has("frame_id")) {
-    throw new Error("Open the Kimi dashboard from the App Launcher or /dashboard inside a Discord server.");
+    throw new Error("Open the dashboard from the App Launcher or /dashboard inside a Discord server.");
   }
   const api = new DashboardApi();
-  const bootstrap = await api.request<{ client_id: string; state: string }>("/bootstrap");
+  const bootstrap = await api.request<{ client_id: string; state: string } & Launch>("/bootstrap");
+  document.title = bootstrap.bot_name;
+  onLaunch?.({ bot_name: bootstrap.bot_name, bot_avatar: bootstrap.bot_avatar });
   const { DiscordSDK } = await import("@discord/embedded-app-sdk");
   const sdk = new DiscordSDK(bootstrap.client_id, { disableConsoleLogOverride: true });
   await Promise.race([sdk.ready(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Discord did not connect. Close this Activity and open it again.")), 20000))]);
@@ -137,7 +147,7 @@ export async function connectActivity(): Promise<Connection> {
   const { access_token: _accessToken, ...session } = result;
   api.csrf = session.csrf;
   return {
-    api, session, displayName: identity.user.global_name || identity.user.username,
+    api, session, displayName: identity.user.global_name || identity.user.username, botAvatar: bootstrap.bot_avatar,
     openLink: async (url: string) => { await sdk.commands.openExternalLink({ url }); },
   };
 }

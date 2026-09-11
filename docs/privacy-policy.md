@@ -5,7 +5,7 @@ and files in your own workspace during a tool call. Any upload to another servic
 or additional storage by a module is covered by that module's privacy notice.
 The file API itself makes no network requests.
 
-_Last updated: 2026-09-10_
+_Last updated: 2026-09-11_
 
 > **Deployment template.** Before publishing this policy, check that the
 > services, retention periods, moderation features, and contact route it
@@ -22,9 +22,14 @@ technical version is [`privacy.md`](privacy.md).
 
 - Kimi starts an AI conversation when you call on it: a mention, a reply
   with the ping on, `hey Kimi` / `hi Kimi`, `Kimi help`, a message in one of its
-  auto-responding threads, the optional `/chat` command, or (when enabled for
-  your account) a direct message. Ordinary DMs to the bot are ignored by
-  default. Personal DMs join the same private conversation as `/chat`.
+  auto-responding threads, the optional `/chat` command, a chat in the optional
+  private dashboard Activity, or (when enabled for your account) a direct
+  message. Ordinary DMs to the bot are ignored by default. Personal DMs join the
+  same private conversation as `/chat`. Dashboard chats are private to you in
+  that server; other people in the Activity, including staff, cannot read them
+  through the dashboard. Normal operator access described below still applies.
+  Discord can show that you launched the Activity in a channel. Closing the
+  Activity does not stop a response that already started.
   Approved scheduled tasks can also run automatically at their configured times.
 - Your messages to Kimi go to the AI provider that powers its replies. Optional
   features (search, video, images, and so on) send only what that feature
@@ -198,7 +203,13 @@ the configured services and tools needed to answer you.
   removed after 7 days of inactivity. Guild-chat workspaces are kept separate
   per server, so files you make in one community aren't visible from another.
   The optional personal user app instead uses one workspace shared across that
-  user's `/chat` and enabled DM conversations.
+  user's `/chat` and enabled DM conversations. Dashboard chats use the same
+  per-server workspace as ordinary guild chat. Their private preview and download
+  copies expire separately under the seven-day file retention policy and can be
+  removed sooner to make room. Deleting a dashboard chat removes its copies and
+  transcript while keeping the shared workspace, approved schedules, and
+  separately saved memory. Branches and responses already copied into other
+  chats remain, along with their own attachment copies.
 - **Browser profile: 7 days.** If the interactive browser is enabled, the
   cookies, site storage, cache, history, and screenshots from tasks Kimi does
   for you live in a profile that is private to you. It is removed after 7 days

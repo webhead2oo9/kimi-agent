@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +17,11 @@ SESSION_COOKIE = "__Host-kimi-dashboard"
 CHALLENGE_COOKIE = "__Host-kimi-dashboard-login"
 _INSTANCE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _API = "https://discord.com/api/v10"
+_CDN = "https://cdn.discordapp.com"
+_AVATAR_HASH = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# Avatars are requested at 128px; anything past this is not one.
+AVATAR_MAX_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +33,29 @@ class DashboardSession:
     channel_id: str
     instance_id: str
     expires: float
+    # The member's Discord avatar as an inline PNG, so the page keeps its
+    # same-origin image policy. None when Discord served nothing usable.
+    avatar: str | None = None
+
+
+def avatar_url(user_id: str, identity: Mapping[str, Any]) -> str:
+    """The CDN image Discord itself shows for this user, as a static PNG."""
+    avatar = identity.get("avatar")
+    if isinstance(avatar, str) and _AVATAR_HASH.fullmatch(avatar):
+        return f"{_CDN}/avatars/{user_id}/{avatar}.png?size=128"
+    discriminator = str(identity.get("discriminator") or "0")
+    if discriminator in {"0", "0000"} or not discriminator.isdigit():
+        index = (int(user_id) >> 22) % 6
+    else:
+        index = int(discriminator) % 5
+    return f"{_CDN}/embed/avatars/{index}.png"
+
+
+def png_data_url(data: bytes) -> str | None:
+    """Inline verified PNG bytes; anything else is dropped rather than served."""
+    if not data.startswith(_PNG_SIGNATURE) or len(data) > AVATAR_MAX_BYTES:
+        return None
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def secure_cookie(response: web.StreamResponse, name: str, value: str, age: int) -> None:
@@ -111,6 +141,7 @@ class DashboardAuth:
         if not user_id.isdigit():
             raise web.HTTPUnauthorized(reason="Discord identity is unavailable")
         guild_id, channel_id = await self.verify_instance(instance_id, user_id)
+        avatar = await self.fetch_avatar(avatar_url(user_id, identity))
         if generation != self._generation:
             raise web.HTTPUnauthorized(reason="Sign-in expired. Reopen the dashboard")
         if len(self._sessions) >= self._maximum:
@@ -123,9 +154,21 @@ class DashboardAuth:
             channel_id,
             instance_id,
             time.monotonic() + self._seconds,
+            avatar,
         )
         self._sessions[session.token] = session
         return session, access_token
+
+    async def fetch_avatar(self, url: str) -> str | None:
+        """Read a CDN avatar as an inline PNG. A missing avatar never fails sign-in."""
+        try:
+            async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200 or response.content_type != "image/png":
+                    return None
+                data = await response.content.read(AVATAR_MAX_BYTES + 1)
+        except aiohttp.ClientError, TimeoutError:
+            return None
+        return png_data_url(data)
 
     async def verify_instance(self, instance_id: str, user_id: str) -> tuple[str, str]:
         if not _INSTANCE_ID.fullmatch(instance_id):

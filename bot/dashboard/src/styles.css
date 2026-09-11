@@ -40,9 +40,12 @@ svg { flex-shrink: 0; }
 .status-pill.warning { background: var(--warning-tint); color: var(--warning); }
 .mobile-only { display: none; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.kimi-mark { width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; display: grid; place-items: center; padding-bottom: 3px; background: var(--accent); color: var(--on-accent); font-family: Georgia, serif; font-size: 22px; font-style: italic; line-height: 1; }
-.kimi-mark.large { width: 44px; height: 44px; border-radius: 12px; padding-bottom: 4px; font-size: 34px; }
-.profile-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; display: grid; place-items: center; background: var(--user-avatar); color: var(--on-user-avatar); font-size: 12px; font-weight: 600; }
+.avatar { width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center; overflow: hidden; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 600; line-height: 1; user-select: none; }
+.avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.avatar.large { width: 44px; height: 44px; font-size: 18px; }
+.avatar.launch { width: 56px; height: 56px; font-size: 22px; }
+.user-message .avatar { background: var(--user-avatar); color: var(--on-user-avatar); }
+.breathing { animation: breathe 1.6s ease-in-out infinite; }
 
 /* Shell */
 .app-shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); width: 100%; height: 100dvh; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
@@ -96,6 +99,7 @@ svg { flex-shrink: 0; }
 .message-meta .pill { margin-left: auto; }
 .user-text { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-light); }
+.result-label.danger { color: var(--danger); }
 .message-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .message-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
 .message-actions .text-button { height: 28px; padding: 0 2px; font-size: 11px; color: var(--muted); }
@@ -130,6 +134,12 @@ svg { flex-shrink: 0; }
 .live-activity > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thinking-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--accent); animation: breathe 1.6s ease-in-out infinite; }
 .loading-history, .history-more { display: block; margin: 0 auto 20px; text-align: center; font-size: 12px; color: var(--muted); }
+.skeleton { display: flex; flex-direction: column; gap: 24px; max-width: 720px; margin: 0 auto 24px; animation: breathe 1.8s ease-in-out infinite; }
+.skeleton-row { display: flex; gap: 12px; }
+.skeleton-avatar { margin-top: 2px; background: var(--hover); }
+.skeleton-row > div { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; padding-top: 6px; }
+.skeleton-row i { display: block; height: 12px; border-radius: 6px; background: var(--surface); }
+.skeleton-row i:first-child { width: 64px; height: 10px; background: var(--hover); }
 
 /* Markdown */
 .markdown { font-size: 14px; line-height: 1.65; color: var(--text-soft); overflow-wrap: anywhere; }
@@ -168,7 +178,7 @@ th { background: var(--surface); font-weight: 600; }
 
 /* Empty states and notices */
 .empty-state, .conversation-start { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 560px; margin: clamp(24px, 14vh, 140px) auto 32px; text-align: center; }
-.empty-state .kimi-mark, .conversation-start .kimi-mark { margin-bottom: 8px; }
+.empty-state .avatar, .conversation-start .avatar { margin-bottom: 8px; }
 .empty-state h1, .conversation-start h2 { margin: 0; font-size: 28px; font-weight: 500; letter-spacing: -.5px; line-height: 1.2; color: #e9e5f1; }
 .empty-state > .primary { height: 40px; margin-top: 4px; padding: 0 18px; }
 .starter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; margin-top: 24px; text-align: left; }
@@ -267,7 +277,8 @@ details[open] > summary::after { transform: rotate(45deg); }
 .chat-dialog input { width: 100%; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .launch-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100dvh; padding: 32px; text-align: center; }
-.launch-screen .kimi-mark { margin-bottom: 8px; }
+.launch-screen .avatar { margin-bottom: 8px; }
+.launch-name { font-size: 15px; font-weight: 600; letter-spacing: -.2px; }
 .launch-screen h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.3px; }
 .launch-screen p { margin: 0; max-width: 440px; color: var(--muted); }
 .launch-screen button { margin-top: 8px; }
@@ -303,8 +314,7 @@ details[open] > summary::after { transform: rotate(45deg); }
   .message-scroll { padding: 20px 16px 8px; }
   .messages { gap: 22px; }
   .message { gap: 10px; }
-  .message-avatar { width: 26px; height: 26px; }
-  .message-avatar.kimi-mark { border-radius: 7px; font-size: 20px; }
+  .message-avatar, .skeleton-avatar { width: 26px; height: 26px; font-size: 11px; }
   .markdown, .user-text { font-size: 15px; }
   .live-activity { padding-left: 36px; }
   .composer-region { padding: 8px 12px 16px; }

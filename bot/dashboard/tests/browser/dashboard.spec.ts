@@ -5,6 +5,7 @@ test("saved chat, preview, task review and responsive navigation", async ({ page
   await expect(page.getByRole("textbox", { name: "Message Kimi" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work", exact: true })).toBeVisible();
   await expect(page.getByText("I've drafted a weekly digest", { exact: false })).toBeVisible();
+  await expect(page.locator(".message-avatar img").first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("conversation.png"), fullPage: true });
   await page.getByRole("button", { name: /Review “Friday/ }).click();

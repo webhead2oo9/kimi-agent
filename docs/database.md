@@ -2,10 +2,10 @@
 
 The bot keeps most of its working state in a single SQLite database at `data/bot.db`. You can change the path with `DATABASE_PATH`. That one file holds everything from conversation transcripts to provider circuit cooldowns, so treat it as production state and back it up.
 
-The current schema version is v12 and the minimum supported baseline is v7.
+The current schema version is v15 and the minimum supported baseline is v7.
 Fresh databases record the v7 baseline, v8 privacy-plugin callback migration,
-v9 paid-image reservation migration, and v10–v12 scheduled-task migrations;
-existing v7–v11 databases upgrade in place. Databases below v7 or above this
+v9 paid-image reservation migration, v10–v13 scheduled-task migrations, and
+v14–v15 dashboard migrations; existing v7–v14 databases upgrade in place. Databases below v7 or above this
 release's supported version are rejected. Optional application modules own their
 own schemas and versions.
 
@@ -252,14 +252,24 @@ Schema v12 records approval-thread sign-off messages and completed closures. It
 queues approved threads left open by the initial management-card release for
 reconciliation; existing task definitions and approvals remain unchanged.
 
+Schema v13 adds `scheduled_tasks.read_failure_streak` so repeated source-read
+failures are tracked for recovery without changing task definitions.
+
 ## Activity dashboard records
 
-Schema version 14 adds `messages.source_id` for non-Discord transcript sources and
-`coding_tasks.delivery_surface` for durable private delivery. Dashboard conversations
-reference ordinary owner-only conversations. `dashboard_turns` and
-`dashboard_actions` record idempotent foreground and task requests;
-`dashboard_events` is their replay journal. `dashboard_files` records protected
-file snapshots, and `dashboard_task_previews` links exact scheduled revisions to
-the chat that displayed them. Dashboard records cascade with the parent
-conversation. Startup marks unfinished foreground turns and task actions
-interrupted instead of replaying them. See [dashboard behavior](dashboard.md).
+Schema v14 adds `messages.source_id` for non-Discord transcript sources and
+`coding_tasks.delivery_surface` for durable private delivery. `dashboard_conversations`
+gives each saved chat an opaque id, title, and originating channel, and references
+one ordinary per-user private conversation that still holds the model-visible
+transcript. `dashboard_turns` and `dashboard_actions` record idempotent foreground
+and task requests; `dashboard_events` is their replay journal. `dashboard_files`
+records protected file snapshots, and `dashboard_task_previews` links exact
+scheduled revisions to the chat that displayed them.
+
+Schema v15 adds `dashboard_branches`, which records a branched chat's parent chat
+and the parent event it was copied through; deleting the parent keeps the branch
+and clears the link.
+
+Dashboard records cascade with the parent conversation. Startup marks unfinished
+foreground turns and task actions interrupted instead of replaying them. See
+[dashboard behavior](dashboard.md).

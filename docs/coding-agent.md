@@ -72,6 +72,8 @@ The status updates no more often than `CODING_STATUS_MIN_INTERVAL_SECONDS` (10 s
 
 When a reply is moved into a thread (explicitly or automatically), the status, acknowledgement, progress, and final report all follow. If Discord cannot create the thread, everything falls back to the original channel.
 
+A task started from the optional [dashboard](dashboard.md) records `dashboard` as its delivery surface in `coding_tasks.delivery_surface`, and its status and final report are delivered only to that private chat. That surface is persisted with the task, so recovery after a restart keeps it, and a private task never falls back to posting in a Discord channel: if private delivery is unavailable, delivery fails instead.
+
 ## What the worker can do
 
 The worker gets a smaller tool set than the foreground assistant:

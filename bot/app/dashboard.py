@@ -24,6 +24,7 @@ from app.dashboard_auth import (
     SESSION_COOKIE,
     DashboardAuth,
     DashboardSession,
+    png_data_url,
     secure_cookie,
 )
 from app.dashboard_files import DashboardFiles
@@ -43,6 +44,8 @@ from utils.asyncio import await_uncancellable
 
 log = logging.getLogger(__name__)
 _SESSION = web.RequestKey("dashboard_session", DashboardSession)
+_BOT_AVATAR_FRESH_SECONDS = 900.0
+_BOT_AVATAR_RETRY_SECONDS = 60.0
 
 
 async def object_body(request: web.Request) -> dict[str, Any]:
@@ -95,12 +98,15 @@ class Dashboard:
         self._sockets: dict[web.WebSocketResponse, DashboardSession] = {}
         self._requests = asyncio.Semaphore(8)
         self._rates: dict[str, deque[float]] = {}
+        self._bot_avatar: tuple[str | None, float] = (None, 0.0)
+        self._bot_avatar_lock = asyncio.Lock()
         if settings.dashboard_enabled:
             self._register_command()
 
     def _register_command(self) -> None:
         @app_commands.command(
-            name="dashboard", description="Open your private Kimi conversations and files"
+            name="dashboard",
+            description=f"Open your private {self.settings.bot_name} conversations and files",
         )
         @app_commands.guild_only()
         @app_commands.allowed_installs(guilds=True, users=False)
@@ -216,7 +222,10 @@ class Dashboard:
             if request.path.startswith("/api/"):
                 if not self.ready():
                     raise web.HTTPServiceUnavailable(
-                        reason="Kimi is starting up or reconnecting. Try again shortly"
+                        reason=(
+                            f"{self.settings.bot_name} is starting up or reconnecting. "
+                            "Try again shortly"
+                        )
                     )
                 if self.auth is None:
                     raise web.HTTPServiceUnavailable(reason="The dashboard is disabled")
@@ -292,6 +301,7 @@ class Dashboard:
 
     async def bootstrap(self, request: web.Request) -> web.Response:
         assert self.auth is not None
+        bot_avatar = await self.bot_avatar()
         response = web.json_response({})
         state = self.auth.challenge(response)
         response.text = json.dumps(
@@ -299,9 +309,34 @@ class Dashboard:
                 "client_id": self.auth.application_id,
                 "state": state,
                 "bot_name": self.settings.bot_name,
+                "bot_avatar": bot_avatar,
             }
         )
         return response
+
+    async def bot_avatar(self) -> str | None:
+        """The bot's Discord avatar as an inline PNG, re-read a few times an hour."""
+        async with self._bot_avatar_lock:
+            value, fresh_until = self._bot_avatar
+            now = time.monotonic()
+            if now < fresh_until:
+                return value
+            value = await self._read_bot_avatar()
+            ttl = _BOT_AVATAR_FRESH_SECONDS if value else _BOT_AVATAR_RETRY_SECONDS
+            self._bot_avatar = (value, now + ttl)
+            return value
+
+    async def _read_bot_avatar(self) -> str | None:
+        user = getattr(self.bot, "user", None)
+        if user is None:
+            return None
+        try:
+            async with asyncio.timeout(5):
+                data = await user.display_avatar.replace(size=128, format="png").read()
+        except discord.DiscordException, aiohttp.ClientError, ValueError, OSError, TimeoutError:
+            log.debug("Could not read the bot avatar", exc_info=True)
+            return None
+        return png_data_url(data)
 
     async def login(self, request: web.Request) -> web.Response:
         assert self.auth is not None
@@ -346,6 +381,7 @@ class Dashboard:
             "consent_text": self.settings.privacy_consent_text,
             "max_upload_bytes": self.files.upload_limit,
             "max_message_chars": self.settings.dashboard_max_message_chars,
+            "user_avatar": session.avatar,
         }
 
     async def session(self, request: web.Request) -> web.Response:
@@ -707,7 +743,7 @@ class Dashboard:
 
     async def close(self) -> None:
         for socket in list(self._sockets):
-            await socket.close(code=1001, message=b"Kimi is restarting")
+            await socket.close(code=1001, message=b"The dashboard is restarting")
         if self._runner:
             await self._runner.cleanup()
             self._runner = None

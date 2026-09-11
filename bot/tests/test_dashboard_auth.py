@@ -4,11 +4,21 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from app.dashboard_auth import CHALLENGE_COOKIE, SESSION_COOKIE, DashboardAuth, secure_cookie
+from app.dashboard_auth import (
+    AVATAR_MAX_BYTES,
+    CHALLENGE_COOKIE,
+    SESSION_COOKIE,
+    DashboardAuth,
+    avatar_url,
+    secure_cookie,
+)
+
+PNG = b"\x89PNG\r\n\x1a\n" + bytes(16)
 
 
 def auth():
@@ -63,6 +73,7 @@ def instance(**changes):
 async def test_oauth_identity_and_instance_are_server_authority():
     service = auth()
     service._json = AsyncMock(side_effect=[{"access_token": "oauth"}, {"id": "1"}, instance()])
+    service.fetch_avatar = AsyncMock(return_value=None)
     state, cookie = challenge(service)
     session, token = await service.login(
         request(cookie=cookie), code="code", state=state, instance_id="instance-1"
@@ -119,6 +130,7 @@ async def test_privacy_deletion_revokes_login_in_flight():
 
     service._json = AsyncMock(side_effect=[{"access_token": "oauth"}, {"id": "1"}])
     service.verify_instance = verify
+    service.fetch_avatar = AsyncMock(return_value=None)
     state, cookie = challenge(service)
     task = asyncio.create_task(
         service.login(request(cookie=cookie), code="code", state=state, instance_id="instance-1")
@@ -144,3 +156,65 @@ def test_cookie_flags_origin_and_challenge_limits():
         challenge(service)
     with pytest.raises(web.HTTPTooManyRequests):
         challenge(service)
+
+
+@pytest.mark.asyncio
+async def test_login_inlines_the_avatar_discord_displays_for_the_user():
+    service = auth()
+    service._json = AsyncMock(
+        side_effect=[{"access_token": "oauth"}, {"id": "1", "avatar": "abc_123"}, instance()]
+    )
+    service.fetch_avatar = AsyncMock(return_value="data:image/png;base64,AA==")
+    state, cookie = challenge(service)
+    session, _token = await service.login(
+        request(cookie=cookie), code="code", state=state, instance_id="instance-1"
+    )
+    service.fetch_avatar.assert_awaited_once_with(
+        "https://cdn.discordapp.com/avatars/1/abc_123.png?size=128"
+    )
+    assert session.avatar == "data:image/png;base64,AA=="
+
+
+@pytest.mark.parametrize(
+    ("identity", "expected"),
+    [
+        ({"avatar": "a_deadbeef"}, "avatars/4194304/a_deadbeef.png?size=128"),
+        ({"avatar": None}, "embed/avatars/1.png"),
+        ({"avatar": "../not-a-hash"}, "embed/avatars/1.png"),
+        ({"avatar": None, "discriminator": "0007"}, "embed/avatars/2.png"),
+    ],
+)
+def test_avatar_url_follows_discord_display_rules(identity, expected):
+    assert avatar_url("4194304", identity) == f"https://cdn.discordapp.com/{expected}"
+
+
+def cdn(status=200, content_type="image/png", body=PNG, error=None):
+    response = MagicMock()
+    response.__aenter__ = AsyncMock(
+        return_value=SimpleNamespace(
+            status=status,
+            content_type=content_type,
+            content=SimpleNamespace(read=AsyncMock(return_value=body[: AVATAR_MAX_BYTES + 1])),
+        )
+    )
+    response.__aexit__ = AsyncMock(return_value=False)
+    return SimpleNamespace(get=MagicMock(return_value=response, side_effect=error))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("http", "expected"),
+    [
+        (cdn(), "data:image/png;base64," + __import__("base64").b64encode(PNG).decode()),
+        (cdn(body=b"GIF89a" + bytes(16)), None),
+        (cdn(content_type="text/html"), None),
+        (cdn(status=404), None),
+        (cdn(body=PNG + bytes(AVATAR_MAX_BYTES)), None),
+        (cdn(error=aiohttp.ClientConnectionError()), None),
+        (cdn(error=TimeoutError()), None),
+    ],
+)
+async def test_fetch_avatar_only_inlines_a_verified_png(http, expected):
+    service = auth()
+    service._http = http
+    assert await service.fetch_avatar("https://cdn.discordapp.com/avatars/1/x.png") == expected

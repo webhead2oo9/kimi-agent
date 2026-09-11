@@ -142,7 +142,7 @@ class KimiCommandTree(app_commands.CommandTree):
         payload.append(
             {
                 "name": "Launch",
-                "description": "Open your private Kimi dashboard",
+                "description": f"Open your private {application.settings.bot_name} dashboard",
                 "type": 4,
                 "handler": 2,
                 "integration_types": [0],

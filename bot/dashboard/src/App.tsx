@@ -4,6 +4,8 @@ import type { Connection } from "./api";
 import { ApiError, retryRead } from "./api";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
+import { Avatar, initialOf } from "./Avatar";
+import { LaunchScreen } from "./LaunchScreen";
 import { WorkPanel } from "./WorkPanel";
 import { conversationTimeline, isResponding, latestWork, mergeEvents, type Chat, type ChatEvent, type FileRecord, type Session } from "./types";
 
@@ -23,7 +25,7 @@ export function FileButton({ file, onSelect }: { file: FileRecord; onSelect: (fi
 }
 
 export function DashboardApp({ connection }: { connection: Connection }) {
-  const { api, openLink, displayName } = connection;
+  const { api, openLink, displayName, botAvatar } = connection;
   const [session, setSession] = useState<Session>(connection.session);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -67,7 +69,8 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const draft = activeId ? drafts[activeId] || emptyDraft : emptyDraft;
   const busy = isResponding(events) || optimisticBusy === activeId && activeId !== null;
   const rememberKey = `kimi-dashboard:last:${session.user_id}:${session.guild_id}`;
-  const initial = displayName.trim()[0]?.toUpperCase() || "Y";
+  const initial = initialOf(displayName) || "Y";
+  const botInitial = initialOf(session.bot_name);
 
   const report = useCallback((error: unknown) => {
     if (error instanceof ApiError && error.status === 401) {
@@ -280,16 +283,16 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const work = latestWork(events);
   const visibleChats = chats.filter(chat => chat.title.toLowerCase().includes(search.toLowerCase()));
 
+  if (loading) return <LaunchScreen state={openingRetry ? "retrying" : "connecting"} name={session.bot_name} avatar={botAvatar} />;
   return <div className={`app-shell ${workOpen ? "with-work" : ""}`}>
     {sidebarOpen && <button className="drawer-scrim" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />}
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-label="Saved conversations">
-      <div className="brand"><div className="kimi-mark">k</div><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
-      <button className="new-chat" onClick={() => void newChat()} disabled={expired || loading}><Plus size={16} /> New chat</button>
+      <div className="brand"><Avatar src={botAvatar} fallback={botInitial} /><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
+      <button className="new-chat" onClick={() => void newChat()} disabled={expired}><Plus size={16} /> New chat</button>
       <label className="chat-search"><Search size={15} /><input aria-label="Search conversations" placeholder="Find a conversation" value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="sidebar-label">Recent</div>
       <nav className="chat-list" aria-label="Conversations">
-        {loading && <p className="muted small-text">Loading conversations…</p>}
-        {!loading && !visibleChats.length && <p className="muted small-text">{search ? "No matching conversations." : "A fresh start is one message away."}</p>}
+        {!visibleChats.length && <p className="muted small-text">{search ? "No matching conversations." : "A fresh start is one message away."}</p>}
         {visibleChats.map(chat => <div className={`chat-row ${chat.id === activeId ? "selected" : ""}`} key={chat.id}>
           <button className="chat-choice" aria-label={chat.title} onClick={() => choose(chat.id)} aria-current={chat.id === activeId ? "page" : undefined}>{chat.parent_title && <GitBranch size={14} aria-hidden="true" />}<span>{chat.title}</span></button>
           <button className="icon-button chat-menu" aria-label={`Options for ${chat.title}`} aria-expanded={menu === chat.id} onClick={() => setMenu(menu === chat.id ? null : chat.id)}><MoreHorizontal size={16} /></button>
@@ -310,10 +313,9 @@ export function DashboardApp({ connection }: { connection: Connection }) {
       {error && <div className="notice error" role="alert"><span>{error}</span>{expired ? <button onClick={() => location.reload()}>Reconnect</button> : <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button>}</div>}
       {session.consent_required && !expired && <div className="consent"><LockKeyhole size={24} /><h2>{session.consent_title}</h2><p>{session.consent_text}</p><button className="primary" onClick={() => void api.request("/consent", "POST", { accept: true }).then(() => setSession({ ...session, consent_required: false })).catch(report)}>Accept and continue</button></div>}
       <div className="message-scroll" ref={history} onScroll={() => { const node = history.current; if (node) followEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
-        {loading && <p className="loading-history" role="status">{openingRetry ? "Connection unavailable. Retrying…" : "Opening your conversations…"}</p>}
-        {!activeId && !loading && !expired && <div className="empty-state"><div className="kimi-mark large">k</div><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
-        {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><div className="kimi-mark large">k</div><h2>What are we working on?</h2></div>}
-        {historyLoading && <p className="loading-history" role="status">Opening conversation…</p>}
+        {!activeId && !expired && <div className="empty-state"><Avatar className="large" src={botAvatar} fallback={botInitial} /><h1>What are we working on?</h1><button className="primary" onClick={() => void newChat()}><Plus size={16} /> New chat</button><div className="starter-grid">{["Help me explore an idea", "Make something with code", "Work through a document"].map(text => <button key={text} onClick={() => void newChat(text)}>{text}<ArrowUp size={15} /></button>)}</div></div>}
+        {activeId && !messages.length && !historyLoading && !session.consent_required && !expired && <div className="conversation-start"><Avatar className="large" src={botAvatar} fallback={botInitial} /><h2>What are we working on?</h2></div>}
+        {historyLoading && <HistorySkeleton />}
         {jumpLoading && <p className="loading-history" role="status">Finding the branch starting message…</p>}
         {moreHistory && <button className="history-more text-button" disabled={jumpLoading} onClick={() => void older()}>Load earlier messages</button>}
         <div className="messages">
@@ -328,10 +330,10 @@ export function DashboardApp({ connection }: { connection: Connection }) {
             return <Fragment key={event.id}>
               {event.kind === "history_message" && messages[index - 1]?.kind !== "history_message" && <div className="branch-divider">Copied conversation history</div>}
               <article id={`message-${event.id}`} tabIndex={-1} className={`message ${user ? "user-message" : "assistant-message"}${focusedMessage?.chatId === activeId && focusedMessage.eventId === event.id ? " highlighted-message" : ""}`}>
-              {user ? <div className="message-avatar profile-avatar">{initial}</div> : <div className="message-avatar kimi-mark">k</div>}
+              {user ? <Avatar className="message-avatar" src={session.user_avatar} fallback={initial} /> : <Avatar className="message-avatar" src={botAvatar} fallback={botInitial} />}
               <div className="message-body"><div className="message-meta"><strong>{user ? "You" : session.bot_name}</strong><time dateTime={new Date(event.created_at * 1000).toISOString()}>{new Date(event.created_at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>{event.kind === "task_action_result" && <span className="pill">Task review</span>}</div>
                 {event.kind === "coding_task" && <span className="result-label">Coding task · {(p.status || "finished").replaceAll("_", " ")}</span>}
-                {event.kind === "turn_finished" && p.status !== "completed" && <span className="result-label">{p.status === "cancelled" ? "Response stopped" : "Response interrupted"}</span>}
+                {event.kind === "turn_finished" && p.status !== "completed" && <span className={p.status === "failed" ? "result-label danger" : "result-label"}>{p.status === "cancelled" ? "Response stopped" : p.status === "failed" ? "Response failed" : "Response interrupted"}</span>}
                 {p.source_chat_id && <div className="returned-result"><CornerUpLeft size={14} /><span>Brought back from </span><button className="text-button" onClick={() => void openChat(p.source_chat_id!, p.source_event_id)}>{p.source_title}</button></div>}
                 {p.text && (user && event.kind !== "branch_result" && !p.render_markdown ? <p className="user-text">{p.text}</p> : <Markdown text={p.text} openLink={openLink} />)}
                 {p.posts?.map((post, index) => <details key={index} className="sample-post"><summary>Sample for channel {post.channel_id}</summary><Markdown text={post.content} openLink={openLink} /></details>)}
@@ -366,6 +368,16 @@ export function DashboardApp({ connection }: { connection: Connection }) {
       if (dialog.kind === "delete" && activeId === dialog.chat.id) setActiveId(result[0]?.id || null);
       setDialog(null);
     }} />}
+  </div>;
+}
+
+// Placeholder rows hold the conversation's shape while its history arrives.
+function HistorySkeleton() {
+  return <div className="skeleton" role="status" aria-busy="true">
+    <span className="visually-hidden">Opening conversation</span>
+    {[["58%"], ["92%", "84%", "40%"], ["34%"], ["76%", "88%"]].map((widths, row) => <div className="skeleton-row" key={row}>
+      <span className="avatar skeleton-avatar" /><div><i /> {widths.map((width, line) => <i key={line} style={{ width }} />)}</div>
+    </div>)}
   </div>;
 }
 

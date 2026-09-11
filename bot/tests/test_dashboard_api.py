@@ -287,3 +287,28 @@ async def test_chat_deleted_while_upload_body_arrives_cannot_recreate_files(api)
     with pytest.raises(web.HTTPNotFound):
         await upload
     service.files.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_carries_bot_identity_and_caches_the_avatar(api):
+    client, service = api
+    launch = await (await client.get("/api/bootstrap")).json()
+    assert (launch["bot_name"], launch["bot_avatar"]) == (service.settings.bot_name, None)
+    reads = 0
+
+    class Asset:
+        def replace(self, **_changes):
+            return self
+
+        async def read(self):
+            nonlocal reads
+            reads += 1
+            return b"\x89PNG\r\n\x1a\n" + bytes(16)
+
+    service.bot = SimpleNamespace(user=SimpleNamespace(display_avatar=Asset()))
+    service._bot_avatar = (None, 0.0)
+    for _ in range(2):
+        launch = await (await client.get("/api/bootstrap")).json()
+        assert launch["bot_avatar"].startswith("data:image/png;base64,")
+    assert reads == 1
+    assert (await (await client.get("/api/session")).json())["user_avatar"] is None

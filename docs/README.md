@@ -18,8 +18,8 @@ The rest is reference material.
   fragment surface.
 - [Discord user-app personal chat](user-app.md): optional `/chat` installation,
   access tiers, scopes, prompt override, and reset behavior.
-- [Private Discord dashboard](dashboard.md): optional Activity, saved chats, files,
-  task review, authentication, and deployment.
+- [Private Discord dashboard](dashboard.md): operator setup, member access,
+  saved chats, files, task review, retention, and troubleshooting.
 - [Dashboard through Cloudflare Tunnel](dashboard-cloudflare.md): reproducible
   development-host setup, connector service, and Discord/Cloudflare portal steps.
 - [Development](development.md): running isolated local and test instances.

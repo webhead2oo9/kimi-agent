@@ -356,10 +356,41 @@ The module scheduler runs `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (default 4) job
 
 ## Discord dashboard frontend
 
-The optional Activity frontend lives in `bot/dashboard`. Its locked dependencies
-require Node 22.18 or newer. From that directory run `npm ci`, `npm test`, and
-`npm run build`. Browser checks use `npx playwright install chromium` followed by
-`npm run test:browser`. The test fixture simulates the API and is excluded from
-the production build; normal `npm run dev` still requires a real Discord launch.
-See [dashboard setup and live smoke testing](dashboard.md) for the separate test
-application, HTTPS mapping, and instance settings.
+The optional Activity frontend lives in `bot/dashboard`. CI uses Node 22.18.0.
+From that directory, run:
+
+```bash
+npm ci
+npm audit
+npm run build
+npm test
+npx playwright install --with-deps chromium
+npm run test:browser
+```
+
+The build includes TypeScript checking. Frontend tests cover request retries and
+rendering; Playwright exercises saved chats, branches, task review, previews, and
+navigation at desktop and phone sizes. The browser fixture simulates the API and
+is excluded from the production build. Normal `npm run dev` requires a real
+Discord launch; Vite proxies `/api` and WebSockets to `127.0.0.1:8088`, where an
+enabled development bot must be listening. If testing frontend changes through
+Vite, point the private HTTPS tunnel or proxy at Vite's listener rather than the
+bot's built frontend.
+
+From `bot/`, run the focused backend checks with:
+
+```bash
+.venv/bin/python -m pytest tests/test_dashboard_*.py -q
+```
+
+These cover authentication, ownership and channel access, replay and revocation,
+file isolation, turn orchestration, cancellation, coding delivery, and scheduled
+approvals. They do not validate Discord's real SDK, proxy cookies, or mobile
+downloads. Follow the [operator guide's live checks](dashboard.md#verification-and-current-limits)
+with an isolated application before rollout.
+
+`KimiCommandTree.sync` in `app/runtime.py` includes the Discord-handled type-4
+**Launch** entry point in the same global command replacement as `/dashboard`.
+The installed discord.py version needs this compatibility code; guild-only sync
+does not update it. When upgrading discord.py, check `test_dashboard_commands.py`
+and Discord's [application-command reference](https://docs.discord.com/developers/interactions/application-commands).

@@ -62,6 +62,22 @@ async def test_access_fetches_member_channel_and_requires_strict_guild_opt_in(tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ids",
+    [
+        {"user_id": "²", "guild_id": "2", "channel_id": "3"},
+        {"user_id": "1", "guild_id": "²", "channel_id": "3"},
+        {"user_id": "1", "guild_id": "2", "channel_id": "²"},
+    ],
+)
+async def test_non_ascii_request_ids_fail_closed(tmp_path, ids):
+    access, _, _, _, _ = setup(tmp_path)
+
+    with pytest.raises(web.HTTPForbidden, match="disabled in this server"):
+        await access.resolve(**ids)
+
+
+@pytest.mark.asyncio
 async def test_thread_access_uses_fresh_parent_overwrites_and_membership(tmp_path):
     access, guild, channel, _, permissions = setup(tmp_path, thread=True)
     await access.resolve(user_id="1", guild_id="2", channel_id="3", continuing=True)
@@ -126,6 +142,57 @@ async def test_listed_user_remains_subject_to_channel_permissions_and_blocks(tmp
     permissions.view_channel = True
     access.user_blocked.return_value = True
     with pytest.raises(web.HTTPForbidden):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
+async def test_guild_dashboard_role_admits_an_unlisted_member_without_changing_trust(tmp_path):
+    access, guild, _, _, _ = setup(tmp_path)
+    access.settings.dashboard_allowed_user_ids = "9"
+    guild.fetch_member.return_value.roles = [SimpleNamespace(id=77)]
+    (tmp_path / "servers" / "2.md").write_text(
+        "---\ndashboard:\n  enabled: true\n  allowed_role_ids: [77]\n---\n"
+    )
+
+    ctx = await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+    assert ctx.tier == TrustTier.MEMBER
+
+
+@pytest.mark.asyncio
+async def test_guild_dashboard_role_allowlist_denies_other_roles_even_at_staff_tier(tmp_path):
+    access, guild, _, _, _ = setup(tmp_path)
+    access.trust.resolve = lambda *_: TrustTier.STAFF
+    guild.fetch_member.return_value.roles = [SimpleNamespace(id=88)]
+    (tmp_path / "servers" / "2.md").write_text(
+        "---\ndashboard:\n  enabled: true\n  allowed_role_ids: [77]\n---\n"
+    )
+
+    with pytest.raises(web.HTTPForbidden, match="limited to invited users or roles"):
+        await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
+async def test_global_dashboard_invitee_bypasses_guild_role_allowlist(tmp_path):
+    access, guild, _, _, _ = setup(tmp_path)
+    access.settings.dashboard_allowed_user_ids = "1"
+    guild.fetch_member.return_value.roles = []
+    (tmp_path / "servers" / "2.md").write_text(
+        "---\ndashboard:\n  enabled: true\n  allowed_role_ids: [77]\n---\n"
+    )
+
+    await access.resolve(user_id="1", guild_id="2", channel_id="3")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("roles", ["77", [True], ["staff"], ["²"], [77, 77], list(range(101))])
+async def test_invalid_guild_dashboard_role_allowlist_fails_closed(tmp_path, roles):
+    access, _, _, _, _ = setup(tmp_path)
+    (tmp_path / "servers" / "2.md").write_text(
+        "---\ndashboard:\n  enabled: true\n  allowed_role_ids: " + repr(roles) + "\n---\n"
+    )
+
+    with pytest.raises(web.HTTPForbidden, match="disabled in this server"):
         await access.resolve(user_id="1", guild_id="2", channel_id="3")
 
 

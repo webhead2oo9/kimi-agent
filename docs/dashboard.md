@@ -84,6 +84,8 @@ secret in frontend files or URL mappings.
    ```yaml
    dashboard:
      enabled: true
+     # Optional hot-read guild-specific launch roles:
+     allowed_role_ids: [123456789012345678]
    ```
 
    Activate the server through validated `bot_active: true` frontmatter or the
@@ -105,8 +107,11 @@ secret in frontend files or URL mappings.
 
 Set `DASHBOARD_ALLOWED_USER_IDS` to a comma-separated list of Discord user IDs
 to limit testing to selected people. Keep real IDs in the private environment
-file. `DASHBOARD_MIN_TIER` sets a minimum server trust tier: `member`, `regular`,
-or `staff`.
+file. To admit guild-specific Discord roles without changing their trust tier,
+set `dashboard.allowed_role_ids` in that guild's server fragment. This list is
+hot-read on every access check, accepts at most 100 unique numeric role IDs, and
+fails closed when malformed. `DASHBOARD_MIN_TIER` independently sets a minimum
+server trust tier: `member`, `regular`, or `staff`.
 
 | Audience | `DASHBOARD_ALLOWED_USER_IDS` | `DASHBOARD_MIN_TIER` |
 | --- | --- | --- |
@@ -115,12 +120,14 @@ or `staff`.
 | Staff | Empty | `staff` |
 | All otherwise eligible members | Empty | `member` |
 
-When both restrictions are configured, users must satisfy both. The allowlist
-does not grant a trust tier, bypass channel permissions, or override a user
-block. Staff and the bot owner do not bypass it. Defaults preserve access for
-otherwise eligible members in enabled servers. These settings are
-environment-only and require a bot restart, which clears existing dashboard
-sessions.
+When a guild role allowlist is present, a member must be in that guild's role
+list or the global invited-user list. The resulting member must still satisfy
+the minimum tier. Neither allowlist grants a trust tier, bypasses channel
+permissions, or overrides a user block. Staff and the bot owner do not bypass
+configured admission lists. With no user or guild-role list, defaults preserve
+access for otherwise eligible members in enabled servers. Environment settings
+require a bot restart, which clears existing dashboard sessions; server-fragment
+role edits do not.
 
 The Activity launcher may remain visible. Unapproved users who open it receive
 an access-denied message before a dashboard session is delivered. `/dashboard`

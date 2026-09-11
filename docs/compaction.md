@@ -1,6 +1,6 @@
 # ReAct-loop context compaction
 
-When a tool-heavy turn runs long, the next request to the model can get close to the model's context window. Instead of failing or silently dropping history, Kimi runs an automatic compaction step that summarizes the oldest tool iterations into a single progress note. The turn keeps moving, and the important facts, file paths, and decisions stay in view.
+When a tool-heavy turn runs long, the next request to the model can get close to the model's context window. Instead of failing or silently dropping history, Bram runs an automatic compaction step that summarizes the oldest tool iterations into a single progress note. The turn keeps moving, and the important facts, file paths, and decisions stay in view.
 
 Compaction only changes what is sent to the model for the current turn. The saved channel transcript is never touched. The same turn can compact more than once; each new summary folds the previous note into itself, so notes roll forward rather than piling up.
 
@@ -16,7 +16,7 @@ Compaction fires when the estimated size of the next request reaches `COMPACTION
 
 - Raise the trigger if you want fewer compaction calls and are confident your models can handle larger windows.
 - Lower it if you see frequent hard truncations or if the summarizer is cheap and reliable.
-- The trigger must leave enough room for `REACT_MAX_TOKENS` of new output. At startup Kimi checks that every reachable chat model's `context_window` satisfies `COMPACTION_TRIGGER_TOKENS + REACT_MAX_TOKENS`.
+- The trigger must leave enough room for `REACT_MAX_TOKENS` of new output. At startup Bram checks that every reachable chat model's `context_window` satisfies `COMPACTION_TRIGGER_TOKENS + REACT_MAX_TOKENS`.
 
 If the provider did not report usage figures, the whole request is estimated the same pessimistic way.
 
@@ -30,7 +30,7 @@ The prompt asks for a thorough, structured handoff: facts and who said them, fil
 
 - Choose a model that is cheap enough to call frequently but capable enough to produce accurate, attributed summaries. A weak summarizer can lose important context.
 - The summarizer only sees the material being compacted. It never receives the live user request or the recent tail.
-- If the summarizer fails, Kimi falls back to tool-body elision and then hard truncation (see below).
+- If the summarizer fails, Bram falls back to tool-body elision and then hard truncation (see below).
 
 ## What survives compaction
 
@@ -133,7 +133,7 @@ Hard truncation only targets tool bodies. It never touches an existing compactio
 Two further protections apply during the turn:
 
 - A per-iteration tool-output budget (`COMPACTION_MAX_ITERATION_TOOL_OUTPUT_TOKENS`, 48,000 by default). Tool results in one iteration are kept whole until the budget runs out; the result that crosses the limit is cut to a head and tail slice, and once too little budget remains to be worth slicing, the remaining results collapse to a one-line stub naming the tool and how much was dropped.
-- If the provider rejects a request as too large despite the estimate, Kimi recognises the error, runs one emergency compaction, and retries once.
+- If the provider rejects a request as too large despite the estimate, Bram recognises the error, runs one emergency compaction, and retries once.
 
 ## Observing and debugging compaction
 
@@ -158,4 +158,4 @@ When adjusting compaction behavior, consider these in order:
 3. Tune the recent-tail budget (`COMPACTION_KEEP_RECENT_TOKENS` / `COMPACTION_KEEP_RECENT_ITERATIONS`) if you find the model is losing too much fresh context.
 4. Only adjust the per-iteration tool-output budget or max note size if you have specific evidence that the defaults are causing problems.
 
-Compaction is always on, for every chat provider. It is one of the things that lets Kimi handle long, tool-heavy turns without collapsing under its own history.
+Compaction is always on, for every chat provider. It is one of the things that lets Bram handle long, tool-heavy turns without collapsing under its own history.

@@ -73,7 +73,7 @@ def test_load_models_parses_baseline_candidate_judge(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(
         "baseline:\n"
-        "  label: kimi\n"
+        "  label: bram\n"
         "  provider_name: openai_compat\n"
         "  model: kimi-k2.6\n"
         "  base_url: http://x\n"

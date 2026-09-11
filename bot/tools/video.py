@@ -67,7 +67,7 @@ _CONFIG_SPEC = (
         default=4,
         minimum=1,
         maximum=8,
-        help="Maximum billable video specialist calls in one outer Kimi turn.",
+        help="Maximum billable video specialist calls in one outer Bram turn.",
     ),
     ToolConfigField(
         field="max_session_interactions",

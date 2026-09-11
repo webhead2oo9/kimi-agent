@@ -1,4 +1,4 @@
-# Hindsight memory backend for Kimi.
+# Hindsight memory backend for Bram.
 #
 # Deploy: copy this dir to the Docker host, copy `.env.example` to `.env`, fill
 # the private provider route, then `docker compose up -d`. See README.md.
@@ -14,7 +14,7 @@ services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:latest
     pull_policy: missing
-    container_name: kimi-hindsight
+    container_name: bram-hindsight
     restart: unless-stopped
     ports:
       # Hindsight has no authentication in this template. Keep both endpoints

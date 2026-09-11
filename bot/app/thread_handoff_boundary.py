@@ -156,7 +156,7 @@ class ThreadHandoffBoundary:
 
     @property
     def bot(self) -> commands.Bot:
-        """Live client reference: ``KimiApplication.bot`` is rebindable."""
+        """Live client reference: ``BramApplication.bot`` is rebindable."""
         return self._get_bot()
 
     @property

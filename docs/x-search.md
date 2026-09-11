@@ -2,7 +2,7 @@
 
 `x_search` is an optional, member-tier searchable tool that searches X (formerly
 Twitter) through xAI's hosted Responses API. It is independent of the chat
-provider: Claude, Kimi, OpenAI, Grok, or any other model with function-tool
+provider: Claude, Bram, OpenAI, Grok, or any other model with function-tool
 support calls the same local tool.
 
 The tool defaults off. Enabling it does not select Grok as the chat model, and
@@ -70,7 +70,7 @@ bounds both paid spend and repeated use of a subscription.
 xAI's public X-search documentation mostly describes API-key access. An OAuth
 token can authorize `/v1/responses` successfully while the account tier does
 not actually run the hosted X search, in which case the model answers with
-generic, uncited prose. Kimi therefore treats "authenticated" and "live search
+generic, uncited prose. Bram therefore treats "authenticated" and "live search
 actually ran" as separate facts. Before relying on OAuth X search, test a real
 account and confirm you get both a positive `x_search_calls` value and
 citations.

@@ -72,7 +72,7 @@ def _ctx(tier: TrustTier = TrustTier.MEMBER) -> MessageContext:
 
 
 def test_gateway_reads_bound_turn_channel_history_before_trigger() -> None:
-    bot_user = _Author(999, "Kimi", bot=True)
+    bot_user = _Author(999, "Bram", bot=True)
     alice = _Author(123, "Alice")
     channel = _Channel(
         [
@@ -87,7 +87,7 @@ def test_gateway_reads_bound_turn_channel_history_before_trigger() -> None:
     result = asyncio.run(gateway.collect_recent_channel_context(_ctx(), limit=15))
 
     assert channel.calls == [{"limit": 15, "before": trigger}]
-    assert [item.transcript_line for item in result] == ["Alice: hello", "Kimi: hi"]
+    assert [item.transcript_line for item in result] == ["Alice: hello", "Bram: hi"]
 
 
 def test_gateway_unbind_removes_turn_source() -> None:
@@ -834,7 +834,7 @@ def test_resolve_member_in_dm_raises_safe_error() -> None:
 
 
 def test_gateway_context_skips_other_bots() -> None:
-    bot_user = _Author(999, "Kimi", bot=True)
+    bot_user = _Author(999, "Bram", bot=True)
     other_bot = _Author(2, "OtherBot", bot=True)
     alice = _Author(123, "Alice")
     channel = _Channel(

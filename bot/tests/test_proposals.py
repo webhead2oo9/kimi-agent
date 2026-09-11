@@ -13,9 +13,9 @@ from app.proposals import (
     ConfigProposalService,
     ProposalHost,
 )
-from kimi_agent_module_api import ProposalActor, ProposalError
-from kimi_agent_module_api.contracts import MessageRef, build_custom_id
-from kimi_agent_module_api.testing import FakeInteraction, FakeInteractions
+from bram_agent_module_api import ProposalActor, ProposalError
+from bram_agent_module_api.contracts import MessageRef, build_custom_id
+from bram_agent_module_api.testing import FakeInteraction, FakeInteractions
 from storage.db import Database
 
 GUILD = 123

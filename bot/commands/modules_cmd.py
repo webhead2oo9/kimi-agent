@@ -11,8 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from commands._shared import send_message
-from kimi_agent_module_api import ModuleSpec
-from kimi_agent_module_api.contracts import ModuleHealth
+from bram_agent_module_api import ModuleSpec
+from bram_agent_module_api.contracts import ModuleHealth
 
 _STATE_ICON = {"healthy": "✅", "starting": "⏳", "degraded": "⚠️", "failed": "❌"}
 
@@ -26,7 +26,7 @@ def render_status(
     now: float | None = None,
 ) -> str:
     if not requested:
-        return "No application modules are configured (`KIMI_MODULES` is empty)."
+        return "No application modules are configured (`BRAM_MODULES` is empty)."
     now = time.time() if now is None else now
     lines = ["**Modules**"]
     disabled = disabled or {}

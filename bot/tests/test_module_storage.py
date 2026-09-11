@@ -8,14 +8,14 @@ from typing import Any
 
 import pytest
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     MODULE_API_VERSION,
     AppModule,
     ModuleLoadContext,
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     MigrationContext,
     ModuleContractError,
     ScopedModuleMigration,

@@ -20,7 +20,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     GuildSettingsSnapshot,

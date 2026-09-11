@@ -7,7 +7,7 @@ from typing import Never
 
 import pytest
 
-REQUIRE_SANDBOX_ENV = "KIMI_REQUIRE_SANDBOX_TESTS"
+REQUIRE_SANDBOX_ENV = "BRAM_REQUIRE_SANDBOX_TESTS"
 
 
 def sandbox_skip_allowed(unavailable: bool) -> bool:

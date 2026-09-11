@@ -196,8 +196,8 @@ def test_runtime_mounts_never_bind_a_symlinked_ancestor_above_the_runtime(
     (runtime / "bin").mkdir(parents=True)
     (runtime / "lib").mkdir()
     (runtime / "bin" / "python1.2").write_text("", encoding="utf-8")
-    (real_local / "share" / "kimi").mkdir()
-    (real_local / "share" / "kimi" / "bot.db").write_text("secret", encoding="utf-8")
+    (real_local / "share" / "bram").mkdir()
+    (real_local / "share" / "bram" / "bot.db").write_text("secret", encoding="utf-8")
     local = tmp_path / "home" / ".local"
     local.parent.mkdir()
     try:
@@ -208,7 +208,7 @@ def test_runtime_mounts_never_bind_a_symlinked_ancestor_above_the_runtime(
 
     mounts = sandbox_module._runtime_mounts(interpreter.absolute())
 
-    secret = local / "share" / "kimi" / "bot.db"
+    secret = local / "share" / "bram" / "bot.db"
     for mount in mounts:
         assert not secret.is_relative_to(mount), f"{mount} exposes {secret}"
         assert not real_local.is_relative_to(mount) and mount != local, mount

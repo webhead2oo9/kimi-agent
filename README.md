@@ -7,7 +7,7 @@
 
 ---
 
-# Kimi
+# Bram
 
 > A Discord assistant built for you and your communities.
 
@@ -15,18 +15,13 @@
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 
-> **Name and affiliation:** This project is an independent open-source Discord
-> assistant. It is not affiliated with, endorsed by, or sponsored by Moonshot AI
-> or its Kimi products and language models. “Kimi” is simply the name of this bot,
-> and the software can be configured to use many different model providers.
-
-Kimi is a bot for communities that want an AI helper without reinventing the wheel.
+Bram is a bot for communities that want an AI helper without reinventing the wheel.
 You point it at whatever LLM you like (OpenAI-compatible,
 Anthropic, OpenRouter, Codex, and more providers to come) in one YAML file, give each server or channel its
 own persona and rules in plain Markdown, and it takes it from there.
 
-It only speaks when spoken to: an @mention, a pinged reply, a `hey Kimi` or
-`Kimi help`, or a message inside a thread it's running. Ordinary DMs are
+It only speaks when spoken to: an @mention, a pinged reply, a `hey Bram` or
+`Bram help`, or a message inside a thread it's running. Ordinary DMs are
 ignored by default. Operators can optionally let approved users continue their
 personal chat in DMs or through the user-installed `/chat` command. Under the
 hood, every invocation runs a
@@ -35,9 +30,9 @@ properly chunked Discord reply, embeds and attachments included.
 
 Roughly what that looks like:
 
-> **@you:** hey Kimi, what was that Rust book you recommended me a while back?
+> **@you:** hey Bram, what was that Rust book you recommended me a while back?
 >
-> **Kimi:** Rust for Rustaceans, back in March. You said you were going to start it after finishing the async chapter of the Book. Did you?  
+> **Bram:** Rust for Rustaceans, back in March. You said you were going to start it after finishing the async chapter of the Book. Did you?  
 
 ## What it can do
 
@@ -88,7 +83,7 @@ standard `venv` module already installed.
 cd bot
 python3 -m venv .venv
 .venv/bin/python -m pip install \
-  --editable ./packages/kimi-agent-module-api --editable .
+  --editable ./packages/bram-agent-module-api --editable .
 .venv/bin/python -m pip check
 cp .env.example .env
 cp config/models.example.yaml config/models.yaml
@@ -122,7 +117,7 @@ against a test guild without touching production state.
 | Understand the system shape | [`docs/architecture.md`](docs/architecture.md) |
 | Look up a setting | [`docs/configuration.md`](docs/configuration.md) |
 | Configure user-installed personal chat | [`docs/user-app.md`](docs/user-app.md) |
-| Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md), [standalone Discord logging module](https://github.com/webhead2oo9/kimi-agent-discord-logging) |
+| Develop or install an application module | [`docs/modules.md`](docs/modules.md), [`bot/modules/example`](bot/modules/example/README.md), [standalone Discord logging module](https://github.com/bram-agent/bram-agent-discord-logging) |
 | Know what's public source vs. private instance data | [`docs/instance-data.md`](docs/instance-data.md) |
 | Browse every doc | [`docs/README.md`](docs/README.md) |
 | Contribute code | [`CLAUDE.md`](CLAUDE.md), the developer map |

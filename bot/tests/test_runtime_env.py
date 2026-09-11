@@ -55,7 +55,7 @@ def test_unset_variable_defaults_to_the_config_home_like_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("RUNTIME_ENV", raising=False)
-    monkeypatch.setenv("KIMI_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("BRAM_CONFIG_HOME", str(tmp_path))
     runtime_env = tmp_path / "runtime.env"
 
     assert merge_runtime_env() == f"no runtime.env overlay ({runtime_env} absent)"

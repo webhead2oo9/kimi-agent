@@ -103,7 +103,7 @@ def test_responses_provider_sends_a_neutral_user_agent() -> None:
         model="gpt-5.6-luna",
     )
 
-    assert provider._client._custom_headers["User-Agent"] == "Kimi"
+    assert provider._client._custom_headers["User-Agent"] == "Bram"
 
 
 def test_responses_provider_accepts_the_runtime_bot_name_as_user_agent() -> None:
@@ -172,7 +172,7 @@ def test_responses_provider_parses_and_replays_function_calls() -> None:
         id="item-1",
         call_id="call-1",
         name="lookup",
-        arguments='{"query":"kimi"}',
+        arguments='{"query":"bram"}',
     )
     provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.6-luna")
     fake = FakeResponses(
@@ -184,7 +184,7 @@ def test_responses_provider_parses_and_replays_function_calls() -> None:
 
     assert response.tool_calls[0].id == "call-1"
     assert response.tool_calls[0].name == "lookup"
-    assert response.tool_calls[0].arguments == {"query": "kimi"}
+    assert response.tool_calls[0].arguments == {"query": "bram"}
     assert response.raw_message == {
         "type": "response_output",
         "output": [
@@ -193,7 +193,7 @@ def test_responses_provider_parses_and_replays_function_calls() -> None:
                 "id": "item-1",
                 "call_id": "call-1",
                 "name": "lookup",
-                "arguments": '{"query":"kimi"}',
+                "arguments": '{"query":"bram"}',
             }
         ],
     }

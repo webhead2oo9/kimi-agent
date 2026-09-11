@@ -1266,7 +1266,7 @@ async def test_on_message_text_invocation_reply_continues_existing_root(
     monkeypatch.setattr(app.message_controller, "handle_message", fake_handle)
 
     message = _trigger_message(
-        content="hey kimi do xyz",
+        content="hey bram do xyz",
         author_id=456,
         author_name="Bob",
         message_id=902,

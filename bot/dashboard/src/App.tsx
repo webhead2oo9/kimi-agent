@@ -77,7 +77,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   const active = chats.find(chat => chat.id === activeId);
   const draft = activeId ? drafts[activeId] || emptyDraft : emptyDraft;
   const busy = isResponding(events) || optimisticBusy === activeId && activeId !== null;
-  const rememberKey = `kimi-dashboard:last:${session.user_id}:${session.guild_id}`;
+  const rememberKey = `bram-dashboard:last:${session.user_id}:${session.guild_id}`;
   const initial = initialOf(displayName) || "Y";
   const botInitial = initialOf(session.bot_name);
 

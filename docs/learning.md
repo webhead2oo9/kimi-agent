@@ -11,7 +11,7 @@ Learning is how staff add shared knowledge to the bot. It is not a tool of its o
 
 **In conversation.** A staff member tells the bot something and asks it to remember. This path is pure prompting: the learn bullets under `## Behavioral Rules` in `config/prompt.md` tell the model to decide whether it has a fact or a procedure, check the `<skills>` index before creating a new procedure, prefer `skill_edit` (`append` or `edits`) over a near-duplicate `skill_create`, and say in one line what was stored and where. This path does not look up community memory before teaching a fact.
 
-**The "Teach Kimi" message context menu** (the name follows `BOT_NAME`; `commands/learn_cmd.py`) lets staff right-click a good explanation and teach it right where it was written. It is staff-only, refuses a blocked user even if they hold staff standing (a block can predate a promotion or a per-guild trust grant), honours `PRIVACY_CONSENT_ENABLED` before running, answers only the staff member (ephemerally), and refuses bot-authored and empty messages. Its dedicated prompt checks `recall_community` before teaching a fact and skips duplicates.
+**The "Teach Bram" message context menu** (the name follows `BOT_NAME`; `commands/learn_cmd.py`) lets staff right-click a good explanation and teach it right where it was written. It is staff-only, refuses a blocked user even if they hold staff standing (a block can predate a promotion or a per-guild trust grant), honours `PRIVACY_CONSENT_ENABLED` before running, answers only the staff member (ephemerally), and refuses bot-authored and empty messages. Its dedicated prompt checks `recall_community` before teaching a fact and skips duplicates.
 
 ## The context-menu turn
 

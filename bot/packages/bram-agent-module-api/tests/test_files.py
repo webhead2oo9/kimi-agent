@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kimi_agent_module_api import FileAccessError, ToolAttachment, ToolFile, ToolFiles
-from kimi_agent_module_api.testing import FakeToolFiles
+from bram_agent_module_api import FileAccessError, ToolAttachment, ToolFile, ToolFiles
+from bram_agent_module_api.testing import FakeToolFiles
 
 
 @pytest.mark.asyncio

@@ -95,7 +95,7 @@ def test_source_discovery_includes_new_layouts_and_excludes_private_data(tmp_pat
     sources = {
         "branding.py": "branding",
         "new_namespace/client.py": "new_namespace.client",
-        "packages/kimi-agent-module-api/src/kimi_agent_module_api/nested/api.py": "kimi_agent_module_api.nested.api",
+        "packages/bram-agent-module-api/src/bram_agent_module_api/nested/api.py": "bram_agent_module_api.nested.api",
         "modules/example/src/community_agent_reference_module/__init__.py": "community_agent_reference_module",
         "modules/minimal/hello_module.py": "hello_module",
     }

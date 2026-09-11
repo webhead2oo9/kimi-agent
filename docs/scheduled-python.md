@@ -1,7 +1,7 @@
 # Scheduled Python
 
 Scheduled tasks can use Python to decide whether to invoke the task model, or to
-produce text and files without a generation-model call. Kimi writes the script
+produce text and files without a generation-model call. Bram writes the script
 during normal setup. The requester reviews `task.py`, the settings, and `SKILL.md`,
 then approves that exact revision.
 
@@ -51,7 +51,7 @@ workspace `.venv` takes precedence over `CODE_EXEC_VENV_DIR`; the standard libra
 is used when neither exists. The workspace `.venv` is mounted read-only and
 protected from concurrent workspace changes during the script.
 
-Kimi can install missing packages using `run_code` during setup, subject to its
+Bram can install missing packages using `run_code` during setup, subject to its
 existing network policy and limits. Occurrences and previews do not install
 packages. A missing or broken dependency fails the check and requires attention.
 Package changes or expiry can affect later runs; approval does not pin versions.

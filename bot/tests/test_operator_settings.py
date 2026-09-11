@@ -45,7 +45,7 @@ def _spec_for(field: str) -> SettingSpec | None:
 
 
 def test_default_bot_name_uses_the_shared_brand() -> None:
-    assert _settings().bot_name == "Kimi"
+    assert _settings().bot_name == "Bram"
 
 
 # ── The spec itself ──────────────────────────────────────────────────────────
@@ -151,8 +151,8 @@ def test_code_exec_filesystem_settings_are_environment_only() -> None:
 def test_code_loading_settings_are_environment_only() -> None:
     managed = {spec.field for spec in SETTINGS_SPEC}
     assert "plugin_modules" not in managed
-    assert "kimi_modules" not in managed
-    assert "kimi_optional_modules" not in managed
+    assert "bram_modules" not in managed
+    assert "bram_optional_modules" not in managed
 
 
 def test_sensitive_observability_content_mode_is_environment_only() -> None:
@@ -441,7 +441,7 @@ def test_apply_reads_back_every_value_kind(tmp_path: Path) -> None:
         "memory_max_writes_per_turn: 3\n"
         "privacy_consent_enabled: true\n"
         "image_detail: high\n"
-        "bot_name: Kimi\n"
+        "bot_name: Bram\n"
         "---\n",
     )
 
@@ -452,4 +452,4 @@ def test_apply_reads_back_every_value_kind(tmp_path: Path) -> None:
     assert settings.memory_max_writes_per_turn == 3
     assert settings.privacy_consent_enabled is True
     assert settings.image_detail == "high"
-    assert settings.bot_name == "Kimi"
+    assert settings.bot_name == "Bram"

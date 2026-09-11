@@ -30,7 +30,7 @@ _LIVE_DOC_PAGES: tuple[Path, ...] = (
     PROJECT_ROOT / "deploy" / "hindsight" / "README.md",
     PROJECT_ROOT / "modules" / "example" / "README.md",
     PROJECT_ROOT / "modules" / "minimal" / "README.md",
-    PROJECT_ROOT / "packages" / "kimi-agent-module-api" / "README.md",
+    PROJECT_ROOT / "packages" / "bram-agent-module-api" / "README.md",
     PROJECT_ROOT / "skills" / "README.md",
     PROJECT_ROOT / "skills" / "builtin" / "README.md",
     REPO_ROOT / "AGENTS.md",
@@ -79,7 +79,7 @@ _EXTERNAL_ENV_TOKENS: frozenset[str] = frozenset(
         # Test-harness switch read by tests/conftest.py and
         # tests/test_sandbox_required.py, never by the bot; it turns a skipped
         # live-sandbox suite into a failure in CI.
-        "KIMI_REQUIRE_SANDBOX_TESTS",
+        "BRAM_REQUIRE_SANDBOX_TESTS",
         # Second EnvironmentFile the shipped systemd unit reads; consumed by
         # scripts/preflight and scripts/sandbox_probe.py, not by Settings.
         "RUNTIME_ENV",

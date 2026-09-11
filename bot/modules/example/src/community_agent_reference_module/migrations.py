@@ -15,8 +15,8 @@ that follow from that design:
 
 from __future__ import annotations
 
-from kimi_agent_module_api import ScopedModuleMigration
-from kimi_agent_module_api.contracts import MigrationContext
+from bram_agent_module_api import ScopedModuleMigration
+from bram_agent_module_api.contracts import MigrationContext
 
 
 async def create_kudos(ctx: MigrationContext) -> None:

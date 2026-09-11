@@ -10,7 +10,7 @@ settings that matter on those endpoints.
 OpenAI models can be routed through either `openai_compat` (Chat Completions) or
 `openai_responses` (the Responses API). Pick the one the model actually
 supports. If you need reasoning with encrypted replay or `store=false` local
-history, the Responses transport carries them. Kimi's Responses wrapper does
+history, the Responses transport carries them. Bram's Responses wrapper does
 not expose provider-native image output; normal Discord image creation uses the
 [`generate_image` tool](image-generation.md).
 
@@ -39,11 +39,11 @@ being specific to OpenAI.
 ## OpenRouter
 
 Use `type: openrouter`. The adapter talks to OpenRouter's fixed Chat
-Completions endpoint, and carries the same inputs Kimi already supports:
+Completions endpoint, and carries the same inputs Bram already supports:
 text, image input, client-side function tools, and inline image output when
 you ask for it explicitly. Tools like browser, search, code execution,
 workspace tools, and `generate_image` are still local ToolRegistry work, so
-routing through OpenRouter never gets around Kimi's authorization or
+routing through OpenRouter never gets around Bram's authorization or
 sandbox.
 
 An OpenRouter profile must set `api_key_env`. It cannot use `keyless`, and
@@ -120,7 +120,7 @@ Every request opts in to bounded router metadata. The turn event records one
 `provider_calls` row per completed model call, in call order. Each row
 carries the served model, the configured `pricing_model`, the call `role`,
 and any of `upstream_provider`, `service_tier`, `openrouter_charge_usd`,
-and `is_byok` that OpenRouter sent back. Fields Kimi doesn't recognize
+and `is_byok` that OpenRouter sent back. Fields Bram doesn't recognize
 are dropped, and the full router payload never lands in conversation
 history. The adapter reads the BYOK flag from
 `openrouter_metadata.is_byok`, the upstream provider from the `selected`
@@ -139,9 +139,9 @@ pricing from your static rate card in model config, and it can come back
 different from what OpenRouter reported. That is intentional: this change
 does not touch the usage ledger schema.
 
-One thing to keep separate: OpenRouter's own upstream fallback and Kimi's
+One thing to keep separate: OpenRouter's own upstream fallback and Bram's
 `<role>_fallbacks` chain are two different layers. OpenRouter can quietly
-re-route between upstreams inside one request. Kimi's chain only kicks in
+re-route between upstreams inside one request. Bram's chain only kicks in
 when the whole OpenRouter call fails with a transient availability
 error. Use both if you want; just remember that a reply attributed to the
 OpenRouter model entry may have been served by any upstream the router

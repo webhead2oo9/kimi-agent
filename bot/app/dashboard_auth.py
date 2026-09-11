@@ -14,8 +14,8 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-SESSION_COOKIE = "__Host-kimi-dashboard"
-CHALLENGE_COOKIE = "__Host-kimi-dashboard-login"
+SESSION_COOKIE = "__Host-bram-dashboard"
+CHALLENGE_COOKIE = "__Host-bram-dashboard-login"
 _INSTANCE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _API = "https://discord.com/api/v10"
 _CDN = "https://cdn.discordapp.com"

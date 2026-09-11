@@ -128,7 +128,7 @@ _CONFIG_SPEC = (
         default=2,
         minimum=1,
         maximum=8,
-        help="Maximum billable image calls in one outer Kimi turn.",
+        help="Maximum billable image calls in one outer Bram turn.",
     ),
     ToolConfigField(
         field="max_reference_images",

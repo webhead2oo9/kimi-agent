@@ -312,12 +312,12 @@ def test_build_app_binds_discord_events(monkeypatch) -> None:
     )
     bound: list[str] = []
 
-    class RecordingBot(app_runtime.KimiBot):
+    class RecordingBot(app_runtime.BramBot):
         def event(self, coro: Any) -> Any:
             bound.append(coro.__name__)
             return coro
 
-    monkeypatch.setattr(app_runtime, "KimiBot", RecordingBot)
+    monkeypatch.setattr(app_runtime, "BramBot", RecordingBot)
 
     app_runtime.build_app(_settings())
 

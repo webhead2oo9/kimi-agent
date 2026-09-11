@@ -1,6 +1,6 @@
 # Tool catalog
 
-This page lists every built-in tool Kimi can offer the language model, who can
+This page lists every built-in tool Bram can offer the language model, who can
 use each one, and which settings decide whether it is registered at all. The
 schemas and the enforcement behind them live in `tools/`.
 
@@ -23,7 +23,7 @@ directly in Discord; the model never selects them:
 | `/models` | Owner | Inspect or change the global chat-model override. |
 | `/modules status`, `/modules manifest` | Owner | Inspect configured application-module health and declarations. |
 | `/moderation block`, `unblock`, `status` | Staff | Manage bot-level user blocks. |
-| **Teach Kimi** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
+| **Teach Bram** message context menu (name follows `BOT_NAME`) | Staff | Run the scoped learning flow against one selected human message. |
 
 ## Visibility and access
 
@@ -384,7 +384,7 @@ can add tools:
   register after plugins. A plugin must not claim any of those names either.
   See [Plugins](plugins.md).
 - **Application-module tools** are registered during `ModuleSpec.create()` by
-  installed packages explicitly selected in `KIMI_MODULES`. They remain hidden
+  installed packages explicitly selected in `BRAM_MODULES`. They remain hidden
   until their module starts and wherever that module is inactive. See
   [Application modules](modules.md).
 

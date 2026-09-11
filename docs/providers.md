@@ -1,6 +1,6 @@
 # Providers
 
-Kimi routes its general chat-capable LLM backends through one internal
+Bram routes its general chat-capable LLM backends through one internal
 interface. Nothing above `providers/` knows whether a reply came from
 Anthropic, an OpenAI-compatible gateway, or a Codex WebSocket; the agent builds
 a `ProviderRequest`, gets a `ProviderResponse` back, and the differences stay
@@ -97,8 +97,8 @@ in mind:
   consuming.
 - **Eligibility is provider-specific.** Z.AI currently limits Coding Plan
   benefits to the subscriber and its officially supported tools, prohibits
-  multi-user access, and does not list Kimi as a supported tool. Use its metered
-  API for Kimi unless Z.AI confirms that this deployment is eligible. Check the
+  multi-user access, and does not list Bram as a supported tool. Use its metered
+  API for Bram unless Z.AI confirms that this deployment is eligible. Check the
   current terms for every other subscription route as well.
 
 Where the provider permits the client and use case, a subscription route can fit
@@ -665,7 +665,7 @@ an unknown value falls back to `auto`.
 ### When the chat model cannot see
 
 If the selected chat model lacks `image_input` and `roles.chat_images` resolves
-to a vision model, Kimi does not simply hand the turn to the vision model. It
+to a vision model, Bram does not simply hand the turn to the vision model. It
 first asks that model for a durable visual *transcription*: scene facts, OCR,
 stated uncertainty, spatial relationships, and approximate boxes for salient and
 OCR regions on a normalized 0-1000 `[left, top, right, bottom]` grid. The

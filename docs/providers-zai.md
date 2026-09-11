@@ -1,8 +1,8 @@
 # Z.AI GLM Coding Plan
 
-Kimi can use Z.AI's GLM Coding Plan through its OpenAI-compatible Chat
+Bram can use Z.AI's GLM Coding Plan through its OpenAI-compatible Chat
 Completions API. No Z.AI-specific provider or SDK is required. This is technical
-compatibility; Z.AI's current plan eligibility does not list Kimi. See
+compatibility; Z.AI's current plan eligibility does not list Bram. See
 [Subscription use](#subscription-use) before enabling the route.
 
 ## Before you start
@@ -19,7 +19,7 @@ account's API balance instead.
 
 ## Configure the model
 
-Add the API key to the dotenv file used by Kimi:
+Add the API key to the dotenv file used by Bram:
 
 ```dotenv
 ZAI_API_KEY=your-zai-key
@@ -75,7 +75,7 @@ The `coding` role is independent of normal chat. Coding tasks also require the
 code sandbox and `CODING_TASKS_ENABLED=true`; see
 [Durable coding agent](coding-agent.md).
 
-Restart Kimi after changing `.env` or `config/models.yaml`. Model selection
+Restart Bram after changing `.env` or `config/models.yaml`. Model selection
 through `/models` takes effect immediately and does not require another
 restart.
 
@@ -85,7 +85,7 @@ To verify a chat route after restarting:
 
 1. Add the entry to `selectable_chat_models`, then open `/models` and select it.
 2. Send a short text prompt.
-3. Ask for an action that requires a Kimi tool.
+3. Ask for an action that requires a Bram tool.
 4. If the model declares `image_input`, attach an image and ask a simple
    question about it.
 
@@ -100,8 +100,8 @@ uses the `/api/coding/paas/v4` URL shown above.
 
 Z.AI limits Coding Plan benefits to the subscriber and its [officially
 supported tools](https://docs.z.ai/devpack/tool/others), prohibits multi-user
-access, and does not currently list Kimi. Use the standard pay-as-you-go API for
-Kimi unless Z.AI confirms this deployment is eligible. See the current [Usage
+access, and does not currently list Bram. Use the standard pay-as-you-go API for
+Bram unless Z.AI confirms this deployment is eligible. See the current [Usage
 Policy](https://docs.z.ai/devpack/usage-policy).
 
 For the general profile and routing concepts used here, see

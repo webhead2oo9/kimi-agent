@@ -64,7 +64,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "config",
         "discord_adapter",
         "image_gen",
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "memory",
         "moderation",
         "modules",
@@ -89,7 +89,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
     "commands": {
         "branding",
         "discord_adapter",
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -97,12 +97,12 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
         "workspace",
     },
-    "community_agent_reference_module": {"kimi_agent_module_api"},
-    "config": {"branding", "kimi_agent_module_api", "providers", "tools", "trust", "utils"},
+    "community_agent_reference_module": {"bram_agent_module_api"},
+    "config": {"branding", "bram_agent_module_api", "providers", "tools", "trust", "utils"},
     "deploy": {"config", "sandbox", "tools", "web_browser"},
     "discord_adapter": {
         "agent",
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "memory",
         "storage",
         "tools",
@@ -124,16 +124,16 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "utils",
     },
     "image_gen": {"codex", "utils"},
-    "hello_module": {"kimi_agent_module_api"},
+    "hello_module": {"bram_agent_module_api"},
     # Core may depend on the shared SDK vocabulary, but the standalone SDK may not
     # depend on core. Its broader third-party allowlist is pinned by
     # test_module_api_contracts.py::test_entire_sdk_has_no_core_runtime_imports.
-    "kimi_agent_module_api": set(),
+    "bram_agent_module_api": set(),
     "memory": {"providers", "storage", "utils"},
     "moderation": {"observability", "providers", "trust", "utils"},
     # Module API runtime services. Grows as each service lands; the app edge is
     # the harness cycle documented above.
-    "modules": {"app", "config", "kimi_agent_module_api", "storage", "tools", "utils", "workspace"},
+    "modules": {"app", "config", "bram_agent_module_api", "storage", "tools", "utils", "workspace"},
     "observability": {"utils"},
     "providers": {"branding", "codex", "utils", "xai"},
     "scripts": {
@@ -141,7 +141,7 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "branding",
         "codex",
         "config",
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "sandbox",
         "skills",
         "xai",
@@ -170,9 +170,9 @@ _ALLOWED_EDGES: dict[str, set[str]] = {
         "web_browser",
         "xai",
     },
-    "trust": {"kimi_agent_module_api"},
+    "trust": {"bram_agent_module_api"},
     "usage": {"config"},
-    "utils": {"kimi_agent_module_api"},
+    "utils": {"bram_agent_module_api"},
     "video_understanding": {"utils"},
     "web_browser": {"sandbox", "utils"},
     "workspace": set(),
@@ -284,7 +284,7 @@ def test_no_undeclared_package_dependencies() -> None:
 
 def test_standalone_sdk_is_scanned() -> None:
     observed_nodes, _ = _observed_graph()
-    assert "kimi_agent_module_api" in observed_nodes, (
+    assert "bram_agent_module_api" in observed_nodes, (
         "Standalone SDK source root disappeared from package-graph discovery"
     )
 
@@ -324,9 +324,9 @@ def test_forbidden_dependency_edges_are_absent() -> None:
     """High-risk dependency boundaries fail with named, specific diagnostics."""
 
     observed = _observed_edges()
-    sdk_core_dependencies = observed.get("kimi_agent_module_api", set())
+    sdk_core_dependencies = observed.get("bram_agent_module_api", set())
     assert not sdk_core_dependencies, (
-        "kimi_agent_module_api -> core is forbidden: the standalone SDK must remain "
+        "bram_agent_module_api -> core is forbidden: the standalone SDK must remain "
         f"host-independent; found {sorted(sdk_core_dependencies)}"
     )
     assert "app" not in observed.get("commands", set()), (

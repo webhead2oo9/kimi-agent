@@ -22,12 +22,12 @@ from app.modules import (
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     ModuleCapabilities,
     TriggeringDiscordMessageSnapshot,
     events as ev,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     MigrationContext,
@@ -36,7 +36,7 @@ from kimi_agent_module_api.contracts import (
     ServiceDeclaration,
     ServiceRequirement,
 )
-from kimi_agent_module_api.testing import (
+from bram_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeHttp,
@@ -1064,7 +1064,7 @@ async def test_personal_chat_tool_context_has_no_channel(tmp_path: Path) -> None
 
 def _optional_manager(tmp_path, names, installed, optional, registry=None):
     settings = _settings(tmp_path)
-    settings.kimi_optional_modules = optional
+    settings.bram_optional_modules = optional
     return ModuleManager.load(
         names, core_settings=settings, installed=installed, registry=registry or ToolRegistry()
     )
@@ -1195,7 +1195,7 @@ async def test_unsafe_optional_failures_still_abort(tmp_path, failure):
 @pytest.mark.asyncio
 async def test_optional_start_failure_retires_host_registrations(tmp_path):
     from dataclasses import replace
-    from kimi_agent_module_api.contracts import CommandSpec
+    from bram_agent_module_api.contracts import CommandSpec
     from modules.scheduler import DurableScheduler
 
     events = []

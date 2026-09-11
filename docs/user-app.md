@@ -1,6 +1,6 @@
 # Discord user-app personal chat
 
-Discord lets a bot be installed on a user account as well as in a server. Kimi uses that to give an approved user one personal conversation with the assistant through `/chat`, usable from any server or DM. It is off by default and does not change the bot's normal mention/reply behavior in servers.
+Discord lets a bot be installed on a user account as well as in a server. Bram uses that to give an approved user one personal conversation with the assistant through `/chat`, usable from any server or DM. It is off by default and does not change the bot's normal mention/reply behavior in servers.
 
 ## What is exposed
 
@@ -11,7 +11,7 @@ When `USER_APP_CHAT_ENABLED=true`, the application registers these commands for 
 
 It also makes the existing self-service `/privacy`, `/memory`, and `/stop` commands available to both Guild Install and User Install. `/chat` itself is ID-allowlisted. `/chat-reset`, `/privacy`, `/memory`, and `/stop` remain caller-scoped so a user can clear or control their data even after access is removed.
 
-Discord user installs are command-only. Installing the app on a user account does **not** let it see channel messages, replies, or a `hey Kimi` in servers where the bot itself is not installed. Use `/chat` there.
+Discord user installs are command-only. Installing the app on a user account does **not** let it see channel messages, replies, or a `hey Bram` in servers where the bot itself is not installed. Use `/chat` there.
 
 ## Direct messages
 

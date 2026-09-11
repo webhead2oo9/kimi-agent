@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     ChannelSnapshot,
     DiscordActions,

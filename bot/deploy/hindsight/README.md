@@ -1,14 +1,14 @@
 # Hindsight backend
 
 The bot's long-term memory (Hindsight) runs as a container named
-`kimi-hindsight`. When they share a host, the bot reaches it at
+`bram-hindsight`. When they share a host, the bot reaches it at
 `HINDSIGHT_URL=http://127.0.0.1:8890`. A bot on another host uses the Docker
 host's trusted LAN/VPN address after the API bind is explicitly configured.
 
 | | value |
 |---|---|
-| Stack dir | `~/kimi-hindsight/` |
-| Container | `kimi-hindsight` |
+| Stack dir | `~/bram-hindsight/` |
+| Container | `bram-hindsight` |
 | Storage | **host bind mount** `./data` → embedded Postgres (`pg0`) |
 | API port | `127.0.0.1:8890` → 8888 by default |
 | Control Plane | `127.0.0.1:9990` → 9999 by default |
@@ -31,13 +31,13 @@ Plane is behind an authenticating proxy.
 
 ```bash
 # On the Docker host:
-mkdir -p ~/kimi-hindsight/data
-cp docker-compose.yml ~/kimi-hindsight/
-cp .env.example ~/kimi-hindsight/.env
+mkdir -p ~/bram-hindsight/data
+cp docker-compose.yml ~/bram-hindsight/
+cp .env.example ~/bram-hindsight/.env
 # Edit .env: provider mode, base URL, API key, and model ID are required.
 # For a remote bot, also set HINDSIGHT_API_BIND_ADDRESS to this host's trusted
 # LAN/VPN address; keep HINDSIGHT_CONTROL_BIND_ADDRESS on 127.0.0.1.
-cd ~/kimi-hindsight && docker compose up -d
+cd ~/bram-hindsight && docker compose up -d
 ```
 
 The tracked template contains no usable provider route. Keep the

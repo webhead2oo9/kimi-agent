@@ -518,7 +518,7 @@ def _default_workspace_dir() -> Path:
     own `tmp_path` instead.
     """
 
-    return Path(tempfile.mkdtemp(prefix="kimibot-tests-"))
+    return Path(tempfile.mkdtemp(prefix="brambot-tests-"))
 
 
 def make_turn_dependencies(

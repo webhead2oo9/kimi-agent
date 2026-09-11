@@ -1,17 +1,17 @@
 #!/bin/bash
 #
-# Quick read-only diagnostics for Kimi.
+# Quick read-only diagnostics for Bram.
 # Safe to run anytime.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
-KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
-RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+BRAM_CONFIG_HOME="${BRAM_CONFIG_HOME:-${HOME}/.config/bram-agent}"
+ENV_FILE="${ENV_FILE:-${BRAM_CONFIG_HOME}/bram.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${BRAM_CONFIG_HOME}/runtime.env}"
 
-echo "Kimi Diagnostics"
+echo "Bram Diagnostics"
 echo "================"
 echo
 
@@ -21,17 +21,17 @@ echo
 
 echo "--- Config and env file permissions ---"
 stat -c '%U:%G %a %n' \
-  "$KIMI_CONFIG_HOME" \
+  "$BRAM_CONFIG_HOME" \
   "$ENV_FILE" \
   "$RUNTIME_ENV" 2>/dev/null || true
 echo
 
-echo "--- namei for kimi.env ---"
+echo "--- namei for bram.env ---"
 namei -l "$ENV_FILE" 2>/dev/null || true
 echo
 
 echo "--- Service file ---"
-systemctl --user cat kimi-agent.service 2>/dev/null || true
+systemctl --user cat bram-agent.service 2>/dev/null || true
 echo
 
 echo "--- Failed units ---"
@@ -39,7 +39,7 @@ systemctl --user list-units --state=failed --no-pager 2>/dev/null || true
 echo
 
 echo "--- Recent warnings ---"
-journalctl --user -u kimi-agent.service -p warning --no-pager -n 30 2>/dev/null || true
+journalctl --user -u bram-agent.service -p warning --no-pager -n 30 2>/dev/null || true
 echo
 
 echo "--- Disk and memory ---"

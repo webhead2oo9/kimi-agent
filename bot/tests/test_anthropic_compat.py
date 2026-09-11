@@ -40,7 +40,7 @@ def _provider(handler, *, prompt_caching: bool = False) -> AnthropicCompatProvid
 def _request() -> ProviderRequest:
     return ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[
             ConversationMessage(role="user", content=[ContentPart.from_text("hi")]),
         ],
@@ -101,7 +101,7 @@ async def test_request_targets_messages_path_with_api_key_auth() -> None:
 
     body = captured["json"]
     assert body["model"] == "minimax-m3"
-    assert body["system"] == "You are Kimi."
+    assert body["system"] == "You are Bram."
     assert body["max_tokens"] == 256
     assert body["tools"][0]["name"] == "get_weather"
     assert body["messages"][-1]["role"] == "user"
@@ -113,7 +113,7 @@ async def test_request_targets_messages_path_with_api_key_auth() -> None:
 async def test_codex_tool_call_is_rebuilt_before_anthropic_tool_result() -> None:
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[
             ConversationMessage(
                 role="assistant",
@@ -219,7 +219,7 @@ async def test_prompt_caching_marks_only_the_final_block() -> None:
     assert body["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
     # The breakpoint rides the message list: a `system` breakpoint is ignored by
     # ccflare's claude-code route (verified live), so system stays a plain string.
-    assert body["system"] == "You are Kimi."
+    assert body["system"] == "You are Bram."
 
 
 @pytest.mark.asyncio
@@ -240,7 +240,7 @@ async def test_prompt_caching_does_not_mutate_stored_raw_provider_data() -> None
     message = ConversationMessage(role="assistant", content=[], raw_provider_data=raw)
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[message],
         current_user_parts=[],
         tools=[],
@@ -260,7 +260,7 @@ async def test_prompt_caching_does_not_mutate_stored_raw_provider_data() -> None
 async def test_prompt_caching_skips_messages_with_no_markable_block() -> None:
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[
             ConversationMessage(role="user", content=[ContentPart.from_text("hi")]),
             # Contributes an empty content list, nothing to hang a breakpoint on.
@@ -316,7 +316,7 @@ async def test_cache_breakpoint_skips_trailing_thinking_block() -> None:
     }
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[ConversationMessage(role="assistant", content=[], raw_provider_data=raw)],
         current_user_parts=[],
         tools=[],
@@ -421,7 +421,7 @@ async def test_turn_escalation_overrides_profile_effort() -> None:
     captured: dict[str, Any] = {}
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[],
         current_user_parts=[ContentPart.from_text("read the file")],
         tools=[],
@@ -439,7 +439,7 @@ async def test_escalation_outside_anthropic_ladder_falls_back_to_profile() -> No
     captured: dict[str, Any] = {}
     request = ProviderRequest(
         conversation_id=1,
-        system_prompt="You are Kimi.",
+        system_prompt="You are Bram.",
         messages=[],
         current_user_parts=[ContentPart.from_text("hi")],
         tools=[],

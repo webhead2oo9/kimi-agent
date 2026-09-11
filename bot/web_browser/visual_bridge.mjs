@@ -181,7 +181,7 @@ if (INPUT.kind === 'mermaid') {
       theme: 'base',
       htmlLabels: false,
       deterministicIds: true,
-      deterministicIDSeed: 'kimi-visual',
+      deterministicIDSeed: 'bram-visual',
       maxTextSize: 12000,
       themeVariables: {
         background: '#ffffff', primaryColor: '#e8f1f8', primaryTextColor: '#111111',
@@ -189,7 +189,7 @@ if (INPUT.kind === 'mermaid') {
         tertiaryColor: '#ffffff', fontFamily: 'Arial, sans-serif'
       }
     });
-    const rendered = await globalThis.mermaid.render('kimi-mermaid', source);
+    const rendered = await globalThis.mermaid.render('bram-mermaid', source);
     const parsed = new DOMParser().parseFromString(rendered.svg, 'image/svg+xml');
     if (parsed.querySelector('parsererror')) throw new Error('Mermaid produced invalid SVG');
     const svg = parsed.documentElement;

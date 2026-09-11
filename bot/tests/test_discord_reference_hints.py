@@ -154,7 +154,7 @@ def test_unrelated_discord_markup_cannot_starve_a_later_message_link() -> None:
 @pytest.mark.asyncio
 async def test_message_link_resolves_message_channel_and_visible_category() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     category = _Channel(CATEGORY_ID, "Engineering", channel_type=discord.ChannelType.category)
     channel = _Channel(CHANNEL_ID, "bug-reports", category=category)
     _allow(category, user, bot, history=False)
@@ -187,7 +187,7 @@ async def test_message_link_resolves_message_channel_and_visible_category() -> N
 @pytest.mark.asyncio
 async def test_channel_hint_requires_view_but_not_history_and_hides_denied_category() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     category = _Channel(CATEGORY_ID, "Secret category", channel_type=discord.ChannelType.category)
     channel = _Channel(CHANNEL_ID, "announcements", category=category)
     _allow(channel, user, bot, history=False)
@@ -209,7 +209,7 @@ async def test_channel_hint_requires_view_but_not_history_and_hides_denied_categ
 @pytest.mark.asyncio
 async def test_denied_explicit_message_link_is_generic_and_never_fetches_message() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     channel = _Channel(CHANNEL_ID, "private-staff")
     _allow(channel, bot)
     guild = _Guild([channel], bot)
@@ -227,7 +227,7 @@ async def test_denied_explicit_message_link_is_generic_and_never_fetches_message
 @pytest.mark.asyncio
 async def test_message_link_requires_read_history_for_user_and_bot() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     channel = _Channel(CHANNEL_ID, "visible-but-no-history")
     _allow(channel, user, bot, history=False)
     guild = _Guild([channel], bot)
@@ -242,7 +242,7 @@ async def test_message_link_requires_read_history_for_user_and_bot() -> None:
 @pytest.mark.asyncio
 async def test_bare_channel_id_is_cache_only_and_missing_ids_are_silent() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     channel = _Channel(CHANNEL_ID, "support")
     _allow(channel, user, bot, history=False)
     guild = _Guild([channel], bot)
@@ -263,7 +263,7 @@ async def test_bare_channel_id_is_cache_only_and_missing_ids_are_silent() -> Non
 @pytest.mark.asyncio
 async def test_private_thread_requires_membership_for_user_and_bot() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     category = _Channel(CATEGORY_ID, "Help Desk", channel_type=discord.ChannelType.category)
     parent = _Channel(PARENT_ID, "support", category=category)
     thread = _Channel(
@@ -299,7 +299,7 @@ async def test_private_thread_requires_membership_for_user_and_bot() -> None:
 @pytest.mark.asyncio
 async def test_cross_guild_link_gets_only_the_generic_unresolved_hint() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     channel = _Channel(CHANNEL_ID, "same-id-local-channel")
     _allow(channel, user, bot)
     guild = _Guild([channel], bot)
@@ -316,7 +316,7 @@ async def test_cross_guild_link_gets_only_the_generic_unresolved_hint() -> None:
 @pytest.mark.asyncio
 async def test_operator_exclusion_applies_to_reference_hints() -> None:
     user = _Actor(USER_ID, "Alice")
-    bot = _Actor(BOT_ID, "Kimi")
+    bot = _Actor(BOT_ID, "Bram")
     channel = _Channel(CHANNEL_ID, "excluded")
     _allow(channel, user, bot)
     guild = _Guild([channel], bot)

@@ -431,10 +431,10 @@ def test_capabilities_are_chain_intersection() -> None:
 
 def test_provider_key_and_model_reflect_chain() -> None:
     chain = FailoverProvider(
-        [_StubProvider("kimi", model="Kimi-K2.6"), _StubProvider("codex", model="gpt-5.5")]
+        [_StubProvider("bram", model="Kimi-K2.6"), _StubProvider("codex", model="gpt-5.5")]
     )
 
-    assert chain.provider_key == "failover[kimi+codex]"
+    assert chain.provider_key == "failover[bram+codex]"
     assert chain.model == "Kimi-K2.6"
 
 

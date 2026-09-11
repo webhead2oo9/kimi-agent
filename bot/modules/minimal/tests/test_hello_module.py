@@ -3,8 +3,8 @@
 import pytest
 
 from hello_module import SPEC
-from kimi_agent_module_api import ModuleToolContext, TrustTier
-from kimi_agent_module_api.testing import load_context
+from bram_agent_module_api import ModuleToolContext, TrustTier
+from bram_agent_module_api.testing import load_context
 
 
 @pytest.mark.asyncio

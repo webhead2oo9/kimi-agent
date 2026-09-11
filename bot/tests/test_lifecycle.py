@@ -21,7 +21,7 @@ def _build_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     *,
     database_path: Path | None = None,
-) -> tuple[app_runtime.KimiApplication, ApplicationLifecycle]:
+) -> tuple[app_runtime.BramApplication, ApplicationLifecycle]:
     monkeypatch.setattr(
         app_runtime,
         "build_provider_manager",

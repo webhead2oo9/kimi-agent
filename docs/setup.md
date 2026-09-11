@@ -1,6 +1,6 @@
-# Getting Kimi Up and Running on Ubuntu
+# Getting Bram Up and Running on Ubuntu
 
-This guide walks you through setting up Kimi on an Ubuntu server from start to finish.
+This guide walks you through setting up Bram on an Ubuntu server from start to finish.
 
 **Before you begin:**
 - This was tested on Ubuntu Server 26.04.1 LTS (64-bit) with Python 3.14.
@@ -46,34 +46,34 @@ ssh <deployment-user>@<server-address>
 Now create a dedicated SSH key for this server (it won't touch any keys you already have):
 
 ```sh
-ssh-keygen -t ed25519 -f "$HOME/.ssh/kimi-install-ed25519" -C kimi-install
-ssh-copy-id -i "$HOME/.ssh/kimi-install-ed25519.pub" \
+ssh-keygen -t ed25519 -f "$HOME/.ssh/bram-install-ed25519" -C bram-install
+ssh-copy-id -i "$HOME/.ssh/bram-install-ed25519.pub" \
   <deployment-user>@<server-address>
 ```
 
 If your workstation doesn't have `ssh-copy-id`, do it manually during the password session:
 
 ```sh
-scp "$HOME/.ssh/kimi-install-ed25519.pub" \
-  <deployment-user>@<server-address>:/tmp/kimi-install-ed25519.pub
+scp "$HOME/.ssh/bram-install-ed25519.pub" \
+  <deployment-user>@<server-address>:/tmp/bram-install-ed25519.pub
 ssh <deployment-user>@<server-address> \
-  'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF -f /tmp/kimi-install-ed25519.pub ~/.ssh/authorized_keys || cat /tmp/kimi-install-ed25519.pub >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; rm -f /tmp/kimi-install-ed25519.pub'
+  'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF -f /tmp/bram-install-ed25519.pub ~/.ssh/authorized_keys || cat /tmp/bram-install-ed25519.pub >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; rm -f /tmp/bram-install-ed25519.pub'
 ```
 
-Add this to your workstation's `~/.ssh/config` so you can just type `ssh kimi-install`:
+Add this to your workstation's `~/.ssh/config` so you can just type `ssh bram-install`:
 
 ```sshconfig
-Host kimi-install
+Host bram-install
     HostName <server-address>
     User <deployment-user>
-    IdentityFile ~/.ssh/kimi-install-ed25519
+    IdentityFile ~/.ssh/bram-install-ed25519
     IdentitiesOnly yes
 ```
 
 Test that it truly won't fall back to a password:
 
 ```sh
-ssh -o BatchMode=yes -o PasswordAuthentication=no kimi-install 'id -un; hostname'
+ssh -o BatchMode=yes -o PasswordAuthentication=no bram-install 'id -un; hostname'
 ```
 
 It should print your username and the server hostname with zero prompting. You're good.
@@ -104,7 +104,7 @@ systemctl --version | head -n 1
 
 ---
 
-## 3. Install the Packages Kimi Needs
+## 3. Install the Packages Bram Needs
 
 ### Core packages
 On the **server**:
@@ -141,8 +141,8 @@ Ubuntu 26.04.1 ships Node 22.22. Perfect. Don't continue on anything older than 
 Do this as your normal deployment user on the **server**:
 
 ```sh
-git clone https://github.com/webhead2oo9/kimi-agent.git kimi-agent
-cd kimi-agent
+git clone https://github.com/bram-agent/bram-agent.git bram-agent
+cd bram-agent
 ```
 
 If you want a branch other than `main`, add `--branch <name>` to the clone command.
@@ -158,19 +158,19 @@ the dependencies declared by the local projects.
 Run this as the deployment user:
 
 ```sh
-cd "$HOME/kimi-agent/bot"
+cd "$HOME/bram-agent/bot"
 
 if command -v uv >/dev/null 2>&1; then
   echo "Using installed uv"
   uv sync --locked
   .venv/bin/python -m ensurepip
   .venv/bin/python -m pip --disable-pip-version-check install \
-    --no-deps --editable ./packages/kimi-agent-module-api --editable .
+    --no-deps --editable ./packages/bram-agent-module-api --editable .
 else
   echo "Using standard venv and pip"
   python3 -m venv .venv
   .venv/bin/python -m pip --disable-pip-version-check install \
-    --editable ./packages/kimi-agent-module-api --editable .
+    --editable ./packages/bram-agent-module-api --editable .
 fi
 
 test -x .venv/bin/python
@@ -200,7 +200,7 @@ sudo systemctl start "user@$(id -u).service"
 
 ### Ubuntu 26.04.1: Disable Apport
 
-Ubuntu's crash reporter (Apport) pipes crash dumps to a collector, which defeats the sandbox's core-dump limit, so Kimi refuses to run code while it is active. Check:
+Ubuntu's crash reporter (Apport) pipes crash dumps to a collector, which defeats the sandbox's core-dump limit, so Bram refuses to run code while it is active. Check:
 
 ```sh
 sysctl kernel.core_pattern
@@ -227,7 +227,7 @@ sudo sh ./deploy/betterwright/install.sh
 
 A successful run ends with `browser smoke passed`.
 
-The runtime is installed at `/opt/kimi/betterwright` (owned by root). Leave it there.
+The runtime is installed at `/opt/bram/betterwright` (owned by root). Leave it there.
 
 ---
 
@@ -240,42 +240,42 @@ Run this as the deployment user:
 ```sh
 umask 077
 install -d -m 700 \
-  "$HOME/.config/kimi-agent/config" \
-  "$HOME/.config/kimi-agent/config/prompts/commands" \
-  "$HOME/.config/kimi-agent/secrets" \
-  "$HOME/.local/share/kimi-agent/data" \
-  "$HOME/.local/share/kimi-agent/workspaces" \
-  "$HOME/.local/share/kimi-agent/skills" \
-  "$HOME/.local/share/kimi-agent/browser_profiles" \
-  "$HOME/.local/state/kimi-agent/logs" \
-  "$HOME/.cache/kimi-agent/attachments"
+  "$HOME/.config/bram-agent/config" \
+  "$HOME/.config/bram-agent/config/prompts/commands" \
+  "$HOME/.config/bram-agent/secrets" \
+  "$HOME/.local/share/bram-agent/data" \
+  "$HOME/.local/share/bram-agent/workspaces" \
+  "$HOME/.local/share/bram-agent/skills" \
+  "$HOME/.local/share/bram-agent/browser_profiles" \
+  "$HOME/.local/state/bram-agent/logs" \
+  "$HOME/.cache/bram-agent/attachments"
 ```
 
 Copy the default prompt and model files:
 
 ```sh
 install -m 600 config/prompt.md config/persona.md \
-  "$HOME/.config/kimi-agent/config/"
+  "$HOME/.config/bram-agent/config/"
 install -m 600 config/prompts/commands/*.md \
-  "$HOME/.config/kimi-agent/config/prompts/commands/"
+  "$HOME/.config/bram-agent/config/prompts/commands/"
 install -m 600 config/models.example.yaml \
-  "$HOME/.config/kimi-agent/config/models.yaml"
-printf '%s\n' '{}' > "$HOME/.config/kimi-agent/secrets/skills.yaml"
-chmod 600 "$HOME/.config/kimi-agent/secrets/skills.yaml"
+  "$HOME/.config/bram-agent/config/models.yaml"
+printf '%s\n' '{}' > "$HOME/.config/bram-agent/secrets/skills.yaml"
+chmod 600 "$HOME/.config/bram-agent/secrets/skills.yaml"
 ```
 
 ### Where things live
 
 | Path | Purpose |
 |---|---|
-| `~/.config/kimi-agent/config` | Prompts, models, guild settings |
-| `~/.config/kimi-agent/kimi.env` | Discord token + main settings (mode 600) |
-| `~/.config/kimi-agent/secrets` | Skill secrets, Codex auth |
-| `~/.local/share/kimi-agent` | Database, workspaces, skills, browser profiles |
-| `~/.local/state/kimi-agent/logs` | Tool event logs |
-| `~/.cache/kimi-agent/attachments` | Temporary files |
+| `~/.config/bram-agent/config` | Prompts, models, guild settings |
+| `~/.config/bram-agent/bram.env` | Discord token + main settings (mode 600) |
+| `~/.config/bram-agent/secrets` | Skill secrets, Codex auth |
+| `~/.local/share/bram-agent` | Database, workspaces, skills, browser profiles |
+| `~/.local/state/bram-agent/logs` | Tool event logs |
+| `~/.cache/bram-agent/attachments` | Temporary files |
 
-### Create `kimi.env`
+### Create `bram.env`
 
 Print your home path first:
 
@@ -286,10 +286,10 @@ printf '%s\n' "$HOME"
 Then create the file (replace every placeholder):
 
 ```sh
-cat > "$HOME/.config/kimi-agent/kimi.env" <<'EOF'
+cat > "$HOME/.config/bram-agent/bram.env" <<'EOF'
 # Discord and the explicitly activated sandbox guild.
 DISCORD_BOT_TOKEN=<discord-bot-token>
-BOT_NAME=Kimi
+BOT_NAME=Bram
 OWNER_USER_ID=<operator-user-id>
 STAFF_USER_IDS=<operator-user-id>
 ALLOWED_GUILD_IDS=<guild-id>
@@ -308,26 +308,26 @@ USER_APP_DM_ENABLED=true
 
 # Generic key-backed provider. Use the exact variable named by models.yaml.
 MODEL_API_KEY=<provider-api-key>
-CODEX_TOKEN_FILE=<home-directory>/.config/kimi-agent/secrets/codex-auth.json
+CODEX_TOKEN_FILE=<home-directory>/.config/bram-agent/secrets/codex-auth.json
 
 # Private configuration and runtime state.
-CONFIG_DIR=<home-directory>/.config/kimi-agent/config
-SKILLS_DIR=<home-directory>/.local/share/kimi-agent/skills
-DATABASE_PATH=<home-directory>/.local/share/kimi-agent/data/bot.db
-WORKSPACE_DIR=<home-directory>/.local/share/kimi-agent/workspaces
-ATTACHMENT_STORE_DIR=<home-directory>/.cache/kimi-agent/attachments
-PERSONAL_SKILLS_DIR=<home-directory>/.local/share/kimi-agent/personal_skills
+CONFIG_DIR=<home-directory>/.config/bram-agent/config
+SKILLS_DIR=<home-directory>/.local/share/bram-agent/skills
+DATABASE_PATH=<home-directory>/.local/share/bram-agent/data/bot.db
+WORKSPACE_DIR=<home-directory>/.local/share/bram-agent/workspaces
+ATTACHMENT_STORE_DIR=<home-directory>/.cache/bram-agent/attachments
+PERSONAL_SKILLS_DIR=<home-directory>/.local/share/bram-agent/personal_skills
 TOOL_EVENT_LOG_ENABLED=true
-TOOL_EVENT_LOG_PATH=<home-directory>/.local/state/kimi-agent/logs/events.jsonl
+TOOL_EVENT_LOG_PATH=<home-directory>/.local/state/bram-agent/logs/events.jsonl
 TOOL_EVENT_LOG_CONTENT_MODE=metadata
-SECRETS_FILE=<home-directory>/.config/kimi-agent/secrets/skills.yaml
-BROWSER_PROFILES_DIR=<home-directory>/.local/share/kimi-agent/browser_profiles
-BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
+SECRETS_FILE=<home-directory>/.config/bram-agent/secrets/skills.yaml
+BROWSER_PROFILES_DIR=<home-directory>/.local/share/bram-agent/browser_profiles
+BROWSER_RUNTIME_DIR=/opt/bram/betterwright
 
 # Separately installed application modules, by entry-point name.
-KIMI_MODULES=
+BRAM_MODULES=
 EOF
-chmod 600 "$HOME/.config/kimi-agent/kimi.env"
+chmod 600 "$HOME/.config/bram-agent/bram.env"
 ```
 
 **Important:** Do not leave any angle-bracket placeholders in the file. Add only the extra keys your deployment actually needs (internet search, for example, activates when you set at least one of `TINYFISH_API_KEY`, `EXA_API_KEY`, or `BRAVE_API_KEY`).
@@ -341,7 +341,7 @@ When creating a separate installation, only bring over config and credential fil
 Go to the Discord Developer Portal for the application that owns your bot token.
 
 ### Bot settings
-1. On the **Bot** tab, create or reset the token and store it only in `kimi.env`.
+1. On the **Bot** tab, create or reset the token and store it only in `bram.env`.
 2. Enable **Message Content Intent** only if a module or feature you enable requires it (we set `MESSAGE_CONTENT_INTENT=true` in the example env file).
 3. Enable **Server Members Intent** only if a module or feature you enable requires it (the optional discord-logging example needs it).
 4. Keep **Guild Install** enabled with the `bot` and `applications.commands` scopes.
@@ -370,7 +370,7 @@ The `USER_APP_*` settings let the operator use `/chat` and expose `/privacy`, `/
 Edit the model routing file:
 
 ```sh
-nano "$HOME/.config/kimi-agent/config/models.yaml"
+nano "$HOME/.config/bram-agent/config/models.yaml"
 ```
 
 Replace every `.example.invalid` URL and model ID. Set realistic context windows and capabilities. The `chat` role must support text + tool calling; `compaction` only needs text. Don't declare `image_input` until you've actually tested images on that route.
@@ -406,7 +406,7 @@ overrides:
   commands: {}
 ```
 
-Secrets stay in `kimi.env`; `models.yaml` just names the environment variable.
+Secrets stay in `bram.env`; `models.yaml` just names the environment variable.
 
 If your model route uses `codex`, run the login helper:
 
@@ -423,7 +423,7 @@ It will prompt for confirmation and then start the device authentication flow.
 Here's a baseline for a 4 vCPU / 4 GiB RAM machine.
 
 ```sh
-cat > "$HOME/.config/kimi-agent/runtime.env" <<'EOF'
+cat > "$HOME/.config/bram-agent/runtime.env" <<'EOF'
 BROWSER_ENABLED=true
 BROWSER_NETWORK_MODE=host
 BROWSER_MAX_TOTAL_MEMORY_MB=1536
@@ -444,7 +444,7 @@ CODE_EXEC_TMP_SIZE_MB=256
 CODE_EXEC_ENV_DIR_MAX_MB=512
 CODE_EXEC_ENV_DIR_MAX_FILES=50000
 EOF
-chmod 600 "$HOME/.config/kimi-agent/runtime.env"
+chmod 600 "$HOME/.config/bram-agent/runtime.env"
 ```
 
 `BROWSER_NETWORK_MODE=host` is the straightforward public-browser path. Code execution stays offline. The test needed `BROWSER_MAX_TASKS=128` because Chromium creates renderer threads. Lowering it without re-testing can cause failures.
@@ -455,37 +455,37 @@ Don't blindly copy resource limits or network modes from another host.
 
 ## 11. (Optional) Discord Logging Module Example
 
-Kimi supports separately installed application modules. The discord-logging module is one example of what a module can do. It is completely optional. You only need it if you want edit/delete/invite/member logging in a channel.
+Bram supports separately installed application modules. The discord-logging module is one example of what a module can do. It is completely optional. You only need it if you want edit/delete/invite/member logging in a channel.
 
 If you enable it, it requires the two privileged intents. You can review the module's code to see exactly what it does and what permissions it needs. The steps below show how to install and configure it as an example.
 
 ```sh
-module_dir="$HOME/kimi-agent-discord-logging"
+module_dir="$HOME/bram-agent-discord-logging"
 module_commit="<reviewed-module-commit>"
 test ! -e "$module_dir"
-git clone https://github.com/webhead2oo9/kimi-agent-discord-logging.git \
+git clone https://github.com/bram-agent/bram-agent-discord-logging.git \
   "$module_dir"
 git -C "$module_dir" checkout --detach "$module_commit"
 git -C "$module_dir" status --short --branch
 test "$(git -C "$module_dir" rev-parse HEAD)" = "$module_commit"
 
-cd "$HOME/kimi-agent/bot"
+cd "$HOME/bram-agent/bot"
 .venv/bin/python -m pip --disable-pip-version-check install \
   --no-deps --editable "$module_dir"
 .venv/bin/python - <<'PY'
 from importlib.metadata import entry_points, version
 
-names = {item.name for item in entry_points(group="kimi_agent.modules")}
+names = {item.name for item in entry_points(group="bram_agent.modules")}
 assert "discord_logging" in names
-print("discord-logging-version=" + version("kimi-agent-discord-logging"))
+print("discord-logging-version=" + version("bram-agent-discord-logging"))
 print("discord-logging-entry-point=present")
 PY
 ```
 
-Then set the installed entry-point name in `kimi.env` before startup:
+Then set the installed entry-point name in `bram.env` before startup:
 
 ```dotenv
-KIMI_MODULES=discord_logging
+BRAM_MODULES=discord_logging
 ```
 
 After any later `uv sync`, repeat the editable install.
@@ -494,8 +494,8 @@ Create a minimal guild config for the sandbox:
 
 ```sh
 install -d -m 700 \
-  "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>"
-cat > "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>/discord_logging.md" <<'EOF'
+  "$HOME/.config/bram-agent/config/guild-modules/<guild-id>"
+cat > "$HOME/.config/bram-agent/config/guild-modules/<guild-id>/discord_logging.md" <<'EOF'
 ---
 logging_channel_id: <logging-channel-id>
 log_edits: true
@@ -509,7 +509,7 @@ snapshot_retention_days: 30
 ---
 EOF
 chmod 600 \
-  "$HOME/.config/kimi-agent/config/guild-modules/<guild-id>/discord_logging.md"
+  "$HOME/.config/bram-agent/config/guild-modules/<guild-id>/discord_logging.md"
 ```
 
 The logging channel needs View Channel, Send Messages, and Embed Links. The bot needs View Channel (and ideally Read Message History) in observed channels. Put sensitive channels in the ignored list.
@@ -547,7 +547,7 @@ It will create the service file with the correct paths, enable lingering if need
 
 You can start it later with:
 ```sh
-systemctl --user start kimi-agent.service
+systemctl --user start bram-agent.service
 ```
 
 ---
@@ -557,9 +557,9 @@ systemctl --user start kimi-agent.service
 If nothing else is using the token, just start it:
 
 ```sh
-systemctl --user start kimi-agent.service
-systemctl --user status kimi-agent.service --no-pager
-journalctl --user -u kimi-agent.service -n 150 --no-pager
+systemctl --user start bram-agent.service
+systemctl --user status bram-agent.service --no-pager
+journalctl --user -u bram-agent.service -n 150 --no-pager
 ```
 
 ---
@@ -569,21 +569,21 @@ journalctl --user -u kimi-agent.service -n 150 --no-pager
 Handy commands:
 
 ```sh
-systemctl --user start kimi-agent.service
-systemctl --user stop kimi-agent.service
-systemctl --user restart kimi-agent.service
+systemctl --user start bram-agent.service
+systemctl --user stop bram-agent.service
+systemctl --user restart bram-agent.service
 
-systemctl --user status kimi-agent.service --no-pager
-journalctl --user -u kimi-agent.service -n 200 --no-pager
-journalctl --user -u kimi-agent.service -b --no-pager
-journalctl --user -u kimi-agent.service \
+systemctl --user status bram-agent.service --no-pager
+journalctl --user -u bram-agent.service -n 200 --no-pager
+journalctl --user -u bram-agent.service -b --no-pager
+journalctl --user -u bram-agent.service \
   --since '30 minutes ago' --no-pager
 
 # Follow live logs until you press Ctrl-C
-journalctl --user -u kimi-agent.service -f
+journalctl --user -u bram-agent.service -f
 ```
 
-Restart after changing `kimi.env`, `runtime.env`, `models.yaml`, or module registration. Most prompt and fragment files reload live, but a restart is still the safest validation.
+Restart after changing `bram.env`, `runtime.env`, `models.yaml`, or module registration. Most prompt and fragment files reload live, but a restart is still the safest validation.
 
 A quick restart can leave a stale scheduler lease for up to 60 seconds. Always prove there's only one `bot.py` process. The "another scheduler runner holds the lease" message is only okay if you then see "Module scheduler resumed" and the module becomes healthy within roughly 80 seconds.
 
@@ -591,8 +591,8 @@ Check boot setup:
 
 ```sh
 loginctl show-user "$(id -un)" -p Linger
-systemctl --user is-enabled kimi-agent.service
-systemctl --user is-active kimi-agent.service
+systemctl --user is-enabled bram-agent.service
+systemctl --user is-active bram-agent.service
 ```
 
 ---
@@ -608,23 +608,23 @@ for the supported schema boundary and backup requirements.
 
 ### 1. Stop the service
 ```sh
-systemctl --user stop kimi-agent.service
+systemctl --user stop bram-agent.service
 ```
 
 ### 2. (Optional) Quick backup
 If you want a safety net:
 ```sh
 umask 077
-backup_dir="$HOME/kimi-agent-backups/$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="$HOME/bram-agent-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 700 "$backup_dir"
 backup_items=()
 for item in \
-  .config/kimi-agent \
-  .config/systemd/user/kimi-agent.service \
-  .config/systemd/user/kimi-agent.service.d \
-  .local/share/kimi-agent \
-  .cache/kimi-agent \
-  .local/state/kimi-agent
+  .config/bram-agent \
+  .config/systemd/user/bram-agent.service \
+  .config/systemd/user/bram-agent.service.d \
+  .local/share/bram-agent \
+  .cache/bram-agent \
+  .local/state/bram-agent
 do
   if [[ -e "$HOME/$item" ]]; then
     backup_items+=("$item")
@@ -645,7 +645,7 @@ separately, preserving its original path and permissions.
 ### 3. Update the code
 Make sure your checkout is clean, then pull:
 ```sh
-cd "$HOME/kimi-agent"
+cd "$HOME/bram-agent"
 git status --short --branch
 git pull --ff-only
 ```
@@ -654,29 +654,29 @@ Compare any prompt changes against your private copies.
 
 ### 4. Reinstall Python packages
 ```sh
-cd "$HOME/kimi-agent/bot"
+cd "$HOME/bram-agent/bot"
 if command -v uv >/dev/null 2>&1; then
   uv sync --locked
   .venv/bin/python -m ensurepip
   .venv/bin/python -m pip install --no-deps \
-    --editable ./packages/kimi-agent-module-api --editable .
+    --editable ./packages/bram-agent-module-api --editable .
 else
   python3 -m venv .venv
   .venv/bin/python -m pip install \
-    --editable ./packages/kimi-agent-module-api --editable .
+    --editable ./packages/bram-agent-module-api --editable .
 fi
 ```
 
 ### 5. Optional: discord-logging module
 If you installed the optional discord-logging module, update it too:
 ```sh
-.venv/bin/python -m pip install --no-deps --editable "$HOME/kimi-agent-discord-logging"
+.venv/bin/python -m pip install --no-deps --editable "$HOME/bram-agent-discord-logging"
 ```
 
 ### 6. Run preflight and start
 ```sh
 ./scripts/preflight
-systemctl --user start kimi-agent.service
+systemctl --user start bram-agent.service
 ```
 
 ---
@@ -703,10 +703,10 @@ sudo reboot
 After reconnecting:
 
 ```sh
-ssh kimi-install
-systemctl --user is-active kimi-agent.service
-systemctl --user status kimi-agent.service --no-pager
-journalctl --user -u kimi-agent.service -b --no-pager
+ssh bram-install
+systemctl --user is-active bram-agent.service
+systemctl --user status bram-agent.service --no-pager
+journalctl --user -u bram-agent.service -b --no-pager
 ```
 
 Make sure your persistent data survived.
@@ -725,8 +725,8 @@ Make sure your persistent data survived.
 | Browser/code probe fails | Check `sysctl kernel.core_pattern`. A leading `|` bypasses the sandbox's zero-core limit. Also verify Bubblewrap, user manager, and workspace mounts. |
 | `DISCORD_BOT_TOKEN is not set` | The `ENV_FILE` is missing, unreadable, or doesn't contain the token. Check paths and permissions (don't print the value). |
 | Provider credentials unavailable | A chat, fallback, or compaction route is missing its key/token. |
-| Model routing file not found | `<CONFIG_DIR>/models.yaml` is missing. Kimi never falls back to the example template. |
-| Discord rejects privileged intents | The portal and your `kimi.env` settings disagree. Enable both sides or turn off the feature that needs them. |
+| Model routing file not found | `<CONFIG_DIR>/models.yaml` is missing. Bram never falls back to the example template. |
+| Discord rejects privileged intents | The portal and your `bram.env` settings disagree. Enable both sides or turn off the feature that needs them. |
 | Bot is online but ignores the guild | The guild is inactive, its fragment is invalid, `bot_active: false` wins, or the bot lacks channel permissions. |
 | `discord_logging` entry point missing | Reinstall the module after any `uv sync` or environment recreation. |
 | Logging module is soft-disabled | Both required intents aren't enabled. `/modules status` will tell you exactly what's missing. |

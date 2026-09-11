@@ -1,20 +1,20 @@
 [Unit]
-Description=Kimi
+Description=Bram
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 UMask=0077
-# Replace /srv/kimi with the deployment checkout or release path. Install
+# Replace /srv/bram with the deployment checkout or release path. Install
 # this as a user unit for the same unprivileged account that owns runtime data.
-WorkingDirectory=/srv/kimi/bot
+WorkingDirectory=/srv/bram/bot
 Environment=PYTHONUNBUFFERED=1
 # Optional deployment-only overrides such as BROWSER_ENABLED/network mode and
 # resource caps. Keep credentials in a separate protected environment file.
-EnvironmentFile=-/srv/kimi/private/runtime.env
-EnvironmentFile=-/srv/kimi/private/secrets.env
-ExecStart=/srv/kimi/bot/.venv/bin/python bot.py
+EnvironmentFile=-/srv/bram/private/runtime.env
+EnvironmentFile=-/srv/bram/private/secrets.env
+ExecStart=/srv/bram/bot/.venv/bin/python bot.py
 # Aggregate cgroup backstop for the bot and all ordinary child processes,
 # including executable skill process trees. Tune these values to the host and
 # lower the per-invocation SCRIPT_SANDBOX_* limits when deploying on less RAM.

@@ -1732,7 +1732,7 @@ async def test_delete_user_data_drops_rooted_and_scrubs_shared(tmp_path) -> None
         await store.save_channel_messages(
             alice_root,
             [
-                ChannelMessageRecord("m-alice", "user", "alice", "Alice", "hey kimi"),
+                ChannelMessageRecord("m-alice", "user", "alice", "Alice", "hey bram"),
                 ChannelMessageRecord("m-bob-reply", "user", "bob", "Bob", "me too"),
                 ChannelMessageRecord("m-bot-1", "assistant", None, None, "hi all"),
             ],
@@ -1748,7 +1748,7 @@ async def test_delete_user_data_drops_rooted_and_scrubs_shared(tmp_path) -> None
         await store.save_channel_messages(
             bob_root,
             [
-                ChannelMessageRecord("m-bob", "user", "bob", "Bob", "kimi help"),
+                ChannelMessageRecord("m-bob", "user", "bob", "Bob", "bram help"),
                 ChannelMessageRecord("m-alice-chime", "user", "alice", "Alice", "+1"),
                 ChannelMessageRecord("m-bot-2", "assistant", None, None, "sure"),
             ],
@@ -1763,7 +1763,7 @@ async def test_delete_user_data_drops_rooted_and_scrubs_shared(tmp_path) -> None
         )
         await store.save_channel_messages(
             carol_root,
-            [ChannelMessageRecord("m-carol", "user", "carol", "Carol", "kimi help")],
+            [ChannelMessageRecord("m-carol", "user", "carol", "Carol", "bram help")],
             context_channel_id="c",
         )
         await store.map_thread_conversation("thread-carol", carol_root, creator_user_id="alice")

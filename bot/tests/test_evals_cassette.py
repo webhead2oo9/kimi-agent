@@ -388,13 +388,13 @@ def test_cassette_model_key_slugs_label():
     assert cassette_model_key("MiniMax M3") == "minimax-m3"
     # spec.model carries provider path segments; the key is slugged off the label
     # precisely so nothing like this ever becomes a nested directory.
-    assert "/" not in cassette_model_key("accounts/fireworks/models/kimi-k3")
+    assert "/" not in cassette_model_key("accounts/fireworks/models/bram-k3")
     with pytest.raises(ValueError):
         cassette_model_key("   ")
 
 
 def test_assert_unique_model_keys_rejects_colliding_labels():
-    assert_unique_model_keys(["kimi-k3", "gpt-5.6-sol", "minimax-m3"])
+    assert_unique_model_keys(["bram-k3", "gpt-5.6-sol", "minimax-m3"])
     # Two arms differing only in punctuation/case would share one tape directory,
     # which is the same cross-model contamination in a quieter costume.
     with pytest.raises(ValueError):

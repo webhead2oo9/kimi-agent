@@ -13,15 +13,15 @@ API client and business logic where they are, and replace the wiring layer.
 
 | Plugin | Module |
 |---|---|
-| `PLUGIN_MODULES=package.plugin` | Install the package and set `KIMI_MODULES=entry_name` |
+| `PLUGIN_MODULES=package.plugin` | Install the package and set `BRAM_MODULES=entry_name` |
 | `PLUGIN_API_VERSION = 2` | `ModuleSpec(..., api_version=2)` |
 | `register(ctx)` | `ModuleSpec.create(ctx)` returns an object with `scoped_migrations`, `start(ctx)`, and `close()` |
-| Imports from `app.plugins`, `tools.registry`, or `trust.tiers` | Host contracts from `kimi_agent_module_api` |
+| Imports from `app.plugins`, `tools.registry`, or `trust.tiers` | Host contracts from `bram_agent_module_api` |
 | `ctx.registry.register(...)` | Register through the module load context in `create()` |
 | `PLUGIN_SETTINGS` | `ModuleSpec.settings` with `ModuleSettingsDefinition` |
 | `ctx.settings_for(MySettings)` | `ctx.settings_for(MySettings)` on the module load context |
 | Live gateway access | Declared operations through the runtime context's `discord` port |
-| Best-effort loading | Required by default; explicitly optional through `KIMI_OPTIONAL_MODULES` |
+| Best-effort loading | Required by default; explicitly optional through `BRAM_OPTIONAL_MODULES` |
 
 ## Move configuration and tool registration
 
@@ -62,7 +62,7 @@ the bot process and is not sandboxed.
 Use SDK fakes to test handlers, settings, and cleanup independently of core.
 Verify the module in an isolated development instance, including failure after
 partial startup. Remove the plugin import from `PLUGIN_MODULES` when adding
-the module entry point to `KIMI_MODULES`: enabling both versions can collide
+the module entry point to `BRAM_MODULES`: enabling both versions can collide
 on tool names. Restart to apply the switch and check `/modules status`.
 
 Keep the old package and plugin configuration until the replacement is

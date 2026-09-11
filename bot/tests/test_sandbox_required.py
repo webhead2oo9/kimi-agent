@@ -3,7 +3,7 @@
 The live-jail tests in test_sandbox_runner.py, test_code_exec_tool.py, and
 test_skill_sandbox.py skip when the Linux boundary cannot start, which is
 right on a developer laptop and self-concealing on the one CI job whose
-purpose is to prove the boundary. That job sets KIMI_REQUIRE_SANDBOX_TESTS=1.
+purpose is to prove the boundary. That job sets BRAM_REQUIRE_SANDBOX_TESTS=1.
 Their shared gate suppresses prerequisite skips under that flag, and this test
 is the fast, readable first failure that names the missing prerequisite. Other
 host-shape skips remain ordinary skips in both environments.
@@ -32,7 +32,7 @@ from tests.sandbox_gate import (
 @pytest.mark.uses_live_settings_env
 def test_live_sandbox_is_available_where_required() -> None:
     if os.environ.get(REQUIRE_SANDBOX_ENV) != "1":
-        pytest.skip("KIMI_REQUIRE_SANDBOX_TESTS=1 is not set; the live sandbox is optional here")
+        pytest.skip("BRAM_REQUIRE_SANDBOX_TESTS=1 is not set; the live sandbox is optional here")
 
     settings = Settings()  # type: ignore[call-arg]
     # The same layered profile startup certifies: the operator settings.md
@@ -66,5 +66,5 @@ def test_runtime_sandbox_gate_skips_locally_and_fails_in_required_ci(
         sandbox_unavailable("libseccomp unavailable")
 
     monkeypatch.setenv(REQUIRE_SANDBOX_ENV, "1")
-    with pytest.raises(pytest.fail.Exception, match="KIMI_REQUIRE_SANDBOX_TESTS=1"):
+    with pytest.raises(pytest.fail.Exception, match="BRAM_REQUIRE_SANDBOX_TESTS=1"):
         sandbox_unavailable("libseccomp unavailable")

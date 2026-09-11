@@ -56,19 +56,19 @@ jobs:
         shell: bash
         run: |
           python_path="$(command -v python)"
-          venv_path="${RUNNER_TEMP}/kimi-agent-pip"
+          venv_path="${RUNNER_TEMP}/bram-agent-pip"
           export PATH=/usr/bin:/bin
           test -z "$(command -v uv || true)"
           "$python_path" --version
           "${python_path}" -m venv "$venv_path"
           "$venv_path/bin/python" -m pip --disable-pip-version-check install \
-            --editable ./packages/kimi-agent-module-api --editable .
+            --editable ./packages/bram-agent-module-api --editable .
           test ! -e build
-          test ! -e packages/kimi-agent-module-api/build
+          test ! -e packages/bram-agent-module-api/build
           test ! -e modules/example/build
           "$venv_path/bin/python" -m pip check
           "$venv_path/bin/python" -c \
-            "import aiohttp, discord, kimi_agent_module_api, openai, pydantic"
+            "import aiohttp, discord, bram_agent_module_api, openai, pydantic"
 
   check:
     name: lint + types + tests
@@ -121,9 +121,9 @@ jobs:
         run: |
           .venv/bin/python -m ensurepip
           .venv/bin/python -m pip --disable-pip-version-check install \
-            --no-deps --editable ./packages/kimi-agent-module-api --editable .
+            --no-deps --editable ./packages/bram-agent-module-api --editable .
           test ! -e build
-          test ! -e packages/kimi-agent-module-api/build
+          test ! -e packages/bram-agent-module-api/build
           test ! -e modules/example/build
           .venv/bin/python -m pip check
 
@@ -147,7 +147,7 @@ jobs:
             modules/minimal/hello_module.py modules/minimal/tests
 
       - name: Test module API package standalone
-        working-directory: bot/packages/kimi-agent-module-api
+        working-directory: bot/packages/bram-agent-module-api
         run: uv run --isolated --locked --group test python -m pytest -q
 
       - name: Tests
@@ -172,7 +172,7 @@ jobs:
 
       - name: Build module API and reference consumer
         run: |
-          uv build --package kimi-agent-module-api --no-sources \
+          uv build --package bram-agent-module-api --no-sources \
             --out-dir dist/module-api
           uv build --package community-agent-reference-module --no-sources \
             --out-dir dist/reference-module
@@ -199,7 +199,7 @@ jobs:
   # core_pattern, so every live-jail test skips there and the most
   # security-critical code in the repo would otherwise never execute in CI.
   # This job provisions the boundary the way docs/code-exec.md tells an
-  # operator to, and KIMI_REQUIRE_SANDBOX_TESTS turns "unavailable" from a
+  # operator to, and BRAM_REQUIRE_SANDBOX_TESTS turns "unavailable" from a
   # skip into a failure.
   sandbox:
     name: live sandbox tests
@@ -295,7 +295,7 @@ jobs:
 
       - name: Live sandbox tests
         env:
-          KIMI_REQUIRE_SANDBOX_TESTS: "1"
+          BRAM_REQUIRE_SANDBOX_TESTS: "1"
         run: >-
           uv run python -m pytest -q -rs
           tests/test_sandbox_required.py

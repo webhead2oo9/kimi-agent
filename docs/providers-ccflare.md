@@ -55,7 +55,7 @@ Four details decide whether this works:
   with the selected account's credential: a Claude Code account gets
   `Authorization: Bearer <oauth token>`, while an Anthropic API-key account gets
   its `x-api-key`. It also adds the `anthropic-version` and `anthropic-beta`
-  headers. Supplying a Kimi-side key would be pointless, and the startup
+  headers. Supplying a Bram-side key would be pointless, and the startup
   credential gate is satisfied without one.
 - **The native `/v1/anthropic/*` prefix will not work here.** It forwards
   straight to api.anthropic.com and demands a real API key, which defeats the

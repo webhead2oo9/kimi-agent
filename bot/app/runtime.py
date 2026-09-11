@@ -152,7 +152,7 @@ class _DeferredShutdownSignal(ShutdownSignal):
         return lifecycle.closed
 
 
-class KimiCommandTree(app_commands.CommandTree):
+class BramCommandTree(app_commands.CommandTree):
     async def sync(
         self, *, guild: discord.abc.Snowflake | None = None
     ) -> list[app_commands.AppCommand]:
@@ -212,8 +212,8 @@ class KimiCommandTree(app_commands.CommandTree):
         return False
 
 
-class KimiBot(commands.Bot):
-    _agent_application: KimiApplication | None = None
+class BramBot(commands.Bot):
+    _agent_application: BramApplication | None = None
 
     async def close(self) -> None:
         try:
@@ -248,9 +248,9 @@ async def _reject_interaction(
 
 
 @dataclass
-class KimiApplication:
+class BramApplication:
     settings: Settings
-    bot: KimiBot
+    bot: BramBot
     _trust_resolver: TrustResolver = field(repr=False)
     discord_gateway: DiscordGateway
     _provider_manager: ProviderManager = field(repr=False)
@@ -509,7 +509,7 @@ class KimiApplication:
                 )
             )
         if self.lifecycle.startup_error is not None:
-            raise RuntimeError("Kimi Agent startup failed") from self.lifecycle.startup_error
+            raise RuntimeError("Bram Agent startup failed") from self.lifecycle.startup_error
         return 0
 
     async def close(self) -> None:
@@ -553,7 +553,7 @@ class KimiApplication:
         )
 
 
-def build_app(settings: Settings) -> KimiApplication:
+def build_app(settings: Settings) -> BramApplication:
     # Layer the operator's settings file over the environment, before any
     # of it is captured into the config objects built below. The file wins over
     # .env on purpose: it is the operator's deliberate edit, so environment
@@ -587,10 +587,10 @@ def build_app(settings: Settings) -> KimiApplication:
             "text trigger, thread auto-reply, and discord_text_search will not.",
             settings.bot_name,
         )
-    bot = KimiBot(
+    bot = BramBot(
         command_prefix="!",
         intents=intents,
-        tree_cls=KimiCommandTree,
+        tree_cls=BramCommandTree,
         allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
         allowed_contexts=app_commands.AppCommandContext(
             guild=True,
@@ -645,7 +645,7 @@ def build_app(settings: Settings) -> KimiApplication:
         privacy_deletion_store=PrivacyDeletionRequestStore(database),
         user_memory_bank_state_store=UserMemoryBankStateStore(database),
     )
-    application = KimiApplication(
+    application = BramApplication(
         settings=settings,
         bot=bot,
         _trust_resolver=trust_resolver,

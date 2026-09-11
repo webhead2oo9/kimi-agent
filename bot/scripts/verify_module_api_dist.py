@@ -15,16 +15,16 @@ import zipfile
 
 _EXPECTED_API_FILES = frozenset(
     {
-        "kimi_agent_module_api/__init__.py",
-        "kimi_agent_module_api/contracts.py",
-        "kimi_agent_module_api/events.py",
-        "kimi_agent_module_api/files.py",
-        "kimi_agent_module_api/images.py",
-        "kimi_agent_module_api/py.typed",
-        "kimi_agent_module_api/settings.py",
-        "kimi_agent_module_api/testing.py",
-        "kimi_agent_module_api/tools.py",
-        "kimi_agent_module_api/trust.py",
+        "bram_agent_module_api/__init__.py",
+        "bram_agent_module_api/contracts.py",
+        "bram_agent_module_api/events.py",
+        "bram_agent_module_api/files.py",
+        "bram_agent_module_api/images.py",
+        "bram_agent_module_api/py.typed",
+        "bram_agent_module_api/settings.py",
+        "bram_agent_module_api/testing.py",
+        "bram_agent_module_api/tools.py",
+        "bram_agent_module_api/trust.py",
     }
 )
 _EXPECTED_API_MODULES = (
@@ -63,12 +63,12 @@ def _verify_artifacts(wheel: Path, sdist: Path) -> None:
 
 
 def _verify_consumer() -> None:
-    import kimi_agent_module_api as api
+    import bram_agent_module_api as api
 
     for module in _EXPECTED_API_MODULES:
-        import_module(f"kimi_agent_module_api.{module}")
+        import_module(f"bram_agent_module_api.{module}")
 
-    contracts = import_module("kimi_agent_module_api.contracts")
+    contracts = import_module("bram_agent_module_api.contracts")
     assert hasattr(contracts, "CommandSyncError")
     assert hasattr(contracts, "GuildCommand")
     assert hasattr(contracts, "ModalSpec")

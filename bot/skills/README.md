@@ -92,7 +92,7 @@ output, output files, and tmpfs have separate caps. These are inherited
 per-process limits, not an aggregate cgroup budget. The process-count limit is also
 per-real-UID. Executable-skill startup requires the whole bot to run as a
 dedicated unprivileged service user. The example systemd unit,
-[`deploy/kimi.service.example`](../deploy/kimi.service.example), adds
+[`deploy/bram.service.example`](../deploy/bram.service.example), adds
 `TasksMax=128`, `MemoryMax=2G`, and `CPUQuota=200%` to the bot's service cgroup,
 which bounds the aggregate bot and executable-skill process trees. Tune those
 ceilings to the host and deployment concurrency, and apply equivalent container

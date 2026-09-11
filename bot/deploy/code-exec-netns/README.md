@@ -25,7 +25,7 @@ or omit the privilege drop.
 ## Provisioning checklist
 
 1. Satisfy the generic host prerequisites before anything netns-specific:
-   - run Kimi under a dedicated non-root service account, with lingering
+   - run Bram under a dedicated non-root service account, with lingering
      enabled and its `systemctl --user` manager reachable. The commands are in
      [`docs/code-exec.md`](../../../docs/code-exec.md#host-requirements);
    - keep `WORKSPACE_DIR` on an exec-capable filesystem; and

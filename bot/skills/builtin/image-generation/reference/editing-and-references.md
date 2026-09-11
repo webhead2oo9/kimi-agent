@@ -1,6 +1,6 @@
 # Editing and multiple references
 
-Adapted for Kimi from OpenAI's
+Adapted for Bram from OpenAI's
 [Image prompting guide](https://developers.openai.com/api/docs/guides/image-prompting).
 Every recipe below assumes the named inputs have first been observed. Do not call
 `generate_image` with imaginary filenames or paths; ask for a missing source.
@@ -110,7 +110,7 @@ background leaked into the result.
 ## Isolate a product on transparent background
 
 Use the observed product photograph as the base. Request isolation both in prose
-and through Kimi's `background: transparent` hint.
+and through Bram's `background: transparent` hint.
 
 ```text
 Extract only the product from Reference 1 onto a fully transparent background.
@@ -122,7 +122,7 @@ or colored backdrop, scenery, checkerboard pattern, halo, fringe, added shadow,
 text, or watermark.
 ```
 
-Kimi returns PNG, but a white canvas or painted checkerboard can still be opaque.
+Bram returns PNG, but a white canvas or painted checkerboard can still be opaque.
 Do not claim transparent alpha from filename, requested metadata, or provider
 labels. Inspect the decoded alpha channel only with an available capable tool;
 otherwise state that transparency must be checked.

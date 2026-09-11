@@ -212,7 +212,7 @@ class DashboardStore:
                 (chat.id,),
             ) as cur:
                 if await cur.fetchone():
-                    raise DashboardBusyError("Kimi is still responding in this conversation")
+                    raise DashboardBusyError("Bram is still responding in this conversation")
             await conn.execute(
                 "INSERT INTO dashboard_turns VALUES(?,?,?,'accepted',?,?)",
                 (turn_id, chat.id, request_id, now, now),

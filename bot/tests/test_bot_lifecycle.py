@@ -164,7 +164,7 @@ class FakeMemoryManager:
         self.close_count += 1
 
 
-def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.KimiApplication:
+def _build_test_app(monkeypatch: pytest.MonkeyPatch) -> app_runtime.BramApplication:
     monkeypatch.setattr(
         app_runtime,
         "build_provider_manager",

@@ -100,37 +100,37 @@ def test_normal_channel_reply_without_bot_mention_is_ignored():
 
 
 def test_hey_bot_name_text_invocation_responds_without_mention():
-    message = _Message(author=_Author(id=123), content="hey kimi can you help?")
+    message = _Message(author=_Author(id=123), content="hey bram can you help?")
 
     assert _should(message) is True
 
 
 def test_hey_bot_name_text_invocation_is_case_insensitive():
-    message = _Message(author=_Author(id=123), content="Hey Kimi")
+    message = _Message(author=_Author(id=123), content="Hey Bram")
 
     assert _should(message) is True
 
 
 def test_hi_bot_name_text_invocation_accepts_punctuation():
-    message = _Message(author=_Author(id=123), content="Hi, Kimi! ping?")
+    message = _Message(author=_Author(id=123), content="Hi, Bram! ping?")
 
     assert _should(message) is True
 
 
 def test_bot_name_help_text_invocation_responds_without_mention():
-    message = _Message(author=_Author(id=123), content="kimi help")
+    message = _Message(author=_Author(id=123), content="bram help")
 
     assert _should(message) is True
 
 
 def test_text_invocation_must_start_the_message():
-    message = _Message(author=_Author(id=123), content="Alice said hey kimi")
+    message = _Message(author=_Author(id=123), content="Alice said hey bram")
 
     assert _should(message) is False
 
 
 def test_text_invocation_requires_the_command_phrase():
-    message = _Message(author=_Author(id=123), content="kimi what can you do?")
+    message = _Message(author=_Author(id=123), content="bram what can you do?")
 
     assert _should(message) is False
 
@@ -175,7 +175,7 @@ def test_paused_thread_falls_back_to_the_ordinary_channel_gates(monkeypatch):
     greeted = _Message(
         author=_Author(id=123),
         channel=thread_channel(id=321),
-        content="hey kimi start responding again",
+        content="hey bram start responding again",
     )
     assert _should(greeted, bot_user=bot, thread_participation=set()) is True
 
@@ -254,7 +254,7 @@ def test_can_send_reply_fails_open_without_member_or_on_error():
 
 
 def test_bot_authored_text_invocation_is_ignored():
-    message = _Message(author=_Author(id=456, bot=True), content="hey kimi help")
+    message = _Message(author=_Author(id=456, bot=True), content="hey bram help")
 
     assert _should(message) is False
 
@@ -296,7 +296,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
 
     assert (
         strip_mention(
-            "hey kimi, troubleshoot the build",
+            "hey bram, troubleshoot the build",
             bot_user=bot_user,
             bot_name=DEFAULT_BOT_NAME,
         )
@@ -304,7 +304,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
     )
     assert (
         strip_mention(
-            "Hi, Kimi! ping?",
+            "Hi, Bram! ping?",
             bot_user=bot_user,
             bot_name=DEFAULT_BOT_NAME,
         )
@@ -312,7 +312,7 @@ def test_strip_mention_removes_text_invocation_prefix_with_prompt():
     )
     assert (
         strip_mention(
-            "kimi help",
+            "bram help",
             bot_user=bot_user,
             bot_name=DEFAULT_BOT_NAME,
         )
@@ -325,9 +325,9 @@ def test_strip_mention_keeps_bare_greeting_non_empty():
 
     assert (
         strip_mention(
-            "hey kimi",
+            "hey bram",
             bot_user=bot_user,
             bot_name=DEFAULT_BOT_NAME,
         )
-        == "hey kimi"
+        == "hey bram"
     )

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     MODULE_API_VERSION,
     ModuleCapabilities,
     ModuleLoadContext,
@@ -16,7 +16,7 @@ from kimi_agent_module_api import (
     ModuleRuntimeContext,
     ModuleSpec,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ButtonSpec,
     CommandOption,
     CommandSpec,
@@ -28,7 +28,7 @@ from kimi_agent_module_api.contracts import (
     TextInputSpec,
     UndeclaredDiscordAction,
 )
-from kimi_agent_module_api.testing import (
+from bram_agent_module_api.testing import (
     FakeInteraction,
     FakeInteractionOwnership,
     FakeInteractions,

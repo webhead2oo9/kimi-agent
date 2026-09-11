@@ -70,7 +70,7 @@ Most settings in this reference are optional or gated off by default. The first 
 
 ## How configuration loading works
 
-Kimi reads configuration from several layers, so you can keep secrets and machine-specific values out of the repository and still have overrides you can audit. The core `Settings` object comes from the environment (or the `.env` file you choose). An optional operator settings file layers on top of it. Per-tool config, guild and channel fragments, and the model routing file are each read at different times: some once at startup, some fresh on every message. The sections below say which is which.
+Bram reads configuration from several layers, so you can keep secrets and machine-specific values out of the repository and still have overrides you can audit. The core `Settings` object comes from the environment (or the `.env` file you choose). An optional operator settings file layers on top of it. Per-tool config, guild and channel fragments, and the model routing file are each read at different times: some once at startup, some fresh on every message. The sections below say which is which.
 
 Each entry point (`bot.py`, the scripts) builds the `Settings` object itself and passes it to `build_app`. Merely importing `config.settings` does not read the environment or any dotenv file. Plugins and application modules may define their own separate settings models.
 
@@ -86,7 +86,7 @@ Once the core `Settings` object exists, `build_app` applies an overlay from `<CO
 - No paths, binaries, scripts, or files (`*_dir`, `*_directory`, `*_path`, `*_bin`, `*_script`, `*_file`).
 - No service URLs or endpoints (`*_uri`, `*_url`, `*_base`, `*_endpoint`, `*_host`, `*_port`, `*_ip`).
 - No `database_*` settings.
-- Neither `plugin_modules`, `kimi_modules`, nor `kimi_optional_modules`.
+- Neither `plugin_modules`, `bram_modules`, nor `bram_optional_modules`.
 
 The `*_ids` allowlists are written as YAML lists in the operator file rather than the comma-separated strings used in `.env`.
 
@@ -295,7 +295,7 @@ The bot token, role-based and user-based trust lists, channel and guild allowlis
 | `OWNER_USER_ID` | str | "" | The bot owner's Discord user ID. Authorizes `/models`, `/modules`, and tools registered with `owner_only=True`; these checks fail closed when empty. Also grants Staff access in personal chat. Staff tier alone does not satisfy bot-owner checks. |
 | `ALLOWED_CHANNEL_IDS` | csv(int) | "" | If set, the bot only responds in these channel IDs. Empty = all allowed. Validated at startup (must be numeric). |
 | `ALLOWED_GUILD_IDS` | csv(int) | "" | Optional boot-time approvals. A readable, non-symlinked, strictly validated `config/servers/<guild_id>.md` containing `bot_active: true` is the other activation source. A validated `bot_active: false` is a negative override: it preserves the setup while deactivating even an environment-approved guild. Missing, unreadable, symlinked, invalid, or keyless setup cannot activate by file. Inactive guilds stay connected, but responding turns fail closed. Validated at startup (must be numeric). |
-| `BOT_NAME` | str | `Kimi` | Runtime/persona name, substituted into `config/persona.md` via `<bot_name>` and used for startup logs, text invocation, the `Teach <name>` context menu, and provider identity unless a model profile overrides `app_name`. It does not rename the visible Discord account; update the existing application/bot identity in the Developer Portal for a complete rename. Runtime instructions live in `config/prompt.md`. |
+| `BOT_NAME` | str | `Bram` | Runtime/persona name, substituted into `config/persona.md` via `<bot_name>` and used for startup logs, text invocation, the `Teach <name>` context menu, and provider identity unless a model profile overrides `app_name`. It does not rename the visible Discord account; update the existing application/bot identity in the Developer Portal for a complete rename. Runtime instructions live in `config/prompt.md`. |
 | `MESSAGE_CONTENT_INTENT` | bool | `true` | Whether to request the privileged Message Content intent at connect. `false` runs degraded: @mentions and pinged replies still work; the "hey <bot_name>" text trigger, thread auto-reply, and `discord_text_search` do not (keep `THREAD_HANDOFF_ENABLED` off while degraded). |
 | `MEMBERS_INTENT` | bool | `false` | Whether to request the privileged Server Members intent at connect. Ordinary operation does not need it: roles come from the message author and member lookups use on-demand fetch/query. Optional modules may require member lifecycle events. Turning it on also requires enabling Server Members in the Discord Developer Portal, or the gateway rejects the identify. |
 | `USER_APP_CHAT_ENABLED` | bool | `false` | Explicitly register the Discord User Install `/chat` and `/chat-reset` surface and promote `/privacy`, `/memory`, and `/stop` to both install types. Off means no personal chat commands are exposed. |
@@ -370,7 +370,7 @@ genuinely absent fragment retains the normal missing-file behavior and is unrest
 member teaches the bot something shared, whether a fact into community memory with `teach`
 or a procedure into a skill with `skill_create`/`skill_edit`, the bot posts a card there
 saying who taught it, what it stored, and linking back to the source message. This matters
-most for the **Teach Kimi** message context menu (the name follows `BOT_NAME`), because its
+most for the **Teach Bram** message context menu (the name follows `BOT_NAME`), because its
 confirmation is ephemeral: with no log channel configured, nobody but the acting staff
 member ever sees that the bot learned something. It fails closed, so an absent or malformed
 value means no learn logging at all (and, like the other id keys, a malformed value blocks
@@ -459,12 +459,12 @@ out into its own column while including it in the estimated cost for the window.
 |---|---|---|---|
 | `MODEL_API_KEY` | secret | (none) | Neutral key for generic OpenAI-compatible profiles, including the placeholder profile in `models.example.yaml`. |
 | `ANTHROPIC_API_KEY` | secret | (none) | Anthropic API key for native `anthropic` profiles. |
-| `OPENCODE_GO_API_KEY` | secret | (none) | OpenCode Go subscription key for every `opencode.ai/zen/go/v1` profile (`openai_compat` /chat/completions for Kimi/GLM; `anthropic_compat` /messages for MiniMax). |
+| `OPENCODE_GO_API_KEY` | secret | (none) | OpenCode Go subscription key for every `opencode.ai/zen/go/v1` profile (`openai_compat` /chat/completions for Bram/GLM; `anthropic_compat` /messages for MiniMax). |
 | `RUNINFRA_GATEWAY_KEY` | secret | (none) | RunInfra gateway key for OpenAI-compatible routes such as DeepSeek V4 Flash at `api.runinfra.ai`. |
 | `GROK_API_KEY` | secret | (none) | xAI Grok key (`openai_compat` profile pointing at `https://api.x.ai/v1`). |
 | `FIREWORKS_API_KEY` | secret | (none) | Fireworks AI key (`openai_compat` profile pointing at `https://api.fireworks.ai/inference/v1`). |
 | `ZAI_API_KEY` | secret | (none) | Z.AI key for GLM Coding Plan profiles using the dedicated `https://api.z.ai/api/coding/paas/v4` Chat Completions endpoint; see [providers-zai.md](providers-zai.md). |
-| `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Kimi Open Platform. |
+| `KIMI_CODING_API_KEY` | secret | (none) | Kimi Code membership coding-plan key (`anthropic_compat` profile pointing at `https://api.kimi.com/coding/v1`); separate product from the pay-as-you-go Bram Open Platform. |
 | `COMPACTION_API_KEY` | secret | (none) | Optional key for profiles assigned to `roles.compaction`. |
 | `GEMINI_API_KEY` | secret | `""` | Dedicated key required by a `gemini_interactions` profile assigned to `roles.video`. |
 | `REACT_MAX_ITERATIONS` | int | `200` | Max tool-use iterations per turn before the loop stops. |
@@ -984,7 +984,7 @@ durable paths outside the checkout so that an application upgrade or container
 replacement can't take instance data with it. One possible layout is:
 
 ```text
-/srv/kimi/
+/srv/bram/
 |-- app/                 # replaceable application checkout
 |-- private/
 |   |-- config/          # CONFIG_DIR
@@ -1008,8 +1008,8 @@ recommended path settings, backup notes, and the provisioning procedure.
 | `CONFIG_DIR` | path | `config` | Operator config root: `prompt.md`, `persona.md`, `models.yaml`, `settings.md`, `tools.md`, and the `channels/`, `channel_threads/`, `threads/`, `servers/`, `prompts/`, `modules/`, `plugins/`, and `tools/` fragment trees. Consumed by prompt construction, guild/channel fragment loaders, core, module, and plugin settings overlays, tool policy/config, and model routing. |
 | `SKILLS_DIR` | path | `skills/store` | Private durable instruction-skill store scanned by `skills/loader.py` and managed by staff skill tools. It is deployment data and is not stored in the repository; a missing store contributes no private skills, while shipped built-ins remain available. |
 | `PLUGIN_MODULES` | CSV of module paths | _(empty)_ | Explicit operator-plugin allowlist; there is no filesystem or package auto-discovery. Each importable module exposes `register(ctx) -> None` (`app/plugins.py`). Loading constructs declared plugin settings from the same `ENV_FILE` as core and applies `<CONFIG_DIR>/plugins/<name>.md` before registration. Core tools register first; a plugin registration failure or invalid overlay skips only that plugin and rolls back partial registrations. |
-| `KIMI_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `kimi_agent.modules`, but only named modules load. Modules are required unless explicitly listed in `KIMI_OPTIONAL_MODULES`. See [modules.md](modules.md). |
-| `KIMI_OPTIONAL_MODULES` | CSV subset of `KIMI_MODULES` | _(empty)_ | Allow recoverable module load/start failures to disable that module. Required dependents, migrations, timeouts, and unsuccessful cleanup still abort startup. Environment-only; restart required. See [failure policy](modules.md#required-and-optional-modules). |
+| `BRAM_MODULES` | CSV of entry-point names | _(empty)_ | Explicit application-module allowlist. Installed packages are discovered through `bram_agent.modules`, but only named modules load. Modules are required unless explicitly listed in `BRAM_OPTIONAL_MODULES`. See [modules.md](modules.md). |
+| `BRAM_OPTIONAL_MODULES` | CSV subset of `BRAM_MODULES` | _(empty)_ | Allow recoverable module load/start failures to disable that module. Required dependents, migrations, timeouts, and unsuccessful cleanup still abort startup. Environment-only; restart required. See [failure policy](modules.md#required-and-optional-modules). |
 | `MODULE_START_TIMEOUT_SECONDS` | int | `60` | Ceiling for one module's `start()`. Exceeding it fails that module and aborts startup, like any other module start failure. Must be ≥ 1. See [modules.md](modules.md#lifecycle-contract). |
 | `MODULE_CLOSE_TIMEOUT_SECONDS` | int | `15` | Ceiling for one module's `close()` during shutdown. Exceeding it cancels that close, logs an error, and continues with the next module. Must be ≥ 1. |
 | `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` | int | `4` | How many module scheduler jobs may run at once across all modules; at most one job per module runs at a time. Must be ≥ 1. |
@@ -1054,7 +1054,7 @@ Exposable skills can declare named secrets that are loaded from this YAML file o
 | `SECRETS_FILE` | path | `secrets/secrets.yaml` | YAML of named secrets injected into skill scripts on demand (declared per skill). |
 
 The file itself is optional when no executable skill needs a secret. If it is
-absent, Kimi logs `Secrets file not found: <path>` and continues with an empty
+absent, Bram logs `Secrets file not found: <path>` and continues with an empty
 store. An empty or non-mapping YAML document also produces an empty store. To
 make an intentional no-secrets deployment quiet and explicit, create the file
 with `{}` and owner-only permissions. A parse/read failure logs the exception
@@ -1112,7 +1112,7 @@ supplies inherited per-process virtual-memory, CPU-time, file-size, open-file,
 process-count, and core-file limits. These are not aggregate cgroup accounting, and the
 process-count limit is per real UID, which is why executable-skill startup rejects root.
 Run the bot under a dedicated unprivileged service account. The example systemd
-unit, [`bot/deploy/kimi.service.example`](../bot/deploy/kimi.service.example), applies
+unit, [`bot/deploy/bram.service.example`](../bot/deploy/bram.service.example), applies
 `TasksMax=128`, `MemoryMax=2G`, and `CPUQuota=200%` to the complete service cgroup,
 including executable-skill descendants. Tune those aggregate ceilings for the host, use
 equivalent container limits outside systemd, and retain service-level egress controls as a
@@ -1189,7 +1189,7 @@ above.
 |---|---|---|---|
 | `BROWSER_ENABLED` | bool | `false` | Request registration of `browser` and, when the exact Mermaid asset is present, searchable `render_chart` and `render_diagram`; missing runtime or a failed shared sandbox/network probe leaves them unavailable. There is no separate visual flag. |
 | `BROWSER_NETWORK_MODE` | `host`/`netns` | `host` | Fixed network boundary. `netns` uses the VPN helper and never falls back to host. |
-| `BROWSER_RUNTIME_DIR` | path | `/opt/kimi/betterwright` | Root-owned pinned BetterWright, Mermaid, Node, and BetterChromium runtime. |
+| `BROWSER_RUNTIME_DIR` | path | `/opt/bram/betterwright` | Root-owned pinned BetterWright, Mermaid, Node, and BetterChromium runtime. |
 | `BROWSER_PROFILES_DIR` | path | `data/browser_profiles` | Private per-user persistent profile root. |
 | `BROWSER_BRIDGE_SCRIPT` | relative path | `web_browser/bridge.mjs` | Application-owned BetterWright JSON bridge under `bot/`. |
 | `BROWSER_BWRAP_BIN` | command | `bwrap` | Bubblewrap executable. |

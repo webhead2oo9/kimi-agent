@@ -20,7 +20,7 @@ def merge_runtime_env() -> str:
         runtime_env = Path(raw)
     else:
         config_home = os.environ.get(
-            "KIMI_CONFIG_HOME", str(Path.home() / ".config" / "kimi-agent")
+            "BRAM_CONFIG_HOME", str(Path.home() / ".config" / "bram-agent")
         )
         runtime_env = Path(config_home) / "runtime.env"
     if not runtime_env.is_file():

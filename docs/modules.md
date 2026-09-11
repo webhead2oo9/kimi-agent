@@ -6,22 +6,22 @@ Use application modules for new extensions, including a single LLM tool. Start w
 
 | | Operator plugin | Application module |
 |---|---|---|
-| Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `KIMI_MODULES` |
-| Discovery | Direct Python import | Installed `kimi_agent.modules` entry point |
+| Selected by | Import path in `PLUGIN_MODULES` | Entry-point name in `BRAM_MODULES` |
+| Discovery | Direct Python import | Installed `bram_agent.modules` entry point |
 | Failure | Logged and skipped | Required by default; explicit optional policy |
 | Best for | A few deployment-owned tools | A versioned application capability with state/lifecycle |
 | Packaging | Any importable code | Installable Python distribution |
 
 ## Required and optional modules
 
-`KIMI_MODULES` selects installed entry-point names. Modules remain required by
-default. `KIMI_OPTIONAL_MODULES` is a subset of that list, not another enable
-list; a name absent from `KIMI_MODULES` is a configuration error. Both lists
+`BRAM_MODULES` selects installed entry-point names. Modules remain required by
+default. `BRAM_OPTIONAL_MODULES` is a subset of that list, not another enable
+list; a name absent from `BRAM_MODULES` is a configuration error. Both lists
 are environment-only and take effect after restart.
 
 ```dotenv
-KIMI_MODULES=moderation,hello
-KIMI_OPTIONAL_MODULES=hello
+BRAM_MODULES=moderation,hello
+BRAM_OPTIONAL_MODULES=hello
 ```
 
 An optional module with a missing package, incompatible API, invalid settings,
@@ -61,24 +61,24 @@ From `bot/`:
 Then set the installed entry-point name and start normally:
 
 ```dotenv
-KIMI_MODULES=reference_kudos
+BRAM_MODULES=reference_kudos
 ```
 
 The example is a small "kudos" feature that uses most public service ports: deployment and per-guild settings, two ordered migrations, scoped storage, a core and a searchable LLM tool, a `/kudos` command group with a staff-only subcommand, a persistent button, a durable digest job, a `discord.member_remove` subscription and its own published topic, a provided service, a configuration proposal, trust lookup, and health metrics. Its README maps each surface to the file that demonstrates it. Use its individual features as references when extending the minimal example.
 
-For a focused module that lives in its own repository, see [`kimi-agent-discord-logging`](https://github.com/webhead2oo9/kimi-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Kimi.
+For a focused module that lives in its own repository, see [`bram-agent-discord-logging`](https://github.com/bram-agent/bram-agent-discord-logging). It is a working Discord audit log built entirely on the public module API. The repository shows how to listen for Discord events, keep module-owned data, offer per-server settings and a staff command, schedule cleanup, report health, and package and test the module independently from Bram.
 
 ## Start a module with an LLM
 
-Give an LLM that can read the Kimi checkout the brief below. It works best
+Give an LLM that can read the Bram checkout the brief below. It works best
 when the LLM can also run commands in a scratch directory outside the
 checkout, because the finished module must not live inside it.
 
 ```text
-Build a Kimi application module that [DESCRIBE THE FEATURE].
+Build a Bram application module that [DESCRIBE THE FEATURE].
 
-Context. Kimi is a Discord bot. Application modules are separately installed
-Python packages that the host discovers through a `kimi_agent.modules` entry
+Context. Bram is a Discord bot. Application modules are separately installed
+Python packages that the host discovers through a `bram_agent.modules` entry
 point and drives through a fixed lifecycle (preflight, settings, create,
 migrate, start, close). The checkout at [PATH] is reference material only: the
 module is its own package in [OUTPUT DIR], never a file inside the checkout.
@@ -87,15 +87,15 @@ Before writing any code, read in this order:
 1. docs/modules.md (the contract: lifecycle, declarations, every runtime port)
 2. bot/modules/minimal/README.md and hello_module.py, then the relevant
    features in bot/modules/example/README.md and their implementations
-3. bot/packages/kimi-agent-module-api/src/kimi_agent_module_api/ (the only
-   Kimi host package the module may import at runtime)
+3. bot/packages/bram-agent-module-api/src/bram_agent_module_api/ (the only
+   Bram host package the module may import at runtime)
 4. CLAUDE.md, for code style and conventions
 
 Rules and boundaries to follow:
-- Depend on `kimi-agent-module-api>=2,<3` for host contracts and declare any
+- Depend on `bram-agent-module-api>=2,<3` for host contracts and declare any
   other runtime dependencies in the module package. Never import `bot/` core
   packages; tests may use the SDK fakes in
-  `kimi_agent_module_api.testing` and nothing from core.
+  `bram_agent_module_api.testing` and nothing from core.
 - Use the existing ports and contracts exactly as the reference module does.
   Do not invent new interfaces, subclass host types, or reach for `raw_bot`
   or `raw_storage`.
@@ -130,9 +130,9 @@ Deliver:
 - Tests over the SDK fakes (`load_context()`, `FakeInteraction`,
   `FakeScheduler.run_due()`, `FakeToolFiles`, `MemoryStorage`, and the rest) covering each
   tool, command, component, job, and event handler, plus a test that the spec
-  passes `kimi_agent_module_api.contracts` validation.
+  passes `bram_agent_module_api.contracts` validation.
 - A README that tells an operator how to install into the environment that
-  runs Kimi, add the entry-point name to `KIMI_MODULES`, configure deployment
+  runs Bram, add the entry-point name to `BRAM_MODULES`, configure deployment
   and per-guild settings (with the exact file paths), restart, and verify with
   startup logs and `/modules status`. It must disclose every table and what
   each row holds, retention and deletion, every external host contacted, and
@@ -146,9 +146,9 @@ Before handing back, run each of these in the module directory:
 - `.venv/bin/mypy .`
 - `.venv/bin/python -m pytest`
 
-Then, from `bot/`, install the module into Kimi's environment with
+Then, from `bot/`, install the module into Bram's environment with
 `.venv/bin/python -m pip install --editable <output-dir>`, set
-`KIMI_MODULES=<name>` in a dev dotenv, and confirm startup reaches the module's
+`BRAM_MODULES=<name>` in a dev dotenv, and confirm startup reaches the module's
 started message. Report exactly what you ran and what you saw.
 ```
 
@@ -159,22 +159,22 @@ whatever database and Discord access it declared.
 
 ## Attach any module package
 
-A module distribution depends on the standalone `kimi-agent-module-api` package, exposes a `ModuleSpec`, and advertises it in `pyproject.toml`:
+A module distribution depends on the standalone `bram-agent-module-api` package, exposes a `ModuleSpec`, and advertises it in `pyproject.toml`:
 
 ```toml
 [project]
 name = "my-assistant-module"
 version = "0.1.0"
-dependencies = ["kimi-agent-module-api>=2,<3"]
+dependencies = ["bram-agent-module-api>=2,<3"]
 
-[project.entry-points."kimi_agent.modules"]
+[project.entry-points."bram_agent.modules"]
 my_module = "my_assistant_module:SPEC"
 ```
 
 The `ModuleSpec` must declare the host contract as an explicit keyword:
 
 ```python
-from kimi_agent_module_api import ModuleSpec
+from bram_agent_module_api import ModuleSpec
 
 SPEC = ModuleSpec(
     name="my_module",
@@ -189,21 +189,21 @@ from the installed SDK's `MODULE_API_VERSION`: rebuilding unchanged source
 against a future SDK must remain an incompatibility until the module is
 reviewed and deliberately updated.
 
-Install it using whatever source your deployment controls (a local path, wheel, private Git repository, or package index), then add `my_module` to `KIMI_MODULES`. Install into the exact environment that runs Kimi; installing with another interpreter doesn't make the entry point visible to the bot. For the standard in-checkout `.venv`, run this from `bot/` after installing the core environment. A local checkout doesn't need publishing:
+Install it using whatever source your deployment controls (a local path, wheel, private Git repository, or package index), then add `my_module` to `BRAM_MODULES`. Install into the exact environment that runs Bram; installing with another interpreter doesn't make the entry point visible to the bot. For the standard in-checkout `.venv`, run this from `bot/` after installing the core environment. A local checkout doesn't need publishing:
 
 ```console
 .venv/bin/python -m pip install --editable /path/to/my-assistant-module
 ```
 
 ```dotenv
-KIMI_MODULES=my_module
+BRAM_MODULES=my_module
 ```
 
-Installing a package never activates it on its own; only a name in `KIMI_MODULES` does that, and core never installs a name it finds there. Listed modules are required by default; the [optional failure policy](#required-and-optional-modules) allows operators to disable a nonessential module after a recoverable failure. Modules start after their dependencies and close in reverse order.
+Installing a package never activates it on its own; only a name in `BRAM_MODULES` does that, and core never installs a name it finds there. Listed modules are required by default; the [optional failure policy](#required-and-optional-modules) allows operators to disable a nonessential module after a recoverable failure. Modules start after their dependencies and close in reverse order.
 
-After installation, activation, and any deployment or per-guild configuration, restart the Kimi process. Check startup logs for the module's composed, migrated, and started messages plus a successful slash-command sync. Then run `/modules status` and smoke-test the module's user-facing command or event path. Reinstall deployment-owned modules whenever the core environment is recreated. If you use the optional uv path, a later `uv sync` can remove pip, Kimi's editable root metadata, and packages not owned by the core lock. Repeat the `ensurepip` and editable core install commands in setup step 5 before reinstalling the modules. Pip normally retains them.
+After installation, activation, and any deployment or per-guild configuration, restart the Bram process. Check startup logs for the module's composed, migrated, and started messages plus a successful slash-command sync. Then run `/modules status` and smoke-test the module's user-facing command or event path. Reinstall deployment-owned modules whenever the core environment is recreated. If you use the optional uv path, a later `uv sync` can remove pip, Bram's editable root metadata, and packages not owned by the core lock. Repeat the `ensurepip` and editable core install commands in setup step 5 before reinstalling the modules. Pip normally retains them.
 
-An empty `KIMI_MODULES` doesn't import module entry points or run module migrations. Existing module tables remain in the shared database while their modules are disabled or absent; disabling isn't data deletion.
+An empty `BRAM_MODULES` doesn't import module entry points or run module migrations. Existing module tables remain in the shared database while their modules are disabled or absent; disabling isn't data deletion.
 
 A module may separately declare `activation_capabilities` for an optional feature that's meaningful only when core is configured to expose it. Missing activation capabilities soft-disable that module (and its dependents) without creating it, running migrations, or aborting bot startup; `/modules status` shows the reason. `requires_capabilities` remains a compatibility check: failure prevents loading and aborts startup for required modules. The core also advertises `discord.guild_commands.v1` for live guild-scoped command replacement, `discord.modals.v1` for modal forms, and `discord.components_v2.v1` for typed Components V2 layouts. The intent-backed capabilities are `discord.members.v1` and `discord.message_content.v1`; they're advertised only when the corresponding gateway intent is enabled in the deployment.
 
@@ -211,9 +211,9 @@ A module may separately declare `activation_capabilities` for an optional featur
 
 - Pin third-party module distributions in deployment-owned requirements or lock data. Don't add them to the core lock file; the in-repository reference module is a workspace-only CI fixture.
 - Each module has its own version and independent, ordered, forward-only migrations. Core records applied versions in `module_schema_versions`. Treat every released migration name and position as immutable: only append new migrations. Startup rejects duplicate names, gaps, or any mismatch between the declared sequence and the history already recorded for that module. Migrations create or update tables when the module starts; those tables remain while the module is disabled or absent.
-- A module can depend on another named module. Every dependency must also be present in `KIMI_MODULES`, because dependencies are never activated implicitly.
+- A module can depend on another named module. Every dependency must also be present in `BRAM_MODULES`, because dependencies are never activated implicitly.
 - Module settings use the same selected dotenv as the core. Explicitly exposed, non-secret operator overrides live under `<CONFIG_DIR>/modules/<module_name>.md`.
-- A module's runtime context is the only thing it needs from core; the `kimi_agent_module_api` package exports contracts, event dataclasses, image helpers, and test fakes, never core implementation types.
+- A module's runtime context is the only thing it needs from core; the `bram_agent_module_api` package exports contracts, event dataclasses, image helpers, and test fakes, never core implementation types.
 - A module can register ordinary tools on the shared registry and declare its activity labels and evaluation surfaces. This is optional; a module that only provides commands or listeners need not expose anything to the LLM. A tool handler receives a `ModuleToolContext` whose ids are `int` snowflakes. On mention-path turns, `trigger_discord_message_id` identifies the exact Discord message that initiated the turn and `trigger_discord_message_snapshot` contains the host-owned immutable message, guild, channel, author, content, and bot-status evidence captured at turn entry; both are `None` on personal and non-message surfaces. Modules that act on triggering-message evidence should use the snapshot rather than re-fetch mutable Discord state. `turn_budget.consume(name, limit)` atomically meters a module-local operation across every child-task dispatch in the same outer turn; the host namespaces names by module and discards counts when the turn ends. A missing budget port must fail closed for operations whose safety depends on a per-turn cap. A module's tools are hidden (masked, like any other gate) until the module has started and wherever the module is inactive; with `guild_only` (the default) they are hidden from DMs and personal chat as well, so `guild_id` is `None` only for a tool registered with `guild_only=False`, and `channel_id` is `None` only in personal chat. Module tool results default to `untrusted=True`; opt out only when the output is wholly controlled by the installed module and cannot contain Discord, network, file, or user-authored data.
 
 For repeatable deployments, keep third-party module requirements in
@@ -229,9 +229,9 @@ processes, why, where it sends data, and how long it retains the result.
 
 Publishing the API lets module authors depend on a small, neutral wheel instead of cloning this application. Publishing example modules is unnecessary: they are templates, while real modules belong to their own maintainers.
 
-The SDK source is `bot/packages/kimi-agent-module-api`, currently versioned at `2.3.0` with `MODULE_API_VERSION = 2`. Tags named `kimi-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
+The SDK source is `bot/packages/bram-agent-module-api`, currently versioned at `2.3.0` with `MODULE_API_VERSION = 2`. Tags named `bram-agent-api-v<version>` run the tag-only release workflow. It verifies the tag/version match, tests the workspace, builds with workspace sources disabled, imports the wheel in an isolated environment, and publishes using a PyPI Trusted Publisher, so there is no long-lived PyPI token in GitHub.
 
-If the `kimi-agent-module-api` project has not yet been reserved on PyPI, use PyPI's pending-publisher flow and configure this repository, workflow `release-kimi-agent-api.yml`, environment `pypi` before the next tag. A name lookup isn't a reservation, so confirm availability again immediately before a release.
+If the `bram-agent-module-api` project has not yet been reserved on PyPI, use PyPI's pending-publisher flow and configure this repository, workflow `release-bram-agent-api.yml`, environment `pypi` before the next tag. A name lookup isn't a reservation, so confirm availability again immediately before a release.
 
 ## Lifecycle contract
 
@@ -259,7 +259,7 @@ A `ModuleSpec` can declare what the module intends to use. After the selected en
 - `provides` / `consumes`: exact `(name, version)` services. A consumed service must come from a module listed in `dependencies`.
 - `guild_settings`: a typed per-guild schema whose `invalid_policy` defaults to `disable_guild`, so an enforcement module with a broken guild document fails closed.
 
-The rules live in `kimi_agent_module_api.contracts`, which imports only the standard library so a package can validate its own declarations in tests. Host preflight runs those checks before `create()` or any lifecycle hook. Every declaration is enforced by the matching runtime service below.
+The rules live in `bram_agent_module_api.contracts`, which imports only the standard library so a package can validate its own declarations in tests. Host preflight runs those checks before `create()` or any lifecycle hook. Every declaration is enforced by the matching runtime service below.
 
 ## Runtime services
 
@@ -315,7 +315,7 @@ the ports are a contract and an audit surface, not a sandbox.
   `discord.invite_create`, `discord.invite_delete`,
   `discord.member_join`, `discord.member_remove`, `discord.member_update`,
   and `discord.audit_log_entry` events
-  (`kimi_agent_module_api.events`) carrying IDs and whatever cannot be
+  (`bram_agent_module_api.events`) carrying IDs and whatever cannot be
   re-fetched, never SDK objects. Discord emits invite create/delete events only
   for channels where the bot has **Manage Channels**, so those events may be
   incomplete without that permission. Uncached raw edit payloads may omit the
@@ -383,7 +383,7 @@ the ports are a contract and an audit surface, not a sandbox.
   `degraded`. The runner executes up to
   `MODULE_SCHEDULER_MAX_CONCURRENT_JOBS` (4) jobs at once, at most one per
   module, so a module's handlers never overlap each other while one module's
-  long job does not delay another's. Kimi runs one process; there is no
+  long job does not delay another's. Bram runs one process; there is no
   multi-node coordination. The runner holds a singleton lease in
   `module_scheduler_runner`, renewed every tick and released on close. A
   second process against the same database cannot take that lease while it
@@ -478,7 +478,7 @@ hatches such as `raw_bot`).
 
 ## Testing a module
 
-`kimi_agent_module_api.testing` ships protocol-level fakes for every service
+`bram_agent_module_api.testing` ships protocol-level fakes for every service
 port (`FakeEvents`, `FakeScheduler`, `FakeDiscordActions`, `FakeInteraction`,
 `FakeHttp`, `FakeProposals`, and friends), `load_context()` for calling
 `create()` with a recording tool registry, and `MemoryStorage` (real SQL over
@@ -499,7 +499,7 @@ whose ports are the fakes above. `runtime.ctx_for(name)` returns a module's
 context, `runtime.ports[name]` its fakes, and `runtime.registry` the composed
 tool registry for assertions. Module test suites
 may import that harness; module production source must use
-`kimi_agent_module_api` rather than core packages for host-facing contracts.
+`bram_agent_module_api` rather than core packages for host-facing contracts.
 
 ## Configuration proposals
 

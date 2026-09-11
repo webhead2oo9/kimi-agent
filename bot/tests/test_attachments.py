@@ -1135,7 +1135,7 @@ async def test_collect_reply_context_skips_bot_authored_reply(tmp_path):
     referenced = _FakeMessage(
         msg_id=2,
         author_id=999,
-        author_name="Kimi",
+        author_name="Bram",
         author_bot=True,
         content="bot text",
     )
@@ -1162,7 +1162,7 @@ async def test_collect_reply_context_allows_current_bot_when_explicit(tmp_path):
     referenced = _FakeMessage(
         msg_id=2,
         author_id=999,
-        author_name="Kimi",
+        author_name="Bram",
         author_bot=True,
         content="public answer",
     )
@@ -1185,7 +1185,7 @@ async def test_collect_reply_context_allows_current_bot_when_explicit(tmp_path):
     )
 
     assert context is not None
-    assert context.author_name == "Kimi"
+    assert context.author_name == "Bram"
     assert context.text == "public answer"
 
 

@@ -25,7 +25,7 @@ WOLFRAM_ALPHA_CALL_COST_USD=
 
 ## Tool behavior
 
-The model supplies a required single-line English `input` and may choose `metric` or `nonmetric` units. Kimi sends the configured output cap as the LLM API's `maxchars`, enforces the same cap itself, and wraps the answer as untrusted context. Any image URLs in the answer are returned as plain text; the tool does not fetch or attach them. The AppID travels in an HTTPS bearer header, never in the query URL.
+The model supplies a required single-line English `input` and may choose `metric` or `nonmetric` units. Bram sends the configured output cap as the LLM API's `maxchars`, enforces the same cap itself, and wraps the answer as untrusted context. Any image URLs in the answer are returned as plain text; the tool does not fetch or attach them. The AppID travels in an HTTPS bearer header, never in the query URL.
 
 The per-turn allowance counts tool requests, including ones the provider answers with an error. Invalid arguments are rejected before they spend the allowance. A transport or transient HTTP failure gets one retry. Credential, quota, timeout, and provider failures return short, safe errors that never include the AppID, response body, or request URL. When Wolfram cannot interpret the query, its suggestions are returned (size-capped, as untrusted context) so the model can rephrase.
 

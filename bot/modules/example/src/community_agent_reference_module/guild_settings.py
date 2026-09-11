@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from kimi_agent_module_api import GuildSettingsSchema
-from kimi_agent_module_api.contracts import GuildSettingField
+from bram_agent_module_api import GuildSettingsSchema
+from bram_agent_module_api.contracts import GuildSettingField
 
 # Names are referenced from several places (commands, the digest job, tests),
 # so they are constants.

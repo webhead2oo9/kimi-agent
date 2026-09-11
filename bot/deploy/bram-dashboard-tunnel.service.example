@@ -1,0 +1,19 @@
+[Unit]
+Description=Bram dashboard Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+ConditionFileNotEmpty=%h/.config/bram-agent/dashboard-tunnel.token
+
+[Service]
+Type=simple
+UMask=0077
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20241 run --token-file %h/.config/bram-agent/dashboard-tunnel.token
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+TasksMax=64
+MemoryMax=256M
+CPUQuota=100%
+
+[Install]
+WantedBy=default.target

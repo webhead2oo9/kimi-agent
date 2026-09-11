@@ -17,7 +17,7 @@ from trust.tiers import TrustTier
 
 def test_plan_matrix_lists_scenarios_times_models():
     models = ModelsConfig(
-        baseline=ModelSpec("base", "openai_compat", "kimi"),
+        baseline=ModelSpec("base", "openai_compat", "bram"),
         candidates={"new": ModelSpec("new", "anthropic", "claude-x")},
         judge=ModelSpec("judge", "anthropic", "opus"),
     )
@@ -125,7 +125,7 @@ def test_qualification_run_skips_tools_hidden_at_scenario_tier(monkeypatch, tmp_
         evals_run,
         "load_models",
         lambda path: ModelsConfig(
-            baseline=ModelSpec("base", "openai_compat", "kimi", base_url="https://x"),
+            baseline=ModelSpec("base", "openai_compat", "bram", base_url="https://x"),
             candidates={"cand": ModelSpec("cand", "openai_compat", "c", base_url="https://x")},
             judge=ModelSpec("judge", "openai_compat", "j", base_url="https://x"),
         ),

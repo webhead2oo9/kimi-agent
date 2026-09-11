@@ -6,8 +6,8 @@ from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from kimi_agent_module_api.files import ToolFiles
-from kimi_agent_module_api.trust import TrustTier
+from bram_agent_module_api.files import ToolFiles
+from bram_agent_module_api.trust import TrustTier
 
 
 class ModuleTurnBudget(Protocol):

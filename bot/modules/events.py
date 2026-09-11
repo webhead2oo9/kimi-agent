@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     CORE_TOPIC_PREFIX,
     Event,
     EventHandler,

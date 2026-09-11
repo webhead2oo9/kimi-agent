@@ -1,15 +1,15 @@
-"""A one-tool module using only the public Kimi API."""
+"""A one-tool module using only the public Bram API."""
 
 from collections.abc import Sequence
 from typing import Any
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     ModuleLoadContext,
     ModuleRuntimeContext,
     ModuleSpec,
     ModuleToolContext,
 )
-from kimi_agent_module_api.contracts import ScopedModuleMigration
+from bram_agent_module_api.contracts import ScopedModuleMigration
 
 
 async def greet(arguments: dict[str, Any], ctx: ModuleToolContext) -> str:

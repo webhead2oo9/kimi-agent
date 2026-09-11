@@ -1,17 +1,17 @@
-# Kimi documentation
+# Bram documentation
 
 This directory is the canonical documentation set for the repository. The
 runtime source, configuration templates, deployment files, and tests all live
 under `../bot/`, and links from these pages point there explicitly.
 
-If you're new to the project, read [Install and operate Kimi](setup.md) first, then
+If you're new to the project, read [Install and operate Bram](setup.md) first, then
 [Architecture](architecture.md), then the [developer map](../CLAUDE.md).
 That's enough to get a bot running and to find your way around the source.
 The rest is reference material.
 
 ## Start here
 
-- [Install and operate Kimi](setup.md): the canonical end-to-end Ubuntu
+- [Install and operate Bram](setup.md): the canonical end-to-end Ubuntu
   deployment, service, upgrade, and troubleshooting guide.
 - [Architecture](architecture.md): the shape of the system and its package map.
 - [Configuration](configuration.md): every deployment setting and every live
@@ -68,7 +68,7 @@ The rest is reference material.
 - [Persona overrides](persona.md): per-user compiled response styles.
 - [Discord embeds](embeds.md): building rich replies.
 - [Thread handoff](thread-handoff.md): managed conversation threads.
-- [Learning](learning.md): staff-taught facts and procedures, the **Teach Kimi**
+- [Learning](learning.md): staff-taught facts and procedures, the **Teach Bram**
   menu, and its injection posture.
 - [Context compaction](compaction.md): managing the context window within a
   turn.

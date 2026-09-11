@@ -65,4 +65,4 @@ api.request = async <T,>(path: string, method = "GET", body?: unknown): Promise<
   return result as T;
 };
 api.subscribe = (chat, _after, callback, status) => { subscriptions.set(chat, callback); status(true); return () => { subscriptions.delete(chat); }; };
-createRoot(document.getElementById("root")!).render(<DashboardApp connection={{ api, displayName: "Charlie", botAvatar: avatar, openLink: async () => {}, session: { user_id: "1", guild_id: "2", channel_id: "3", csrf: "fixture", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "", max_upload_bytes: 25000000, max_message_chars: 32000, user_avatar: avatar } }} />);
+createRoot(document.getElementById("root")!).render(<DashboardApp connection={{ api, displayName: "Charlie", botAvatar: avatar, openLink: async () => {}, session: { user_id: "1", guild_id: "2", channel_id: "3", csrf: "fixture", bot_name: "Bram", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "", max_upload_bytes: 25000000, max_message_chars: 32000, user_avatar: avatar } }} />);

@@ -1,4 +1,4 @@
-"""Keep KimiApplication private state out of the test suite."""
+"""Keep BramApplication private state out of the test suite."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ TESTS_DIR = Path(__file__).parent
 _PRIVATE_APP_REACH = re.compile(r"app[.][_][a-z]")
 
 
-def test_kimi_application_private_reaches_stay_behind_test_seams() -> None:
+def test_bram_application_private_reaches_stay_behind_test_seams() -> None:
     offenders: list[str] = []
 
     for path in sorted(TESTS_DIR.rglob("*.py")):
@@ -20,6 +20,6 @@ def test_kimi_application_private_reaches_stay_behind_test_seams() -> None:
             if _PRIVATE_APP_REACH.search(line):
                 offenders.append(f"{relative_path}:{line_number}: {line.strip()}")
 
-    assert offenders == [], "KimiApplication private reaches are forbidden in tests:\n" + "\n".join(
+    assert offenders == [], "BramApplication private reaches are forbidden in tests:\n" + "\n".join(
         offenders
     )

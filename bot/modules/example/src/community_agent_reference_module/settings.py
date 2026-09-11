@@ -17,7 +17,7 @@ Two rules the host enforces when it validates this definition at startup:
 
 from __future__ import annotations
 
-from kimi_agent_module_api import ModuleSetting, ModuleSettingsDefinition
+from bram_agent_module_api import ModuleSetting, ModuleSettingsDefinition
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

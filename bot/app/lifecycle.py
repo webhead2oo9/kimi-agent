@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import discord
 from discord.ext import commands
-from kimi_agent_module_api import ModuleSpec
-from kimi_agent_module_api.contracts import InteractionRouter
+from bram_agent_module_api import ModuleSpec
+from bram_agent_module_api.contracts import InteractionRouter
 from pydantic import SecretStr
 
 from agent.context import ContextManager
@@ -454,7 +454,7 @@ class ApplicationLifecycle:
                 await self.initialize()
             except Exception as exc:
                 self._startup_error = exc
-                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
+                log.critical("Bram Agent startup failed; closing the client", exc_info=True)
                 return False
 
         try:
@@ -468,7 +468,7 @@ class ApplicationLifecycle:
         except Exception as exc:
             if first_init:
                 self._startup_error = exc
-                log.critical("Kimi Agent startup failed; closing the client", exc_info=True)
+                log.critical("Bram Agent startup failed; closing the client", exc_info=True)
                 return False
             log.warning("Could not refresh memory integration after READY", exc_info=True)
 

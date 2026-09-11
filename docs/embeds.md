@@ -49,7 +49,7 @@ The call returns `{"queued": true, "image": null}` rather than the embed itself,
 The model's own prose becomes the caption above the card:
 
 ```
-Kimi
+Bram
   Here's the short version:
 
   ┃ Server Rules

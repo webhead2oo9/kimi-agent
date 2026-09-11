@@ -1,6 +1,6 @@
 # Visual rendering
 
-Kimi has two searchable member-tier tools, `render_chart` and `render_diagram`,
+Bram has two searchable member-tier tools, `render_chart` and `render_diagram`,
 that turn one tool call into a Discord-ready PNG. `render_chart` takes
 structured bar, line, or scatter data; `render_diagram` takes a constrained
 Mermaid diagram. In both cases the model supplies only data. It never supplies
@@ -10,7 +10,7 @@ Matplotlib/Mermaid configuration.
 Visual rendering ships with the [persistent browser](browser.md) capability.
 There is no second feature flag: when `BROWSER_ENABLED=true`, the browser
 runtime, selected browser network sandbox, and Mermaid assets pass their startup
-checks, Kimi registers `browser` and both visual tools. If the Mermaid bundle is
+checks, Bram registers `browser` and both visual tools. If the Mermaid bundle is
 absent, `browser` can still register; boot logs a specific warning and leaves the
 visual tools unavailable until the operator reruns the installer.
 
@@ -201,7 +201,7 @@ BROWSER_ENABLED=true
 
 Choose and configure the persistent browser's `host` or `netns` mode as
 explained in [Persistent browser](browser.md). Visual jobs are offline in either
-case. Restart Kimi and check the capability summary for both `persistent
+case. Restart Bram and check the capability summary for both `persistent
 browser` and `visual rendering`.
 
 ## Deployment verification

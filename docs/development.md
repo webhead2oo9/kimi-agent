@@ -29,7 +29,7 @@ dependencies in one resolver run:
 cd bot
 python3 -m venv .venv
 .venv/bin/python -m pip install \
-  --editable ./packages/kimi-agent-module-api \
+  --editable ./packages/bram-agent-module-api \
   --editable ./modules/example \
   --editable ".[dev]"
 .venv/bin/python -m pip check
@@ -42,7 +42,7 @@ replace the setup block on POSIX hosts:
 uv sync --locked --all-packages --extra dev
 .venv/bin/python -m ensurepip
 .venv/bin/python -m pip install --no-deps \
-  --editable ./packages/kimi-agent-module-api \
+  --editable ./packages/bram-agent-module-api \
   --editable ./modules/example \
   --editable .
 .venv/bin/python -m pip check
@@ -57,7 +57,7 @@ Windows PowerShell, the uv equivalent is:
 uv sync --locked --all-packages --extra dev
 .\.venv\Scripts\python.exe -m ensurepip
 .\.venv\Scripts\python.exe -m pip install --no-deps `
-  --editable ./packages/kimi-agent-module-api `
+  --editable ./packages/bram-agent-module-api `
   --editable ./modules/example `
   --editable .
 .\.venv\Scripts\python.exe -m pip check
@@ -69,7 +69,7 @@ The complete standard PowerShell setup is:
 Set-Location bot
 py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install `
-  --editable ./packages/kimi-agent-module-api `
+  --editable ./packages/bram-agent-module-api `
   --editable ./modules/example `
   --editable ".[dev]"
 .\.venv\Scripts\python.exe -m pip check
@@ -241,7 +241,7 @@ has actually loaded.
   tests skip, and `run_code` does not register.
   `.venv/bin/python -m scripts.sandbox_probe` names the missing prerequisite for the
   configured profile; the CI `sandbox` job provisions all of them and runs
-  those tests with `KIMI_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
+  those tests with `BRAM_REQUIRE_SANDBOX_TESTS=1`, where a sandbox-gate skip
   counts as failure.
 - **Persistent browser and visual rendering** also need the Linux isolation
   stack and pinned BetterWright/Mermaid runtime. They are off unless
@@ -261,7 +261,7 @@ construct `Settings` through `tests.helpers.make_settings` (or pass
 `_env_file=None` explicitly), and an autouse fixture removes ambient settings
 variables before each test; `tests/test_settings_isolation.py` enforces both.
 A test that intentionally reads the live operator profile carries the
-`uses_live_settings_env` marker. `KIMI_REQUIRE_SANDBOX_TESTS` is not a setting
+`uses_live_settings_env` marker. `BRAM_REQUIRE_SANDBOX_TESTS` is not a setting
 and is never removed. After the first-time standard environment setup, run these
 checks from `bot/`:
 
@@ -291,7 +291,7 @@ The equivalent Python checks in Windows PowerShell are:
 ```
 
 The application suite includes both example modules. The standalone API has a
-separate suite; run it from `bot/packages/kimi-agent-module-api/`:
+separate suite; run it from `bot/packages/bram-agent-module-api/`:
 
 ```bash
 uv run --isolated --locked --group test python -m pytest -q
@@ -303,7 +303,7 @@ auditing and distribution builds still require uv:
 ```bash
 uv sync --locked --all-packages --extra dev
 uv --preview-features audit-command audit --locked
-uv build --package kimi-agent-module-api --no-sources --out-dir dist/module-api
+uv build --package bram-agent-module-api --no-sources --out-dir dist/module-api
 uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
 
 api_wheel=$(find dist/module-api -maxdepth 1 -name '*.whl' -print -quit)
@@ -348,7 +348,7 @@ MODULE_START_TIMEOUT_SECONDS=60   # start() past this fails the module and abort
 MODULE_CLOSE_TIMEOUT_SECONDS=15   # close() past this is cancelled; shutdown continues
 ```
 
-A start timeout raises `Kimi module '<name>' start() exceeded 60s`, emits a `module_health` event with state `failed`, and the process exits like it would for any other module failure, so look at the log and the event to diagnose it. A close timeout logs `Kimi module <name> close() exceeded 15s; continuing shutdown` and the remaining modules still close. In both cases the module's coroutine is cancelled and given five seconds to stop; one that ignores cancellation is logged as abandoned and left to the event loop.
+A start timeout raises `Bram module '<name>' start() exceeded 60s`, emits a `module_health` event with state `failed`, and the process exits like it would for any other module failure, so look at the log and the event to diagnose it. A close timeout logs `Bram module <name> close() exceeded 15s; continuing shutdown` and the remaining modules still close. In both cases the module's coroutine is cancelled and given five seconds to stop; one that ignores cancellation is logged as abandoned and left to the event loop.
 
 If a module trips either ceiling during development, the fix belongs in the module (move slow work into a scheduler job, or make `close()` cancel rather than await), not in the setting.
 
@@ -390,7 +390,7 @@ approvals. They do not validate Discord's real SDK, proxy cookies, or mobile
 downloads. Follow the [operator guide's live checks](dashboard.md#verification-and-current-limits)
 with an isolated application before rollout.
 
-`KimiCommandTree.sync` in `app/runtime.py` includes the Discord-handled type-4
+`BramCommandTree.sync` in `app/runtime.py` includes the Discord-handled type-4
 **Launch** entry point in the same global command replacement as `/dashboard`.
 The installed discord.py version needs this compatibility code; guild-only sync
 does not update it. When upgrading discord.py, check `test_dashboard_commands.py`

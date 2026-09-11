@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, overload
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ModuleContractError,
     ServiceDeclaration,
     ServiceRequirement,
@@ -77,7 +77,7 @@ class ServiceRegistryImpl:
             )
         provided = _Provided(provider, implementation)
         self._provided[key] = provided
-        log.info("Kimi module %s provides service %s@%d", provider, name, version)
+        log.info("Bram module %s provides service %s@%d", provider, name, version)
         return _Registration(provided)
 
     def get(self, provider: str, name: str, version: int) -> ServiceProxy:

@@ -164,11 +164,11 @@ def test_chat_commands_are_user_install_only() -> None:
         bot,
         run_chat=run_chat,
         reset_chat=reset_chat,
-        bot_name="Kimi",
+        bot_name="Bram",
     )
     chat_command = cast(Any, bot.tree.get_command("chat"))
     assert chat_command is not None
-    assert chat_command.description == "Chat with Kimi"
+    assert chat_command.description == "Chat with Bram"
     parameters = {parameter.name: parameter for parameter in chat_command.parameters}
     assert set(parameters) == {"message", "attachment", "visibility"}
     assert parameters["visibility"].required is False
@@ -354,7 +354,7 @@ async def test_chat_visibility_choice_maps_to_internal_public_flag() -> None:
         bot,
         run_chat=run_chat,
         reset_chat=reset_chat,
-        bot_name="Kimi",
+        bot_name="Bram",
     )
     command = cast(Any, bot.tree.get_command("chat"))
     assert command is not None

@@ -34,7 +34,7 @@ from tests.helpers import (
     corrupt_png_crc,
     corrupt_png_idat_stream,
 )
-from kimi_agent_module_api.images import SUPPORTED_IMAGE_MEDIA_TYPES
+from bram_agent_module_api.images import SUPPORTED_IMAGE_MEDIA_TYPES
 from utils import image_types
 
 BAD_PNGS = [

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kimi_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
+from bram_agent_module_api.contracts import Backoff, JobRun, ModuleContractError
 from modules.scheduler import (
     FOREIGN_RUNNER_DETAIL,
     RUNNER_TABLE,

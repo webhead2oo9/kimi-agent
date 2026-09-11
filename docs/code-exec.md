@@ -1,14 +1,14 @@
 # Code execution
 
-`run_code` lets Kimi run inline Python, an inline shell script, or a file from the caller's workspace. It only works on Linux and is off by default.
+`run_code` lets Bram run inline Python, an inline shell script, or a file from the caller's workspace. It only works on Linux and is off by default.
 
 The default access level is `member`. Set `CODE_EXEC_MIN_TIER=regular` or `CODE_EXEC_MIN_TIER=staff` if you want to restrict it. Changing the tier requires a restart.
 
-Turning on `CODE_EXEC_ENABLED` is only a request. Before the tool appears, Kimi runs a real test program through the sandbox and network mode you configured. If that test fails, `run_code` stays unavailable, the startup log warns that the probe failed, and `scripts.sandbox_probe` (see [Check your deployment](#check-your-deployment)) tells you which check broke. Kimi never exposes a half-working sandbox.
+Turning on `CODE_EXEC_ENABLED` is only a request. Before the tool appears, Bram runs a real test program through the sandbox and network mode you configured. If that test fails, `run_code` stays unavailable, the startup log warns that the probe failed, and `scripts.sandbox_probe` (see [Check your deployment](#check-your-deployment)) tells you which check broke. Bram never exposes a half-working sandbox.
 
 Each run is Python, a shell script, or a workspace file run directly (`auto` picks from the file extension). In a networked mode, a run can `pip install` public packages into a `.venv` that stays in the workspace for later runs. Files the run creates also stay in the workspace; the model must name each one it wants to attach with `queue_file`.
 
-The optional [durable coding agent](coding-agent.md) uses the same sandbox for longer jobs. A coding job may get more wall-clock and CPU time, but no extra files, network access, syscalls, quota, or credentials. For both ordinary runs and coding jobs, systemd also gets its own deadline (`RuntimeMaxSec`), so a run that somehow outlives Kimi's timer is still killed.
+The optional [durable coding agent](coding-agent.md) uses the same sandbox for longer jobs. A coding job may get more wall-clock and CPU time, but no extra files, network access, syscalls, quota, or credentials. For both ordinary runs and coding jobs, systemd also gets its own deadline (`RuntimeMaxSec`), so a run that somehow outlives Bram's timer is still killed.
 
 [Scheduled Python tasks](scheduled-python.md) also reuse this sandbox and its
 packages. They always execute offline in a temporary job directory, with the
@@ -54,11 +54,11 @@ The filesystem, process, syscall, resource, and credential protections still app
 
 ### `netns`
 
-Use `netns` when code needs internet access but must not use the server's normal routes. You provide a persistent network namespace with a VPN or another restricted uplink. Kimi does not depend on a particular VPN provider.
+Use `netns` when code needs internet access but must not use the server's normal routes. You provide a persistent network namespace with a VPN or another restricted uplink. Bram does not depend on a particular VPN provider.
 
 For operator setup steps using Private Internet Access, see [Use a PIA VPN](pia-vpn.md).
 
-Before the tool appears, Kimi launches a test through the real privileged path and checks that:
+Before the tool appears, Bram launches a test through the real privileged path and checks that:
 
 1. seccomp is installed and a blocked syscall returns `EPERM`;
 2. the namespace has a route;
@@ -73,7 +73,7 @@ The namespace should block loopback, private, link-local, metadata, and unnecess
 Every network mode gets the same core protections:
 
 - a transient `systemd-run --user` cgroup limits tasks, memory, swap, and CPU for the whole process tree;
-- Bubblewrap creates user, pid, IPC, UTS, and cgroup namespaces, and Kimi checks that code inside cannot create further user namespaces;
+- Bubblewrap creates user, pid, IPC, UTS, and cgroup namespaces, and Bram checks that code inside cannot create further user namespaces;
 - libseccomp blocks high-risk kernel features such as `bpf`, io_uring, userfaultfd, perf, ptrace/process-vm, keyrings, mounts, namespaces, module loading, NUMA policy, and personality calls;
 - `prlimit` caps address space, CPU time, file size, open files, and core dumps;
 - `/tmp` is a private size-limited tmpfs;
@@ -84,7 +84,7 @@ The run cannot see a home directory, the repository checkout, the bot environmen
 
 Seccomp is extra protection, not the whole boundary. It uses a deny list because Python and build tools need a broad, changing set of syscalls. The real boundary is the combination of namespaces, cgroups, mounts, dropped privileges, and host isolation.
 
-The sandbox still shares the host kernel and runs as the bot's Unix user. A successful kernel escape would land in that account. For a large or hostile user base, put Kimi in a dedicated VM with no credentials it does not need.
+The sandbox still shares the host kernel and runs as the bot's Unix user. A successful kernel escape would land in that account. For a large or hostile user base, put Bram in a dedicated VM with no credentials it does not need.
 
 ### Core dumps
 
@@ -109,7 +109,7 @@ The manager opens the seccomp program as file descriptor 3. `sudo -C 4` keeps it
 
 The namespace name is not a bot setting or a sudo argument. It is fixed inside the helper, which keeps the privileged interface and sudoers rule narrow. See the [generic provisioning templates](../bot/deploy/code-exec-netns/README.md).
 
-Only one netns run can be active at a time. When it finishes, Kimi stops the transient unit and confirms it is inactive before letting the next run start. If Kimi cannot confirm cleanup finished, it stops accepting netns runs until the bot restarts. That is safer than assuming no process is left in the namespace.
+Only one netns run can be active at a time. When it finishes, Bram stops the transient unit and confirms it is inactive before letting the next run start. If Bram cannot confirm cleanup finished, it stops accepting netns runs until the bot restarts. That is safer than assuming no process is left in the namespace.
 
 ## Packages and build files
 
@@ -123,18 +123,18 @@ These directories have their own byte and file-count quotas. They stay out of no
 
 ### Workspace checks while code runs
 
-Kimi scans the whole workspace before launch, every `CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` during the run, and once more before returning output. The default interval is five seconds. A job may go over a limit briefly, but the final scan stops unchecked output from being returned.
+Bram scans the whole workspace before launch, every `CODE_EXEC_WORKSPACE_QUOTA_POLL_SECONDS` during the run, and once more before returning output. The default interval is five seconds. A job may go over a limit briefly, but the final scan stops unchecked output from being returned.
 
 Files can disappear mid-scan while package managers and test runners are working. When a scan hits a file that vanished (`ENOENT` or `ESTALE`), it retries up to `CODE_EXEC_WORKSPACE_QUOTA_SCAN_RETRIES` attempts in total, four by default and ten at most. Permission errors and other non-temporary failures stop the run immediately, and so does a temporary error that survives every retry. The log line names the area, errno, relative path, and attempt count, but never the full workspace path.
 
 ### Shared read-only packages
 
-`CODE_EXEC_VENV_DIR` points to one package environment shared by every workspace. Kimi mounts it read-only and never writes to it. Only the operator can add packages:
+`CODE_EXEC_VENV_DIR` points to one package environment shared by every workspace. Bram mounts it read-only and never writes to it. Only the operator can add packages:
 
 ```bash
 # once, as the bot user
-/usr/bin/python3 -m venv /opt/kimi/code-exec-venv
-/opt/kimi/code-exec-venv/bin/pip install numpy pillow
+/usr/bin/python3 -m venv /opt/bram/code-exec-venv
+/opt/bram/code-exec-venv/bin/pip install numpy pillow
 ```
 
 Set `CODE_EXEC_VENV_DIR` to that directory and restart. Later package installs into the same venv are visible on the next run without restarting. Only changing the path needs a restart.
@@ -147,23 +147,23 @@ Three details matter:
 
 Host Python package directories are hidden, so this venv is the only preinstalled package set until a workspace creates `/work/.venv`, which takes priority in Python mode. In a networked mode, the selected interpreter must also be able to create a pip-enabled venv. See [Host requirements](#host-requirements).
 
-Keep the shared venv separate from Kimi's own environment. Never put credentials in it because every code-exec user can read it.
+Keep the shared venv separate from Bram's own environment. Never put credentials in it because every code-exec user can read it.
 
 ## Workspaces, quotas, and output files
 
 A run holds the same per-workspace lock used by `write_file`, `edit_file`, imports, archive extraction, and other writing tools. Those tools cannot replace a path with a symlink while code is running.
 
-Kimi watches the size and file count of the normal workspace and of the environment folders (`.venv`, `.pio`) separately. Crossing a limit kills the whole process tree. Files the run created are then deleted. Files that existed before the run are left alone, because rolling them back without a snapshot could destroy the user's work. Environment folders can be regenerated, so those may be removed even if they existed before the run. Cleanup opens directories relative to a held file descriptor, never follows symlinks, and re-checks each directory's identity, so a symlink or rename swapped in during cleanup cannot point it outside the workspace.
+Bram watches the size and file count of the normal workspace and of the environment folders (`.venv`, `.pio`) separately. Crossing a limit kills the whole process tree. Files the run created are then deleted. Files that existed before the run are left alone, because rolling them back without a snapshot could destroy the user's work. Environment folders can be regenerated, so those may be removed even if they existed before the run. Cleanup opens directories relative to a held file descriptor, never follows symlinks, and re-checks each directory's identity, so a symlink or rename swapped in during cleanup cannot point it outside the workspace.
 
 The workspace limits are monitoring and cleanup limits, not hard disk quotas. Polling is not instant, and the file-size limit applies per file rather than to the total, so a hostile program can write more than the configured total before the monitor kills it.
 
 For untrusted users, put `WORKSPACE_DIR` on its own size-limited filesystem or apply an OS filesystem/project quota. Size that hard limit for your allowed concurrency, and keep it separate from the repository, database, logs, and root filesystem. Without that host-level boundary, do not expose code execution to a hostile public population.
 
-After a run, Kimi reports up to 50 changed file names. Files remain in the workspace and are never attached automatically. The model must select each deliverable with `queue_file`. The result says whether a changed path was already queued and reminds the model when changed files remain unqueued.
+After a run, Bram reports up to 50 changed file names. Files remain in the workspace and are never attached automatically. The model must select each deliverable with `queue_file`. The result says whether a changed path was already queued and reminds the model when changed files remain unqueued.
 
 ## Weekly network limit
 
-Each `host` or `netns` run counts one against the user's weekly allowance. The count is taken after Kimi has validated the arguments and paths but before any sandbox work starts. `CODE_EXEC_NETWORK_WEEKLY_LIMIT` defaults to 100 over a rolling seven-day window. Set it to `0` to disable the limit. `STAFF` is exempt.
+Each `host` or `netns` run counts one against the user's weekly allowance. The count is taken after Bram has validated the arguments and paths but before any sandbox work starts. `CODE_EXEC_NETWORK_WEEKLY_LIMIT` defaults to 100 over a rolling seven-day window. Set it to `0` to disable the limit. `STAFF` is exempt.
 
 A run still counts if installation or execution fails afterwards, because it used network and build capacity. Offline `none` runs never count. This allowance is separate from model and paid-tool costs.
 
@@ -185,12 +185,12 @@ Without it `bwrap` fails with `loopback: Failed RTM_NEWADDR: Operation not permi
 
 The user bus that `systemd-run --user` connects through comes from `dbus-user-session`; minimal server images may not have it installed.
 
-Kimi must run as a normal Unix user. Root (UID 0) is rejected at startup and again before every run. Root inside a container still counts as root.
+Bram must run as a normal Unix user. Root (UID 0) is rejected at startup and again before every run. Root inside a container still counts as root.
 
-The account also needs lingering so its systemd user manager stays available. Replace `kimi` with the real account:
+The account also needs lingering so its systemd user manager stays available. Replace `bram` with the real account:
 
 ```bash
-bot_user=kimi
+bot_user=bram
 bot_uid=$(id -u "$bot_user")
 sudo loginctl enable-linger "$bot_user"
 sudo systemctl start "user@${bot_uid}.service"
@@ -200,7 +200,7 @@ sudo -u "$bot_user" env \
   systemctl --user is-system-running
 ```
 
-The last command should report `running` or `degraded`; either means the user bus is reachable. Kimi can work out those two environment variables on its own, but it cannot start a user manager that does not exist.
+The last command should report `running` or `degraded`; either means the user bus is reachable. Bram can work out those two environment variables on its own, but it cannot start a user manager that does not exist.
 
 A networked mode needs an interpreter that can create a venv with pip. That is `CODE_EXEC_VENV_DIR/bin/python3` when a shared environment is configured, otherwise `CODE_EXEC_PYTHON_BIN`. On Debian and Ubuntu you usually need the matching `python3-venv` package. The startup test builds a disposable venv and leaves `run_code` unavailable if it fails.
 
@@ -240,11 +240,11 @@ Before exposing the tool:
    in startup's order. It names the first check that fails. Exit status 0 means
    a jailed process really started with that profile, including the network
    legs of `netns` or `host`.
-2. Run the live-jail tests. `KIMI_REQUIRE_SANDBOX_TESTS=1` turns a skipped
+2. Run the live-jail tests. `BRAM_REQUIRE_SANDBOX_TESTS=1` turns a skipped
    sandbox test into a failure, so a broken sandbox cannot pass quietly:
 
    ```bash
-   KIMI_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py
+   BRAM_REQUIRE_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q tests/test_sandbox_required.py tests/test_sandbox_runner.py tests/test_code_exec_tool.py tests/test_skill_sandbox.py
    ```
 
    CI runs the same job on a provisioned `ubuntu-24.04` runner
@@ -259,7 +259,7 @@ Before exposing the tool:
 
 If registration fails, the usual causes are:
 
-- Kimi is running as UID 0;
+- Bram is running as UID 0;
 - a required program is missing;
 - the selected Python cannot build a pip-enabled venv;
 - the workspace is mounted `noexec`;
@@ -271,4 +271,4 @@ If registration fails, the usual causes are:
 - DNS or TLS is broken; or
 - a private target has become reachable.
 
-Fix the failed check and restart. Do not work around the startup test. It is telling you that the sandbox you configured is not the sandbox Kimi would actually be running code in.
+Fix the failed check and restart. Do not work around the startup test. It is telling you that the sandbox you configured is not the sandbox Bram would actually be running code in.

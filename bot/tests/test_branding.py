@@ -4,7 +4,7 @@ from branding import DEFAULT_BOT_NAME, PROVIDER_IDENTITY_MAX_LENGTH, provider_id
 
 
 def test_provider_identity_transliterates_unicode_and_drops_header_controls() -> None:
-    assert provider_identity("  Kímí 🤖\r\nInjected: value  ") == "Kimi Injected- value"
+    assert provider_identity("  Bram Café 🤖\r\nInjected: value  ") == "Bram Cafe Injected- value"
 
 
 def test_provider_identity_falls_back_when_no_safe_characters_remain() -> None:

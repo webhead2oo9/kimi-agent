@@ -10,7 +10,7 @@ import pytest
 from app.guild_activation import GuildActivationConfig, GuildActivationService
 from app.modules import ModuleManager
 from config.fragments.guild_config import server_setup_activation
-from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
+from bram_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
 from modules.guild_settings import GUILD_MODULES_DIR, GuildSettingsService
 from tests.app_state_probes import guild_activation_task
 

@@ -352,7 +352,7 @@ async def test_first_silent_baseline_loads_skill_and_discards_queued_posts(
         moderation=None,
         semaphore=None,
         settings=SimpleNamespace(
-            bot_name="Kimi",
+            bot_name="Bram",
             react_max_iterations=20,
             react_max_tokens=4000,
             react_turn_timeout_seconds=60,

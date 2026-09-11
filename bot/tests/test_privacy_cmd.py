@@ -1510,7 +1510,7 @@ async def test_privacy_command_replies_ephemerally_with_embed_and_buttons() -> N
         memory_client=None,
         auto_retain_watermarks=None,
         retention_days=30,
-        bot_name="Kimi",
+        bot_name="Bram",
     )
 
     response = _Response()
@@ -1520,7 +1520,7 @@ async def test_privacy_command_replies_ephemerally_with_embed_and_buttons() -> N
     assert len(response.sent) == 1
     sent = response.sent[0]
     assert sent["ephemeral"] is True
-    assert sent["embed"].title == "Kimi: Privacy in brief"
+    assert sent["embed"].title == "Bram: Privacy in brief"
     description = sent["embed"].description or ""
     assert "Long-term memory is enabled by default" in description
     assert "conversation history" in description

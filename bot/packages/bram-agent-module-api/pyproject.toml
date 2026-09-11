@@ -1,5 +1,5 @@
 [project]
-name = "kimi-agent-module-api"
+name = "bram-agent-module-api"
 version = "2.3.0"
 description = "Stable contracts for community-built assistant modules"
 requires-python = ">=3.14"
@@ -10,12 +10,12 @@ readme = "README.md"
 dependencies = ["pydantic-settings>=2.14.2"]
 
 [project.urls]
-Documentation = "https://github.com/webhead2oo9/kimi-agent/blob/main/docs/modules.md"
-Issues = "https://github.com/webhead2oo9/kimi-agent/issues"
-Repository = "https://github.com/webhead2oo9/kimi-agent"
+Documentation = "https://github.com/bram-agent/bram-agent/blob/main/docs/modules.md"
+Issues = "https://github.com/bram-agent/bram-agent/issues"
+Repository = "https://github.com/bram-agent/bram-agent"
 
 [project.optional-dependencies]
-# kimi_agent_module_api.testing.MemoryStorage runs real SQL in unit tests.
+# bram_agent_module_api.testing.MemoryStorage runs real SQL in unit tests.
 testing = ["aiosqlite"]
 
 [dependency-groups]
@@ -29,7 +29,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-kimi_agent_module_api = ["py.typed"]
+bram_agent_module_api = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -96,7 +96,7 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
         provider_routing={"require_parameters": True, "data_collection": "deny"},
         service_tier="priority",
         app_url="https://example.com",
-        app_name="Kímí 🤖\r\nInjected: value",
+        app_name="Bram Café 🤖\r\nInjected: value",
     )
     completions = FakeCompletions(native)
     provider._client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=completions)))
@@ -117,7 +117,7 @@ def test_openrouter_provider_sends_routing_headers_and_modalities() -> None:
 
     request = completions.calls[0]
     assert request["extra_headers"]["HTTP-Referer"] == "https://example.com"
-    assert request["extra_headers"]["X-OpenRouter-Title"] == "Kimi Injected- value"
+    assert request["extra_headers"]["X-OpenRouter-Title"] == "Bram Cafe Injected- value"
     assert "X-Title" not in request["extra_headers"]
     assert request["extra_headers"]["X-OpenRouter-Metadata"] == "enabled"
     assert request["service_tier"] == "priority"

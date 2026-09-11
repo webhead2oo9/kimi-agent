@@ -64,7 +64,7 @@ stale image-only token leaves chat available and produces a concise
 re-authentication error from the tool.
 
 Refresh is careful about concurrency. Before refreshing, the runtime reloads a
-same-account token that another process may have written, so two Kimi
+same-account token that another process may have written, so two Bram
 instances sharing a token file don't fight over it. A WebSocket 401 forces that
 guarded reload-and-refresh once and retries the handshake, without ever exposing
 the bearer token in logs.

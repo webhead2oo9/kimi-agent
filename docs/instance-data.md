@@ -22,7 +22,7 @@ Keep the deployment repository separate from the public application checkout.
 A practical layout looks like this:
 
 ```text
-kimibot-private/
+brambot-private/
 ├── README.md                         # deployment notes, with no secrets
 ├── config/
 │   ├── prompt.md                     # required base system-prompt template
@@ -54,7 +54,7 @@ kimibot-private/
 `persona.md` may be absent only if the prompt doesn't use `<persona>` (the
 public `prompt.md` does); a missing file silently renders an empty block rather
 than failing, so you won't get an error to warn you. Copy every tracked shared
-command template as well. In particular, the **Teach Kimi** context menu expects
+command template as well. In particular, the **Teach Bram** context menu expects
 `config/prompts/commands/learn.md`; without it, the turn falls back to the base
 prompt and loses its narrower learning workflow and quoted-message handling.
 When user-app chat is enabled, copy and customize
@@ -85,8 +85,8 @@ order and supported layout behavior.
 Point the application at the private checkout with absolute paths:
 
 ```dotenv
-CONFIG_DIR=/srv/kimi/private/config
-SKILLS_DIR=/srv/kimi/private/skills
+CONFIG_DIR=/srv/bram/private/config
+SKILLS_DIR=/srv/bram/private/skills
 ```
 
 Clone and update the public and private repositories independently, review and commit private configuration changes, then deploy an approved revision of each. Which files need a restart:
@@ -113,19 +113,19 @@ Deployment-owned plugin packages are private application code, not configuration
 Point every writable or deployment-owned path outside the application checkout. Absolute paths avoid any dependence on the supervisor's working directory, and separating durable state from temporary staging keeps the backup and retention policy clear:
 
 ```dotenv
-CONFIG_DIR=/srv/kimi/private/config
-SKILLS_DIR=/srv/kimi/private/skills
-DATABASE_PATH=/srv/kimi/instance/data/bot.db
-PERSONAL_SKILLS_DIR=/srv/kimi/instance/data/personal_skills
-WORKSPACE_DIR=/srv/kimi/instance/workspaces
-TOOL_EVENT_LOG_PATH=/srv/kimi/instance/logs/events.jsonl
-SECRETS_FILE=/srv/kimi/instance/secrets/skills.yaml
-CODEX_TOKEN_FILE=/srv/kimi/instance/secrets/codex-auth.json
-BROWSER_PROFILES_DIR=/srv/kimi/instance/data/browser_profiles
-BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
+CONFIG_DIR=/srv/bram/private/config
+SKILLS_DIR=/srv/bram/private/skills
+DATABASE_PATH=/srv/bram/instance/data/bot.db
+PERSONAL_SKILLS_DIR=/srv/bram/instance/data/personal_skills
+WORKSPACE_DIR=/srv/bram/instance/workspaces
+TOOL_EVENT_LOG_PATH=/srv/bram/instance/logs/events.jsonl
+SECRETS_FILE=/srv/bram/instance/secrets/skills.yaml
+CODEX_TOKEN_FILE=/srv/bram/instance/secrets/codex-auth.json
+BROWSER_PROFILES_DIR=/srv/bram/instance/data/browser_profiles
+BROWSER_RUNTIME_DIR=/opt/bram/betterwright
 
 # Temporary staging; normal turns delete these files immediately.
-ATTACHMENT_STORE_DIR=/var/tmp/kimi/attachments
+ATTACHMENT_STORE_DIR=/var/tmp/bram/attachments
 ```
 
 These paths are examples, not prescribed host locations. Mount the durable paths into replacement containers or services, but don't back up attachment staging. Workspaces and logs are retained according to their own TTL, quota, and rotation rules, so any backups must enforce compatible deletion periods.

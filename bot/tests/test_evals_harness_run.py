@@ -34,7 +34,7 @@ from usage.normalization import UsageBreakdown
 
 def _models():
     return ModelsConfig(
-        baseline=ModelSpec("prod", "openai_compat", "kimi", base_url="https://x"),
+        baseline=ModelSpec("prod", "openai_compat", "bram", base_url="https://x"),
         candidates={"sol": ModelSpec("gpt-5.6-sol", "codex", "gpt-5.6-sol")},
         judge=ModelSpec("judge", "openai_compat", "glm", base_url="https://x"),
     )

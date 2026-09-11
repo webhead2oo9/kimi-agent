@@ -1,8 +1,8 @@
 [project]
-name = "kimi-hello-module"
+name = "bram-hello-module"
 version = "1.0.0"
 requires-python = ">=3.14"
-dependencies = ["kimi-agent-module-api>=2,<3"]
+dependencies = ["bram-agent-module-api>=2,<3"]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -10,7 +10,7 @@ license-files = ["LICENSE"]
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
 
-[project.entry-points."kimi_agent.modules"]
+[project.entry-points."bram_agent.modules"]
 hello = "hello_module:SPEC"
 
 [build-system]

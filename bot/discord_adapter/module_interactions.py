@@ -28,7 +28,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     MessageRef,
     CUSTOM_ID_PREFIX,
     MODAL_CUSTOM_ID_MAX_LENGTH,

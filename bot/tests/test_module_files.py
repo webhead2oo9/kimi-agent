@@ -10,8 +10,8 @@ import pytest
 from agent.attachments import AttachmentRef
 from app.modules import ModuleManager
 from config.settings import Settings
-from kimi_agent_module_api import ModulePermissions, ModuleSpec, ModuleToolContext
-from kimi_agent_module_api.files import FileAccessError
+from bram_agent_module_api import ModulePermissions, ModuleSpec, ModuleToolContext
+from bram_agent_module_api.files import FileAccessError
 from modules.files import ModuleToolFiles
 from modules.testing import build_test_runtime
 from providers.types import ContentPart
@@ -234,7 +234,7 @@ async def test_cancelled_worker_retains_workspace_lease(tmp_path: Path) -> None:
     def read(limit):
         entered.set()
         release.wait(5)
-        from kimi_agent_module_api import ToolFile
+        from bram_agent_module_api import ToolFile
 
         return ToolFile("a.txt", "text/plain", b"raw")
 

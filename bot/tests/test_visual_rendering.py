@@ -438,7 +438,7 @@ async def test_visual_service_confirms_unit_stop_when_spawn_is_cancelled(
         )
 
     assert len(stopped) == 1
-    assert stopped[0].startswith("kimi-visual-")
+    assert stopped[0].startswith("bram-visual-")
 
 
 @pytest.mark.asyncio

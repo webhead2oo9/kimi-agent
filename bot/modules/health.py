@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     HEALTH_DETAIL_MAX_LENGTH,
     HEALTH_METRICS_MAX_KEYS,
     HealthState,
@@ -123,7 +123,7 @@ class HealthRegistry:
         self._states[module_name] = health
         if previous is None or previous.state != health.state:
             log.info(
-                "Kimi module %s is %s%s",
+                "Bram module %s is %s%s",
                 module_name,
                 health.state,
                 f": {health.detail}" if health.detail else "",

@@ -1,9 +1,9 @@
-name: Release Kimi agent module API
+name: Release Bram agent module API
 
 on:
   push:
     tags:
-      - "kimi-agent-api-v*"
+      - "bram-agent-api-v*"
 
 permissions:
   contents: read
@@ -44,25 +44,25 @@ jobs:
           uv run python -m pytest -q
 
       - name: Test module API package standalone
-        working-directory: bot/packages/kimi-agent-module-api
+        working-directory: bot/packages/bram-agent-module-api
         run: uv run --isolated --locked --group test python -m pytest -q
 
       - name: Verify release tag matches package version
         shell: bash
         run: |
-          version=$(uv run python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('packages/kimi-agent-module-api/pyproject.toml').read_text())['project']['version'])")
-          test "${GITHUB_REF_NAME}" = "kimi-agent-api-v${version}"
+          version=$(uv run python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('packages/bram-agent-module-api/pyproject.toml').read_text())['project']['version'])")
+          test "${GITHUB_REF_NAME}" = "bram-agent-api-v${version}"
 
       - name: Build publishable API and reference consumer
         run: |
-          uv build --package kimi-agent-module-api --no-sources --out-dir dist/kimi-agent-module-api
+          uv build --package bram-agent-module-api --no-sources --out-dir dist/bram-agent-module-api
           uv build --package community-agent-reference-module --no-sources --out-dir dist/reference-module
 
       - name: Test built module API through the reference wheel
         shell: bash
         run: |
-          api_wheel=$(find dist/kimi-agent-module-api -maxdepth 1 -name '*.whl' -print -quit)
-          api_sdist=$(find dist/kimi-agent-module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
+          api_wheel=$(find dist/bram-agent-module-api -maxdepth 1 -name '*.whl' -print -quit)
+          api_sdist=$(find dist/bram-agent-module-api -maxdepth 1 -name '*.tar.gz' -print -quit)
           reference_wheel=$(find dist/reference-module -maxdepth 1 -name '*.whl' -print -quit)
           test -n "${api_wheel}"
           test -n "${api_sdist}"
@@ -70,4 +70,4 @@ jobs:
           uv run python scripts/verify_module_api_dist.py verify "${api_wheel}" "${api_sdist}" "${reference_wheel}"
 
       - name: Publish to PyPI with Trusted Publishing
-        run: uv publish --trusted-publishing always dist/kimi-agent-module-api/*
+        run: uv publish --trusted-publishing always dist/bram-agent-module-api/*

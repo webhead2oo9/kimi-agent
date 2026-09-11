@@ -1,6 +1,6 @@
 # Video understanding
 
-The optional searchable `video` tool lets Kimi ask a stateful Gemini specialist
+The optional searchable `video` tool lets Bram ask a stateful Gemini specialist
 questions about one video. A session may start from:
 
 - an exact public YouTube URL;

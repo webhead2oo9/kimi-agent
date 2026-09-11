@@ -81,7 +81,7 @@ def _client(
             resolver,
             timeout_seconds=10,
             max_retries=2,
-            user_agent="Kimi",
+            user_agent="Bram",
         ),
         session,
         manager,

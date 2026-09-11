@@ -12,7 +12,7 @@ def _script(name: str) -> str:
 def test_helpers_keep_deployment_home_separate_from_app_config_dir() -> None:
     for name in HELPERS:
         source = _script(name)
-        assert 'KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-' in source
+        assert 'BRAM_CONFIG_HOME="${BRAM_CONFIG_HOME:-' in source
         assert 'CONFIG_DIR="${CONFIG_DIR:-' not in source
 
 

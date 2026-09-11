@@ -1,6 +1,6 @@
 # Persistent browser
 
-Kimi can give members a real browser for sites that a search or a plain page fetch cannot handle: pages that need JavaScript, logins, or clicking through. It runs inside the same hardened sandbox used for code execution. The deployment pins one BetterWright release and the matching Chromium build. The same install also brings in Mermaid for the separate chart and diagram tools.
+Bram can give members a real browser for sites that a search or a plain page fetch cannot handle: pages that need JavaScript, logins, or clicking through. It runs inside the same hardened sandbox used for code execution. The deployment pins one BetterWright release and the matching Chromium build. The same install also brings in Mermaid for the separate chart and diagram tools.
 
 Enabling the browser adds real attack surface. It is off by default. Only turn it on when you have reviewed the isolation boundary, chosen a network mode, and tested the startup probe on your host.
 
@@ -25,7 +25,7 @@ This protects the host in several ways:
 - The worker cannot see other users' profiles, the bot's own files, the repository, or the database.
 - It cannot reach the host's normal network routes unless you explicitly choose `host` mode.
 - Even if Chromium is compromised, the namespaces, seccomp filter, and dropped privileges limit what the escape can reach.
-- The runtime at `/opt/kimi/betterwright` is root-owned and not group- or world-writable. The unprivileged bot user can only read and traverse it.
+- The runtime at `/opt/bram/betterwright` is root-owned and not group- or world-writable. The unprivileged bot user can only read and traverse it.
 
 System fonts are mounted read-only because Chromium needs them to render pages. The bot service can keep `NoNewPrivileges=yes`.
 
@@ -52,7 +52,7 @@ From the `bot/` directory:
 sudo sh ./deploy/betterwright/install.sh
 ```
 
-The installer pins the runtime and replaces the root-owned copy at `/opt/kimi/betterwright`. Installing the runtime does not enable the tool.
+The installer pins the runtime and replaces the root-owned copy at `/opt/bram/betterwright`. Installing the runtime does not enable the tool.
 
 You still need to set the environment variables and restart:
 
@@ -80,7 +80,7 @@ The startup limits are listed in the [configuration guide](configuration.md). Pe
 
 If a profile grows past `BROWSER_MAX_PROFILE_MB`, it is deleted (not trimmed). Any logged-in sessions in that profile are lost. The next call for that user starts fresh. Profiles also expire after `BROWSER_PROFILE_TTL_SECONDS` of inactivity.
 
-When a user chooses `/privacy` → **Delete my data**, Kimi waits for any browser work in progress, closes the worker, and deletes the profile right away.
+When a user chooses `/privacy` → **Delete my data**, Bram waits for any browser work in progress, closes the worker, and deletes the profile right away.
 
 Treat `data/browser_profiles/` with the same private storage, backup, access, and deletion policy as workspaces. See the [privacy policy](privacy-policy.md).
 

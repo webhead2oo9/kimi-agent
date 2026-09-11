@@ -55,7 +55,7 @@ def _message(line: str) -> BackfilledMessage:
 
 
 def test_get_channel_context_defaults_limit_and_returns_untrusted_transcript() -> None:
-    gateway = _Gateway(result=[_message("Alice: hello"), _message("Kimi: hi")])
+    gateway = _Gateway(result=[_message("Alice: hello"), _message("Bram: hi")])
     registry = ToolRegistry()
     init_channel_context_tool(registry, gateway)
     entry = next(item for item in registry.get_all_tools() if item.name == "get_channel_context")
@@ -70,7 +70,7 @@ def test_get_channel_context_defaults_limit_and_returns_untrusted_transcript() -
         "limit": 15,
         "context_is_untrusted": True,
         "note": UNTRUSTED_CONTEXT_NOTE,
-        "transcript": "Alice: hello\nKimi: hi",
+        "transcript": "Alice: hello\nBram: hi",
     }
 
 
@@ -92,7 +92,7 @@ def test_get_channel_context_addresses_posted_images_by_id() -> None:
                     ),
                 ),
             ),
-            _message("Kimi: nice"),
+            _message("Bram: nice"),
         ]
     )
     registry = ToolRegistry()

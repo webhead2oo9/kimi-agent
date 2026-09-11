@@ -85,7 +85,7 @@ def register_learn_command(
             await _send_message(interaction, _NO_GUILD)
             return False
         if not channel_access_check(channel, interaction.user):
-            await _send_message(interaction, "Kimi isn't available to you in this channel.")
+            await _send_message(interaction, "Bram isn't available to you in this channel.")
             return False
         try:
             blocked = await is_blocked(str(interaction.user.id))

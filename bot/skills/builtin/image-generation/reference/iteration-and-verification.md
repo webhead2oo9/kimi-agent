@@ -1,6 +1,6 @@
 # Iteration and verification
 
-Adapted for Kimi from OpenAI's
+Adapted for Bram from OpenAI's
 [Image prompting guide](https://developers.openai.com/api/docs/guides/image-prompting).
 The central method is simple: inspect the result, revise one condition, repeat
 the preservation constraints, and stop when the user's requirement is met or
@@ -32,7 +32,7 @@ When the image is visible, compare it against a checklist derived from the brief
 - **Transparency:** decoded alpha variation and edge quality, if and only if an
   actual alpha-inspection capability is available.
 
-Also inspect the structured result. `requested` records effective Kimi hints;
+Also inspect the structured result. `requested` records effective Bram hints;
 `actual` establishes decoded size and PNG format; `provider_reported` repeats
 allowlisted provider labels; `mismatches` identifies some metadata conflicts.
 Neither provider labels nor a missing mismatch proves visual compliance.

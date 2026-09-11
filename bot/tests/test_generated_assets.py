@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from kimi_agent_module_api.images import SUPPORTED_IMAGE_MEDIA_TYPES
+from bram_agent_module_api.images import SUPPORTED_IMAGE_MEDIA_TYPES
 from providers import assets as asset_writer
 from providers.assets import write_generated_assets
 from providers.types import GeneratedAsset

@@ -11,7 +11,7 @@ handler is no longer registered stays paused and degrades the module's health.
 
 The runner executes up to ``max_concurrent`` jobs at once, at most one per
 module, so one module's long job cannot delay another module's due work while
-a module's own handlers still never overlap. Kimi is a single process: before
+a module's own handlers still never overlap. Bram is a single process: before
 claiming anything, the runner must hold the singleton lease in
 ``module_scheduler_runner``, renewed every tick. A second process against the
 same database cannot take it while it is live, so it pauses (degrading every
@@ -36,7 +36,7 @@ from typing import Any
 
 from modules.tasks import DEFAULT_CANCEL_GRACE_SECONDS, cancel_with_grace, run_bounded
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     Backoff,
     HealthState,
     JobHandler,
@@ -463,7 +463,7 @@ class DurableScheduler:
             return
         self._foreign_pause_reported = True
         log.error(
-            "Module scheduler paused: %s. Another Kimi process is running jobs against "
+            "Module scheduler paused: %s. Another Bram process is running jobs against "
             "this database; stop it, or wait for its lease (%gs) to expire.",
             FOREIGN_RUNNER_DETAIL,
             self._lease_seconds,

@@ -1,11 +1,11 @@
 # BetterWright runtime installer
 
-This guide walks through installing the reviewed BetterWright runtime that the bot's persistent browser and visual-rendering tools need. The runtime lives outside the bot checkout at `/opt/kimi/betterwright`, root-owned and not writable by the bot account, so a compromised bot can't tamper with the files it executes.
+This guide walks through installing the reviewed BetterWright runtime that the bot's persistent browser and visual-rendering tools need. The runtime lives outside the bot checkout at `/opt/bram/betterwright`, root-owned and not writable by the bot account, so a compromised bot can't tamper with the files it executes.
 
 **Quick heads-up before you begin:**
 - You need a Linux host with Node `>=22.18.0`, npm, `unzip`, Bubblewrap, util-linux, and a working per-user systemd manager.
 - This was tested on the same Ubuntu versions the main setup covers.
-- The installer is privileged and only writes `/opt/kimi/betterwright`. Run it as a sudo-enabled user, never as root.
+- The installer is privileged and only writes `/opt/bram/betterwright`. Run it as a sudo-enabled user, never as root.
 - The bot account needs read and traverse on the install directory so it can execute the immutable Node and BetterChromium files; it does not need write.
 - Browser and visual-rendering calls do not install packages or load Mermaid from a CDN once the runtime is in place.
 
@@ -45,7 +45,7 @@ sudo sh ./deploy/betterwright/install.sh
 ```
 
 ### What you're checking
-A successful run prints the staged packages, the version checks, and a final message confirming the runtime is in place at `/opt/kimi/betterwright`. A failed run leaves the previous install untouched, so you can rerun safely.
+A successful run prints the staged packages, the version checks, and a final message confirming the runtime is in place at `/opt/bram/betterwright`. A failed run leaves the previous install untouched, so you can rerun safely.
 
 ---
 
@@ -63,20 +63,20 @@ sudo env NODE_BIN=/absolute/path/to/node NPM_BIN=/absolute/path/to/npm \
   sh ./deploy/betterwright/install.sh
 ```
 
-This doesn't replace the system Node installation; it just tells the installer which binaries to use for the staged `npm ci`. The bot still uses the Node bundled in `/opt/kimi/betterwright` at runtime.
+This doesn't replace the system Node installation; it just tells the installer which binaries to use for the staged `npm ci`. The bot still uses the Node bundled in `/opt/bram/betterwright` at runtime.
 
 ---
 
 ## Step 4. Keep the configured runtime path fixed
 
 ### Why do this?
-The installer only writes `/opt/kimi/betterwright` and accepts no path argument. Point `BROWSER_RUNTIME_DIR` at that exact reviewed location in your `.env`.
+The installer only writes `/opt/bram/betterwright` and accepts no path argument. Point `BROWSER_RUNTIME_DIR` at that exact reviewed location in your `.env`.
 
 ### What to configure
-Add the runtime path to the bot's active `ENV_FILE` (normally `kimi.env`):
+Add the runtime path to the bot's active `ENV_FILE` (normally `bram.env`):
 
 ```dotenv
-BROWSER_RUNTIME_DIR=/opt/kimi/betterwright
+BROWSER_RUNTIME_DIR=/opt/bram/betterwright
 ```
 
 ---
@@ -112,7 +112,7 @@ On the **server**:
 sudo loginctl enable-linger <bot-user>
 ```
 
-Replace `<bot-user>` with the account the bot runs under. The unit file itself is [`../kimi.service.example`](../kimi.service.example).
+Replace `<bot-user>` with the account the bot runs under. The unit file itself is [`../bram.service.example`](../bram.service.example).
 
 ---
 

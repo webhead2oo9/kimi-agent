@@ -1,4 +1,4 @@
-"""Reference Kimi module: a small "kudos" feature that exercises every host port.
+"""Reference Bram module: a small "kudos" feature that exercises every host port.
 
 The package is split by responsibility so each file reads as one lesson:
 

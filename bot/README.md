@@ -1,4 +1,4 @@
-# Kimi
+# Bram
 
 > A self-hosted Discord assistant with a provider-neutral tool loop.
 
@@ -6,14 +6,14 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7+-5865F2.svg)
 
-Kimi is a generalist assistant for Discord communities. It responds only when
+Bram is a generalist assistant for Discord communities. It responds only when
 invoked. It runs a provider-neutral
 [ReAct](https://arxiv.org/abs/2210.03629) tool-use loop behind trust tiers and
 config gates: it can search configured Discord history, work with per-user
 files, build structured embeds, move a conversation into a managed thread, and
 remember durable facts about who it's talking to.
 
-The bot's runtime name comes from `BOT_NAME` (default `Kimi`) and is never
+The bot's runtime name comes from `BOT_NAME` (default `Bram`) and is never
 hardcoded on the Discord-facing surface; the persona lives in
 [`config/persona.md`](config/persona.md). This setting does not rename the
 Discord account itself. For a complete rename, update the existing
@@ -74,7 +74,7 @@ guild installations, and permissions stay intact.
   manage deployment-owned instruction docs from inside Discord.
   Operator-authored script-backed tools run under mandatory Linux isolation and
   default-denied networking; the writable store is private instance data. Staff
-  can also teach from a selected human message through the **Teach Kimi**
+  can also teach from a selected human message through the **Teach Bram**
   context menu (or **Teach &lt;name&gt;** when `BOT_NAME` is customized).
 - **Discord commands.** `/memory`, `/moderation`, `/privacy`, and
   `/usage` expose user controls and staff operations; the bot owner uses `/models`
@@ -145,18 +145,18 @@ in `app/runtime.py` → `agent/turn.py` → `agent/core.py`.
 ## Quick start
 
 The canonical Ubuntu operator path is
-[Install and operate Kimi on Ubuntu](../docs/setup.md). It covers host packages,
+[Install and operate Bram on Ubuntu](../docs/setup.md). It covers host packages,
 the Python environment, external private/runtime paths, Discord and provider
 setup, modules, systemd, upgrades, and diagnostics. This shorter development
 path assumes Python 3.14+ with the standard `venv` module and intentionally
 keeps ignored instance files inside the checkout.
 
 ```bash
-git clone https://github.com/webhead2oo9/kimi-agent.git
-cd kimi-agent/bot
+git clone https://github.com/bram-agent/bram-agent.git
+cd bram-agent/bot
 python3 -m venv .venv
 .venv/bin/python -m pip install \
-  --editable ./packages/kimi-agent-module-api --editable .
+  --editable ./packages/bram-agent-module-api --editable .
 .venv/bin/python -m pip check
 
 cp .env.example .env

@@ -300,10 +300,10 @@ def _run_simple(provider: OpenAIChatProvider, message: SimpleNamespace) -> Any:
 
 
 def test_chat_provider_captures_kimi_reasoning_field_fallback() -> None:
-    # kimi exposes chain-of-thought as `reasoning` (no `reasoning_content`) on the
+    # bram exposes chain-of-thought as `reasoning` (no `reasoning_content`) on the
     # OpenCode Go route; it must be captured, not silently dropped.
     message = SimpleNamespace(
-        content="The ball costs $0.05.", reasoning="kimi cot here", tool_calls=None
+        content="The ball costs $0.05.", reasoning="bram cot here", tool_calls=None
     )
     provider = OpenAIChatProvider(
         api_key="t",
@@ -312,7 +312,7 @@ def test_chat_provider_captures_kimi_reasoning_field_fallback() -> None:
         provider_key="openai_compat",
     )
     response = _run_simple(provider, message)
-    assert response.reasoning_content == "kimi cot here"
+    assert response.reasoning_content == "bram cot here"
 
 
 def test_chat_provider_prefers_reasoning_content_over_reasoning() -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     MODULE_API_VERSION,
     AppModule,
     ModuleLoadContext,
@@ -18,7 +18,7 @@ from kimi_agent_module_api import (
     ServiceDeclaration,
     ServiceRequirement,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ModuleContractError,
     ScopedModuleMigration,
     ServiceUnavailable,

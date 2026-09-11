@@ -16,7 +16,7 @@ import pytest
 from app.modules import validate_module_selection
 from config.plugin_settings import PluginSetting, PluginSettingsDefinition
 from config.settings import Settings
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     BASELINE_CAPABILITIES,
     MODULE_API_VERSION,
     AppModule,
@@ -31,7 +31,7 @@ from kimi_agent_module_api import (
     ServiceRequirement,
     TrustTier,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     CUSTOM_ID_MAX_LENGTH,
     Backoff,
@@ -58,15 +58,15 @@ from kimi_agent_module_api.contracts import (
     validate_services,
     validate_subscription,
 )
-from kimi_agent_module_api.events import CORE_TOPICS
+from bram_agent_module_api.events import CORE_TOPICS
 from trust.tiers import TrustTier as CoreTrustTier
 
 SDK_ROOT = (
     Path(__file__).resolve().parents[1]
     / "packages"
-    / "kimi-agent-module-api"
+    / "bram-agent-module-api"
     / "src"
-    / "kimi_agent_module_api"
+    / "bram_agent_module_api"
 )
 
 
@@ -460,7 +460,7 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    allowed = set(sys.stdlib_module_names) | {"kimi_agent_module_api"}
+    allowed = set(sys.stdlib_module_names) | {"bram_agent_module_api"}
     assert imported <= allowed, (
         f"{module}.py imports outside the contract layer: {imported - allowed}"
     )
@@ -468,7 +468,7 @@ def test_contract_modules_import_only_stdlib_and_each_other(module: str) -> None
 
 def test_entire_sdk_has_no_core_runtime_imports() -> None:
     allowed = set(sys.stdlib_module_names) | {
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "pydantic_settings",
     }
     # testing.MemoryStorage imports aiosqlite lazily behind the ``testing`` extra;
@@ -490,8 +490,8 @@ def test_entire_sdk_has_no_core_runtime_imports() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> None:
-    from kimi_agent_module_api.contracts import Backoff, JobRun
-    from kimi_agent_module_api.testing import FakeScheduler
+    from bram_agent_module_api.contracts import Backoff, JobRun
+    from bram_agent_module_api.testing import FakeScheduler
 
     scheduler = FakeScheduler()
     attempts: list[int] = []
@@ -522,8 +522,8 @@ async def test_fake_scheduler_retries_failures_with_backoff_like_the_host() -> N
 
 @pytest.mark.asyncio
 async def test_fake_scheduler_caps_extreme_backoff_without_overflow() -> None:
-    from kimi_agent_module_api.contracts import Backoff, JobRun
-    from kimi_agent_module_api.testing import FakeScheduler
+    from bram_agent_module_api.contracts import Backoff, JobRun
+    from bram_agent_module_api.testing import FakeScheduler
 
     scheduler = FakeScheduler()
     attempts: list[int] = []
@@ -550,7 +550,7 @@ async def test_fake_scheduler_caps_extreme_backoff_without_overflow() -> None:
 
 
 def test_render_guild_settings_matches_the_host_document_format() -> None:
-    from kimi_agent_module_api import render_guild_settings
+    from bram_agent_module_api import render_guild_settings
 
     rendered = render_guild_settings({"b": True, "a": [1, 2], "c": "x: y", "d": 3, "e": None})
 
@@ -559,15 +559,15 @@ def test_render_guild_settings_matches_the_host_document_format() -> None:
 
 @pytest.mark.parametrize("key", ["bad:key", "bad\ninjected", "UPPER", ""])
 def test_render_guild_settings_rejects_invalid_keys(key: str) -> None:
-    from kimi_agent_module_api import render_guild_settings
+    from bram_agent_module_api import render_guild_settings
 
     with pytest.raises(ValueError, match="invalid guild setting name"):
         render_guild_settings({key: True})
 
 
 def test_fake_service_registry_typed_get() -> None:
-    from kimi_agent_module_api.contracts import ServiceUnavailable
-    from kimi_agent_module_api.testing import FakeServiceRegistry
+    from bram_agent_module_api.contracts import ServiceUnavailable
+    from bram_agent_module_api.testing import FakeServiceRegistry
 
     class Board:
         def answer(self) -> int:
@@ -590,12 +590,12 @@ def test_fake_service_registry_typed_get() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_discord_actions_gate_fetch_roles_invites_and_can_view_channel() -> None:
-    from kimi_agent_module_api.contracts import (
+    from bram_agent_module_api.contracts import (
         InviteSnapshot,
         RoleSnapshot,
         UndeclaredDiscordAction,
     )
-    from kimi_agent_module_api.testing import FakeDiscordActions
+    from bram_agent_module_api.testing import FakeDiscordActions
 
     actions = FakeDiscordActions("m", frozenset({"fetch_roles", "fetch_invites"}))
     actions.roles[1] = (RoleSnapshot(1, 10, "mod", 5),)
@@ -608,8 +608,8 @@ async def test_fake_discord_actions_gate_fetch_roles_invites_and_can_view_channe
 
 
 def test_fake_interaction_exposes_the_component_message() -> None:
-    from kimi_agent_module_api.contracts import MessageRef
-    from kimi_agent_module_api.testing import FakeInteraction
+    from bram_agent_module_api.contracts import MessageRef
+    from bram_agent_module_api.testing import FakeInteraction
 
     ref = MessageRef(1, 2, 3)
     assert FakeInteraction(message=ref).message == ref
@@ -618,14 +618,14 @@ def test_fake_interaction_exposes_the_component_message() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_interaction_records_modal_values_and_layouts() -> None:
-    from kimi_agent_module_api.contracts import (
+    from bram_agent_module_api.contracts import (
         LayoutText,
         ModalSpec,
         OutgoingLayout,
         SelectSpec,
         TextInputSpec,
     )
-    from kimi_agent_module_api.testing import FakeInteraction
+    from bram_agent_module_api.testing import FakeInteraction
 
     interaction = FakeInteraction(text_values={"title": "Hello"}, module_name="demo")
     modal = ModalSpec("edit", "Edit", (TextInputSpec("title", "Title"),))
@@ -652,7 +652,7 @@ async def test_fake_interaction_records_modal_values_and_layouts() -> None:
                 SelectSpec(f"select_{index}", (("One", "1", None),)) for index in range(6)
             ),
         )
-    from kimi_agent_module_api.contracts import LayoutSection
+    from bram_agent_module_api.contracts import LayoutSection
 
     with pytest.raises(ModuleContractError, match="40 components"):
         await interaction.respond(
@@ -666,8 +666,8 @@ async def test_fake_interaction_records_modal_values_and_layouts() -> None:
 
 
 def test_fake_interactions_reject_duplicate_and_invalid_registrations() -> None:
-    from kimi_agent_module_api.contracts import CommandSpec, ModuleContractError
-    from kimi_agent_module_api.testing import FakeInteractions
+    from bram_agent_module_api.contracts import CommandSpec, ModuleContractError
+    from bram_agent_module_api.testing import FakeInteractions
 
     router = FakeInteractions("example")
 
@@ -688,8 +688,8 @@ def test_fake_interactions_reject_duplicate_and_invalid_registrations() -> None:
 
 @pytest.mark.asyncio
 async def test_memory_storage_serializes_writers_and_runs_migrations() -> None:
-    from kimi_agent_module_api.contracts import MigrationContext
-    from kimi_agent_module_api.testing import MemoryStorage
+    from bram_agent_module_api.contracts import MigrationContext
+    from bram_agent_module_api.testing import MemoryStorage
 
     async def create(ctx: MigrationContext) -> None:
         await ctx.connection.execute(f"CREATE TABLE {ctx.table('t')} (n INTEGER)")
@@ -704,8 +704,8 @@ async def test_memory_storage_serializes_writers_and_runs_migrations() -> None:
 
 
 def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
-    from kimi_agent_module_api.contracts import ServiceUnavailable
-    from kimi_agent_module_api.testing import FakeServiceRegistry
+    from bram_agent_module_api.contracts import ServiceUnavailable
+    from bram_agent_module_api.testing import FakeServiceRegistry
 
     class Board:
         def answer(self) -> int:
@@ -721,7 +721,7 @@ def test_fake_service_proxy_stays_closed_after_a_re_provide() -> None:
         old.answer()
     assert registry.get("s", 1, Board).answer() == 1
     # A second live provider is refused, as in the host.
-    from kimi_agent_module_api.contracts import ModuleContractError
+    from bram_agent_module_api.contracts import ModuleContractError
 
     with pytest.raises(ModuleContractError):
         registry.provide("s", 1, Board())

@@ -9,8 +9,8 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic_settings import BaseSettings
 
-from kimi_agent_module_api import contracts as _contracts
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api import contracts as _contracts
+from bram_agent_module_api.contracts import (
     ConfigSnapshot,
     RoleSnapshot,
     render_guild_settings,
@@ -36,19 +36,19 @@ from kimi_agent_module_api.contracts import (
     TextInputSpec,
     TextInputStyle,
 )
-from kimi_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
-from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile, ToolFiles
-from kimi_agent_module_api.tools import (
+from bram_agent_module_api.settings import ModuleSetting, ModuleSettingsDefinition
+from bram_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile, ToolFiles
+from bram_agent_module_api.tools import (
     ModuleToolContext,
     ModuleToolHandler,
     ModuleToolRegistry,
     ModuleTurnBudget,
     TriggeringDiscordMessageSnapshot,
 )
-from kimi_agent_module_api.trust import TrustTier
+from bram_agent_module_api.trust import TrustTier
 
 MODULE_API_VERSION = 2
-MODULE_ENTRYPOINT_GROUP = "kimi_agent.modules"
+MODULE_ENTRYPOINT_GROUP = "bram_agent.modules"
 # Capabilities every compatible host advertises regardless of configuration.
 BASELINE_CAPABILITIES: frozenset[str] = frozenset({"discord.history.v1", "proposals.v2"})
 
@@ -108,7 +108,7 @@ class ModuleLoadContext:
     registry: ModuleToolRegistry
     module_settings: BaseSettings | None
     # Host sinks behind the two convenience methods below. Tests build a
-    # context with ``kimi_agent_module_api.testing.load_context``.
+    # context with ``bram_agent_module_api.testing.load_context``.
     label_sink: Callable[[Mapping[str, str]], None]
     surface_sink: Callable[[str, Sequence[str]], None]
 

@@ -3,7 +3,7 @@
 Every fake here satisfies one runtime port from ``contracts`` with plain
 Python and records what a module asked of it. Nothing imports Discord, the
 database, or core runtime packages, so a module package can unit-test its own
-logic with only ``kimi_agent_module_api`` installed. The integration harness
+logic with only ``bram_agent_module_api`` installed. The integration harness
 that composes real core services lives in core's ``modules.testing``.
 """
 
@@ -22,10 +22,10 @@ from typing import Any, TypeVar, overload
 
 from pydantic_settings import BaseSettings
 
-from kimi_agent_module_api.trust import TrustTier
-from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
+from bram_agent_module_api.trust import TrustTier
+from bram_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ALL_DISCORD_ACTIONS,
     MODAL_CUSTOM_ID_MAX_LENGTH,
     Backoff,
@@ -74,8 +74,8 @@ from kimi_agent_module_api.contracts import (
     validate_outgoing_layout,
     validate_publish_topic,
 )
-from kimi_agent_module_api.tools import ModuleToolHandler
-from kimi_agent_module_api import (
+from bram_agent_module_api.tools import ModuleToolHandler
+from bram_agent_module_api import (
     BASELINE_CAPABILITIES,
     ModuleCapabilities,
     ModuleLoadContext,
@@ -1183,7 +1183,7 @@ class FakeTrust:
 class MemoryStorage:
     """``ModuleStorage`` over one in-memory SQLite connection.
 
-    Requires the ``testing`` extra (``kimi-agent-module-api[testing]``), which
+    Requires the ``testing`` extra (``bram-agent-module-api[testing]``), which
     brings ``aiosqlite``. Mirrors the host's guarantees: ``table()`` returns
     the quoted ``"<module>_<name>"``, reads go through ``connection``, and
     ``write_transaction()`` serializes writers, commits on success, and rolls

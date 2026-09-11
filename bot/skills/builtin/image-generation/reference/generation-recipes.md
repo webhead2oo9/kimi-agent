@@ -96,7 +96,7 @@ watermarks, or extra copy.
 
 Use `background: transparent` in addition to the prompt. Do not call the PNG
 transparent unless actual alpha was inspected. If the user needs several logo
-directions, each Kimi call still produces one image; ask before spending calls
+directions, each Bram call still produces one image; ask before spending calls
 on additional directions unless variations were explicitly requested.
 
 ## Historically grounded scene

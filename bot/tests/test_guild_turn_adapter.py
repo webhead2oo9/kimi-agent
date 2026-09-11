@@ -191,7 +191,7 @@ class FakeCollaborators:
         self.config = GuildTurnDeliveryConfig(
             thread_auto_handoff_enabled=False,
             thread_handoff_enabled=True,
-            bot_name="Kimi",
+            bot_name="Bram",
         )
         self.bot_user = object()
         self.discord_gateway = FakeGateway(self.events)

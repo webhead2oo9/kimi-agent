@@ -110,7 +110,7 @@ def _runtime_env() -> dict[str, str]:
 def _browser_runtime_dir() -> Path:
     runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     root = Path(runtime) if runtime else Path("/tmp")
-    path = root / "kimi-browser"
+    path = root / "bram-browser"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
 
@@ -355,7 +355,7 @@ class _SubprocessBrowserWorker:
         cls, config: BrowserServiceConfig, owner_id: str, home: Path
     ) -> _SubprocessBrowserWorker:
         del owner_id
-        unit_name = f"kimi-browser-{uuid4().hex}"
+        unit_name = f"bram-browser-{uuid4().hex}"
         bpf_path: Path | None = None
         seccomp_fd = _NETNS_SECCOMP_FD
         pass_fds: tuple[int, ...] = ()

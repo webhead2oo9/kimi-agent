@@ -28,7 +28,7 @@ _PRIVATE_ROOTS = {
     "evals/latest",
 }
 _SOURCE_ROOTS = (
-    "packages/kimi-agent-module-api/src",
+    "packages/bram-agent-module-api/src",
     "modules/example/src",
     "modules/minimal",
 )

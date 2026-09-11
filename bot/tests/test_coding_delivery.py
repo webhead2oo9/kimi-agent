@@ -167,7 +167,7 @@ def make_delivery(
         or CodingDeliveryConfig(
             thread_handoff_enabled=False,
             thread_auto_handoff_enabled=False,
-            bot_name="Kimi",
+            bot_name="Bram",
         ),
         strip_message_invocation=lambda content, *, bot_user: content,
     )
@@ -381,7 +381,7 @@ async def test_coding_result_channel_adopts_foreground_handoff_thread(monkeypatc
         config=CodingDeliveryConfig(
             thread_auto_handoff_enabled=False,
             thread_handoff_enabled=True,
-            bot_name="Kimi",
+            bot_name="Bram",
         ),
     )
 
@@ -449,7 +449,7 @@ async def test_coding_result_channel_applies_forced_auto_thread_policy(monkeypat
         config=CodingDeliveryConfig(
             thread_auto_handoff_enabled=True,
             thread_handoff_enabled=True,
-            bot_name="Kimi",
+            bot_name="Bram",
         ),
     )
 

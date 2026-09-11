@@ -165,7 +165,7 @@ def _app(monkeypatch, *, targets: set[str], channels: list[Any] | None = None):
     )
 
     app = app_runtime.build_app(_settings())
-    me = _Member(BOT_ID, "Kimi")
+    me = _Member(BOT_ID, "Bram")
     asker = _Member(ASKER_ID, "Alice")
     guild = _Guild(
         999,

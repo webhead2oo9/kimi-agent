@@ -4,7 +4,7 @@
 the requested modules through ``ModuleManager`` exactly as the bot does,
 applies their migrations, and starts them with a runtime context whose ports
 are the real implementations where core has them and the public fakes from
-``kimi_agent_module_api.testing`` elsewhere. Health, services, and storage are
+``bram_agent_module_api.testing`` elsewhere. Health, services, and storage are
 always the real core implementations; inspect them via ``runtime.manager``.
 ``start_test_manager`` applies the same fake-port substitution for tests that
 drive ``ModuleManager`` directly.
@@ -27,8 +27,8 @@ from app.modules import (
     module_capabilities,
 )
 from config.settings import Settings
-from kimi_agent_module_api import ModuleCapabilities
-from kimi_agent_module_api.testing import (
+from bram_agent_module_api import ModuleCapabilities
+from bram_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeGuildSettings,
@@ -49,7 +49,7 @@ from workspace import WorkspaceManager
 def manager_config_dir(manager: ModuleManager) -> Path:
     """Return a loaded manager's config directory for test assertions."""
     if manager.settings is None:
-        raise RuntimeError("Kimi module manager has not been loaded")
+        raise RuntimeError("Bram module manager has not been loaded")
     return manager.settings.config_dir
 
 
@@ -58,7 +58,7 @@ def manager_context(manager: ModuleManager, module_name: str) -> ModuleRuntimeCo
     try:
         return manager._contexts[module_name]
     except KeyError as exc:
-        raise RuntimeError(f"Kimi module {module_name!r} has not been started") from exc
+        raise RuntimeError(f"Bram module {module_name!r} has not been started") from exc
 
 
 class FakeTree:
@@ -271,11 +271,11 @@ def fake_ports(spec: ModuleSpec, ports: dict[str, Any]) -> dict[str, Any]:
     # Keep the fake command tree there so successive customize() calls share the
     # same top-level ownership, just as every live router shares one Discord tree.
     database = getattr(ports.get("storage"), "database", None)
-    ownership = getattr(database, "_kimi_test_interaction_ownership", None)
+    ownership = getattr(database, "_bram_test_interaction_ownership", None)
     if not isinstance(ownership, FakeInteractionOwnership):
         ownership = FakeInteractionOwnership()
         if database is not None:
-            database._kimi_test_interaction_ownership = ownership
+            database._bram_test_interaction_ownership = ownership
     is_guild_active = ports.get("is_guild_active")
     return {
         **ports,

@@ -11,14 +11,14 @@ plain-language version written for community members is
 [privacy-policy.md](privacy-policy.md); when behavior changes, keep the two in
 sync.
 
-This document covers Kimi core only. Separately installed application modules
+This document covers Bram core only. Separately installed application modules
 must document their own data handling and publish a separate privacy notice.
 
 Two facts frame everything below:
 
 - **The bot ignores DMs unless personal chat explicitly opts in.** By default,
   the message controller (`app/message_runtime.py`, reached from
-  `KimiApplication.on_message` in `app/runtime.py`) rejects a DM before any
+  `BramApplication.on_message` in `app/runtime.py`) rejects a DM before any
   reaction, transcript write, consent prompt, or provider call. When
   `USER_APP_DM_ENABLED` is on, an approved user's DM enters the same personal
   conversation as `/chat`, with the same retention and deletion behavior. DMs
@@ -135,7 +135,7 @@ public YouTube URL or streamed bytes from an
 exact current-message Discord attachment/safe workspace video plus the user's
 question to Google's paid Gemini API. Uploads use Files API (500 MiB and one-hour
 hard ceilings); Google documents File retention up to 48 hours. Interactions use
-`store=true` and follow-ups use `previous_interaction_id`. The normal Kimi chat
+`store=true` and follow-ups use `previous_interaction_id`. The normal Bram chat
 provider sees only the untrusted specialist result.
 
 Local sessions contain safe identifiers/scope metadata only and expire after at
@@ -163,7 +163,7 @@ participants' messages. The per-user preference defaults to enabled;
 `/memory opt-out` disables it and `/memory opt-in` re-enables it.
 
 Per-guild community banks are separate shared stores, and only a STAFF `teach`
-tool call writes them. The staff-facing **Teach Kimi** context menu can quote a
+tool call writes them. The staff-facing **Teach Bram** context menu can quote a
 guild message visible to the invoking staff member to the chat provider, which
 may then retain derived knowledge in that community bank or a shared skill.
 When the guild configures a learn-log channel, the bot attempts to post a
@@ -402,7 +402,7 @@ calls `get_channel_context` (recent channel history) or `discord_text_search`
 (operator-configured channels), messages from other members in channels both
 the requester and bot can read are forwarded to the provider as transient,
 untrusted context. The same is true when an invoked guild message contains a
-same-guild Discord message link: Kimi may
+same-guild Discord message link: Bram may
 fetch that exact message and add a bounded `[Automated hint: ...]` to the active
 turn. Both requester and bot must be able to view the channel and read its
 history; private-thread membership and operator search exclusions also apply.
@@ -488,7 +488,7 @@ click gets an ephemeral rejection.
 
 ### Where it sits
 
-`KimiApplication.on_message` (`app/runtime.py`) hands the message to
+`BramApplication.on_message` (`app/runtime.py`) hands the message to
 `DiscordMessageController` in `app/message_runtime.py`, which consults the gate
 immediately after deciding the bot would respond and **before** it takes the
 response lock, saves the triggering message, or calls the provider:

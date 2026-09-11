@@ -1,6 +1,6 @@
 # Provider resilience
 
-When a general model provider fails, Kimi does two things: it moves on to the
+When a general model provider fails, Bram does two things: it moves on to the
 next model in the role's fallback chain for the rest of the turn, and it
 remembers that the failing backend is unhealthy so later turns skip it for a
 while. Both mechanisms work across the general provider types constructed by
@@ -24,7 +24,7 @@ task) keep using that model rather than retrying the first one each time.
 
 ## Provider cooldowns
 
-When a backend stays unavailable, Kimi opens a "circuit" for it and stores
+When a backend stays unavailable, Bram opens a "circuit" for it and stores
 that in SQLite. An open circuit means later turns skip that backend without
 trying it, and because it is stored, that survives a restart.
 

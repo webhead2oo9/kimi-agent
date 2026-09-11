@@ -463,9 +463,9 @@ class OpenAIChatProvider(LLMProvider):
         raw_usage = getattr(response, "usage", None)
         provider_response = ProviderResponse(
             content=getattr(msg, "content", None),
-            # GLM/DeepSeek expose chain-of-thought as `reasoning_content`; kimi (and some
+            # GLM/DeepSeek expose chain-of-thought as `reasoning_content`; bram (and some
             # OpenRouter-style routes) use `reasoning`. Prefer the former, fall back to the
-            # latter so kimi's reasoning is not silently dropped.
+            # latter so bram's reasoning is not silently dropped.
             reasoning_content=(
                 self._message_field(msg, "reasoning_content")
                 or self._message_field(msg, "reasoning")

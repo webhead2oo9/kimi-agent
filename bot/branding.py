@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-DEFAULT_BOT_NAME = "Kimi"
-DEFAULT_BOT_SLUG = "kimi"
+DEFAULT_BOT_NAME = "Bram"
+DEFAULT_BOT_SLUG = "bram"
 PROVIDER_IDENTITY_MAX_LENGTH = 64
 
 

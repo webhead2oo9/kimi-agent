@@ -33,7 +33,7 @@ def test_derive_thread_name_collapses_and_truncates() -> None:
 
 
 def test_derive_thread_name_falls_back_when_empty() -> None:
-    assert derive_thread_name("   ", fallback="Chat with Kimi") == "Chat with Kimi"
+    assert derive_thread_name("   ", fallback="Chat with Bram") == "Chat with Bram"
     assert derive_thread_name("", fallback="") == "Thread"
 
 
@@ -42,7 +42,7 @@ def test_build_request_none_without_thresholds() -> None:
         build_auto_handoff_request(
             response_text="a\nb\nc\nd\ne",
             question_text="hi",
-            bot_name="Kimi",
+            bot_name="Bram",
             min_lines=None,
             min_chars=None,
         )
@@ -55,7 +55,7 @@ def test_build_request_none_for_short_reply() -> None:
         build_auto_handoff_request(
             response_text="just a line or two",
             question_text="hi",
-            bot_name="Kimi",
+            bot_name="Bram",
             min_lines=4,
             min_chars=600,
         )
@@ -67,7 +67,7 @@ def test_build_request_synthesizes_named_thread() -> None:
     request = build_auto_handoff_request(
         response_text="a\nb\nc\nd\ne\nf",
         question_text="how do I fix Quest 3 link cable",
-        bot_name="Kimi",
+        bot_name="Bram",
         min_lines=4,
         min_chars=600,
     )
@@ -83,7 +83,7 @@ def test_build_request_always_skips_length_check() -> None:
     request = build_auto_handoff_request(
         response_text="ok",
         question_text="quick one",
-        bot_name="Kimi",
+        bot_name="Bram",
         min_lines=None,
         min_chars=None,
         always=True,
@@ -96,9 +96,9 @@ def test_build_request_uses_fallback_name_when_question_blank() -> None:
     request = build_auto_handoff_request(
         response_text="a\nb\nc\nd\ne\nf",
         question_text="   ",
-        bot_name="Kimi",
+        bot_name="Bram",
         min_lines=4,
         min_chars=None,
     )
     assert request is not None
-    assert request.name == "Chat with Kimi"
+    assert request.name == "Chat with Bram"

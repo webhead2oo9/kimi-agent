@@ -2,7 +2,7 @@
 
 This guide adds an HTTPS endpoint to a Linux development bot using a Cloudflare
 Tunnel created in the Cloudflare console and a domain in your Cloudflare account.
-The tunnel runs on the same host as Kimi and forwards to `127.0.0.1:8088`.
+The tunnel runs on the same host as Bram and forwards to `127.0.0.1:8088`.
 Cloudflare handles public HTTPS; the bot's HTTP port stays on loopback.
 
 Follow [development setup](development.md) first if a development bot does not
@@ -22,7 +22,7 @@ the public checkout; this guide contains only reusable instructions.
 Before changing a service, identify its working directory and environment files:
 
 ```bash
-systemctl --user show kimi-agent.service \
+systemctl --user show bram-agent.service \
   -p ActiveState -p WorkingDirectory -p ExecStart -p EnvironmentFiles
 python3 --version
 node --version
@@ -53,7 +53,7 @@ npm run build
 npm test
 ```
 
-The build creates `dist/index.html` and `dist/assets/`. Kimi serves these files
+The build creates `dist/index.html` and `dist/assets/`. Bram serves these files
 from the bot process. Repeat the build after frontend changes; an ordinary
 `git pull` does not create or refresh `dist`.
 
@@ -70,12 +70,12 @@ The live launch check remains necessary.
 
 Use a private environment file dedicated to the dashboard. This keeps the
 existing bot token, models, and module settings in their established files.
-Create `~/.config/kimi-agent/dashboard.env` as the bot account, with mode 600:
+Create `~/.config/bram-agent/dashboard.env` as the bot account, with mode 600:
 
 ```bash
-install -d -m 700 "$HOME/.config/kimi-agent"
-touch "$HOME/.config/kimi-agent/dashboard.env"
-chmod 600 "$HOME/.config/kimi-agent/dashboard.env"
+install -d -m 700 "$HOME/.config/bram-agent"
+touch "$HOME/.config/bram-agent/dashboard.env"
+chmod 600 "$HOME/.config/bram-agent/dashboard.env"
 ```
 
 Edit that file to contain:
@@ -109,14 +109,14 @@ server activation, channel access, or user blocks. See
 Create the service drop-in directory:
 
 ```bash
-install -d -m 700 "$HOME/.config/systemd/user/kimi-agent.service.d"
+install -d -m 700 "$HOME/.config/systemd/user/bram-agent.service.d"
 ```
 
-Create `~/.config/systemd/user/kimi-agent.service.d/dashboard.conf` with:
+Create `~/.config/systemd/user/bram-agent.service.d/dashboard.conf` with:
 
 ```ini
 [Service]
-EnvironmentFile=%h/.config/kimi-agent/dashboard.env
+EnvironmentFile=%h/.config/bram-agent/dashboard.env
 ```
 
 This adds an environment file to the existing service without replacing its
@@ -154,8 +154,8 @@ On Ubuntu/Debian, use Cloudflare's
 ```bash
 sudo install -d -m 755 /usr/share/keyrings
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  -o /tmp/kimi-cloudflare-main.gpg
-sudo install -m 644 /tmp/kimi-cloudflare-main.gpg \
+  -o /tmp/bram-cloudflare-main.gpg
+sudo install -m 644 /tmp/bram-cloudflare-main.gpg \
   /usr/share/keyrings/cloudflare-main.gpg
 echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
   | sudo tee /etc/apt/sources.list.d/cloudflared.list
@@ -171,9 +171,9 @@ or later; see Cloudflare's
 Prepare an empty private token file only if it does not already exist:
 
 ```bash
-install -d -m 700 "$HOME/.config/kimi-agent"
-touch "$HOME/.config/kimi-agent/dashboard-tunnel.token"
-chmod 600 "$HOME/.config/kimi-agent/dashboard-tunnel.token"
+install -d -m 700 "$HOME/.config/bram-agent"
+touch "$HOME/.config/bram-agent/dashboard-tunnel.token"
+chmod 600 "$HOME/.config/bram-agent/dashboard-tunnel.token"
 ```
 
 ## 5. Configure the Cloudflare web UI
@@ -183,14 +183,14 @@ Follow Cloudflare's
 
 1. Open **Networking > Tunnels** and create a Cloudflared tunnel for this
    development instance.
-2. Copy its connector token into `~/.config/kimi-agent/dashboard-tunnel.token`
+2. Copy its connector token into `~/.config/bram-agent/dashboard-tunnel.token`
    using an editor on the host. Store only the token, not the installation
    command. This setup uses a user service, so skip the generated root service
    installation command.
 3. If the setup wizard waits for a connector, start the service from step 6,
    then return to the wizard. On the tunnel's **Routes** tab, select
    **Add route > Published application**. Use a hostname such as
-   `kimi-dev.example.com`, no path restriction, and service URL
+   `bram-dev.example.com`, no path restriction, and service URL
    **http://127.0.0.1:8088**. If the UI separates the protocol from the address,
    choose **HTTP** and enter **127.0.0.1:8088**.
 
@@ -211,11 +211,11 @@ From the repository root, install the provided service:
 
 ```bash
 install -d -m 700 "$HOME/.config/systemd/user"
-install -m 600 bot/deploy/kimi-dashboard-tunnel.service.example \
-  "$HOME/.config/systemd/user/kimi-dashboard-tunnel.service"
+install -m 600 bot/deploy/bram-dashboard-tunnel.service.example \
+  "$HOME/.config/systemd/user/bram-dashboard-tunnel.service"
 sudo loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
-systemctl --user enable --now kimi-dashboard-tunnel.service
+systemctl --user enable --now bram-dashboard-tunnel.service
 ```
 
 The unit reads the token from a file, keeping it out of process arguments. An
@@ -223,9 +223,9 @@ empty or missing token file causes the unit to be skipped. Metrics listen on
 `127.0.0.1:20241`; change that port in the private unit if already occupied.
 
 ```bash
-systemctl --user is-active kimi-dashboard-tunnel.service
+systemctl --user is-active bram-dashboard-tunnel.service
 curl --fail --silent --show-error http://127.0.0.1:20241/ready
-journalctl --user -u kimi-dashboard-tunnel.service -n 30 --no-pager
+journalctl --user -u bram-dashboard-tunnel.service -n 30 --no-pager
 ```
 
 Confirm that Cloudflare reports a connected tunnel. Restart this service after
@@ -242,7 +242,7 @@ In the Developer Portal for the development bot application:
 | --- | --- |
 | Installation contexts | Guild Install enabled |
 | Activities settings | Activities enabled; select the intended Web/iOS/Android platforms |
-| Activity URL mapping | Prefix `/`, target `kimi-dev.example.com` |
+| Activity URL mapping | Prefix `/`, target `bram-dev.example.com` |
 | OAuth2 redirect URI | `https://127.0.0.1` for Embedded App SDK authorization |
 
 The hostname is the published Cloudflare route from step 5. Discord's
@@ -261,12 +261,12 @@ Once the real client secret and both dashboard switches are configured, restart
 the existing dev bot service:
 
 ```bash
-systemctl --user restart kimi-agent.service
-systemctl --user is-active kimi-agent.service
+systemctl --user restart bram-agent.service
+systemctl --user is-active bram-agent.service
 curl --fail --silent --show-error --output /dev/null \
   --write-out '%{http_code}\n' http://127.0.0.1:8088/
 curl --fail --silent --show-error --output /dev/null \
-  --write-out '%{http_code}\n' https://kimi-dev.example.com/
+  --write-out '%{http_code}\n' https://bram-dev.example.com/
 ```
 
 Service activation can precede application readiness. Wait for the dashboard
@@ -323,11 +323,11 @@ publishing the instance identity or its data.
 To remove public access through this tunnel, stop its service:
 
 ```bash
-systemctl --user disable --now kimi-dashboard-tunnel.service
+systemctl --user disable --now bram-dashboard-tunnel.service
 ```
 
 To disable the dashboard itself, set `DASHBOARD_ENABLED=false` in
-`~/.config/kimi-agent/dashboard.env` and restart the bot. Retain the existing
+`~/.config/bram-agent/dashboard.env` and restart the bot. Retain the existing
 instance data and saved conversations. Remove the Cloudflare route separately
 if retiring the hostname.
 

@@ -5,7 +5,7 @@ import { ApiError, DashboardApi, type Connection } from "./api";
 import { conversationTimeline, mergeEvents, isResponding, latestWork, type ChatEvent } from "./types";
 import { Markdown } from "./Markdown";
 
-const session = { user_id: "1", guild_id: "2", channel_id: "3", csrf: "c", bot_name: "Kimi", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "Please accept", max_upload_bytes: 10000, max_message_chars: 32000, user_avatar: null };
+const session = { user_id: "1", guild_id: "2", channel_id: "3", csrf: "c", bot_name: "Bram", retention_days: 30, consent_required: false, consent_title: "Privacy", consent_text: "Please accept", max_upload_bytes: 10000, max_message_chars: 32000, user_avatar: null };
 const chat = { id: "a", guild_id: "2", channel_id: "3", parent_channel_id: "3", channel_name: "general", title: "A test conversation", created_at: 1, updated_at: 1 };
 const event = (id: number, kind: string, payload: ChatEvent["payload"]): ChatEvent => ({ id, kind, payload, created_at: 1 });
 
@@ -68,7 +68,7 @@ it("renders consent Markdown and provides the promised Decline control", async (
   expect(await screen.findByText("Your privacy", { selector: "strong" })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Decline" }));
   await waitFor(() => expect(fixture.request).toHaveBeenCalledWith("/consent", "POST", { accept: false }));
-  expect(screen.getByRole("textbox", { name: "Message Kimi" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Message Bram" })).toBeDisabled();
 });
 
 describe("saved chat", () => {
@@ -88,7 +88,7 @@ describe("saved chat", () => {
     // This fixture only delivers live events; wait for its subscription before
     // sending, since it does not journal and replay events like the backend.
     await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
-    fireEvent.change(await screen.findByRole("textbox", { name: "Message Kimi" }), { target: { value: "hello" } });
+    fireEvent.change(await screen.findByRole("textbox", { name: "Message Bram" }), { target: { value: "hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText("Done")).toBeVisible();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument());
@@ -102,7 +102,7 @@ describe("saved chat", () => {
       return base(path, ...args);
     });
     render(<DashboardApp connection={fixture.value} />);
-    const composer = await screen.findByRole("textbox", { name: "Message Kimi" });
+    const composer = await screen.findByRole("textbox", { name: "Message Bram" });
     fireEvent.change(composer, { target: { value: "Keep this draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Network interrupted");
@@ -116,7 +116,7 @@ describe("saved chat", () => {
   it("updates durable work results from live events", async () => {
     const fixture = connection();
     render(<DashboardApp connection={fixture.value} />);
-    await screen.findByRole("textbox", { name: "Message Kimi" });
+    await screen.findByRole("textbox", { name: "Message Bram" });
     await act(async () => fixture.receive([event(4, "coding_task", { id: "coding", status: "completed", text: "Built the report", files: [{ id: "file", filename: "report.csv" }] })]));
     expect(screen.getByText("Built the report")).toBeVisible();
     expect(screen.getByRole("button", { name: /report.csv/ })).toBeEnabled();
@@ -152,7 +152,7 @@ describe("saved chat", () => {
       .mockResolvedValueOnce({ id: "first", filename: "first.txt", size: 1 })
       .mockResolvedValueOnce({ id: "next", filename: "next.txt", size: 1 });
     const { container } = render(<DashboardApp connection={fixture.value} />);
-    const composer = await screen.findByRole("textbox", { name: "Message Kimi" });
+    const composer = await screen.findByRole("textbox", { name: "Message Bram" });
     const input = container.querySelector('input[type="file"]')!;
     fireEvent.change(composer, { target: { value: "First message" } });
     fireEvent.change(input, { target: { files: [new File(["a"], "first.txt")] } });
@@ -174,7 +174,7 @@ it("shows the connection state only while the socket is down", async () => {
   let status: (connected: boolean, expired: boolean) => void = () => {};
   vi.spyOn(fixture.value.api, "subscribe").mockImplementation((_chat, _after, _callback, report) => { status = report; report(true); return () => {}; });
   render(<DashboardApp connection={fixture.value} />);
-  await screen.findByRole("textbox", { name: "Message Kimi" });
+  await screen.findByRole("textbox", { name: "Message Bram" });
   await waitFor(() => expect(fixture.value.api.subscribe).toHaveBeenCalled());
   expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   await act(async () => status(false, false));
@@ -250,7 +250,7 @@ it("keeps a live plan in the conversation when the work panel is closed", async 
   ]));
   expect(plan).toBeVisible();
   expect(screen.queryByText("Reading the data…")).not.toBeInTheDocument();
-  expect(screen.getByText("Kimi is thinking…")).toBeVisible();
+  expect(screen.getByText("Bram is thinking…")).toBeVisible();
 });
 
 it("replays one plan per response and keeps each plan in conversation order", () => {
@@ -335,7 +335,7 @@ it("reconciles a response that finishes while another chat is open", async () =>
     return { files: [] };
   });
   render(<DashboardApp connection={fixture.value} />);
-  fireEvent.change(await screen.findByRole("textbox", { name: "Message Kimi" }), { target: { value: "Work on this" } });
+  fireEvent.change(await screen.findByRole("textbox", { name: "Message Bram" }), { target: { value: "Work on this" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await screen.findByRole("button", { name: "Stop response" });
   fireEvent.click(screen.getByRole("button", { name: "Other conversation" }));
@@ -440,11 +440,11 @@ describe("identity and loading", () => {
     fixture.request.mockImplementation(async (path, ...args) => path === "/chats" ? new Promise(resolve => { release = resolve; }) : base(path, ...args));
     const { container } = render(<DashboardApp connection={{ ...fixture.value, botAvatar: bot }} />);
     expect(container.querySelector(".launch-screen img")).toHaveAttribute("src", bot);
-    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    expect(screen.getByText("Bram")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
     await act(async () => release({ chats: [chat] }));
-    expect(await screen.findByRole("textbox", { name: "Message Kimi" })).toBeVisible();
+    expect(await screen.findByRole("textbox", { name: "Message Bram" })).toBeVisible();
     expect(container.querySelector(".launch-screen")).not.toBeInTheDocument();
   });
 
@@ -454,7 +454,7 @@ describe("identity and loading", () => {
     let release: (value: unknown) => void = () => {};
     fixture.request.mockImplementation(async (path, ...args) => path.endsWith("/events") ? new Promise(resolve => { release = resolve; }) : base(path, ...args));
     render(<DashboardApp connection={fixture.value} />);
-    await screen.findByRole("textbox", { name: "Message Kimi" });
+    await screen.findByRole("textbox", { name: "Message Bram" });
     expect(await screen.findByRole("status", { busy: true })).toHaveTextContent("Opening conversation");
     await act(async () => release({ events: exchange }));
     expect(await screen.findByText("hello")).toBeVisible();
@@ -472,7 +472,7 @@ describe("identity and loading", () => {
     live.unmount();
     const fallback = render(<DashboardApp connection={fixture.value} />);
     await screen.findByText("hello");
-    expect([...fallback.container.querySelectorAll(".message-avatar")].map(node => node.textContent)).toEqual(["C", "K"]);
+    expect([...fallback.container.querySelectorAll(".message-avatar")].map(node => node.textContent)).toEqual(["C", "B"]);
     expect(fallback.container.querySelector(".message-avatar img")).toBeNull();
   });
 
@@ -497,7 +497,7 @@ it.each([undefined, "Too many dashboard tabs. Close another tab, then close and 
   let status: Parameters<DashboardApi["subscribe"]>[3] = () => {};
   vi.mocked(fixture.value.api.subscribe).mockImplementation((_chat, _after, _receive, callback) => { status = callback; callback(true); return () => {}; });
   render(<DashboardApp connection={fixture.value} />);
-  const composer = await screen.findByRole("textbox", { name: "Message Kimi" });
+  const composer = await screen.findByRole("textbox", { name: "Message Bram" });
   fireEvent.change(composer, { target: { value: "Keep my draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Options for A test conversation" }));
   fireEvent.click(screen.getByRole("button", { name: "Rename" }));
@@ -533,7 +533,7 @@ it("keeps terminal recovery instructions when an older request fails late", asyn
   const base = fixture.request.getMockImplementation()!;
   fixture.request.mockImplementation((path, ...args) => path.endsWith("/messages") ? new Promise((_resolve, reject) => { fail = reject; }) : base(path, ...args));
   render(<DashboardApp connection={fixture.value} />);
-  fireEvent.change(await screen.findByRole("textbox", { name: "Message Kimi" }), { target: { value: "hello" } });
+  fireEvent.change(await screen.findByRole("textbox", { name: "Message Bram" }), { target: { value: "hello" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await act(async () => status(false, true, "Too many dashboard tabs. Close another tab, then close and reopen this Activity to continue."));
   expect(screen.getByRole("button", { name: "Stop response" })).toBeDisabled();

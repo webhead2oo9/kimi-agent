@@ -31,7 +31,7 @@ At the dispatch boundary the loop calls `observability.events.emit_tool_call(...
 
 When the turn produces its final response (or ends on the max-iteration fallback or the whole-turn wall-clock timeout) the loop calls `emit_turn(...)`. Under `redacted` or `full`, that row carries a snapshot of the iteration-0 model input and the final assistant text; under `metadata` both fields are `null`. Because the snapshot is captured before tool dispatch, channel history fetched later with `get_channel_context` does not appear in it. In `redacted` or `full` mode, that history can instead appear in the corresponding `tool_call.result`.
 
-`emit_*` are no-ops unless the writer was started. `KimiApplication.on_ready` calls `start_event_writer(...)` when `TOOL_EVENT_LOG_ENABLED` is set, and application shutdown flushes via `stop_event_writer()`.
+`emit_*` are no-ops unless the writer was started. `BramApplication.on_ready` calls `start_event_writer(...)` when `TOOL_EVENT_LOG_ENABLED` is set, and application shutdown flushes via `stop_event_writer()`.
 
 The writer (`observability/events.py:EventWriter`) is non-blocking: `emit_*` only enqueue onto an `asyncio.Queue`, and a single background task drains it, appends one line, and flushes. The ReAct loop never touches the disk. If the queue fills, the writer drops events with a one-time warning; if the path can't be opened, the writer stays disabled; and an `OSError` during a write stops the drain task with one warning, after which later events are silently dropped. Whatever happens, logging never crashes the bot. On POSIX the live file and its rotated backup are created mode `0600`, readable only by the owner, and if the file can't be locked down that way the writer never starts.
 
@@ -176,7 +176,7 @@ The `moderation` event is emitted by `moderation/service.py` (through `emit_mode
   call's purpose. `upstream_provider`, `service_tier`,
   `openrouter_charge_usd`, and `is_byok` carry bounded OpenRouter response
   attribution when supplied, otherwise empty or `null`. The charge is
-  provider-reported telemetry and can differ from Kimi's static configured
+  provider-reported telemetry and can differ from Bram's static configured
   rate; the ledger still prices each call from `pricing_model`.
 - **Child tool calls:** a `tool_call` row may come from the outer ReAct loop or
   from a tool-owned private loop. Child rows share the outer turn's `turn_id`

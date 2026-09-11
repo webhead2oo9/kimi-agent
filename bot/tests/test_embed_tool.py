@@ -72,7 +72,7 @@ def test_full_valid_embed_builds_spec(tmp_path: Path) -> None:
             "description": "What changed",
             "url": "https://example.com/notes",
             "color": "#5865F2",
-            "author_name": "Kimi",
+            "author_name": "Bram",
             "footer_text": "v1.2",
             "thumbnail_url": "https://example.com/thumb.png",
             "fields": [
@@ -89,7 +89,7 @@ def test_full_valid_embed_builds_spec(tmp_path: Path) -> None:
     assert spec.description == "What changed"
     assert spec.url == "https://example.com/notes"
     assert spec.color == 0x5865F2
-    assert spec.author_name == "Kimi"
+    assert spec.author_name == "Bram"
     assert spec.footer_text == "v1.2"
     assert spec.thumbnail_url == "https://example.com/thumb.png"
     assert spec.fields == (("Added", "Embeds", True), ("Fixed", "Bugs", False))
@@ -318,7 +318,7 @@ def test_summary_title_only() -> None:
 
 def test_summary_falls_back_to_description_then_author_then_field() -> None:
     assert embed_transcript_summary(EmbedSpec(description="Body")) == "[embed] Body"
-    assert embed_transcript_summary(EmbedSpec(author_name="Kimi")) == "[embed] Kimi"
+    assert embed_transcript_summary(EmbedSpec(author_name="Bram")) == "[embed] Bram"
     assert embed_transcript_summary(EmbedSpec(fields=(("Score", "9", False),))) == "[embed] Score"
 
 

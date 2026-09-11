@@ -35,7 +35,7 @@ def snapshot_output(
     assets: list[GeneratedAsset],
 ) -> tuple[list[tuple[str, str | None, bytes]], dict[str, Any] | None]:
     """Called under workspace ownership, off the event loop. Bound durable bytes."""
-    with TemporaryDirectory(prefix="kimi-task-output-") as temporary:
+    with TemporaryDirectory(prefix="bram-task-output-") as temporary:
         roots = list(outbox.allowed_file_roots)
         paths = list(outbox.output_files)
         if outbox.embed_attachment is not None:

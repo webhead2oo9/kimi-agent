@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     zai_api_key: SecretStr = SecretStr("")
     # Kimi Code membership coding-plan key from the Kimi Code Console
     # (anthropic_compat profile pointing at https://api.kimi.com/coding/v1).
-    # Separate product from the pay-as-you-go Kimi Open Platform.
+    # Separate product from the pay-as-you-go Bram Open Platform.
     kimi_coding_api_key: SecretStr = SecretStr("")
     react_max_iterations: int = 200
     react_max_tokens: int = 65536
@@ -314,7 +314,7 @@ class Settings(BaseSettings):
     browser_network_mode: str = "host"
     # Root-owned runtime from deploy/betterwright/install.sh, deliberately
     # outside the checkout so the bot account cannot rewrite what it executes.
-    browser_runtime_dir: str = "/opt/kimi/betterwright"
+    browser_runtime_dir: str = "/opt/bram/betterwright"
     browser_profiles_dir: str = "data/browser_profiles"
     browser_bridge_script: str = "web_browser/bridge.mjs"
     browser_bwrap_bin: str = "bwrap"
@@ -487,11 +487,11 @@ class Settings(BaseSettings):
     # registers; a failing plugin is logged and skipped, never a boot abort.
     plugin_modules: str = ""
     # Required lifecycle-aware application modules discovered from installed
-    # ``kimi_agent.modules`` entry points. A configured module that cannot load
+    # ``bram_agent.modules`` entry points. A configured module that cannot load
     # aborts startup rather than silently removing a deployment capability.
-    kimi_modules: str = ""
-    # Subset of KIMI_MODULES allowed to fail without preventing startup.
-    kimi_optional_modules: str = ""
+    bram_modules: str = ""
+    # Subset of BRAM_MODULES allowed to fail without preventing startup.
+    bram_optional_modules: str = ""
     # Lifecycle ceilings for each configured module. A start() that exceeds its
     # ceiling aborts startup like any other module failure; a close() that
     # exceeds its ceiling is logged and shutdown moves on to the next module.
@@ -1176,5 +1176,5 @@ class Settings(BaseSettings):
         return tuple(name.strip() for name in self.plugin_modules.split(",") if name.strip())
 
     @property
-    def kimi_module_list(self) -> tuple[str, ...]:
-        return tuple(name.strip() for name in self.kimi_modules.split(",") if name.strip())
+    def bram_module_list(self) -> tuple[str, ...]:
+        return tuple(name.strip() for name in self.bram_modules.split(",") if name.strip())

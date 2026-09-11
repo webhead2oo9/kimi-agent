@@ -98,7 +98,7 @@ def _tools(manager: ThreadHandoffManager | None, *, can_manage_thread=None):
     init_thread_tools(
         registry,
         lambda: manager,
-        bot_name="kimi",
+        bot_name="bram",
         can_manage_thread=can_manage_thread,
     )
     return registry
@@ -465,7 +465,7 @@ async def test_pause_then_resume_flips_the_mode_and_persists():
     # The note has to carry both halves of the way back: the tool the model
     # calls, and the phrase a user can type to reach a paused thread.
     assert "resume_thread_replies" in paused["note"]
-    assert "hey kimi" in paused["note"]
+    assert "hey bram" in paused["note"]
 
     resumed = json.loads(await resume({}, _ctx(thread_id="321")))
     assert resumed["resumed"] is True

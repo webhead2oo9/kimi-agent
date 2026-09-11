@@ -198,7 +198,7 @@ class VisualService:
             seccomp_fd = open_bpf_fd()
         except (OSError, SeccompUnavailableError) as exc:
             raise VisualServiceError("Visual rendering seccomp policy is unavailable.") from exc
-        unit_name = f"kimi-visual-{uuid4().hex}"
+        unit_name = f"bram-visual-{uuid4().hex}"
         command = build_visual_worker_command(
             self.config,
             job_dir,

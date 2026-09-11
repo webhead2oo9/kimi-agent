@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     Backoff,
     Event,
     JobRun,
@@ -13,7 +13,7 @@ from kimi_agent_module_api.contracts import (
     ServiceUnavailable,
     UndeclaredDiscordAction,
 )
-from kimi_agent_module_api.testing import (
+from bram_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeInteraction,

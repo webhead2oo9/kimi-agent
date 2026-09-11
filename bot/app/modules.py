@@ -3,7 +3,7 @@
 Unlike operator plugins, application modules may own Discord commands/listeners,
 database schema, background work, and optional LLM tools.  Installed packages
 are discovered through Python entry points, but only names explicitly listed in
-``KIMI_MODULES`` are loaded.  A requested module is part of the deployment
+``BRAM_MODULES`` are loaded.  A requested module is part of the deployment
 contract by default. Explicitly optional modules can be disabled after
 recoverable failures; migrations, timeouts, and failed cleanup remain fatal.
 """
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from agent.activity import register_tool_labels
 from app.tool_surfaces import declare_surface_tools, restore_surface_tools, snapshot_surface_tools
 from config.module_settings import ModuleSettingsError, ModuleSettingsRegistry
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     DiscordActions,
     InteractionRouter,
     ModuleHealth,
@@ -32,7 +32,7 @@ from kimi_agent_module_api.contracts import (
     validate_permissions,
     validate_services,
 )
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     BASELINE_CAPABILITIES,
     AppModule,
     MODULE_API_VERSION,
@@ -322,13 +322,13 @@ def _installed_specs(requested: Sequence[str]) -> dict[str, ModuleSpec]:
         if point.name not in requested_names:
             continue
         if point.name in found:
-            raise RuntimeError(f"Duplicate installed Kimi module entry point {point.name!r}")
+            raise RuntimeError(f"Duplicate installed Bram module entry point {point.name!r}")
         loaded = point.load()
         if not isinstance(loaded, ModuleSpec):
-            raise TypeError(f"Kimi module entry point {point.name!r} did not export ModuleSpec")
+            raise TypeError(f"Bram module entry point {point.name!r} did not export ModuleSpec")
         if loaded.name != point.name:
             raise RuntimeError(
-                f"Kimi module entry point {point.name!r} exports mismatched name {loaded.name!r}"
+                f"Bram module entry point {point.name!r} exports mismatched name {loaded.name!r}"
             )
         found[point.name] = loaded
     return found
@@ -340,10 +340,10 @@ def _ordered_specs(
     requested_tuple = tuple(requested)
     requested_set = set(requested_tuple)
     if len(requested_set) != len(requested_tuple):
-        raise RuntimeError("KIMI_MODULES contains a duplicate module name")
+        raise RuntimeError("BRAM_MODULES contains a duplicate module name")
     missing = [name for name in requested_tuple if name not in installed]
     if missing:
-        raise RuntimeError(f"Configured Kimi module is not installed: {missing[0]}")
+        raise RuntimeError(f"Configured Bram module is not installed: {missing[0]}")
 
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -353,12 +353,12 @@ def _ordered_specs(
         if name in visited:
             return
         if name in visiting:
-            raise RuntimeError(f"Kimi module dependency cycle includes {name!r}")
+            raise RuntimeError(f"Bram module dependency cycle includes {name!r}")
         visiting.add(name)
         spec = installed[name]
         for dependency in spec.dependencies:
             if dependency not in requested_set:
-                raise RuntimeError(f"Kimi module {name!r} requires active module {dependency!r}")
+                raise RuntimeError(f"Bram module {name!r} requires active module {dependency!r}")
             visit(dependency)
         visiting.remove(name)
         visited.add(name)
@@ -388,14 +388,14 @@ def validate_module_selection(
         prefix = table_prefix(spec.name)
         if previous := by_prefix.get(prefix):
             raise RuntimeError(
-                f"Kimi modules {previous!r} and {spec.name!r} share normalized prefix {prefix!r}"
+                f"Bram modules {previous!r} and {spec.name!r} share normalized prefix {prefix!r}"
             )
         by_prefix[prefix] = spec.name
     capabilities = capabilities if capabilities is not None else module_capabilities(core_settings)
     for spec in specs:
         if spec.api_version != MODULE_API_VERSION:
             raise RuntimeError(
-                f"Kimi module {spec.name!r} requires module API {spec.api_version}; "
+                f"Bram module {spec.name!r} requires module API {spec.api_version}; "
                 f"core provides {MODULE_API_VERSION}"
             )
         missing_capability = next(
@@ -408,7 +408,7 @@ def validate_module_selection(
         )
         if missing_capability is not None:
             raise RuntimeError(
-                f"Kimi module {spec.name!r} requires unavailable capability {missing_capability!r}"
+                f"Bram module {spec.name!r} requires unavailable capability {missing_capability!r}"
             )
         _validate_declarations(spec)
     by_name = {spec.name: spec for spec in specs}
@@ -420,7 +420,7 @@ def validate_module_selection(
                 for declaration in provider.provides
             ):
                 raise RuntimeError(
-                    f"Kimi module {spec.name!r} consumes {requirement.name}@"
+                    f"Bram module {spec.name!r} consumes {requirement.name}@"
                     f"{requirement.version} from {requirement.provider!r}, but that provider "
                     "does not declare it"
                 )
@@ -440,7 +440,7 @@ def _validate_declarations(spec: ModuleSpec) -> None:
         if spec.guild_settings is not None:
             validate_guild_settings_schema(spec.name, spec.guild_settings)
     except ValueError as exc:
-        raise RuntimeError(f"Kimi module {spec.name!r} has an invalid declaration: {exc}") from exc
+        raise RuntimeError(f"Bram module {spec.name!r} has an invalid declaration: {exc}") from exc
 
 
 def _activation_disabled(
@@ -547,12 +547,12 @@ class ModuleManager:
             close_timeout_seconds=float(core_settings.module_close_timeout_seconds),
         )
         manager._optional = frozenset(
-            name.strip() for name in core_settings.kimi_optional_modules.split(",") if name.strip()
+            name.strip() for name in core_settings.bram_optional_modules.split(",") if name.strip()
         )
         if manager._optional - set(names):
-            raise RuntimeError("KIMI_OPTIONAL_MODULES must be a subset of KIMI_MODULES")
+            raise RuntimeError("BRAM_OPTIONAL_MODULES must be a subset of BRAM_MODULES")
         if len(set(names)) != len(names):
-            raise RuntimeError("KIMI_MODULES contains a duplicate module name")
+            raise RuntimeError("BRAM_MODULES contains a duplicate module name")
         if not names:
             return manager
         resolved_capabilities = (
@@ -623,7 +623,7 @@ class ModuleManager:
             tool_registry.seal()
         for spec in specs:
             if reason := disabled.get(spec.name):
-                log.warning("Kimi module disabled: %s %s (%s)", spec.name, spec.version, reason)
+                log.warning("Bram module disabled: %s %s (%s)", spec.name, spec.version, reason)
         manager._specs = tuple(spec for spec in active_specs if spec.name in manager._modules)
         manager.load_state = ModuleLoadState(
             requested=tuple(names),
@@ -651,7 +651,7 @@ class ModuleManager:
             if unavailable:
                 reason = "dependency unavailable: " + ", ".join(unavailable)
                 if spec.name not in manager._optional:
-                    raise RuntimeError(f"Kimi module {spec.name!r}: {reason}")
+                    raise RuntimeError(f"Bram module {spec.name!r}: {reason}")
                 manager._disable(spec.name, spec.version, reason)
                 continue
             surfaces_before = snapshot_surface_tools()
@@ -688,10 +688,10 @@ class ModuleManager:
                 manager._disable(spec.name, spec.version, _summarize(exc))
                 continue
             manager._modules[spec.name] = instance
-            log.info("Kimi module composed: %s %s", spec.name, spec.version)
+            log.info("Bram module composed: %s %s", spec.name, spec.version)
 
     def _disable(self, name: str, version: str, reason: str) -> None:
-        log.error("Kimi module unavailable: %s %s (%s)", name, version, reason)
+        log.error("Bram module unavailable: %s %s (%s)", name, version, reason)
         self.load_state = ModuleLoadState(
             requested=self.load_state.requested,
             loaded=tuple(item for item in self.load_state.loaded if item != name),
@@ -751,7 +751,7 @@ class ModuleManager:
                 if unavailable:
                     reason = "dependency unavailable: " + ", ".join(unavailable)
                     if spec.name not in self._optional:
-                        raise RuntimeError(f"Kimi module {spec.name!r}: {reason}")
+                        raise RuntimeError(f"Bram module {spec.name!r}: {reason}")
                     self._disable(spec.name, spec.version, reason)
                     continue
                 instance = self._modules[spec.name]
@@ -761,7 +761,7 @@ class ModuleManager:
                 missing = sorted(name for name in _REQUIRED_PORTS if ports.get(name) is None)
                 if missing:
                     raise RuntimeError(
-                        f"Kimi module {spec.name!r} cannot start: core provided no "
+                        f"Bram module {spec.name!r} cannot start: core provided no "
                         f"{', '.join(missing)} port"
                     )
                 module_ctx = ModuleRuntimeContext(**ports)
@@ -771,18 +771,18 @@ class ModuleManager:
                 outcome = await run_bounded(
                     instance.start(module_ctx),
                     timeout=self.start_timeout_seconds,
-                    what=f"Kimi module {spec.name} start()",
+                    what=f"Bram module {spec.name} start()",
                 )
                 if outcome.timed_out:
                     detail = f"start() exceeded {self.start_timeout_seconds:g}s"
                     if outcome.abandoned:
                         detail += " and ignored cancellation"
                     self.health.set(spec.name, "failed", detail)
-                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                    raise RuntimeError(f"Bram module {spec.name!r} {detail}")
                 if outcome.cancelled:
                     detail = "start() was cancelled before it finished"
                     self.health.set(spec.name, "failed", detail)
-                    raise RuntimeError(f"Kimi module {spec.name!r} {detail}")
+                    raise RuntimeError(f"Bram module {spec.name!r} {detail}")
                 if outcome.error is not None:
                     self.health.set(spec.name, "failed", _summarize(outcome.error))
                     if spec.name not in self._optional or not isinstance(outcome.error, Exception):
@@ -796,7 +796,7 @@ class ModuleManager:
                     # Only now are the module's tools visible; before this line
                     # a half-started module could be called through them.
                     self._tool_registry.guild_active[spec.name] = module_ctx.is_guild_active
-                log.info("Kimi module started: %s %s", spec.name, spec.version)
+                log.info("Bram module started: %s %s", spec.name, spec.version)
         except BaseException:
             await self.close()
             raise
@@ -914,23 +914,23 @@ class ModuleManager:
             outcome = await run_bounded(
                 self._modules[name].close(),
                 timeout=self.close_timeout_seconds,
-                what=f"Kimi module {name} close()",
+                what=f"Bram module {name} close()",
             )
             if outcome.timed_out:
                 log.error(
-                    "Kimi module %s close() exceeded %gs%s; continuing shutdown",
+                    "Bram module %s close() exceeded %gs%s; continuing shutdown",
                     name,
                     self.close_timeout_seconds,
                     " and ignored cancellation" if outcome.abandoned else "",
                 )
             elif outcome.cancelled:
-                log.error("Kimi module %s close() was cancelled before it finished", name)
+                log.error("Bram module %s close() was cancelled before it finished", name)
             elif outcome.error is not None:
-                log.error("Error closing Kimi module %s: %s", name, _summarize(outcome.error))
+                log.error("Error closing Bram module %s: %s", name, _summarize(outcome.error))
             else:
                 clean = True
         except Exception:
-            log.exception("Error closing Kimi module %s", name)
+            log.exception("Error closing Bram module %s", name)
         finally:
             router = getattr(self._contexts.get(name), "interactions", None)
             close_router = getattr(router, "close", None)
@@ -939,7 +939,7 @@ class ModuleManager:
                     close_router()
                 except Exception:
                     clean = False
-                    log.exception("Error closing interactions for Kimi module %s", name)
+                    log.exception("Error closing interactions for Bram module %s", name)
             if self.events is not None:
                 stopped = await self.events.close_module(name)
                 if strict and not stopped:
@@ -952,7 +952,7 @@ class ModuleManager:
                 self._tool_registry.guild_active.pop(name, None)
             self._contexts.pop(name, None)
         if strict and not clean:
-            raise RuntimeError(f"Kimi module {name!r} cleanup failed; cannot continue startup")
+            raise RuntimeError(f"Bram module {name!r} cleanup failed; cannot continue startup")
 
 
 def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[Any, ...]:
@@ -969,22 +969,22 @@ def _migrations_for(instance: AppModule, storage: ModuleStorageImpl) -> tuple[An
     for version, declaration in enumerate(scoped, start=1):
         if not isinstance(declaration, tuple) or len(declaration) != 2:
             raise RuntimeError(
-                f"Kimi module {storage.module_name!r} migration v{version} must be a "
+                f"Bram module {storage.module_name!r} migration v{version} must be a "
                 "(name, callable) tuple"
             )
         name, migrate = declaration
         if not isinstance(name, str) or not name.strip():
             raise RuntimeError(
-                f"Kimi module {storage.module_name!r} migration v{version} must have "
+                f"Bram module {storage.module_name!r} migration v{version} must have "
                 "a non-empty name"
             )
         if name in declared_names:
             raise RuntimeError(
-                f"Kimi module {storage.module_name!r} declares duplicate migration name {name!r}"
+                f"Bram module {storage.module_name!r} declares duplicate migration name {name!r}"
             )
         if not callable(migrate):
             raise RuntimeError(
-                f"Kimi module {storage.module_name!r} migration {name!r} is not callable"
+                f"Bram module {storage.module_name!r} migration {name!r} is not callable"
             )
         declared_names.add(name)
         prepared.append((name, wrap(migrate)))

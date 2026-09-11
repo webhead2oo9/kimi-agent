@@ -1,4 +1,4 @@
-"""The published SDK stays importable without the Kimi application runtime."""
+"""The published SDK stays importable without the Bram application runtime."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import kimi_agent_module_api as api
+import bram_agent_module_api as api
 
-SDK_ROOT = Path(__file__).resolve().parents[1] / "src" / "kimi_agent_module_api"
+SDK_ROOT = Path(__file__).resolve().parents[1] / "src" / "bram_agent_module_api"
 
 
 def test_public_exports_resolve() -> None:
@@ -42,7 +42,7 @@ def test_standalone_environment_has_no_core_runtime() -> None:
 def test_sdk_imports_only_declared_dependencies() -> None:
     allowed = set(sys.stdlib_module_names) | {
         "aiosqlite",
-        "kimi_agent_module_api",
+        "bram_agent_module_api",
         "pydantic_settings",
     }
     unexpected: dict[str, set[str]] = {}

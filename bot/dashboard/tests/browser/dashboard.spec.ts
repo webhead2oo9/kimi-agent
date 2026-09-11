@@ -36,7 +36,7 @@ test("mobile drawers contain keyboard focus and restore it on Escape", async ({ 
 
 test("saved chat, preview, task review and responsive navigation", async ({ page }, testInfo) => {
   await page.goto("/tests/fixture.html");
-  await expect(page.getByRole("textbox", { name: "Message Kimi" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message Bram" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work", exact: true })).toBeVisible();
   await expect(page.getByText("I've drafted a weekly digest", { exact: false })).toBeVisible();
   await expect(page.locator(".message-avatar img").first()).toBeVisible();
@@ -57,7 +57,7 @@ test("saved chat, preview, task review and responsive navigation", async ({ page
   await expect(plan.getByText("Gather community highlights")).toBeVisible();
   await expect(plan.getByRole("status")).toHaveText("2 of 2 done");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("textbox", { name: "Message Kimi" }).fill("Please keep the tone informal.");
+  await page.getByRole("textbox", { name: "Message Bram" }).fill("Please keep the tone informal.");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText(/I've kept your direction/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop response" })).toHaveCount(0);
@@ -79,7 +79,7 @@ test("branch a response, navigate its parent, and bring a result back", async ({
   await expect(page.getByText("I've drafted a weekly digest", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop response" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
-  await page.getByRole("textbox", { name: "Message Kimi" }).fill("Explore another format.");
+  await page.getByRole("textbox", { name: "Message Bram" }).fill("Explore another format.");
   await page.getByRole("button", { name: "Send message" }).click();
   await page.getByRole("button", { name: "Bring to parent", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Response brought to parent." })).toBeVisible();

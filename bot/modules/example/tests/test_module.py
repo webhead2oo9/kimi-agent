@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from bram_agent_module_api import TrustTier
+from bram_agent_module_api.contracts import ButtonSpec, UndeclaredDiscordAction, parse_custom_id
+from bram_agent_module_api.events import TOPIC_MEMBER_REMOVE, MemberRemoveEvent
+from bram_agent_module_api.testing import FakeInteraction
 from conftest import ALICE, BOB, GUILD, STAFF, Harness, ToolContext
-from kimi_agent_module_api import TrustTier
-from kimi_agent_module_api.contracts import ButtonSpec, UndeclaredDiscordAction, parse_custom_id
-from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE, MemberRemoveEvent
-from kimi_agent_module_api.testing import FakeInteraction
 
 from community_agent_reference_module.module import (
     BUTTON_THANK_BACK,

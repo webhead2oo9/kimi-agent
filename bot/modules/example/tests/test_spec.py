@@ -7,16 +7,16 @@ declaration fails here, before the first bot start.
 from __future__ import annotations
 
 import pytest
-from kimi_agent_module_api import MODULE_API_VERSION, TrustTier
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api import MODULE_API_VERSION, TrustTier
+from bram_agent_module_api.contracts import (
     validate_guild_settings_schema,
     validate_module_name,
     validate_permissions,
     validate_services,
     validate_subscription,
 )
-from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE
-from kimi_agent_module_api.testing import load_context
+from bram_agent_module_api.events import TOPIC_MEMBER_REMOVE
+from bram_agent_module_api.testing import load_context
 
 from community_agent_reference_module import SPEC
 from community_agent_reference_module.guild_settings import FIELD_DIGEST_CHANNEL, FIELD_GIVER_TIER

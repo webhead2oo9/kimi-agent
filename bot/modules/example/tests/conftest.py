@@ -1,6 +1,6 @@
 """Test scaffolding that needs nothing from the host.
 
-``kimi_agent_module_api.testing`` ships a fake for every runtime port,
+``bram_agent_module_api.testing`` ships a fake for every runtime port,
 including ``MemoryStorage`` (real SQL over in-memory SQLite, via the
 ``testing`` extra). The ``started`` fixture assembles a full
 ``ModuleRuntimeContext`` from those fakes, applies the module's migrations,
@@ -16,13 +16,13 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     ModuleCapabilities,
     ModuleRuntimeContext,
     ModuleToolContext,
     TrustTier,
 )
-from kimi_agent_module_api.testing import (
+from bram_agent_module_api.testing import (
     FakeDiscordActions,
     FakeEvents,
     FakeGuildSettings,

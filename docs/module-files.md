@@ -7,12 +7,12 @@ and workspace scope; modules never accept a user ID to choose whose files to rea
 
 ## Declare access
 
-Depend on `kimi-agent-module-api>=2.2,<3`, keep `api_version=2`, and require the
+Depend on `bram-agent-module-api>=2.2,<3`, keep `api_version=2`, and require the
 host capability `tools.files.v1`. Installing a newer SDK does not add this service
 to an older host.
 
 ```python
-from kimi_agent_module_api import ModulePermissions, ModuleSpec
+from bram_agent_module_api import ModulePermissions, ModuleSpec
 
 SPEC = ModuleSpec(
     name="my_media",
@@ -37,7 +37,7 @@ has an opaque invocation-local `id`, `filename`, byte `size`, optional `media_ty
 `unavailable_reason`. Filenames and media metadata are untrusted input.
 
 ```python
-from kimi_agent_module_api import FileAccessError, ModuleToolContext
+from bram_agent_module_api import FileAccessError, ModuleToolContext
 
 async def inspect_attachment(arguments: dict, ctx: ModuleToolContext) -> str:
     if ctx.files is None:

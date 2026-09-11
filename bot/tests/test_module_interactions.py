@@ -21,7 +21,7 @@ from discord_adapter.module_interactions import (
     build_view,
     build_layout_view,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     CUSTOM_ID_MAX_LENGTH,
     MODAL_CUSTOM_ID_MAX_LENGTH,
     ButtonSpec,
@@ -43,7 +43,7 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     build_custom_id,
 )
-from kimi_agent_module_api.testing import FakeTrust
+from bram_agent_module_api.testing import FakeTrust
 
 
 class _Tree:

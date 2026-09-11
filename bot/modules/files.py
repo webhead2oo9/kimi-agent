@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from kimi_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
+from bram_agent_module_api.files import FileAccessError, ToolAttachment, ToolFile
 from tools.registry import MessageContext
 from tools.workspace.common import UserLocks, workspace_activity
 from utils.asyncio import await_uncancellable

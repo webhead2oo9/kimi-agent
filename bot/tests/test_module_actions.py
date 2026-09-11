@@ -15,7 +15,7 @@ from discord_adapter.module_actions import (
     TargetProtected,
     TrustLookupImpl,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ButtonSpec,
     MessageRef,
     OutgoingEmbed,
@@ -181,7 +181,7 @@ async def test_gate_blocks_undeclared_actions_before_touching_discord() -> None:
 @pytest.mark.asyncio
 async def test_audit_reason_caps_the_combined_prefix_and_preserves_leading_correlation() -> None:
     impl, guild, _ = _actions()
-    marker = "[kimi-case:abc123]"
+    marker = "[bram-case:abc123]"
     await impl.kick(1, 20, actor_id=10, reason=f"{marker} {'x' * 600}")
     audit_reason = guild.kicks[0][1]
     assert audit_reason is not None

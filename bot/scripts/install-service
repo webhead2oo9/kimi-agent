@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Installs the user systemd service for Kimi.
+# Installs the user systemd service for Bram.
 # Run this as your normal deployment user.
 #
 set -euo pipefail
@@ -10,11 +10,11 @@ BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON_BIN="$BOT_DIR/.venv/bin/python"
 USER_NAME="$(id -un)"
 SERVICE_DIR="${HOME}/.config/systemd/user"
-SERVICE_FILE="${SERVICE_DIR}/kimi-agent.service"
+SERVICE_FILE="${SERVICE_DIR}/bram-agent.service"
 
-KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
-RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+BRAM_CONFIG_HOME="${BRAM_CONFIG_HOME:-${HOME}/.config/bram-agent}"
+ENV_FILE="${ENV_FILE:-${BRAM_CONFIG_HOME}/bram.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${BRAM_CONFIG_HOME}/runtime.env}"
 
 systemd_quote() {
     local value="$1"
@@ -49,7 +49,7 @@ SYSTEMD_ENV_FILE="$(systemd_quote "ENV_FILE=$ENV_FILE")"
 SYSTEMD_RUNTIME_ENV="$(systemd_quote "-$RUNTIME_ENV")"
 SYSTEMD_EXECUTABLE="$(systemd_exec_quote "$PYTHON_BIN")"
 
-echo "Kimi systemd service installer"
+echo "Bram systemd service installer"
 echo "=============================="
 echo "User:        $USER_NAME"
 echo "Bot dir:     $BOT_DIR"
@@ -74,7 +74,7 @@ mkdir -p "$SERVICE_DIR"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Kimi Agent
+Description=Bram Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -102,15 +102,15 @@ EOF
 chmod 600 "$SERVICE_FILE"
 
 systemctl --user daemon-reload
-systemctl --user enable kimi-agent.service
+systemctl --user enable bram-agent.service
 
 echo
 echo "Service installed and enabled."
-systemctl --user status kimi-agent.service --no-pager || true
+systemctl --user status bram-agent.service --no-pager || true
 
 echo
 echo "You can start it with:"
-echo "  systemctl --user start kimi-agent.service"
+echo "  systemctl --user start bram-agent.service"
 echo
 echo "Check logs with:"
-echo "  journalctl --user -u kimi-agent.service -f"
+echo "  journalctl --user -u bram-agent.service -f"

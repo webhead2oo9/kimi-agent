@@ -150,7 +150,7 @@ async def main(settings: Settings) -> None:
             ),
             max_output_bytes=settings.browser_max_screenshot_bytes,
         )
-        with tempfile.TemporaryDirectory(prefix="kimi-visual-smoke-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="bram-visual-smoke-") as temporary:
             root = Path(temporary)
             chart_dir = root / "chart"
             chart_dir.mkdir()

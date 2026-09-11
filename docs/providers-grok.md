@@ -1,6 +1,6 @@
 # xAI Grok
 
-Kimi supports two xAI model transports:
+Bram supports two xAI model transports:
 
 - `openai_compat` uses xAI's Chat Completions endpoint with `GROK_API_KEY`.
   This remains backward compatible and is appropriate for existing deployments.
@@ -52,7 +52,7 @@ models:
   do not switch billing sources.
 
 The `xai` provider fixes the inference origin in code, sends `store: false`, and
-uses the same stateless Responses conversation replay as other Kimi providers.
+uses the same stateless Responses conversation replay as other Bram providers.
 Refresh-token rotation is serialized across tasks and processes sharing the
 token file. A `401` forces one guarded refresh before the request fails or an
 explicit `auto` profile uses its API-key fallback.
@@ -75,14 +75,14 @@ providers:
 
 Put the secret in `.env` as `GROK_API_KEY`, then declare and route the model
 entries normally. This transport supports the generic client-side function
-tools Kimi sends, but it does not expose xAI's provider-hosted tools inside the
+tools Bram sends, but it does not expose xAI's provider-hosted tools inside the
 main model request.
 
 ## X search
 
 The separate [`x_search` tool](x-search.md) can use either credential path and
 works with any tool-calling main model, including Grok. It always runs through
-Kimi's local tool registry instead of receiving special native injection into a
+Bram's local tool registry instead of receiving special native injection into a
 Grok chat request, so policy, budgets, fallback, and evidence checks stay
 identical across providers.
 

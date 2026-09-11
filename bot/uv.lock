@@ -9,8 +9,8 @@ resolution-markers = [
 [manifest]
 members = [
     "community-agent-reference-module",
-    "kimi-agent",
-    "kimi-agent-module-api",
+    "bram-agent",
+    "bram-agent-module-api",
 ]
 
 [[package]]
@@ -288,12 +288,12 @@ name = "community-agent-reference-module"
 version = "1.0.0"
 source = { editable = "modules/example" }
 dependencies = [
-    { name = "kimi-agent-module-api" },
+    { name = "bram-agent-module-api" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "kimi-agent-module-api", extra = ["testing"] },
+    { name = "bram-agent-module-api", extra = ["testing"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -302,8 +302,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
-    { name = "kimi-agent-module-api", extras = ["testing"], marker = "extra == 'dev'", editable = "packages/kimi-agent-module-api" },
+    { name = "bram-agent-module-api", editable = "packages/bram-agent-module-api" },
+    { name = "bram-agent-module-api", extras = ["testing"], marker = "extra == 'dev'", editable = "packages/bram-agent-module-api" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
@@ -614,7 +614,7 @@ wheels = [
 ]
 
 [[package]]
-name = "kimi-agent"
+name = "bram-agent"
 version = "2.0.0"
 source = { virtual = "." }
 dependencies = [
@@ -626,7 +626,7 @@ dependencies = [
     { name = "firecrawl-anydoc" },
     { name = "hindsight-client" },
     { name = "httpx" },
-    { name = "kimi-agent-module-api" },
+    { name = "bram-agent-module-api" },
     { name = "openai" },
     { name = "pillow" },
     { name = "pydantic" },
@@ -657,7 +657,7 @@ requires-dist = [
     { name = "firecrawl-anydoc", specifier = "==0.2.4" },
     { name = "hindsight-client", specifier = ">=0.9.2,<1" },
     { name = "httpx" },
-    { name = "kimi-agent-module-api", editable = "packages/kimi-agent-module-api" },
+    { name = "bram-agent-module-api", editable = "packages/bram-agent-module-api" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "openai", specifier = ">=3.0" },
     { name = "pillow", specifier = ">=12.0" },
@@ -676,9 +676,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "kimi-agent-module-api"
+name = "bram-agent-module-api"
 version = "2.3.0"
-source = { editable = "packages/kimi-agent-module-api" }
+source = { editable = "packages/bram-agent-module-api" }
 dependencies = [
     { name = "pydantic-settings" },
 ]

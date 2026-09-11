@@ -13,9 +13,9 @@ Model-facing visual-brief, editing, iteration, and verification guidance ships
 in the read-only bundled
 [image-generation skill](../bot/skills/builtin/image-generation/SKILL.md). Its
 reference files adapt and attribute OpenAI's image-prompting guide while keeping
-the examples inside the narrower Kimi tool contract documented here.
+the examples inside the narrower Bram tool contract documented here.
 
-The image backend is independent of the chat provider. A Claude, GLM, Kimi, or
+The image backend is independent of the chat provider. A Claude, GLM, Bram, or
 Codex chat turn can all call the same OpenAI-backed image tool. OpenAI is the
 only backend shipped today; adding another means implementing the
 `ImageBackend` protocol under `bot/image_gen/` and adding one factory entry.
@@ -256,13 +256,13 @@ to quality, size, format, compression, and edit fidelity.
 
 ### OAuth transport distinction
 
-These observations apply to Kimi's existing Codex Images endpoints, which this
+These observations apply to Bram's existing Codex Images endpoints, which this
 change preserves. They are not interchangeable with the Codex Responses image
 tool used by Hermes. A separate Responses-route probe returned actual JPEG
 output, but rejected `background: transparent` with “Transparent background is
 not supported for this model” even with Sunburst requested. That probe does not
 independently establish the model actually served. Website-style
-`transparent_background` flags did not demonstrate control on Kimi's Images
+`transparent_background` flags did not demonstrate control on Bram's Images
 route. No transport switch or website-only parameters are introduced here.
 
 ## Resource and safety boundaries

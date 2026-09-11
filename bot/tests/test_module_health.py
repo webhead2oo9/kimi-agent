@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from commands.modules_cmd import render_manifest, render_status
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     MODULE_API_VERSION,
     AppModule,
     ModuleLoadContext,
@@ -17,7 +17,7 @@ from kimi_agent_module_api import (
     ModuleSpec,
     ServiceDeclaration,
 )
-from kimi_agent_module_api.contracts import ModuleHealth, ScopedModuleMigration
+from bram_agent_module_api.contracts import ModuleHealth, ScopedModuleMigration
 from modules.health import HealthRegistry
 from modules.testing import build_test_runtime
 
@@ -222,7 +222,7 @@ def test_keyed_reports_cannot_clear_core_constraints() -> None:
 
 
 def test_fake_health_state_is_the_worst_across_keys() -> None:
-    from kimi_agent_module_api.testing import FakeHealth
+    from bram_agent_module_api.testing import FakeHealth
 
     fake = FakeHealth()
     fake.report("healthy", "", {"guilds": 1})

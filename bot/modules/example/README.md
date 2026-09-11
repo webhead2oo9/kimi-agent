@@ -4,7 +4,7 @@ For tools that process uploaded media or saved workspace files, see the
 [SDK 2.2 file access guide](../../../docs/module-files.md) and `FakeToolFiles`.
 The kudos example itself needs no file permission.
 
-A complete, small Kimi application module. Members thank each other, each
+A complete, small Bram application module. Members thank each other, each
 guild gets a leaderboard, and a digest is posted on a schedule. Every file
 covers one part of the module API, with comments on why the host works that
 way.
@@ -83,7 +83,7 @@ Read the files in the order the host uses them: `spec.py` → `settings.py` →
 
 ## Try it
 
-From `bot/`, install the reference module into Kimi's existing environment and
+From `bot/`, install the reference module into Bram's existing environment and
 enable the entry point in `.env`:
 
 ```console
@@ -91,7 +91,7 @@ enable the entry point in `.env`:
 ```
 
 ```dotenv
-KIMI_MODULES=reference_kudos
+BRAM_MODULES=reference_kudos
 ```
 
 Then run the bot normally. In a server, ask the bot to give someone kudos,
@@ -113,7 +113,7 @@ or the same fields, without the prefix, as frontmatter in
    and the entry-point name. The module name must match `ModuleSpec.name`
    and `ModuleSettingsDefinition.name`; it prefixes every table and the
    module's event namespace.
-3. Depend on `kimi-agent-module-api` from PyPI.
+3. Depend on `bram-agent-module-api` from PyPI.
 4. Keep `ModuleSpec.api_version` as the literal contract version this source
    implements. Change it only after reviewing and adapting to a new API; do not
    derive it from whichever SDK happens to be installed.

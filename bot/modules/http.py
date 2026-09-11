@@ -27,7 +27,7 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     DISCORD_CDN_HOSTS,
     HostNotAllowed,
     HttpHostRule,
@@ -224,7 +224,7 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 class ModuleHttpRuntime:
     """Process-wide sessions: one public-only, one for declared private hosts."""
 
-    def __init__(self, *, user_agent: str = "KimiAgent-Module") -> None:
+    def __init__(self, *, user_agent: str = "BramAgent-Module") -> None:
         self._user_agent = user_agent
         self._public: aiohttp.ClientSession | None = None
         self._private: aiohttp.ClientSession | None = None

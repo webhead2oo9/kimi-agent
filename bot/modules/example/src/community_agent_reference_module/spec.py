@@ -1,6 +1,6 @@
 """The ``ModuleSpec``: identity, declarations, and load-time wiring.
 
-This is the object the ``kimi_agent.modules`` entry point resolves to. The
+This is the object the ``bram_agent.modules`` entry point resolves to. The
 host reads it in two phases:
 
 1. **Preflight**, before the module's ``create()`` runs. It validates the declarations
@@ -17,7 +17,7 @@ Declaring less than you use fails at runtime (``UndeclaredDiscordAction``,
 
 from __future__ import annotations
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     AppModule,
     ModuleLoadContext,
     ModulePermissions,
@@ -25,7 +25,7 @@ from kimi_agent_module_api import (
     ServiceDeclaration,
     TrustTier,
 )
-from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE
+from bram_agent_module_api.events import TOPIC_MEMBER_REMOVE
 
 from community_agent_reference_module.guild_settings import GUILD_SETTINGS
 from community_agent_reference_module.module import (
@@ -94,7 +94,7 @@ def create(ctx: ModuleLoadContext) -> AppModule:
         min_tier=TrustTier.MEMBER,
         searchable=True,
     )
-    # Gerund phrases shown in the "Kimi is ..." activity line while a tool runs.
+    # Gerund phrases shown in the "Bram is ..." activity line while a tool runs.
     ctx.register_tool_labels(
         {
             TOOL_GIVE: "Giving kudos",

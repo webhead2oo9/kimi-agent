@@ -63,7 +63,7 @@ def make_flusher(
         "preference_store": prefs,
         "memory_client": memory,
         "ensure_user_bank": fake_ensure_user_bank,
-        "get_bot_name": lambda: "Kimi",
+        "get_bot_name": lambda: "Bram",
         "idle_seconds": IDLE,
         "backfill_horizon_seconds": HORIZON,
         "min_user_chars": 20,
@@ -190,7 +190,7 @@ async def test_flush_reads_live_bot_name(tmp_path) -> None:
                 ("assistant", None, None, "I will keep that preference in mind."),
             ],
         )
-        active_name = ["Kimi"]
+        active_name = ["Bram"]
         memory = FakeMemoryClient()
         flusher = make_flusher(
             db,
@@ -205,8 +205,8 @@ async def test_flush_reads_live_bot_name(tmp_path) -> None:
         [retained] = memory.retains
         assert "Nova" in retained["content"]
         assert "Nova (assistant)" in retained["context"]
-        assert "Kimi" not in retained["content"]
-        assert "Kimi" not in retained["context"]
+        assert "Bram" not in retained["content"]
+        assert "Bram" not in retained["context"]
     finally:
         await db.close()
 

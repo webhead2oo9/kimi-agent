@@ -14,8 +14,8 @@ from typing import Any
 import discord
 from discord.ext import commands
 
-from kimi_agent_module_api import events as ev
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api import events as ev
+from bram_agent_module_api.contracts import (
     AttachmentSnapshot,
     InviteSnapshot,
     MemberSnapshot,

@@ -13,11 +13,11 @@ From `bot/`, with the development environment already installed:
 .venv/bin/python -m pip install --no-deps --editable ./modules/minimal
 ```
 
-Add `hello` to the existing `KIMI_MODULES` list in your instance's environment
+Add `hello` to the existing `BRAM_MODULES` list in your instance's environment
 and restart. For an instance with no other modules:
 
 ```dotenv
-KIMI_MODULES=hello
+BRAM_MODULES=hello
 ```
 
 Ask the assistant in an active server to use `hello_member`. This example
@@ -28,7 +28,7 @@ results receive the registry's default untrusted-content envelope.
 Modules are required by default. To make this greeting feature optional, also set:
 
 ```dotenv
-KIMI_OPTIONAL_MODULES=hello
+BRAM_OPTIONAL_MODULES=hello
 ```
 
 Optional failures appear in `/modules status`; changing either list requires

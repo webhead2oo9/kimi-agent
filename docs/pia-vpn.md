@@ -1,12 +1,12 @@
 # Use a PIA VPN for code execution and browsing
 
-Use this guide when you want Kimi's code execution or browser traffic to leave
+Use this guide when you want Bram's code execution or browser traffic to leave
 through Private Internet Access (PIA). Discord and model-provider traffic keep
 using the server's normal connection.
 
-Kimi connects to an existing Linux network namespace: an isolated network with
+Bram connects to an existing Linux network namespace: an isolated network with
 its own routes and DNS. The repository supplies the helper and sudo rule that
-let Kimi enter it. It does **not** supply a PIA namespace installer or a service
+let Bram enter it. It does **not** supply a PIA namespace installer or a service
 that maintains the tunnel. You need that host setup before enabling this mode.
 Installing PIA on the host alone does not satisfy this requirement.
 
@@ -15,7 +15,7 @@ Installing PIA on the host alone does not satisfy this requirement.
 You need:
 
 - A Linux server with systemd and administrator access.
-- Kimi running as a dedicated non-root account, with the
+- Bram running as a dedicated non-root account, with the
   [sandbox host prerequisites](code-exec.md#host-requirements) working.
 - A PIA account and a separately enrolled WireGuard peer for this server.
 - A service that creates and maintains the VPN namespace, including its
@@ -25,7 +25,7 @@ You need:
 
 If you are still setting up the namespace service, complete
 [Prepare the VPN namespace](#prepare-the-vpn-namespace) first. The remaining
-steps connect that service to Kimi.
+steps connect that service to Bram.
 
 Keep credentials, generated WireGuard configuration, and installed host files
 outside the checkout. Use your private deployment notes for real host values.
@@ -37,27 +37,27 @@ your installation's values consistently.
 
 | Item | Example | Used by |
 |---|---|---|
-| Bot account | `kimi` | sudo rule and service commands |
-| Namespace | `kimi-vpn` | VPN service and helper |
+| Bot account | `bram` | sudo rule and service commands |
+| Namespace | `bram-vpn` | VPN service and helper |
 | VPN interface inside it | `wg0` | tunnel checks |
-| Readiness file | `/run/kimi-vpn.ready` | VPN service and helper |
-| Helper installation | `/usr/local/sbin/kimi-netns` | sudo rule and Kimi settings |
-| Namespace resolver | `/etc/netns/kimi-vpn/resolv.conf` | Kimi settings |
+| Readiness file | `/run/bram-vpn.ready` | VPN service and helper |
+| Helper installation | `/usr/local/sbin/bram-netns` | sudo rule and Bram settings |
+| Namespace resolver | `/etc/netns/bram-vpn/resolv.conf` | Bram settings |
 | Private test target | An actual listening private IP and TCP port | startup isolation probe |
 
 The readiness file means the service has checked the tunnel, DNS, firewall,
 and private-network isolation. Creating the file manually bypasses those checks.
 
-## 2. Check the VPN before configuring Kimi
+## 2. Check the VPN before configuring Bram
 
 Run these as an administrator, using your namespace and interface names:
 
 ```bash
-sudo ip netns exec kimi-vpn wg show wg0
-sudo ip netns exec kimi-vpn ip route
-sudo ip netns exec kimi-vpn nft list ruleset
-sudo ip netns exec kimi-vpn curl --fail --show-error https://example.com/
-sudo ip netns exec kimi-vpn curl --fail --show-error https://ifconfig.me/ip
+sudo ip netns exec bram-vpn wg show wg0
+sudo ip netns exec bram-vpn ip route
+sudo ip netns exec bram-vpn nft list ruleset
+sudo ip netns exec bram-vpn curl --fail --show-error https://example.com/
+sudo ip netns exec bram-vpn curl --fail --show-error https://ifconfig.me/ip
 ```
 
 Check that the tunnel has a recent handshake after traffic, HTTPS works, and
@@ -68,9 +68,9 @@ Also test your private target: it must accept a connection from the host and
 be unreachable from the namespace. A closed port is not a valid isolation test.
 Use a dedicated test listener rather than a production service with credentials.
 
-Do not continue if these checks fail. Kimi cannot repair the tunnel or firewall.
+Do not continue if these checks fail. Bram cannot repair the tunnel or firewall.
 
-## 3. Install Kimi's helper and sudo rule
+## 3. Install Bram's helper and sudo rule
 
 The files to copy are in
 [`bot/deploy/code-exec-netns/`](../bot/deploy/code-exec-netns/README.md):
@@ -82,19 +82,19 @@ Make private working copies outside the checkout and replace the tokens:
 
 | Template token | Replacement for the examples above |
 |---|---|
-| REPLACE_NETNS_NAME | `kimi-vpn` |
-| REPLACE_READY_FILE | `kimi-vpn.ready` |
-| REPLACE_ABSOLUTE_HELPER_PATH | `usr/local/sbin/kimi-netns` (the template already supplies `/`) |
-| REPLACE_BOT_USER | `kimi` |
+| REPLACE_NETNS_NAME | `bram-vpn` |
+| REPLACE_READY_FILE | `bram-vpn.ready` |
+| REPLACE_ABSOLUTE_HELPER_PATH | `usr/local/sbin/bram-netns` (the template already supplies `/`) |
+| REPLACE_BOT_USER | `bram` |
 
-Install the edited helper as `/usr/local/sbin/kimi-netns`, owned by `root:root`
+Install the edited helper as `/usr/local/sbin/bram-netns`, owned by `root:root`
 with mode `0755`. Install the edited sudo rule as
-`/etc/sudoers.d/kimi-netns`, owned by `root:root` with mode `0440`. Validate the
+`/etc/sudoers.d/bram-netns`, owned by `root:root` with mode `0440`. Validate the
 edited rule with `visudo -cf` before installing it, then check the installed
 configuration:
 
 ```bash
-sudo visudo -cf /etc/sudoers.d/kimi-netns
+sudo visudo -cf /etc/sudoers.d/bram-netns
 sudo visudo -c
 ```
 
@@ -104,17 +104,17 @@ running a command. Keep that privilege drop intact.
 
 The helper and resolver must be real files, owned by root, with no group or
 other write permission. Their parent directories must also be root-controlled.
-Kimi rejects symlinks for these files.
+Bram rejects symlinks for these files.
 
 ## 4. Enable the tools you need
 
-Edit the private configuration used by your Kimi service. For code execution:
+Edit the private configuration used by your Bram service. For code execution:
 
 ```dotenv
 CODE_EXEC_ENABLED=true
 CODE_EXEC_NETWORK_MODE=netns
-CODE_EXEC_NETNS_HELPER_BIN=/usr/local/sbin/kimi-netns
-CODE_EXEC_NETNS_RESOLV_CONF=/etc/netns/kimi-vpn/resolv.conf
+CODE_EXEC_NETNS_HELPER_BIN=/usr/local/sbin/bram-netns
+CODE_EXEC_NETNS_RESOLV_CONF=/etc/netns/bram-vpn/resolv.conf
 CODE_EXEC_NETWORK_PROBE_BLOCKED_IP=REPLACE_WITH_PRIVATE_IP:PORT
 ```
 
@@ -123,16 +123,16 @@ For the persistent browser:
 ```dotenv
 BROWSER_ENABLED=true
 BROWSER_NETWORK_MODE=netns
-BROWSER_NETNS_HELPER_BIN=/usr/local/sbin/kimi-netns
-BROWSER_NETNS_RESOLV_CONF=/etc/netns/kimi-vpn/resolv.conf
+BROWSER_NETNS_HELPER_BIN=/usr/local/sbin/bram-netns
+BROWSER_NETNS_RESOLV_CONF=/etc/netns/bram-vpn/resolv.conf
 BROWSER_NETWORK_PROBE_BLOCKED_IP=REPLACE_WITH_PRIVATE_IP:PORT
 ```
 
 Replace the test-target value before restarting. Enable either tool or both.
-When both use the same namespace, Kimi serializes their access. You can leave
+When both use the same namespace, Bram serializes their access. You can leave
 code execution in offline `none` mode when only the browser needs the VPN.
 
-## 5. Verify Kimi and restart
+## 5. Verify Bram and restart
 
 From `bot/`, run the probe as the **bot account**, using the same configuration
 and environment as the running service:
@@ -145,17 +145,17 @@ This checks the code-execution profile; exit status `0` means its sandbox
 started and the configured network checks passed. For a browser-only setup,
 check the browser startup probe and capability summary after restart.
 
-Restart your Kimi service using your normal service-management command. Confirm
+Restart your Bram service using your normal service-management command. Confirm
 the enabled tools appear as available in its startup capability summary. A
 failed live probe can leave the bot online while the affected tool is unavailable.
 
 During a maintenance window, stop the VPN namespace service and verify that
-VPN traffic fails and Kimi cannot start a new workload through it. The service
+VPN traffic fails and Bram cannot start a new workload through it. The service
 must remove its readiness file on stop. Restart the VPN service, repeat the
-checks, and restart Kimi before making the tools available again.
+checks, and restart Bram before making the tools available again.
 
 Finally, reboot once and repeat the checks. A successful manual start does not
-prove that the VPN starts before Kimi at boot.
+prove that the VPN starts before Bram at boot.
 
 ## Troubleshooting
 
@@ -164,17 +164,17 @@ prove that the VPN starts before Kimi at boot.
 | No handshake or HTTPS fails in step 2 | VPN service logs, peer configuration, endpoint reachability, routes, and namespace firewall. |
 | DNS fails but IP connectivity works | The namespace resolver and firewall exception for the peer's assigned DNS server. |
 | Helper says the namespace is not ready | VPN service status and readiness-file ownership. Let the service publish readiness after its checks pass. |
-| Kimi rejects a helper or resolver | Absolute path, root ownership, write permissions, symlinks, and parent directories. |
-| sudo rejects `-C` or `closefrom_override` | Kimi needs sudo support for preserving its seccomp file descriptor. Some Ubuntu hosts use `sudo-rs`; if classic sudo is installed as `/usr/bin/sudo.ws`, configure `CODE_EXEC_SUDO_BIN` and `BROWSER_SUDO_BIN` to that path and validate with the matching `visudo.ws`. |
+| Bram rejects a helper or resolver | Absolute path, root ownership, write permissions, symlinks, and parent directories. |
+| sudo rejects `-C` or `closefrom_override` | Bram needs sudo support for preserving its seccomp file descriptor. Some Ubuntu hosts use `sudo-rs`; if classic sudo is installed as `/usr/bin/sudo.ws`, configure `CODE_EXEC_SUDO_BIN` and `BROWSER_SUDO_BIN` to that path and validate with the matching `visudo.ws`. |
 | User systemd manager is unavailable | Follow the lingering and user-manager commands in [host requirements](code-exec.md#host-requirements). |
 | Private-target check fails | Confirm the target is listening from the host and blocked from the namespace. |
 | Works manually but fails after reboot | VPN service ordering, readiness checks, and boot logs. |
-| Tool stays unavailable after repairing the VPN | Repeat the probe and restart Kimi; uncertain workload cleanup can require a restart. |
+| Tool stays unavailable after repairing the VPN | Repeat the probe and restart Bram; uncertain workload cleanup can require a restart. |
 
 ## Disable or rotate the VPN
 
 To stop using the affected tools, set `CODE_EXEC_ENABLED=false` and/or
-`BROWSER_ENABLED=false`, then restart Kimi. To keep offline code execution,
+`BROWSER_ENABLED=false`, then restart Bram. To keep offline code execution,
 set `CODE_EXEC_NETWORK_MODE=none` instead. Switching to `host` would give
 workloads the server's normal network access.
 
@@ -212,7 +212,7 @@ Your namespace service needs to:
    bridge, without providing a route to host loopback.
 7. Check handshake, DNS, HTTPS, VPN egress, and private-target isolation, then
    create the root-owned readiness file in a root-controlled directory.
-8. Supervise failures, remove readiness on teardown, and start before Kimi.
+8. Supervise failures, remove readiness on teardown, and start before Bram.
 
 Use default-drop input and forwarding rules. The namespace must lose internet
 access when the tunnel fails. If a dedicated private probe listener needs a

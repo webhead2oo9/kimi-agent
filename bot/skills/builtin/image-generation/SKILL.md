@@ -31,7 +31,7 @@ Read the reference file that fits the request:
   revisions, billboard sequences, character consistency, alpha checks, and
   deterministic fallbacks.
 
-## Kimi tool contract
+## Bram tool contract
 
 `generate_image` is optional. If it is absent, say image generation is not
 enabled here; do not pretend to call a provider. For generation, omit reference

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Run preflight checks before starting Kimi.
+# Run preflight checks before starting Bram.
 # Verifies provider credentials and the browser runtime when enabled.
 #
 set -euo pipefail
@@ -10,11 +10,11 @@ BOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON_BIN="$BOT_DIR/.venv/bin/python"
 cd "$BOT_DIR"
 
-KIMI_CONFIG_HOME="${KIMI_CONFIG_HOME:-${HOME}/.config/kimi-agent}"
-ENV_FILE="${ENV_FILE:-${KIMI_CONFIG_HOME}/kimi.env}"
-RUNTIME_ENV="${RUNTIME_ENV:-${KIMI_CONFIG_HOME}/runtime.env}"
+BRAM_CONFIG_HOME="${BRAM_CONFIG_HOME:-${HOME}/.config/bram-agent}"
+ENV_FILE="${ENV_FILE:-${BRAM_CONFIG_HOME}/bram.env}"
+RUNTIME_ENV="${RUNTIME_ENV:-${BRAM_CONFIG_HOME}/runtime.env}"
 
-echo "Kimi Preflight"
+echo "Bram Preflight"
 echo "=============="
 echo "ENV_FILE:    $ENV_FILE"
 echo "RUNTIME_ENV: $RUNTIME_ENV"
@@ -75,4 +75,4 @@ PY
 
 echo
 echo "All preflight checks passed."
-echo "You can now start the service with: systemctl --user start kimi-agent.service"
+echo "You can now start the service with: systemctl --user start bram-agent.service"

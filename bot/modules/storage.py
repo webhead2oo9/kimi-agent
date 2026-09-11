@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     TABLE_NAME_RE,
     MigrationContext,
     ModuleContractError,

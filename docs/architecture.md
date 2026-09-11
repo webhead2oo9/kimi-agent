@@ -1,14 +1,14 @@
 # Architecture
 
-This page is a map of Kimi: the ways people talk to it, and which folders own which job.
+This page is a map of Bram: the ways people talk to it, and which folders own which job.
 
 ## What this bot is
 
-People talk to Kimi in a few different ways. Under the hood they all use the same model loop, so swapping OpenAI, Anthropic, or another provider does not change the rest of the bot. There is also an optional background coding worker. You can install extra modules if you want features that are not in core.
+People talk to Bram in a few different ways. Under the hood they all use the same model loop, so swapping OpenAI, Anthropic, or another provider does not change the rest of the bot. There is also an optional background coding worker. You can install extra modules if you want features that are not in core.
 
 ### Community chat
 
-This is ordinary Discord chat in a server. If someone mentions the bot, replies to it with the reply ping on, starts a message with `hey <bot name>`, `hi <bot name>`, or `<bot name> help`, or talks in an auto-responding thread it created, Kimi starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
+This is ordinary Discord chat in a server. If someone mentions the bot, replies to it with the reply ping on, starts a message with `hey <bot name>`, `hi <bot name>`, or `<bot name> help`, or talks in an auto-responding thread it created, Bram starts a tool-using turn with the saved conversation, trust-gated tools, and optional Hindsight memory. There is no general guild `/chat` command.
 
 In code, a Discord message lands in `DiscordMessageController`, which decides whether the bot should answer at all and takes the lock for that conversation. It then hands the turn to the shared foreground runner, which runs the model and posts the reply back to the channel.
 
@@ -18,7 +18,7 @@ In code, a Discord message lands in `DiscordMessageController`, which decides wh
 
 In code, the `/chat` command does its own access and consent checks and takes the conversation lock, then uses the same foreground runner. The only difference is how the reply gets back to Discord: a slash command reply instead of a channel message.
 
-### Teach Kimi
+### Teach Bram
 
 Staff can use the message context menu (named after `BOT_NAME`) to teach the bot from a selected message. That is still a model turn, but it only gets the `LEARN_TOOLS` set. The reply is shown once and is not saved to the conversation. `app/learn_log.py` writes an audit record. Code path: `commands/learn_cmd.py` → `app/learn_turn.py`.
 
@@ -34,7 +34,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `app/` | Where the bot is wired together, then handed Discord events |
 | `agent/` | The model loop: turn prep, tools, compaction, attachments |
 | `discord_adapter/` | Talks to Discord: sending, receiving, permissions, cleanup jobs |
-| `providers/` | How Kimi talks to model APIs, including failover |
+| `providers/` | How Bram talks to model APIs, including failover |
 | `image_gen/` | Image generation/editing backend |
 | `search/` | Internet search backends (TinyFish, Exa, Brave) and the chain that blends them |
 | `video_understanding/` | Gemini video sessions |
@@ -45,7 +45,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `web_browser/` | Persistent browser profiles, plus one-shot chart/Mermaid rendering |
 | `workspace/` | Per-user file folders |
 | `sandbox/` | The Linux jail for running code |
-| `commands/` | Slash commands and the Teach Kimi menu |
+| `commands/` | Slash commands and the Teach Bram menu |
 | `memory/` | Hindsight memory: banks, auto-retain, opt-out |
 | `storage/` | SQLite: conversations, usage, circuits, coding tasks, video sessions |
 | `trust/` | Who counts as member, regular, or staff |
@@ -72,7 +72,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 | `foreground_turn.py` | The shared prepare → run → deliver sequence used by guild messages and `/chat` |
 | `guild_turn_adapter.py` | Delivers a guild-message turn's reply back to the channel |
 | `user_app_chat.py`, `user_app_turn_adapter.py` | Personal `/chat`: its access rules, and delivering its reply through the slash-command response |
-| `user_app_consent.py` | The privacy consent prompt shared by `/chat` and Teach Kimi |
+| `user_app_consent.py` | The privacy consent prompt shared by `/chat` and Teach Bram |
 | `response_delivery.py` | Posts replies and attachments to Discord, checking workspace file rules first |
 | `command_sync.py` | Publishes slash commands to Discord after READY |
 | `guild_activation.py` | Tracks which servers are active and refreshes their state |
@@ -87,7 +87,7 @@ Big repository jobs should not hold up a live Discord reply. `start_coding_task`
 
 ## Design choices that matter
 
-**Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Kimi logs it and keeps going. Installed modules (`app/modules.py`) are required by default; explicitly optional modules can be disabled after recoverable failures.
+**Wired in one place.** Core starts in `app/runtime.py:build_app()`. Extra tools for one deployment can come from plugins (`app/plugins.py`). If a plugin breaks, Bram logs it and keeps going. Installed modules (`app/modules.py`) are required by default; explicitly optional modules can be disabled after recoverable failures.
 
 **Each server keeps its own stuff.** Every stored record carries the server (guild) id. A server has to be explicitly allowed. Trust, prompts, pins, and denylists come from `config/servers/<id>.md`. Workspaces and community memory are per server. `/chat` is the exception so using it inside a server cannot pull that server's private config.
 

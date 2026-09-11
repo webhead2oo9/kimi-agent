@@ -1,9 +1,9 @@
 # Image prompting fundamentals
 
-Adapted for Kimi from OpenAI's
+Adapted for Bram from OpenAI's
 [Image prompting guide](https://developers.openai.com/api/docs/guides/image-prompting).
 The source's prompting principles are retained here while its broader API
-parameter examples are narrowed to Kimi's actual `generate_image` contract.
+parameter examples are narrowed to Bram's actual `generate_image` contract.
 
 ## Begin with the deliverable
 
@@ -133,7 +133,7 @@ unavailable original, product photograph, or prior output, ask the user to
 provide it rather than imagining one. Refer to the exact saved path or filename
 in the tool call, and keep the prose roles aligned with that order.
 
-## Choose sensible Kimi hints
+## Choose sensible Bram hints
 
 Composition should drive size. Use `1024x1536` for posters, cards, people, and
 vertical explainers; `1536x1024` for rooms, landscapes, slides, wide diagrams,
@@ -149,7 +149,7 @@ latency level across operator-selected models.
 Use `background: transparent` only when the requested asset needs isolation, and
 also state “fully transparent background” in the prompt. Ask for a crisp
 silhouette and prohibit a solid backdrop, scenery, and painted checkerboard.
-Kimi still saves PNG, but PNG alone does not prove an alpha channel. The tool
+Bram still saves PNG, but PNG alone does not prove an alpha channel. The tool
 does not inspect actual alpha; verify it only with an image-analysis facility
 that can truly read the returned file, or tell the user it remains to be checked.
 

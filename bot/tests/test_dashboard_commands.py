@@ -5,7 +5,7 @@ import discord
 import pytest
 from discord import app_commands
 
-from app.runtime import KimiCommandTree
+from app.runtime import BramCommandTree
 from tests.helpers import make_settings
 
 
@@ -13,7 +13,7 @@ from tests.helpers import make_settings
 async def test_global_sync_keeps_primary_entrypoint_in_same_replacement():
     client = discord.Client(intents=discord.Intents.none(), application_id=42)
     client._agent_application = SimpleNamespace(settings=make_settings(dashboard_enabled=True))
-    tree = KimiCommandTree(client)
+    tree = BramCommandTree(client)
 
     @tree.command(name="hello")
     async def hello(interaction: discord.Interaction):
@@ -32,7 +32,7 @@ async def test_global_sync_keeps_primary_entrypoint_in_same_replacement():
     assert [item["name"] for item in payload] == ["hello", "Launch"]
     assert payload[-1] == {
         "name": "Launch",
-        "description": "Open your private Kimi dashboard",  # default BOT_NAME
+        "description": "Open your private Bram dashboard",  # default BOT_NAME
         "type": 4,
         "handler": 2,
         "integration_types": [0],
@@ -46,7 +46,7 @@ async def test_global_sync_keeps_primary_entrypoint_in_same_replacement():
 async def test_disabled_and_guild_sync_use_normal_discord_py_path(monkeypatch):
     client = discord.Client(intents=discord.Intents.none(), application_id=42)
     client._agent_application = SimpleNamespace(settings=make_settings())
-    tree = KimiCommandTree(client)
+    tree = BramCommandTree(client)
     original = AsyncMock(return_value=[])
     monkeypatch.setattr(app_commands.CommandTree, "sync", original)
     await tree.sync()

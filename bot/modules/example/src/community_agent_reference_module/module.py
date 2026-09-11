@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     ModuleRuntimeContext,
     ModuleToolContext,
     ProposalActor,
@@ -34,7 +34,7 @@ from kimi_agent_module_api import (
     TrustTier,
     render_guild_settings,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     ButtonSpec,
     CommandOption,
     CommandSpec,
@@ -46,7 +46,7 @@ from kimi_agent_module_api.contracts import (
     TrustTierName,
     parse_custom_id,
 )
-from kimi_agent_module_api.events import TOPIC_MEMBER_REMOVE, MemberRemoveEvent
+from bram_agent_module_api.events import TOPIC_MEMBER_REMOVE, MemberRemoveEvent
 
 from community_agent_reference_module.guild_settings import (
     FIELD_ALLOW_THANK_BACK,

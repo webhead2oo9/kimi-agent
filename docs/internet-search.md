@@ -9,7 +9,7 @@ The model sees one tool and never learns which provider answered. Provider names
 - `search` takes a `query` and returns up to `num_results` combined results. Queries must stay within both limits: 400 characters and 50 words.
 - `contents` takes one or more absolute HTTP(S) `urls` and reads those pages. TinyFish and Exa can do this; Brave cannot. A Brave-only deployment returns an error saying no page-reading provider is configured, rather than quietly turning the request into a search.
 - `content_mode` is `highlights` by default. Asking for `text` sends the call only to a backend that can return full page text, and the two entry points are judged separately: TinyFish search returns snippets and is skipped for a `text` search, while TinyFish page reads return whole pages and are eligible.
-- Domain, publication-date, and country constraints are optional. Where a provider can't apply one itself, Kimi applies it to that provider's results afterward, so a constraint is never dropped quietly. A result whose publication date the provider never reported can't satisfy a date constraint, and is dropped.
+- Domain, publication-date, and country constraints are optional. Where a provider can't apply one itself, Bram applies it to that provider's results afterward, so a constraint is never dropped quietly. A result whose publication date the provider never reported can't satisfy a date constraint, and is dropped.
 
 Each result carries `title`, `url`, the useful `content`, and the publication date or author where the provider reports them. Results and page text are stamped as untrusted context. A search that genuinely found nothing says so plainly:
 

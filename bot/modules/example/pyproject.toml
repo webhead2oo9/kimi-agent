@@ -1,23 +1,23 @@
 [project]
 name = "community-agent-reference-module"
 version = "1.0.0"
-description = "Reference implementation of a Kimi application module"
+description = "Reference implementation of a Bram application module"
 requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 # The only runtime dependency a module needs. Pin to the major version: the
 # API's MODULE_API_VERSION changes with it.
-dependencies = ["kimi-agent-module-api>=2.0.0,<3"]
+dependencies = ["bram-agent-module-api>=2.0.0,<3"]
 
 [project.optional-dependencies]
 # The SDK's ``testing`` extra brings MemoryStorage (real SQL in unit tests);
 # it is not a runtime dependency because the host owns the real database.
-dev = ["kimi-agent-module-api[testing]", "mypy", "pytest", "pytest-asyncio", "ruff"]
+dev = ["bram-agent-module-api[testing]", "mypy", "pytest", "pytest-asyncio", "ruff"]
 
 # This is the whole discovery contract: the host looks up this group and
-# activates the names listed in KIMI_MODULES.
-[project.entry-points."kimi_agent.modules"]
+# activates the names listed in BRAM_MODULES.
+[project.entry-points."bram_agent.modules"]
 reference_kudos = "community_agent_reference_module:SPEC"
 
 [build-system]

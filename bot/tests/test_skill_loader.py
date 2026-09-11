@@ -231,7 +231,7 @@ def test_bundled_image_generation_skill_loads_with_readable_references() -> None
     )
     assert skill is not None
     assert skill.meta.origin is SkillOrigin.BUILTIN
-    assert "Kimi tool contract" in skill.content
+    assert "Bram tool contract" in skill.content
 
     references = dict(list_reference_files(skill.meta.path))
     assert set(references) == {

@@ -256,7 +256,7 @@ def build_runtime_tools(
         settings_registry=PluginSettingsRegistry(config_dir=Path(settings.config_dir)),
     )
     module_manager = ModuleManager.load(
-        settings.kimi_module_list,
+        settings.bram_module_list,
         core_settings=settings,
         registry=registry,
         tool_files=lambda ctx: ModuleToolFiles(

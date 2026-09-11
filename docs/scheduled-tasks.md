@@ -1,6 +1,6 @@
 # Scheduled tasks
 
-Kimi can run an approved procedure once or repeatedly without an incoming message.
+Bram can run an approved procedure once or repeatedly without an incoming message.
 Each task owns an automatically generated instruction skill, a schedule, saved notes,
 and run history. [Scheduled Python](scheduled-python.md) can check conditions
 before invoking an LLM or publish deterministic text and files. During LLM runs,
@@ -88,13 +88,13 @@ routing, including the active `/models` selection, scope overrides, and
 
 ## Create and edit tasks
 
-Ask Kimi naturally: “Every Friday at 9am, summarize development changes in
+Ask Bram naturally: “Every Friday at 9am, summarize development changes in
 #announcements, but post only if something changed.” The `task_manage` setup action
-loads a conversational wizard and remembers setup in the conversation. Kimi asks
+loads a conversational wizard and remembers setup in the conversation. Bram asks
 for missing sources, timing, destinations, conditions, and output requirements.
 Use `cancel_setup` to stop an unfinished wizard.
 
-Kimi writes the dedicated skill while preparing a draft, plus a Python script when
+Bram writes the dedicated skill while preparing a draft, plus a Python script when
 that execution mode is selected. The preview includes the execution mode,
 interpreted schedule, complete settings, `SKILL.md`, and `task.py` when applicable.
 Click **Approve** to activate that exact revision, or **Reject** to reject it. Changed or already-used previews cannot be
@@ -110,7 +110,7 @@ an existing run keeps its approved revision. Changing sources, condition, Python
 code, input declarations, or execution mode
 resets saved comparison state, as shown in the preview.
 
-Ask Kimi to copy a task's skill to personal skills with a chosen kebab-case name.
+Ask Bram to copy a task's skill to personal skills with a chosen kebab-case name.
 Only the creator can export it; the personal copy and task skill then change
 independently. `/tasks` opens a private, paginated list of tasks. Select one to see
 its schedule, next run, latest outcome, and management buttons. Owners see their
@@ -157,7 +157,7 @@ and covered by the existing privacy deletion controls.
 
 Each occurrence starts fresh with the skill and up to 64,000 characters of saved
 task state. The skill explains what to remember: a release identifier, message
-cursor, previous findings, or the last reporting window. It can use Kimi's normal
+cursor, previous findings, or the last reporting window. It can use Bram's normal
 available tools. Live-message thread handoff and starting a detached coding task
 are unavailable during scheduled runs.
 
@@ -294,7 +294,7 @@ The wizard stays in the current conversation. A draft is delivered separately in
 quiet approval thread by default; a current thread is reused. New approval threads
 do not automatically answer messages. Ask to keep approval in-channel to opt out.
 If thread creation is unavailable, the preview appears in the current channel.
-Kimi's ordinary reply uses a labeled **Review task** link to the pending approval and does not repeat the
+Bram's ordinary reply uses a labeled **Review task** link to the pending approval and does not repeat the
 skill or settings.
 
 Previews show a readable schedule and the task's IANA timezone. Upcoming dates and
@@ -313,7 +313,7 @@ revisions point to management of the current task. Archived approval receipts st
 fixed; `/tasks` always shows current status. Rejecting an edit keeps the previously approved
 version running. Replaced pending previews are marked superseded.
 
-After approval or rejection, Kimi posts a short sign-off and then locks and archives
+After approval or rejection, Bram posts a short sign-off and then locks and archives
 the approval thread where the requester and bot have the necessary authority.
 Use `/tasks` to reopen private management controls. Missing permissions leave the
 thread open without undoing the decision. Threads used by an approved task for
@@ -326,7 +326,7 @@ usable and are updated on interaction.
 ## Replies to scheduled output
 
 Replies continue from the published message. While its task and run records remain,
-Kimi receives an application-generated origin hint with the task's name at that
+Bram receives an application-generated origin hint with the task's name at that
 revision, task/run IDs, revision, and publication time. The hint remains available
 through conversation compaction. It includes no private skill, comparison state,
 or working transcript. Ordinary cross-channel posts do not receive this hint.

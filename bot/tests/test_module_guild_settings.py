@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from threading import Event, Lock, Thread
 
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     GuildSettingField,
     GuildSettingsSchema,
     GuildSettingsSnapshot,
@@ -277,8 +277,8 @@ def test_stale_refresh_cannot_override_newer_enforcement_snapshot(tmp_path: Path
 
 
 def test_render_guild_settings_round_trips_through_the_host_parser() -> None:
-    from kimi_agent_module_api import render_guild_settings
-    from kimi_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
+    from bram_agent_module_api import render_guild_settings
+    from bram_agent_module_api.contracts import GuildSettingField, GuildSettingsSchema
     from modules.guild_settings import coerce_document
     from utils.frontmatter import split_frontmatter_strict
 
@@ -314,7 +314,7 @@ def test_render_guild_settings_round_trips_through_the_host_parser() -> None:
 
 
 def test_render_guild_settings_rejects_values_no_schema_kind_holds() -> None:
-    from kimi_agent_module_api import render_guild_settings
+    from bram_agent_module_api import render_guild_settings
 
     with pytest.raises(TypeError):
         render_guild_settings({"x": 1.5})

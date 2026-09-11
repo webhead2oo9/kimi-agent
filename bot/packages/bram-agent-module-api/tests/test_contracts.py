@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic_settings import BaseSettings
 
-from kimi_agent_module_api import (
+from bram_agent_module_api import (
     BASELINE_CAPABILITIES,
     MODULE_API_VERSION,
     AppModule,
@@ -23,7 +23,7 @@ from kimi_agent_module_api import (
     TrustTier,
     render_guild_settings,
 )
-from kimi_agent_module_api.contracts import (
+from bram_agent_module_api.contracts import (
     Backoff,
     ButtonSpec,
     CommandSpec,
@@ -46,9 +46,9 @@ from kimi_agent_module_api.contracts import (
     validate_services,
     validate_subscription,
 )
-from kimi_agent_module_api.events import CORE_TOPICS
-from kimi_agent_module_api.images import looks_like_image_attachment, sniff_image_media_type
-from kimi_agent_module_api.testing import load_context
+from bram_agent_module_api.events import CORE_TOPICS
+from bram_agent_module_api.images import looks_like_image_attachment, sniff_image_media_type
+from bram_agent_module_api.testing import load_context
 
 
 class DemoSettings(BaseSettings):
@@ -85,7 +85,7 @@ def test_spec_and_runtime_context_keep_stable_defaults() -> None:
 
 
 def test_distribution_version_includes_triggering_message_snapshot_contract() -> None:
-    assert version("kimi-agent-module-api") == "2.3.0"
+    assert version("bram-agent-module-api") == "2.3.0"
 
 
 def test_triggering_discord_message_snapshot_is_immutable() -> None:

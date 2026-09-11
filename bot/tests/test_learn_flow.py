@@ -502,7 +502,7 @@ def _menu(
     run_learn,
     *,
     staff_ids: set[str] | None = None,
-    bot_name: str = "Kimi",
+    bot_name: str = "Bram",
     blocked_ids: frozenset[str] = frozenset(),
     request_consent=None,
     channel_access_check=lambda _channel, _user: True,
@@ -594,7 +594,7 @@ async def test_context_menu_channel_gate_precedes_block_consent_and_learn() -> N
 
     assert checked == [(message.channel, interaction.user)]
     assert downstream == []
-    assert interaction.response.sent == ["Kimi isn't available to you in this channel."]
+    assert interaction.response.sent == ["Bram isn't available to you in this channel."]
     assert not interaction.response.deferred
 
 

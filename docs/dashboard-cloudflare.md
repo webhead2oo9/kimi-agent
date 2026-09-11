@@ -318,7 +318,7 @@ publishing the instance identity or its data.
 | Page loads but login fails | Same Discord application for both credentials, OAuth redirect, root mapping, and cookies reaching the API |
 | Activity is missing | Portal Activities switch, development-team access, Developer Mode, and global command sync |
 | Dashboard is disabled in the server | Active server plus both global and per-server dashboard switches |
-| Activity opens with an access-denied message | User is on any configured `DASHBOARD_ALLOWED_USER_IDS` list and meets `DASHBOARD_MIN_TIER` |
+| Activity opens with an access-denied message | User is globally invited or has a guild `dashboard.allowed_role_ids` role, then passes the independent block, channel, permission, and `DASHBOARD_MIN_TIER` checks |
 
 To remove public access through this tunnel, stop its service:
 

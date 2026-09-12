@@ -186,9 +186,11 @@ sudo sh ./deploy/betterwright/install.sh
 ```
 
 The installer consumes the committed npm lock with `npm ci`, installs exactly
-BetterWright 2.4.0 and Mermaid 11.17.2 into a staging tree, runs the explicit
+BetterWright 2.7.1 and Mermaid 11.17.2 into a staging tree, runs the explicit
 BetterChromium setup, verifies versions, files, imports, shared libraries, and
 permissions, then atomically renames the completed root-owned tree into place.
+Mermaid 12.0.0 is intentionally not selected: its current Chevrotain dependency
+chain produces high-severity `lodash-es` advisories, while 11.17.2 audits clean.
 A failed install leaves the installed runtime in place. npm and network access
 are needed only during this operator-run install or upgrade; bot startup and
 visual rendering never install packages or contact a CDN.

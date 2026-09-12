@@ -385,6 +385,8 @@ def test_visual_worker_command_is_ephemeral_and_offline(tmp_path: Path) -> None:
     assert command[timeout_index + 1] == "47.5"
     output_limit_index = command.index("VISUAL_MAX_OUTPUT_BYTES")
     assert command[output_limit_index + 1] == "1234567"
+    ad_block_index = command.index("BETTERWRIGHT_AD_BLOCK")
+    assert command[ad_block_index + 1] == "0"
     visual_math = str((config.bridge_script.parent / "visual_math.mjs").resolve())
     math_index = command.index(visual_math)
     assert command[math_index - 1 : math_index + 2] == [

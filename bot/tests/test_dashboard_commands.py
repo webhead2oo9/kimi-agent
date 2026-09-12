@@ -1,11 +1,13 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
 from discord import app_commands
 
 from app.runtime import KimiCommandTree
+from app.dashboard import Dashboard
 from tests.helpers import make_settings
 
 
@@ -55,3 +57,46 @@ async def test_disabled_and_guild_sync_use_normal_discord_py_path(monkeypatch):
     guild = discord.Object(2)
     await tree.sync(guild=guild)
     assert original.call_args.kwargs == {"guild": guild}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_command_explains_missing_activity_permission():
+    tree = SimpleNamespace(add_command=Mock())
+    bot = SimpleNamespace(tree=tree)
+    access = SimpleNamespace(resolve=AsyncMock())
+    response = SimpleNamespace(
+        launch_activity=AsyncMock(
+            side_effect=discord.Forbidden(
+                cast(Any, SimpleNamespace(status=403, reason="Forbidden")),
+                "Missing Permissions",
+            ),
+        ),
+        send_message=AsyncMock(),
+    )
+    Dashboard(
+        bot=cast(Any, bot),
+        settings=make_settings(dashboard_enabled=True),
+        store=Mock(),
+        access=cast(Any, access),
+        files=Mock(),
+        turns=Mock(),
+        tasks=Mock(),
+        privacy=Mock(),
+        ready=lambda: True,
+    )
+    command = tree.add_command.call_args.args[0]
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        guild_id=2,
+        channel_id=3,
+        response=response,
+    )
+
+    await command.callback(cast(Any, interaction))
+
+    access.resolve.assert_awaited_once_with(user_id="1", guild_id="2", channel_id="3")
+    response.send_message.assert_awaited_once_with(
+        "I can't launch the dashboard Activity in this channel. "
+        "Ask an administrator to enable **Use Activities** for you or one of your roles here.",
+        ephemeral=True,
+    )

@@ -120,7 +120,15 @@ class Dashboard:
                         guild_id=str(interaction.guild_id or ""),
                         channel_id=str(interaction.channel_id or ""),
                     )
-                await interaction.response.launch_activity()
+                try:
+                    await interaction.response.launch_activity()
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "I can't launch the dashboard Activity in this channel. "
+                        "Ask an administrator to enable **Use Activities** for you or one of "
+                        "your roles here.",
+                        ephemeral=True,
+                    )
             except TimeoutError:
                 await interaction.response.send_message(
                     "Channel verification took too long. Please try /dashboard again.",

@@ -54,7 +54,7 @@ svg { flex-shrink: 0; }
 /* Sidebar */
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 16px 12px 12px; background: var(--sidebar); border-right: 1px solid var(--border); }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; }
-.brand > span { flex: 1; font-size: 15px; font-weight: 600; letter-spacing: -.2px; }
+.brand-name { flex: 1; font-size: 15px; font-weight: 600; letter-spacing: -.2px; }
 .new-chat { width: 100%; justify-content: flex-start; }
 .chat-search { display: flex; align-items: center; gap: 8px; height: 36px; margin-top: 8px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--faint); }
 .chat-search:focus-within { border-color: var(--border-strong); }

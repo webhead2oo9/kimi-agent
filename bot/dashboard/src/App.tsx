@@ -306,7 +306,7 @@ export function DashboardApp({ connection }: { connection: Connection }) {
   return <div className={`app-shell ${workOpen ? "with-work" : ""}`}>
     <ResponsiveDrawer query="(max-width: 700px)" open={sidebarOpen} onClose={() => setSidebarOpen(false)} label="Saved conversations" returnFocusRef={sidebarTrigger}>
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-label="Saved conversations">
-      <div className="brand"><Avatar src={botAvatar} fallback={botInitial} /><span>{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
+      <div className="brand"><Avatar src={botAvatar} fallback={botInitial} /><span className="brand-name">{session.bot_name}</span><button className="icon-button mobile-only" aria-label="Close conversations" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
       <button className="new-chat" onClick={() => void newChat()} disabled={expired}><Plus size={16} /> New chat</button>
       <label className="chat-search"><Search size={15} /><input aria-label="Search conversations" placeholder="Find a conversation" value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="sidebar-label">Recent</div>

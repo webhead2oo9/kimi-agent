@@ -14,6 +14,16 @@ test("secondary text meets normal-text contrast on each dashboard surface", asyn
   for (const pair of ratios) expect(pair.ratio, `${pair.text} on ${pair.background}`).toBeGreaterThanOrEqual(4.5);
 });
 
+test("sidebar brand avatar stays circular after the dashboard loads", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Desktop sidebar layout");
+  await page.goto("/tests/fixture.html");
+  const avatar = page.locator(".brand .avatar");
+  await expect(avatar).toBeVisible();
+  const box = await avatar.boundingBox();
+  expect(box?.width).toBe(28);
+  expect(box?.height).toBe(28);
+});
+
 test("mobile drawers contain keyboard focus and restore it on Escape", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Mobile drawer behavior");
   await page.goto("/tests/fixture.html");
